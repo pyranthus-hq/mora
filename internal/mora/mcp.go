@@ -417,7 +417,7 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	retrieval := time.Since(retrievalStarted)
 	res := diversifyEvidence(sr.Results)
 	if err == nil && len(res) > 0 {
-		res, err = decorateDispositions(cfg, res, now)
+		res, err = decorateExplicitCorrections(cfg, res, now, filters)
 	}
 	// Say where each row came from. The kind is derived here, at the boundary
 	// where the rows leave for an agent, so no writer can set it and nothing is
@@ -549,7 +549,7 @@ func mcpListMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 	retrievalStarted := time.Now()
 	res, err := listActivityMemories(cfg, strArg(args, "scope", ""), limit, filter, hours, now)
 	if err == nil {
-		res, err = decorateDispositions(cfg, res, now)
+		res, err = decorateDispositions(cfg, res, now, filter)
 	}
 	retrieval := time.Since(retrievalStarted)
 	recordMCPUsage(ctx, cfg, usageEvent{Tool: "list_memory", Scope: strArg(args, "scope", ""), Results: len(res), Millis: time.Since(start).Milliseconds()})
@@ -612,6 +612,13 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 		return nil, err
 	}
 	assemblyStarted := time.Now()
+	if intent != contextIntentOpenLoops && len(items) > 0 {
+		items, err = decorateExplicitCorrections(cfg, items, now, filters)
+		if err != nil {
+			recordMCPPhases(ctx, retrieval, time.Since(assemblyStarted))
+			return nil, err
+		}
+	}
 	// The hybrid path already points a row at a newer related record from its
 	// deeper pool. The current-state and no-query paths do not, so run the same
 	// conservative pass over what this call retrieved. It only adds pointers.

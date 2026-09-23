@@ -48,6 +48,15 @@ type Memory struct {
 	DecisionStatus string `json:"decision_status,omitempty"`
 	// Disposition is a derived local correction annotation, never persisted on the target.
 	Disposition *Disposition `json:"disposition,omitempty"`
+	// ExplicitCorrections are bounded, visible authored records that explicitly
+	// target this record. They are writer assertions, never inferred
+	// supersession or proof of user adoption, and are attached only on search
+	// and context reads. The vault file never stores this projection.
+	ExplicitCorrections []ExplicitCorrection `json:"explicit_corrections,omitempty"`
+	// CorrectionOmitted reports that a same-scope explicit link was excluded by
+	// this request's filters or the per-record cap. It carries no excluded
+	// record identity or content.
+	CorrectionOmitted bool `json:"correction_omitted,omitempty"`
 	// Owner attributes a result from a SHARED corpus (`mora share subscribe`)
 	// with the subscriber-chosen subscription name. Never persisted to disk and
 	// always empty for the user's own memories — omitempty keeps local-only
@@ -102,6 +111,17 @@ type LaterRelatedEvidence struct {
 	Title     string `json:"title"`
 	Source    string `json:"source"`
 	IndexedAt string `json:"indexed_at"`
+}
+
+// ExplicitCorrection is a compact, read_memory-addressable assertion by an
+// authored correction record. Text is a bounded excerpt of that record.
+type ExplicitCorrection struct {
+	ID          string `json:"id"`
+	CreatedAt   string `json:"created_at"`
+	Provenance  string `json:"provenance"`
+	Text        string `json:"text"`
+	Truncated   bool   `json:"truncated,omitempty"`
+	Disposition string `json:"disposition,omitempty"`
 }
 
 // GmailSegmentEvidence is the strongest query-matching derived Gmail segment receipt.

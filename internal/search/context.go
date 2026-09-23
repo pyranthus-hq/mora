@@ -68,6 +68,15 @@ func BuildContext(cfg config.Config, items []memory.Memory, budget int, hasQuery
 		if line := laterRelatedLine(m); line != "" {
 			fmt.Fprintf(&warning, "%s\n", line)
 		}
+		for _, c := range m.ExplicitCorrections {
+			fmt.Fprintf(&warning, "Explicit correction asserted by record %s (%s; origin: %s). Excerpt: %s\n", c.ID, c.CreatedAt, c.Provenance, c.Text)
+			if c.Disposition != "" {
+				fmt.Fprintf(&warning, "Writer's disposition for the prior record: %s; this does not establish truth or user adoption.\n", c.Disposition)
+			}
+		}
+		if m.CorrectionOmitted {
+			warning.WriteString("Additional correction context was omitted by this request's filters or the per-record cap; do not rely on the prior claim alone.\n")
+		}
 		if m.Decision != nil {
 			fmt.Fprintf(&body, "Decision status: %s\nAs of: %s\nDurability: %s\nFlip conditions: %s\n", m.DecisionStatus, m.Decision.AsOf, m.Decision.Durability, strings.Join(m.Decision.FlipConditions, "; "))
 			if m.Decision.ReviewBy != "" {
@@ -110,6 +119,8 @@ func BuildContext(cfg config.Config, items []memory.Memory, budget int, hasQuery
 				if out.Len() == 0 {
 					if len(block.warning) <= remaining {
 						out.WriteString(block.warning)
+					} else if len(missingCorrectionWarning(block)) <= remaining {
+						out.WriteString(missingCorrectionWarning(block))
 					} else if len(shortProvenanceWarning) <= remaining {
 						out.WriteString(shortProvenanceWarning)
 					}
@@ -131,6 +142,15 @@ func BuildContext(cfg config.Config, items []memory.Memory, budget int, hasQuery
 // shortProvenanceWarning stands in when the real one will not fit. It says less
 // but it is complete, which a truncated warning never is.
 const shortProvenanceWarning = "Provenance: unchecked; read the record itself.\n"
+
+const shortCorrectionWarning = "Provenance: unchecked. A linked correction was omitted by this budget; read the records before relying on the prior claim.\n"
+
+func missingCorrectionWarning(block contextBlock) string {
+	if strings.Contains(block.warning, "Explicit correction asserted") || strings.Contains(block.warning, "Additional correction context was omitted") {
+		return shortCorrectionWarning
+	}
+	return shortProvenanceWarning
+}
 
 // provenanceLine says where the record came from, in the reader's language.
 // It never calls a record true, and it says outright that repeating an agent's

@@ -235,7 +235,7 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if *eventHours > 0 {
 		items = recentSourceEvents(items, now, *eventHours, *limit)
 	}
-	items, err = decorateDispositions(cfg, items, time.Now())
+	items, err = decorateDispositions(cfg, items, now, filter)
 	if err != nil {
 		return err
 	}
@@ -327,7 +327,7 @@ func cmdSearch(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 	items := res.Results
 	if len(items) > 0 {
-		items, err = decorateDispositions(cfg, items, now)
+		items, err = decorateExplicitCorrections(cfg, items, now, filter)
 		if err != nil {
 			return err
 		}
@@ -428,6 +428,12 @@ func cmdContext(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	}
 	if err != nil {
 		return err
+	}
+	if len(items) > 0 {
+		items, err = decorateExplicitCorrections(cfg, items, briefClock(), searchFilters{})
+		if err != nil {
+			return err
+		}
 	}
 	if *jsonOut {
 		// Receipts are budgeted FIRST and the blob gets the remainder (#200).
