@@ -19,7 +19,6 @@ cask "mora" do
   binary "#{appdir}/Mora.app/Contents/MacOS/mora", target: "mora"
 
   # Third-party tap: literal preflight_steps cannot check a conflicting user app.
-  # rubocop:disable Cask/InstallSteps
   preflight do
     user_app = Pathname(Dir.home)/"Applications/Mora.app"
     if user_app.exist?
@@ -28,7 +27,6 @@ cask "mora" do
     end
   end
 
-  # rubocop:enable Cask/InstallSteps
 
   caveats <<~EOS
     This installs the signed memory CLI app and the mora command, not the desktop companion.

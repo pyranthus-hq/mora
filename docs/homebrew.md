@@ -70,6 +70,6 @@ self-updated app; wait for the tap version to catch up.
 
 The third-party tap retains a narrowly scoped Ruby preflight because Homebrew's
 literal `preflight_steps` cannot express the conflicting-user-app check. Its
-style exemption is limited to that block. `brew uninstall --cask
+style check requires an explicit `Cask/InstallSteps` exception for this guard. `brew uninstall --cask
 pyranthus-hq/tap/mora` removes the installation without a data-deleting `zap`.
 Manage any schedules separately before uninstalling.
