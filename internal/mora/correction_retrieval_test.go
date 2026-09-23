@@ -2,6 +2,8 @@ package mora
 
 import (
 	"context"
+	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +21,48 @@ func seedExplicitCorrectionFixture(t *testing.T, target Memory, corrections ...M
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+func TestExplicitCorrectionHiddenByGovernanceIsNotLinked(t *testing.T) {
+	target := Memory{ID: "mem_prior", Scope: "project:widget", Type: "fact", Source: "mcp", Title: "Widget", Text: "widgetrun prior claim", CreatedAt: "2026-06-01T00:00:00Z"}
+	correction := Memory{ID: "mem_hidden", Scope: target.Scope, Type: "correction", Source: "mcp", Title: "Hidden correction", Text: "private hidden correction", CreatedAt: "2026-07-01T00:00:00Z", Meta: map[string]any{"target": target.ID, "disposition": "outdated"}}
+	cfg := seedExplicitCorrectionFixture(t, target, correction)
+	if _, err := appendGovernanceEntry(cfg, govEntry{Kind: govKindTeachMemory, Action: govActionRecord, TargetID: correction.ID, Decision: teachMemoryRetract}); err != nil {
+		t.Fatal(err)
+	}
+	assertExplicitCorrectionAbsent(t, cfg, target)
+}
+
+func TestExplicitCorrectionPendingDeleteIsNotLinked(t *testing.T) {
+	target := Memory{ID: "mem_prior", Scope: "project:widget", Type: "fact", Source: "mcp", Title: "Widget", Text: "widgetrun prior claim", CreatedAt: "2026-06-01T00:00:00Z"}
+	correction := Memory{ID: "mem_pending", Scope: target.Scope, Type: "correction", Source: "mcp", Title: "Pending correction", Text: "private pending correction", CreatedAt: "2026-07-01T00:00:00Z", Meta: map[string]any{"target": target.ID, "disposition": "outdated"}}
+	cfg := seedExplicitCorrectionFixture(t, target, correction)
+	if _, err := markIndexDirty(testCtx(t), cfg, pendingOp{Kind: opKindDelete, Path: filepath.Join(memoriesRoot(cfg), target.Scope, correction.ID+".md"), MemoryID: correction.ID}); err != nil {
+		t.Fatal(err)
+	}
+	assertExplicitCorrectionAbsent(t, cfg, target)
+}
+
+func TestExplicitCorrectionTombstoneIsNotLinked(t *testing.T) {
+	target := Memory{ID: "mem_prior", Scope: "project:widget", Type: "fact", Source: "mcp", Title: "Widget", Text: "widgetrun prior claim", CreatedAt: "2026-06-01T00:00:00Z"}
+	correction := Memory{ID: "mem_dead", Scope: target.Scope, Type: "correction", Source: "mcp", Title: "Deleted correction", Text: "private deleted correction", CreatedAt: "2026-07-01T00:00:00Z", Meta: map[string]any{"target": target.ID, "disposition": "outdated"}}
+	cfg := seedExplicitCorrectionFixture(t, target, correction)
+	correction.DeletedAt = "2026-08-01T00:00:00Z"
+	if err := writeMemory(cfg, correction); err != nil {
+		t.Fatal(err)
+	}
+	assertExplicitCorrectionAbsent(t, cfg, target)
+}
+
+func assertExplicitCorrectionAbsent(t *testing.T, cfg Config, target Memory) {
+	t.Helper()
+	rows, err := decorateExplicitCorrections(cfg, []Memory{target}, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), searchFilters{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || len(rows[0].ExplicitCorrections) != 0 || rows[0].Disposition != nil || rows[0].CorrectionOmitted {
+		t.Fatalf("hidden correction was linked or left a misleading marker: %+v", rows)
+	}
 }
 
 func TestExplicitCorrectionSurvivesOffPageSearchAndContextBudget(t *testing.T) {
@@ -158,12 +202,29 @@ func TestExplicitCorrectionCLISourceFilterParity(t *testing.T) {
 		run(t, "search", "widgetrun", "--source", "gmail", "--json"),
 		run(t, "list", "--source", "gmail", "--json"),
 	} {
-		if strings.Contains(raw, correction.ID) || strings.Contains(raw, correction.Text) || strings.Contains(raw, `"disposition"`) {
-			t.Fatalf("CLI source filter leaked local correction: %s", raw)
+		var receipt struct {
+			Memories []Memory `json:"memories"`
+		}
+		if err := json.Unmarshal([]byte(raw), &receipt); err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range receipt.Memories {
+			if row.ID == correction.ID || len(row.ExplicitCorrections) != 0 || row.Disposition != nil {
+				t.Fatalf("CLI source filter leaked local correction: %+v", row)
+			}
 		}
 	}
 	unfiltered := run(t, "search", "widgetrun", "--json")
-	if !strings.Contains(unfiltered, correction.ID) || !strings.Contains(unfiltered, "private correction text") {
-		t.Fatalf("CLI search lost unfiltered correction: %s", unfiltered)
+	var receipt struct {
+		Memories []Memory `json:"memories"`
 	}
+	if err := json.Unmarshal([]byte(unfiltered), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range receipt.Memories {
+		if row.ID == target.ID && len(row.ExplicitCorrections) == 1 && row.ExplicitCorrections[0].ID == correction.ID && row.ExplicitCorrections[0].Text == correction.Text {
+			return
+		}
+	}
+	t.Fatalf("CLI search lost unfiltered correction: %+v", receipt.Memories)
 }

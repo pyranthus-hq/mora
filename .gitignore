@@ -9,6 +9,7 @@ bin/
 .claude/
 .playwright-mcp/
 cache/
+.cache/recovery/
 
 # NOTE: internal/google/client.json is a committed NON-SECRET placeholder so the
 # //go:embed compiles on a fresh clone (`go build` must work for source testers).
