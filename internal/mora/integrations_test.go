@@ -38,8 +38,9 @@ func TestIntegrationsConnectAndDisconnectCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	home := cfg.HomeDir()
+	bin := filepath.Join(home, "synthetic", "mora")
 	run(t, "init")
-	stdout, _, err := runSplit(t, "integrations", "connect", "--client", "cursor", "--binary", "/synthetic/mora", "--json")
+	stdout, _, err := runSplit(t, "integrations", "connect", "--client", "cursor", "--binary", bin, "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,8 +130,13 @@ func TestIntegrationsConnectRefusesRelativeBinaryAndUnknownClient(t *testing.T) 
 
 func TestIntegrationsClaudeListAndDisconnectHooks(t *testing.T) {
 	withTempHomeSetenv(t)
-	run(t, "integrations", "connect", "--client", "claude", "--binary", "/synthetic/mora", "--json")
-	stdout, _, err := runSplit(t, "integrations", "list", "--binary", "/synthetic/mora", "--json")
+	cfg, err := loadConfigFor(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(cfg.HomeDir(), "synthetic", "mora")
+	run(t, "integrations", "connect", "--client", "claude", "--binary", bin, "--json")
+	stdout, _, err := runSplit(t, "integrations", "list", "--binary", bin, "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,10 +163,6 @@ func TestIntegrationsClaudeListAndDisconnectHooks(t *testing.T) {
 	}
 	if receipt.Hook != "not_installed" {
 		t.Fatal(stdout)
-	}
-	cfg, err := loadConfigFor(testCtx(t))
-	if err != nil {
-		t.Fatal(err)
 	}
 	body, err := os.ReadFile(filepath.Join(cfg.HomeDir(), ".claude", "settings.json"))
 	if err != nil {

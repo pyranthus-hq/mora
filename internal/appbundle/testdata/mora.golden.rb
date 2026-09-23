@@ -13,9 +13,12 @@ cask "mora" do
   desc "Local-first, agent-agnostic memory CLI"
   homepage "https://github.com/pyranthus-hq/mora"
 
+  depends_on :macos
+
   app "Mora.app"
   binary "#{appdir}/Mora.app/Contents/MacOS/mora", target: "mora"
 
+  # Third-party tap: literal preflight_steps cannot check a conflicting user app.
   preflight do
     user_app = Pathname(Dir.home)/"Applications/Mora.app"
     if user_app.exist?
@@ -25,6 +28,9 @@ cask "mora" do
   end
 
   caveats <<~EOS
+    This installs the signed memory CLI app and the mora command, not the desktop companion.
+    For automatic updates, run mora upgrade --policy auto, then mora schedule install update-daily.
+    Installation does not enable a schedule or configure connectors.
     Mora preserves its vault, configuration, state, connector tokens, and backups on uninstall.
     If another Mora.app, standalone mora binary, symlink, formula, or legacy Cask is installed,
     remove that installation explicitly before retrying. This Cask never uses --adopt.

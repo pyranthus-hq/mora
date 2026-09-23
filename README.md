@@ -63,11 +63,19 @@ The installer checks the release before it installs
 `~/Applications/Mora.app`. It links the `mora` command to the app. It does not
 clear quarantine or sign the app again.
 
-Homebrew installation is not public yet. The repository can deterministically
-generate a signed-app Cask, but publishing remains blocked on the scheduled
-update policy in [#291](https://github.com/pyranthus-hq/mora/issues/291) and the
-release canary in [#294](https://github.com/pyranthus-hq/mora/issues/294). Do
-not use the private legacy Cask; it installs the obsolete raw-binary shape.
+Install the signed memory CLI app with Homebrew:
+
+```sh
+brew tap pyranthus-hq/tap
+brew install --cask pyranthus-hq/tap/mora
+```
+
+See the [Homebrew guide](docs/homebrew.md) for migration and updates.
+The Cask installs the memory CLI app, not the desktop companion.
+
+Installing Mora does not enable a daily update job. After installation, run
+`mora upgrade --policy auto` and `mora schedule install update-daily` to enable
+scheduled updates. Updates can only deliver published releases.
 
 Linux and older standalone installs can use:
 

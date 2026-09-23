@@ -49,12 +49,10 @@ it before you grant that permission.
 
 #### Homebrew status
 
-The signed-app Homebrew Cask is not published yet. `cmd/gencask` exists so the
-future Cask can be reproduced exactly from a release tag and
-`checksums-app.txt`, but it does not publish anything and currently refuses to
-declare `auto_updates true`. That declaration remains blocked until #291 ships
-scheduled update checks and notification behavior. The private legacy Cask is
-not a supported workaround: it installs a raw binary and strips quarantine.
+The signed-app Cask and verified-release preparation workflow are documented in
+[the Homebrew guide](homebrew.md). The tap is public at `pyranthus-hq/tap`. Do not use the legacy raw-binary
+Cask. Installing the new Cask does not configure connectors or install an update
+schedule. `auto_updates` is omitted because it cannot enable scheduling.
 
 `mora upgrade` replaces the whole app bundle. It checks the new bundle before
 the swap and checks it again after the swap. It restores the old bundle if the
@@ -1017,7 +1015,8 @@ and rebuilds the graph. Use it after an update that changes extraction.
 Choose the automatic-check policy and inspect its local receipt:
 
 ```bash
-mora upgrade --policy auto    # Mora.app-path default; PR #291 currently checks/notifies only
+mora upgrade --policy auto    # saves policy; does not install the daily job
+mora schedule install update-daily
 mora upgrade --policy notify
 mora upgrade --policy off     # scheduled checks make zero network or notification calls
 mora upgrade --status
@@ -1028,7 +1027,7 @@ The default is `auto` for a released binary whose resolved executable has the
 `Mora.app/Contents/MacOS/mora` path shape, `notify` for another released binary,
 and `off` for source/local builds. The status reason is `mora_app_path`: this
 stage recognizes layout only and does not claim the app signature was verified.
-PR #291's pre-apply stage must verify the real bundle identity before any swap.
+The updater verifies the bundle identity before applying an update.
 The policy and cached status are local. Check receipts live under Mora's state
 directory and contain versions, timestamps, and typed outcome codes only—not
 GitHub tokens, private paths, source content, or raw error text. A failed check
