@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/disposition"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
+	"github.com/pyranthus-hq/mora/internal/memory"
 	"io"
 	"os"
 	"strconv"
@@ -164,7 +165,7 @@ func cmdRead(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		// so they must be readable too. Delete paths never take this fallback.
 		if sm, ok := findSharedMemory(cfg, fs.Arg(0)); ok {
 			if *jsonOut {
-				return emitReceipt(stdout, "mora.read", 1, sm)
+				return emitReceipt(stdout, "mora.read", 1, memory.WithProvenance(sm))
 			}
 			printHealthBannerLine(stdout, cfg, time.Now())
 			return emit(stdout, sm, false)
@@ -174,7 +175,7 @@ func cmdRead(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if *jsonOut {
 		// The envelope MERGES into the memory object, so every field `read
 		// --json` published before stays at its top-level location (CON-05).
-		return emitReceipt(stdout, "mora.read", 1, m)
+		return emitReceipt(stdout, "mora.read", 1, memory.WithProvenance(m))
 	}
 	printHealthBannerLine(stdout, cfg, time.Now())
 	return emit(stdout, m, false)
@@ -239,6 +240,7 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return err
 	}
 	if *jsonOut {
+		items = withProvenance(items)
 		if *eventHours > 0 {
 			return emitReceipt(stdout, "mora.list", 1, struct {
 				Memories        []Memory `json:"memories"`
@@ -331,6 +333,7 @@ func cmdSearch(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		}
 	}
 	if jsonOut {
+		items = withProvenance(items)
 		if filter.Active() {
 			if items == nil {
 				items = []Memory{}

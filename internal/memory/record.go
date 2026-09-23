@@ -19,6 +19,13 @@ type Memory struct {
 	LastSynced  string   `json:"last_synced,omitempty"`
 	Truncated   bool     `json:"truncated,omitempty"`
 	DeletedAt   string   `json:"deleted_at,omitempty"`
+	// Provenance says where the record came from: "evidence" for a connector
+	// record with an outside sender, "document" for a file the filesystem
+	// connector copied from disk, and "authored" for something an agent wrote.
+	// It says nothing about whether the record is true and nothing about
+	// whether the user agreed with it. It is derived when a record is handed
+	// to an agent through MCP or CLI JSON, and never stored.
+	Provenance string `json:"provenance,omitempty"`
 	// EventStart, SourceCreatedAt, and IndexedAt split the three distinct instants
 	// `created_at` conflated on a browse row (#218): when the thing happens, when
 	// the source object was created at its provider, and when Mora wrote the

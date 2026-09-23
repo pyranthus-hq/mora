@@ -8,6 +8,7 @@
         "target": "target"
       },
       "path": "\u003cpath\u003e",
+      "provenance": "authored",
       "scope": "global",
       "source": "manual",
       "tags": null,
@@ -24,6 +25,7 @@
       },
       "id": "target",
       "path": "\u003cpath\u003e",
+      "provenance": "authored",
       "scope": "global",
       "source": "manual",
       "tags": null,

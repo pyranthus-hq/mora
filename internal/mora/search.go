@@ -2,10 +2,12 @@ package mora
 
 import (
 	"context"
-	searchpkg "github.com/pyranthus-hq/mora/internal/search"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
+	searchpkg "github.com/pyranthus-hq/mora/internal/search"
 )
 
 // snippetMemories returns copies of the results with each body flattened to a
@@ -156,6 +158,38 @@ func searchMemoriesObserved(ctx context.Context, cfg Config, query, scope string
 }
 func buildContext(cfg Config, items []Memory, budget int, hasQuery bool) string {
 	return searchpkg.BuildContext(cfg, items, budget, hasQuery)
+}
+
+// annotateLaterRelated points every row at the newest strongly related record
+// in the same set. The search path already does this from its deeper
+// pre-truncation pool; context_memory's other intents do not, and a record with
+// no pointer reads as the last word on its subject. The pass only ever adds a
+// pointer to a row that has none, so a hint attached from a deeper pool
+// survives even when this shallower set holds a nearer but less recent match.
+func annotateLaterRelated(items []Memory) []Memory {
+	var missing []Memory
+	var at []int
+	for i := range items {
+		if items[i].LaterRelatedEvidence == nil {
+			missing = append(missing, items[i])
+			at = append(at, i)
+		}
+	}
+	if len(missing) == 0 {
+		return items
+	}
+	annotated := searchpkg.AnnotateLaterRelatedEvidence(missing, items)
+	for k, i := range at {
+		items[i] = annotated[k]
+	}
+	return items
+}
+
+// withProvenance attaches the derived origin kind to every row. Read surfaces
+// call it at the boundary where they hand rows to an agent; nothing writes the
+// result back to the vault.
+func withProvenance(mems []Memory) []Memory {
+	return memory.WithProvenanceAll(mems)
 }
 
 // ftsToken normalizes a raw field into its bare term and a lowercase key used

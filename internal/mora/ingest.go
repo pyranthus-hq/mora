@@ -2405,7 +2405,18 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 		id := "src_" + ContentHash(s.Name+":"+rel)
 		m := Memory{ID: id, Scope: s.Scope, Type: "source", Title: rel, Tags: []string{s.Type, s.Name}, Source: path, CreatedAt: time.Now().Format(time.RFC3339), Text: text, Meta: map[string]any{"ingest_correlation_id": cfg.OperationRunID()}}
 		dest := filepath.Join(sourcesRoot(cfg), s.Type, s.Name, id+".md")
-		body, _ := renderMemory(m)
+		body, rerr := renderMemory(m)
+		if rerr != nil {
+			// Rendering only refuses a record whose frontmatter would be
+			// forged or corrupt. Writing the empty body it returned would
+			// truncate a good file on disk, and skipping the record quietly
+			// would leave it out of the new manifest, whose cleanup then
+			// deletes the good copy it already has. Failing the walk is the
+			// only safe answer: the cleanup below runs on success alone.
+			result.Failed++
+			result.Missing++
+			return fmt.Errorf("rendering filesystem source %q file %q: %w", s.Name, rel, rerr)
+		}
 		if testHookFSPreWrite != nil {
 			testHookFSPreWrite(id)
 		}

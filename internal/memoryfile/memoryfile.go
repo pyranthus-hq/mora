@@ -21,8 +21,37 @@ import (
 // Document is the shared memory record; the codec persists only its canonical frontmatter subset.
 type Document = memory.Memory
 
+// unescapedScalars are the frontmatter fields Render writes verbatim, without
+// passing them through QuoteYAML. A line break in any of them would write a
+// second frontmatter line that the parser then reads as a field of its own, so
+// a value carrying one is refused rather than serialized.
+func unescapedScalars(m Document) map[string]string {
+	fields := map[string]string{
+		"id": m.ID, "scope": m.Scope, "type": m.Type, "created_at": m.CreatedAt,
+		"provider": m.Provider, "account": m.Account, "content_hash": m.ContentHash,
+		"last_synced": m.LastSynced, "deleted_at": m.DeletedAt,
+	}
+	for i, tag := range m.Tags {
+		fields[fmt.Sprintf("tags[%d]", i)] = tag
+	}
+	return fields
+}
+
 // Render serializes a document as canonical Mora Markdown.
 func Render(m Document) ([]byte, error) {
+	// Fail closed on a value that would forge a frontmatter line. Without this
+	// a type or a tag containing a line break can write its own "id:" or
+	// "provider:" line, and the record parses back as a different record with
+	// a different origin. See TestRenderRefusesALineBreakThatWouldForgeAField.
+	for name, value := range unescapedScalars(m) {
+		// \n and \r would forge a frontmatter line the parser then reads as a
+		// field of its own. U+2028 and U+2029 cannot, because the parser splits
+		// on \n alone, but they still corrupt the value they sit in, so a
+		// record carrying one never reaches the disk either.
+		if strings.ContainsAny(value, "\n\r\u2028\u2029") {
+			return nil, fmt.Errorf("frontmatter field %s contains a line break, which would forge or corrupt a frontmatter line", name)
+		}
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "---\n")
 	fmt.Fprintf(&b, "id: %s\nscope: %s\ntype: %s\ntitle: %s\n", m.ID, m.Scope, m.Type, QuoteYAML(m.Title))
@@ -94,6 +123,10 @@ func ParseBytes(path string, b []byte) (Document, error) {
 		return Document{}, errors.New("invalid frontmatter")
 	}
 	m := Document{Path: path, Text: strings.TrimSpace(parts[1])}
+	// A canonical file names each field once. A second copy of a known field
+	// means something wrote a line break into a value, and the last copy would
+	// silently win, changing the record's identity or its origin. Refuse it.
+	seenKeys := map[string]bool{}
 	for _, line := range strings.Split(parts[0], "\n") {
 		key, val, ok := strings.Cut(line, ":")
 		if !ok {
@@ -139,6 +172,10 @@ func ParseBytes(path string, b []byte) (Document, error) {
 			// they do not understand, including their value syntax.
 			continue
 		}
+		if seenKeys[key] {
+			return Document{}, fmt.Errorf("frontmatter names %s twice; a value carrying a line break can forge a field", key)
+		}
+		seenKeys[key] = true
 		parsedVal, err := ParseFrontmatterScalar(key, val)
 		if err != nil {
 			return Document{}, err

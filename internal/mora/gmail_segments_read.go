@@ -38,7 +38,8 @@ func shapeReadMemoryEvidenceRef(cfg Config, m Memory, seg gmailSegmentRow, args 
 	// Narrow the target FIRST (DQ6 precedence): #242's own bounded-read
 	// machinery then runs over ONLY this segment's text, so match/
 	// max_tokens/occurrence — if supplied — apply strictly within it.
-	scoped := m
+	// The evidence_ref path bypasses mcpReadMemoryResult, so derive origin here too.
+	scoped := memory.WithProvenance(m)
 	scoped.Text = seg.Text
 	shaped, receipt := applyBoundedRead(scoped, args)
 	// Identity fields survive composition with #242's params (DQ6): the
