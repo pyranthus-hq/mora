@@ -27,7 +27,6 @@ cask "mora" do
     end
   end
 
-
   caveats <<~EOS
     This installs the signed memory CLI app and the mora command, not the desktop companion.
     For automatic updates, run mora upgrade --policy auto, then mora schedule install update-daily.

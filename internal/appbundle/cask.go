@@ -116,7 +116,6 @@ func GenerateCask(tag string, checksums io.Reader, autoUpdates bool) ([]byte, er
 	fmt.Fprintln(&out, `    end`)
 	fmt.Fprintln(&out, `  end`)
 	fmt.Fprintln(&out)
-	fmt.Fprintln(&out)
 	fmt.Fprintln(&out, `  caveats <<~EOS`)
 	fmt.Fprintln(&out, `    This installs the signed memory CLI app and the mora command, not the desktop companion.`)
 	fmt.Fprintln(&out, `    For automatic updates, run mora upgrade --policy auto, then mora schedule install update-daily.`)
