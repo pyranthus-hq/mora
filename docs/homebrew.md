@@ -34,14 +34,17 @@ and installation behavior before manually merging. The generator intentionally
 omits `auto_updates` until Mora's updater schedule and notification audit is
 complete. It does not strip quarantine or mutate an existing source install.
 
-For local preparation, with `gh`, `jq`, `cosign`, Go, and `shasum` installed:
+For local preparation, with `gh`, `jq`, `curl`, `cosign`, Go, and `shasum` installed:
 
 ```sh
-bash scripts/prepare-homebrew-release.sh --tag v0.15.0 --out /tmp/mora.rb
+bash scripts/prepare-homebrew-release.sh --tag v0.15.1 --out /tmp/mora.rb
 ```
 
-This command only writes the requested output file. It does not change the tap.
-Run the secret-free regression with `bash scripts/regress/homebrew-release.sh`.
+This command reads the release's dedicated assets endpoint because the tag
+response can omit its embedded asset list. It only writes the requested output
+file and does not change the tap. Run the secret-free regressions with
+`bash scripts/regress/homebrew-release.sh` and
+`bash scripts/regress/homebrew-release-contract.sh`.
 
 ## Installation and updates
 

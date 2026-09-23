@@ -48,6 +48,10 @@ jobs:
           cache-dependency-path: go.sum
       - name: Mora.app release contract
         run: bash scripts/regress/app-bundle-contract.sh
+      - name: Homebrew release contracts
+        run: |
+          bash scripts/regress/homebrew-release.sh
+          bash scripts/regress/homebrew-release-contract.sh
 
   test:
     runs-on: ubuntu-latest
