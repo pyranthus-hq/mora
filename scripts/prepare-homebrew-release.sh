@@ -16,7 +16,7 @@ while (($#)); do
 done
 [[ $tag =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || usage
 [[ -n $out && $out != '-' ]] || usage
-for command in gh jq cosign shasum go; do
+for command in gh jq curl cosign shasum go; do
   command -v "$command" >/dev/null || die "missing required command: $command"
 done
 
@@ -26,21 +26,34 @@ amd64="mora_${version}_darwin_amd64_app.zip"
 arm64="mora_${version}_darwin_arm64_app.zip"
 assets=("$amd64" "$arm64" checksums-app.txt checksums-app.txt.cosign.sig checksums-app.txt.cosign.pem)
 metadata=$(gh api "repos/$repo/releases/tags/$tag") || die "release $tag could not be read"
-jq -e --arg tag "$tag" '.tag_name == $tag and .draft == false and .prerelease == false and (.published_at | type == "string")' <<< "$metadata" >/dev/null \
+jq -e --arg tag "$tag" '.tag_name == $tag and .draft == false and .prerelease == false and (.published_at | type == "string") and (.id | type == "number" and . > 0)' <<< "$metadata" >/dev/null \
   || die "release $tag is not a published, stable release with the requested tag"
-for asset in "${assets[@]}"; do
-  jq -e --arg name "$asset" '[.assets[] | select(.name == $name and .state == "uploaded" and .size > 0)] | length == 1' <<< "$metadata" >/dev/null \
-    || die "release $tag lacks exactly one uploaded $asset"
-done
+release_id=$(jq -r '.id' <<< "$metadata")
+# GitHub can return an empty embedded .assets list for a published release.
+# The release assets endpoint is the authority for the complete, paginated list.
+asset_pages=$(gh api --paginate --slurp "repos/$repo/releases/$release_id/assets?per_page=100") \
+  || die "release $tag assets could not be read"
+jq -e 'type == "array" and all(.[]; type == "array")' <<< "$asset_pages" >/dev/null \
+  || die "release $tag assets response is invalid"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-gh release download "$tag" --repo "$repo" --dir "$work" \
-  --pattern "$amd64" --pattern "$arm64" --pattern checksums-app.txt \
-  --pattern checksums-app.txt.cosign.sig --pattern checksums-app.txt.cosign.pem \
-  || die "could not download required app assets for $tag"
 for asset in "${assets[@]}"; do
-  [[ -s "$work/$asset" ]] || die "downloaded $asset is missing or empty"
+  expected_url="https://github.com/$repo/releases/download/$tag/$asset"
+  asset_size=$(jq -er --arg name "$asset" --arg url "$expected_url" '
+    [.[][] | select(.name == $name)] |
+    if length == 1 and .[0].state == "uploaded" and
+       (.[0].size | type == "number" and . > 0 and floor == .) and
+       .[0].browser_download_url == $url
+    then .[0].size else empty end
+  ' <<< "$asset_pages") || die "release $tag lacks exactly one valid uploaded $asset"
+  [[ -n $asset_size ]] || die "release $tag lacks exactly one valid uploaded $asset"
+  curl --fail --location --silent --show-error --retry 3 --retry-all-errors \
+    --proto '=https' --proto-redir '=https' --output "$work/$asset" "$expected_url" \
+    || die "could not download $asset for $tag"
+  downloaded_size=$(wc -c < "$work/$asset" | tr -d '[:space:]')
+  [[ $downloaded_size == "$asset_size" ]] \
+    || die "downloaded $asset size differs from release metadata"
 done
 
 cosign verify-blob \

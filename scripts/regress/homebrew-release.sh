@@ -18,20 +18,28 @@ printf 'fixture certificate\n' > "$work/assets/checksums-app.txt.cosign.pem"
 cat > "$work/bin/gh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "$1" == api ]]; then
-  cat "$MOCK_METADATA"
-elif [[ "$1 $2" == 'release download' ]]; then
-  dir=''
-  while (($#)); do
-    case "$1" in
-      --dir) dir=$2; shift 2 ;;
-      *) shift ;;
-    esac
-  done
-  cp "$MOCK_ASSETS"/* "$dir/"
-else
-  exit 2
-fi
+case "$*" in
+  'api repos/pyranthus-hq/mora/releases/tags/v0.15.0') cat "$MOCK_METADATA" ;;
+  'api --paginate --slurp repos/pyranthus-hq/mora/releases/394528664/assets?per_page=100') cat "$MOCK_ASSET_METADATA" ;;
+  *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 2 ;;
+esac
+SH
+cat > "$work/bin/curl" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+output=''
+url=''
+while (($#)); do
+  case "$1" in
+    --output) output=$2; shift 2 ;;
+    --proto|--proto-redir|--retry) shift 2 ;;
+    --fail|--location|--silent|--show-error|--retry-all-errors) shift ;;
+    https://github.com/pyranthus-hq/mora/releases/download/v0.15.0/*) url=$1; shift ;;
+    *) printf 'unexpected curl argument: %s\n' "$1" >&2; exit 2 ;;
+  esac
+done
+[[ -n $output && -n $url ]] || exit 2
+cp "$MOCK_ASSETS/${url##*/}" "$output"
 SH
 cat > "$work/bin/cosign" <<'SH'
 #!/usr/bin/env bash
@@ -40,14 +48,19 @@ set -euo pipefail
 printf '%s\n' "$*" > "$MOCK_COSIGN_ARGS"
 [[ ${MOCK_COSIGN_FAIL:-0} != 1 ]]
 SH
-chmod +x "$work/bin/gh" "$work/bin/cosign"
-export PATH="$work/bin:$PATH" MOCK_ASSETS="$work/assets" MOCK_METADATA="$work/metadata.json" MOCK_COSIGN_ARGS="$work/cosign-args"
+chmod +x "$work/bin/gh" "$work/bin/curl" "$work/bin/cosign"
+export PATH="$work/bin:$PATH" MOCK_ASSETS="$work/assets" MOCK_METADATA="$work/metadata.json" MOCK_ASSET_METADATA="$work/asset-pages.json" MOCK_COSIGN_ARGS="$work/cosign-args"
 
 metadata() {
-  jq -n --arg tag "$tag" --arg amd64 "$amd64" --arg arm64 "$arm64" \
-    '{tag_name:$tag,draft:false,prerelease:false,published_at:"2026-09-23T00:00:00Z",
-      assets:([$amd64,$arm64,"checksums-app.txt","checksums-app.txt.cosign.sig","checksums-app.txt.cosign.pem"]
-      | map({name:.,state:"uploaded",size:100}))}' > "$MOCK_METADATA"
+  jq -n --arg tag "$tag" \
+    '{id:394528664,tag_name:$tag,draft:false,prerelease:false,published_at:"2026-09-23T00:00:00Z",assets:[]}' > "$MOCK_METADATA"
+  : > "$work/asset-lines.jsonl"
+  for asset in "$amd64" "$arm64" checksums-app.txt checksums-app.txt.cosign.sig checksums-app.txt.cosign.pem; do
+    size=$(wc -c < "$MOCK_ASSETS/$asset" | tr -d '[:space:]')
+    jq -n --arg name "$asset" --arg url "https://github.com/pyranthus-hq/mora/releases/download/$tag/$asset" --argjson size "$size" \
+      '{name:$name,state:"uploaded",size:$size,browser_download_url:$url}' >> "$work/asset-lines.jsonl"
+  done
+  jq -s '[.]' "$work/asset-lines.jsonl" > "$MOCK_ASSET_METADATA"
 }
 run() { bash "$root/scripts/prepare-homebrew-release.sh" --tag "$tag" --out "$work/out/mora.rb"; }
 fail_case() {
@@ -80,12 +93,12 @@ cp "$work/changed.json" "$MOCK_METADATA"
 fail_case prerelease
 
 metadata
-jq --arg name "$arm64" '.assets |= map(select(.name != $name))' "$MOCK_METADATA" > "$work/changed.json"
-cp "$work/changed.json" "$MOCK_METADATA"
+jq --arg name "$arm64" '.[0] |= map(select(.name != $name))' "$MOCK_ASSET_METADATA" > "$work/changed.json"
+cp "$work/changed.json" "$MOCK_ASSET_METADATA"
 fail_case missing-arm64-asset
 
 metadata
-printf 'tampered\n' > "$work/assets/$arm64"
+printf 'ARM64-app-zip\n' > "$work/assets/$arm64"
 fail_case mismatched-app-checksum
 
 metadata
