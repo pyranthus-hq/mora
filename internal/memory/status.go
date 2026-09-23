@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // SyncStatus is the per-source state surfaced by `mora sync status` and used to
@@ -21,6 +22,20 @@ type SyncStatus struct {
 	// IncrementalCursor is the provider-native between-run position. Checkpoint
 	// remains the in-progress page token and is cleared only after completion.
 	IncrementalCursor string `json:"incremental_cursor,omitempty"`
+	// PendingSyncCursor is the provider position captured at the START of a
+	// snapshot, before the snapshot has finished walking its pages. Gmail hands
+	// it over on page one so that changes racing pagination replay through
+	// history instead of falling into a gap, but it only becomes a legitimate
+	// between-run position once every page has been walked. Committing it to
+	// IncrementalCursor early would let a snapshot that died mid-walk resume as
+	// an incremental sync and silently skip the rest of the backfill.
+	PendingSyncCursor string `json:"pending_sync_cursor,omitempty"`
+	// CursorMode records which provider endpoint Checkpoint's page token belongs
+	// to. A page token cannot identify its own API, and a snapshot page token
+	// replayed against the history endpoint (or the reverse) reads the wrong
+	// mailbox slice. Empty decodes as CursorModeSnapshot: every checkpoint
+	// written before this field existed is a snapshot page token.
+	CursorMode string `json:"cursor_mode,omitempty"`
 	// AccountEmail binds Google cursors to the live mailbox that issued them.
 	// Legacy/unbound cursors must not be reused after credential replacement.
 	AccountEmail string `json:"account_email,omitempty"`
@@ -69,6 +84,50 @@ func LoadStatus(path string) (*SyncStatus, error) {
 	return &s, nil
 }
 
+// InspectStatusRecord separates sync receipts from filesystem walk manifests
+// and interrupted .tmp writes in the shared sync directory. A diagnostic names
+// malformed legacy state without altering or deleting its file. A real legacy
+// receipt without Source remains readable under its stable filename identity.
+func InspectStatusRecord(dir, name string) (status *SyncStatus, diagnostic string) {
+	if !strings.HasSuffix(name, ".json") {
+		return nil, ""
+	}
+	path := filepath.Join(dir, name)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, "unreadable_status"
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(b, &fields); err != nil || fields == nil {
+		return nil, "invalid_status_json"
+	}
+	// A walk manifest maps file paths to metadata. Its name is ambiguous: a
+	// source named "notes.manifest" has the same suffix, so use content too.
+	_, source := fields["source"]
+	_, lastSynced := fields["last_synced"]
+	_, lastAttempt := fields["last_attempt_at"]
+	_, checkpoint := fields["checkpoint"]
+	_, cursor := fields["incremental_cursor"]
+	_, itemCount := fields["item_count"]
+	_, lastError := fields["last_error"]
+	_, lastSuccess := fields["last_success_at"]
+	if !source && !lastSynced && !lastAttempt && !checkpoint && !cursor && !itemCount && !lastError && !lastSuccess {
+		if strings.HasSuffix(name, ".manifest.json") {
+			return nil, ""
+		}
+		return nil, "unrecognized_status"
+	}
+	var st SyncStatus
+	if err := json.Unmarshal(b, &st); err != nil {
+		return nil, "invalid_status_fields"
+	}
+	if strings.TrimSpace(st.Source) == "" {
+		st.Source = ""
+		return &st, "legacy_missing_source"
+	}
+	return &st, ""
+}
+
 func SaveStatus(path string, s *SyncStatus) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
@@ -83,3 +142,10 @@ func SaveStatus(path string, s *SyncStatus) error {
 	}
 	return os.Rename(tmp, path)
 }
+
+// Cursor modes for SyncStatus.CursorMode. Empty is read as CursorModeSnapshot
+// so records written before the field existed keep resuming correctly.
+const (
+	CursorModeSnapshot = "snapshot"
+	CursorModeHistory  = "history"
+)

@@ -322,13 +322,22 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 	}})
 	for _, outcome := range outcomes {
 		count += outcome.Materialized
-		if outcome.Err != nil && !outcome.Cancelled && !outcome.TimedOut {
-			if !*all {
-				namedErr = outcome.Err
-			} else {
-				warnf(progress, "%s sync incomplete (resumable): %v", outcome.Key, outcome.Err)
-			}
+		if outcome.Err == nil || outcome.Cancelled {
+			continue
 		}
+		// A timeout that still materialized records stopped mid-walk with its
+		// checkpoint persisted, so the next run resumes: say so and keep the
+		// exit status clean. Every other failed attempt — including a timeout
+		// that produced nothing — is reported rather than swallowed.
+		// TimedOut covers the outer guard; a returned DeadlineExceeded is the
+		// inner ingest budget, which is the one that normally fires.
+		timedOut := outcome.TimedOut || errors.Is(outcome.Err, context.DeadlineExceeded)
+		resumable := timedOut && outcome.Materialized > 0
+		if !*all && !resumable {
+			namedErr = outcome.Err
+			continue
+		}
+		warnf(progress, "%s sync incomplete (resumable): %v", outcome.Key, outcome.Err)
 	}
 	var rebuildErr error
 	if sourceOutcomesMaterialized(outcomes) > 0 && ctx.Err() == nil {
@@ -721,7 +730,10 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 			if err != nil {
 				return err
 			}
-			return emitReceipt(stdout, "mora.sync.status", 1, syncStatusReceipt{Sources: syncStatusReceiptSources(configured, entries, dir, time.Now())})
+			return emitReceipt(stdout, "mora.sync.status", 1, syncStatusReceipt{
+				Sources:     syncStatusReceiptSources(configured, entries, dir, time.Now()),
+				Diagnostics: syncStatusDiagnostics(entries, dir),
+			})
 		}
 		if len(entries) == 0 {
 			fmt.Fprintln(stdout, "no sources synced yet")
@@ -740,9 +752,15 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		}
 		sty := newStyler(stdout, false)
 		for _, e := range entries {
-			st, err := memory.LoadStatus(filepath.Join(dir, e.Name()))
-			if err != nil {
+			st, diagnostic := memory.InspectStatusRecord(dir, e.Name())
+			if diagnostic != "" {
+				fmt.Fprintf(stdout, "sync state %s: %s (file preserved)\n", e.Name(), diagnostic)
+			}
+			if st == nil {
 				continue
+			}
+			if st.Source == "" {
+				st.Source = statusFilenameIdentity(e.Name())
 			}
 			state := syncStatusFileState(st, syncStatusFileThreshold(e.Name()), now)
 			stale := ""
@@ -905,7 +923,28 @@ func emitSyncSourceResult(cfg Config, stdout io.Writer, source string, jsonOut b
 // syncStatusReceipt is additive: Phase 2 (ISO-02) and Phase 7 (OBS-01) may add
 // fields in a minor release; removal or retyping requires a schema_version bump.
 type syncStatusReceipt struct {
-	Sources []syncStatusReceiptSource `json:"sources"`
+	Sources     []syncStatusReceiptSource `json:"sources"`
+	Diagnostics []syncStatusDiagnostic    `json:"diagnostics,omitempty"`
+}
+
+type syncStatusDiagnostic struct {
+	File   string `json:"file"`
+	Reason string `json:"reason"`
+}
+
+func syncStatusDiagnostics(entries []os.DirEntry, dir string) []syncStatusDiagnostic {
+	var diagnostics []syncStatusDiagnostic
+	for _, entry := range entries {
+		_, reason := memory.InspectStatusRecord(dir, entry.Name())
+		if reason != "" {
+			diagnostics = append(diagnostics, syncStatusDiagnostic{File: entry.Name(), Reason: reason})
+		}
+	}
+	return diagnostics
+}
+
+func statusFilenameIdentity(name string) string {
+	return strings.TrimSuffix(name, ".json")
 }
 
 type syncStatusReceiptSource struct {
@@ -939,9 +978,9 @@ func syncStatusReceiptSources(configured []Source, entries []os.DirEntry, dir st
 			continue
 		}
 		seenPaths[path] = true
-		st, err := memory.LoadStatus(path)
-		if err != nil {
-			continue
+		st, _ := memory.InspectStatusRecord(dir, filepath.Base(path))
+		if st == nil {
+			st = &memory.SyncStatus{}
 		}
 		sources = append(sources, syncStatusReceiptRow(st, source.Name, source.Type, source.Account, source.IsEnabled(), true, filepath.Base(path), now))
 	}
@@ -950,13 +989,13 @@ func syncStatusReceiptSources(configured []Source, entries []os.DirEntry, dir st
 		if seenPaths[path] {
 			continue
 		}
-		st, err := memory.LoadStatus(path)
-		if err != nil {
+		st, _ := memory.InspectStatusRecord(dir, entry.Name())
+		if st == nil {
 			continue
 		}
 		instanceID := st.Source
 		if instanceID == "" {
-			instanceID = strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+			instanceID = statusFilenameIdentity(entry.Name())
 		}
 		sources = append(sources, syncStatusReceiptRow(st, instanceID, "", "", true, false, entry.Name(), now))
 	}
@@ -1471,6 +1510,22 @@ func ingestGoogleDetailed(ctx context.Context, cfg Config, s Source, kind google
 	}
 	if identityErr = verifyGoogleSyncIdentity(s, kind, actual); identityErr != nil {
 		return sourceIngestResult{}, identityErr
+	}
+	if kind == google.KindGmailThread {
+		sources, loadErr := loadSources(cfg)
+		if loadErr != nil {
+			return sourceIngestResult{}, loadErr
+		}
+		if owner, duplicate := gmailMailboxOwner(sources, s, actual); duplicate {
+			return sourceIngestResult{}, fmt.Errorf("Gmail source %q and %q read the same mailbox and selection; disable one before syncing", owner.Name, s.Name)
+		}
+		if s.Email == "" {
+			// Legacy sources may lack the address that duplicate detection needs.
+			// Record only this source's observed identity before spending quota.
+			if err := setSourceEmailByName(cfg, s.Name, actual); err != nil {
+				return sourceIngestResult{}, err
+			}
+		}
 	}
 	st, statusErr := memory.LoadStatus(statusPath)
 	if statusErr != nil {
@@ -2396,7 +2451,18 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 		id := "src_" + ContentHash(s.Name+":"+rel)
 		m := Memory{ID: id, Scope: s.Scope, Type: "source", Title: rel, Tags: []string{s.Type, s.Name}, Source: path, CreatedAt: time.Now().Format(time.RFC3339), Text: text, Meta: map[string]any{"ingest_correlation_id": cfg.OperationRunID()}}
 		dest := filepath.Join(sourcesRoot(cfg), s.Type, s.Name, id+".md")
-		body, _ := renderMemory(m)
+		body, rerr := renderMemory(m)
+		if rerr != nil {
+			// Rendering only refuses a record whose frontmatter would be
+			// forged or corrupt. Writing the empty body it returned would
+			// truncate a good file on disk, and skipping the record quietly
+			// would leave it out of the new manifest, whose cleanup then
+			// deletes the good copy it already has. Failing the walk is the
+			// only safe answer: the cleanup below runs on success alone.
+			result.Failed++
+			result.Missing++
+			return fmt.Errorf("rendering filesystem source %q file %q: %w", s.Name, rel, rerr)
+		}
 		if testHookFSPreWrite != nil {
 			testHookFSPreWrite(id)
 		}

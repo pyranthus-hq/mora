@@ -41,7 +41,15 @@ type sourceRunResult struct {
 }
 
 const defaultSourceRunConcurrency = 4
-const defaultSourceTimeout = 15 * time.Minute
+
+// defaultSourceTimeout is the OUTER guard around one source run, held
+// deliberately above memory.DefaultMaxRuntime rather than equal to it. Ingest's
+// own deadline unwinds cleanly — it stamps the attempt, persists the resume
+// checkpoint, and returns the work it completed — while this one only cancels
+// the goroutine. Equal budgets race, so the graceful path must be the one that
+// fires first. Holding these two constants apart with no relation between them
+// is what made a 45-minute ingest budget silently behave like a 15-minute one.
+const defaultSourceTimeout = memory.DefaultMaxRuntime + 2*time.Minute
 
 type sourceRunOptions struct {
 	Concurrency   int
@@ -152,14 +160,31 @@ func aggregateSourceRuns(plans []sourceRunPlan, outcomes []sourceRunOutcome, not
 			ConsecutiveFailureCount: outcome.ConsecutiveFailureCount,
 			CorrelationID:           outcome.CorrelationID,
 		}
+		// The outer guard sets TimedOut, but by design it is no longer the
+		// deadline that fires: ingest's own budget is shorter so it can persist
+		// its checkpoint first, and that path surfaces as a returned
+		// DeadlineExceeded instead of a flag. Both are the same fact.
+		timedOut := outcome.TimedOut || errors.Is(outcome.Err, context.DeadlineExceeded)
 		switch {
 		case outcome.Cancelled:
 			receipt.Status = sourceRunStatusCancelled
-		case outcome.TimedOut:
-			receipt.Status = sourceRunStatusFailed
+		case timedOut:
 			receipt.ErrorCode = connectorErrorCode(context.DeadlineExceeded)
 			receipt.ErrorClass = connectorErrorClassOf(receipt.ErrorCode)
 			receipt.Retryable = retryableForErrorCode(receipt.ErrorCode)
+			// A run that ran out of time AFTER durably materializing records and
+			// advancing its resume checkpoint is partial, not failed: what it
+			// wrote is on disk and the next run continues from where it stopped.
+			// Reporting that as failed/unusable hid 1,434 ingested Gmail threads
+			// behind a bare "connector.unavailable". Only a timeout with nothing
+			// to show for it is a failed attempt. The error code is unchanged
+			// either way, so "why did this stop" stays answerable.
+			if outcome.Materialized > 0 {
+				receipt.Status = sourceRunStatusPartial
+				receipt.Usable = true
+			} else {
+				receipt.Status = sourceRunStatusFailed
+			}
 		case outcome.Err != nil && outcome.Materialized > 0:
 			receipt.Status = sourceRunStatusPartial
 			receipt.Usable = true

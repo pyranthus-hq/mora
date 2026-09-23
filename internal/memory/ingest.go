@@ -36,6 +36,11 @@ type IngestParams struct {
 	Map func(Item, string, int) MappedMemory
 }
 
+// DefaultMaxRuntime is the ingest wall clock when Limits.MaxRuntime is unset.
+// The CLI source runner must use the same budget (defaultSourceTimeout); a
+// shorter outer timeout makes this value inert and 403s the next Gmail walk.
+const DefaultMaxRuntime = 45 * time.Minute
+
 type IngestLimits struct {
 	MaxRecordBytes int
 	MaxBatchItems  int
@@ -68,7 +73,10 @@ func (l IngestLimits) bounded() IngestLimits {
 		l.MaxRetries = 2
 	}
 	if l.MaxRuntime <= 0 {
-		l.MaxRuntime = 15 * time.Minute
+		// A 90-day Gmail snapshot at ~2 threads/sec needs more than 15
+		// minutes; cutting it short leaves personal mail without an
+		// incremental cursor and the next run burns quota again.
+		l.MaxRuntime = DefaultMaxRuntime
 	}
 	return l
 }
@@ -169,11 +177,27 @@ func Ingest(p IngestParams) (IngestResult, error) {
 		mapFn = MapItem
 	}
 	cursor := p.Status.Checkpoint
-	result := IngestResult{Status: p.Status, Incremental: cursor == "" && p.Status.IncrementalCursor != ""}
-	if cursor == "" {
+	// A checkpoint only tells us WHERE we stopped; CursorMode tells us which
+	// endpoint that token belongs to. Resuming a half-walked snapshot must stay
+	// on the snapshot endpoint even though an incremental cursor is already on
+	// file, and resuming half-walked history must go back to history rather
+	// than restarting a full snapshot walk.
+	resumingSnapshot := cursor != "" && p.Status.CursorMode != CursorModeHistory
+	incremental := !resumingSnapshot && p.Status.IncrementalCursor != ""
+	result := IngestResult{Status: p.Status, Incremental: incremental}
+	if incremental {
 		p.Window.SyncCursor = p.Status.IncrementalCursor
 	}
+	mode := CursorModeSnapshot
+	if incremental {
+		mode = CursorModeHistory
+	}
 	nextSyncCursor := p.Status.IncrementalCursor
+	// A snapshot that already captured its baseline carries it forward instead
+	// of asking the provider for a second one mid-walk.
+	if resumingSnapshot && p.Status.PendingSyncCursor != "" {
+		nextSyncCursor = p.Status.PendingSyncCursor
+	}
 	fallbackUsed := false
 	// Snapshot the prior error tally so the clean-completion reset only clears
 	// errors carried in from a PRIOR run — a run that itself accumulates per-item
@@ -202,6 +226,15 @@ func Ingest(p IngestParams) (IngestResult, error) {
 			nextSyncCursor = ""
 			cursor = ""
 			p.Status.Checkpoint = ""
+			// The run is now walking the snapshot endpoint, so everything that
+			// described it as incremental has to stop saying so. A checkpoint
+			// left stamped "history" would send the next resume back to the
+			// endpoint whose cursor just expired, and a baseline staged under
+			// the old mode would be carried into a window it never covered.
+			mode = CursorModeSnapshot
+			result.Incremental = false
+			p.Status.CursorMode = ""
+			p.Status.PendingSyncCursor = ""
 			continue
 		}
 		if err != nil {
@@ -220,6 +253,7 @@ func Ingest(p IngestParams) (IngestResult, error) {
 			p.Status.LastAttemptAt = time.Now().UTC().Format(time.RFC3339)
 			// Keep checkpoint = cursor so the next run resumes this page.
 			p.Status.Checkpoint = cursor
+			p.Status.CursorMode = mode
 			return finish(), err
 		}
 		result.Stages.Pages++
@@ -241,6 +275,12 @@ func Ingest(p IngestParams) (IngestResult, error) {
 		mapStarted := time.Now()
 		if page.SyncCursor != "" {
 			nextSyncCursor = page.SyncCursor
+			// Stage the baseline the provider captured on page one so a run that
+			// dies mid-walk does not have to redo the whole snapshot for it. It
+			// is deliberately NOT written to IncrementalCursor here: until every
+			// page is walked, an incremental cursor on file would make the next
+			// run skip the rest of the backfill and call it done.
+			p.Status.PendingSyncCursor = nextSyncCursor
 		}
 		for itemIndex, it := range page.Items {
 			result.Examined++
@@ -261,6 +301,7 @@ func Ingest(p IngestParams) (IngestResult, error) {
 				p.Status.ErrorCode = ""
 				p.Status.LastAttemptAt = time.Now().UTC().Format(time.RFC3339)
 				p.Status.Checkpoint = cursor
+				p.Status.CursorMode = mode
 				return finish(), err
 			}
 			wrote := true
@@ -290,6 +331,7 @@ func Ingest(p IngestParams) (IngestResult, error) {
 		}
 		cursor = page.NextCursor
 		p.Status.Checkpoint = cursor // advance checkpoint per page
+		p.Status.CursorMode = mode
 		if p.Checkpoint != nil {
 			if err := p.Checkpoint(p.Status); err != nil {
 				p.Status.ErrorCount++
@@ -300,7 +342,11 @@ func Ingest(p IngestParams) (IngestResult, error) {
 			}
 		}
 	}
+	// Paging finished, so the staged baseline is now a legitimate between-run
+	// position. This is the ONLY place it is promoted.
 	p.Status.Checkpoint = ""
+	p.Status.CursorMode = ""
+	p.Status.PendingSyncCursor = ""
 	p.Status.IncrementalCursor = nextSyncCursor
 	// Paging finished. Every completed attempt — clean OR partial — stamps
 	// LastAttemptAt (when it was tried). The SUCCESS timestamps are stamped only

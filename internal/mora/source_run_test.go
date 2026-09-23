@@ -19,6 +19,19 @@ import (
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
+func TestDefaultSourceTimeoutCoversGmailSnapshot(t *testing.T) {
+	// Strictly greater, not equal. Ingest's own deadline unwinds gracefully —
+	// it stamps the attempt, persists the resume checkpoint, and returns the
+	// work it completed — while this outer one only cancels the goroutine.
+	// Equal budgets race for which fires first; the graceful path has to win.
+	if defaultSourceTimeout <= memory.DefaultMaxRuntime {
+		t.Fatalf("defaultSourceTimeout=%s must exceed memory.DefaultMaxRuntime=%s so the CLI wrapper cannot cut off a paced Gmail snapshot before ingest checkpoints it", defaultSourceTimeout, memory.DefaultMaxRuntime)
+	}
+	if memory.DefaultMaxRuntime < 45*time.Minute {
+		t.Fatalf("memory.DefaultMaxRuntime=%s is too short for a 90-day Gmail snapshot", memory.DefaultMaxRuntime)
+	}
+}
+
 func TestIsolationConcurrencyBound(t *testing.T) {
 	plans := make([]sourceRunPlan, 20)
 	for i := range plans {
@@ -617,5 +630,60 @@ func TestIsolationFilteredPulseWithoutSyncConstructsNothing(t *testing.T) {
 	}
 	if called {
 		t.Fatal("pulse without --sync must not construct or coordinate a source")
+	}
+}
+
+// A Gmail backfill that runs out of wall clock after writing thousands of
+// threads has not failed: the records are on disk and the resume checkpoint is
+// persisted. Reporting it as failed/unusable hid real ingested mail behind a
+// bare connector.unavailable and told the operator nothing had landed.
+func TestTimedOutSourceWithMaterializedWorkIsPartial(t *testing.T) {
+	plans := []sourceRunPlan{{Key: "gmail"}}
+	outcomes := []sourceRunOutcome{{Key: "gmail", TimedOut: true, Err: context.DeadlineExceeded, Items: 1434, Materialized: 1434}}
+	aggregate, err := aggregateSourceRuns(plans, outcomes, nil, nil)
+	if err != nil {
+		t.Fatalf("aggregate error: %v", err)
+	}
+	got := aggregate.Sources[0]
+	if got.Status != sourceRunStatusPartial || !got.Usable {
+		t.Fatalf("status=%q usable=%v, want partial and usable", got.Status, got.Usable)
+	}
+	if got.ErrorCode != errCodeConnectorUnavailable {
+		t.Fatalf("error code = %q, want the timeout still named so the stop reason stays answerable", got.ErrorCode)
+	}
+}
+
+// A timeout that produced nothing has no partial work to stand on.
+func TestTimedOutSourceWithNoWorkStaysFailed(t *testing.T) {
+	plans := []sourceRunPlan{{Key: "gmail"}}
+	outcomes := []sourceRunOutcome{{Key: "gmail", TimedOut: true, Err: context.DeadlineExceeded}}
+	aggregate, err := aggregateSourceRuns(plans, outcomes, nil, nil)
+	if err == nil {
+		t.Fatal("a source that timed out with nothing materialized must surface an error")
+	}
+	got := aggregate.Sources[0]
+	if got.Status != sourceRunStatusFailed || got.Usable {
+		t.Fatalf("status=%q usable=%v, want failed and unusable", got.Status, got.Usable)
+	}
+}
+
+// The inner ingest budget is shorter than the outer guard by design, so the
+// deadline that actually fires arrives as a returned DeadlineExceeded rather
+// than the runner's TimedOut flag. Classification must recognize both, or the
+// graceful path — the one that persists a checkpoint — reports worse than the
+// abrupt one it replaced.
+func TestInnerDeadlineWithMaterializedWorkIsPartial(t *testing.T) {
+	plans := []sourceRunPlan{{Key: "gmail"}}
+	outcomes := []sourceRunOutcome{{Key: "gmail", Err: context.DeadlineExceeded, Items: 1434, Materialized: 1434}}
+	aggregate, err := aggregateSourceRuns(plans, outcomes, nil, nil)
+	if err != nil {
+		t.Fatalf("aggregate error: %v", err)
+	}
+	got := aggregate.Sources[0]
+	if got.Status != sourceRunStatusPartial || !got.Usable {
+		t.Fatalf("status=%q usable=%v, want partial and usable", got.Status, got.Usable)
+	}
+	if got.ErrorCode != errCodeConnectorUnavailable {
+		t.Fatalf("error code = %q, want the timeout named rather than connector.unclassified", got.ErrorCode)
 	}
 }

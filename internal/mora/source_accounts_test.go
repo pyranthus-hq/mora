@@ -80,16 +80,33 @@ func TestGoogleSyncRequiresExactDeclaredMailbox(t *testing.T) {
 }
 
 func TestGoogleCursorCannotCrossAccountIdentity(t *testing.T) {
-	for _, old := range []string{"", "other@example.test"} {
-		st := &memory.SyncStatus{AccountEmail: old, Checkpoint: "old-page", IncrementalCursor: "old-history", LastSuccessAt: "old-success", LastSynced: "old-sync"}
-		if !bindGoogleSyncStatus(st, "owner@example.test") || st.Checkpoint != "" || st.IncrementalCursor != "" || st.LastSuccessAt != "" || st.LastSynced != "" || st.LastError == "" {
-			t.Fatalf("old mailbox cursor/freshness retained: %+v", st)
-		}
-		st.Checkpoint = "new-page"
-		st.IncrementalCursor = "new-history"
-		if bindGoogleSyncStatus(st, "owner@example.test") || st.Checkpoint != "new-page" || st.IncrementalCursor != "new-history" {
-			t.Fatal("same-account resume reset")
-		}
+	st := &memory.SyncStatus{AccountEmail: "other@example.test", Checkpoint: "old-page", CursorMode: memory.CursorModeHistory, PendingSyncCursor: "old-pending", IncrementalCursor: "old-history", LastSuccessAt: "old-success", LastSynced: "old-sync"}
+	if !bindGoogleSyncStatus(st, "owner@example.test") || st.Checkpoint != "" || st.IncrementalCursor != "" || st.LastSuccessAt != "" || st.LastSynced != "" || st.LastError == "" {
+		t.Fatalf("old mailbox cursor/freshness retained: %+v", st)
+	}
+	// The staged baseline and the mode that describes the checkpoint belong to
+	// the previous mailbox just as much as the cursor does. Leaving either
+	// behind lets the next completed walk promote a foreign history id.
+	if st.PendingSyncCursor != "" || st.CursorMode != "" {
+		t.Fatalf("old mailbox resume state retained: %+v", st)
+	}
+	st.Checkpoint = "new-page"
+	st.IncrementalCursor = "new-history"
+	if bindGoogleSyncStatus(st, "owner@example.test") || st.Checkpoint != "new-page" || st.IncrementalCursor != "new-history" {
+		t.Fatal("same-account resume reset")
+	}
+}
+
+func TestGoogleBindEmptyAccountEmailKeepsCursor(t *testing.T) {
+	st := &memory.SyncStatus{Checkpoint: "page", IncrementalCursor: "history", LastSuccessAt: "ok", LastSynced: "ok"}
+	if !bindGoogleSyncStatus(st, "owner@example.test") {
+		t.Fatal("empty account_email should bind")
+	}
+	if st.AccountEmail != "owner@example.test" || st.Checkpoint != "page" || st.IncrementalCursor != "history" || st.LastSuccessAt != "ok" {
+		t.Fatalf("legacy persist omit wiped a live cursor: %+v", st)
+	}
+	if bindGoogleSyncStatus(st, "owner@example.test") {
+		t.Fatal("same-account rebind should be a no-op")
 	}
 }
 

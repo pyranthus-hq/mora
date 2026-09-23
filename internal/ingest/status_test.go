@@ -76,6 +76,9 @@ func TestSourceFreshnessUsesSourceAndLegacyFilename(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "bad.json"), []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "filesystem-notes.manifest.json"), []byte(`{"/notes/a.md":{"size":4}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	got := SourceFreshness(cfg)
 	want := map[string]string{"mail-work": "one", "local": "two"}
 	if !reflect.DeepEqual(got, want) {

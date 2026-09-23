@@ -62,9 +62,27 @@ func bindGoogleSyncStatus(st *memory.SyncStatus, actual string) bool {
 	if st.AccountEmail == actual {
 		return false
 	}
+	// Older binaries persist this file without account_email. Binding the
+	// verified mailbox onto that record is not an identity change — wiping
+	// IncrementalCursor here sent personal Gmail back through a 90-day walk.
+	if st.AccountEmail == "" {
+		// An empty identity does not PROVE this state came from `actual`, but
+		// the state file is per source instance and a cursor that did not come
+		// from this mailbox self-heals: Gmail rejects a foreign history id,
+		// ingest maps that to ErrIncrementalCursorExpired, and the run falls
+		// back to a full snapshot. One wasted call is the whole downside, and
+		// it is cheaper than sending every legacy record through a 90-day walk.
+		st.AccountEmail = actual
+		return true
+	}
 	st.AccountEmail = actual
 	st.Checkpoint = ""
+	st.CursorMode = ""
 	st.IncrementalCursor = ""
+	// A staged snapshot baseline belongs to the mailbox that issued it. Leaving
+	// it behind would let the next completed walk promote another account's
+	// history id into this record's incremental cursor.
+	st.PendingSyncCursor = ""
 	st.GmailHistory = ""
 	st.CalSyncToken = ""
 	st.LastSuccessAt = ""

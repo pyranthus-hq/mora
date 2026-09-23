@@ -85,8 +85,8 @@ func SourceFreshness(cfg config.Config) map[string]string {
 	dir := filepath.Join(cfg.StateDir, "sync")
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
-		st, err := memory.LoadStatus(filepath.Join(dir, e.Name()))
-		if err != nil || st == nil {
+		st, _ := memory.InspectStatusRecord(dir, e.Name())
+		if st == nil {
 			continue
 		}
 		key := st.Source

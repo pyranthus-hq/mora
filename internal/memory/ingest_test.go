@@ -644,3 +644,156 @@ func TestIngestFailureDropsStaleErrorCode(t *testing.T) {
 		}
 	})
 }
+
+// windowRecordingFetcher records the FetchWindow it was handed for each page so
+// a test can assert WHICH provider endpoint a resumed run went back to.
+type windowRecordingFetcher struct {
+	pages   map[string]Page
+	windows []FetchWindow
+}
+
+func (f *windowRecordingFetcher) FetchPage(_ ItemKind, w FetchWindow, cursor string) (Page, error) {
+	f.windows = append(f.windows, w)
+	page, ok := f.pages[cursor]
+	if !ok {
+		// An unknown cursor must be loud. Handing back an empty success would
+		// let a resume test pass while resuming from the wrong position.
+		return Page{}, errFetch
+	}
+	return page, nil
+}
+
+// A snapshot that dies on its FIRST page has no checkpoint to resume from: the
+// page token is still empty. If it also committed the baseline the provider
+// handed over on that page, the next run reads "no checkpoint + a cursor" as a
+// finished snapshot, switches to the incremental endpoint, and silently skips
+// the rest of the backfill while reporting success.
+func TestIngestInterruptedFirstPageDoesNotCommitIncrementalCursor(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	f := &fakeFetcher{pages: map[string]Page{
+		"": {Items: []Item{{Kind: kindGmailThread, ProviderID: "t1"}}, NextCursor: "p2", SyncCursor: "hist-100"},
+	}}
+	status := &SyncStatus{Source: "gmail"}
+	_, err := Ingest(IngestParams{
+		Context: ctx, Fetcher: f, Kind: kindGmailThread, Status: status,
+		Map:   func(it Item, scope string, budget int) MappedMemory { cancel(); return MapItem(it, scope, budget) },
+		Write: func(MappedMemory) error { return nil },
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if status.IncrementalCursor != "" {
+		t.Fatalf("interrupted snapshot committed IncrementalCursor=%q; the next run would skip the rest of the backfill", status.IncrementalCursor)
+	}
+	if status.PendingSyncCursor != "hist-100" {
+		t.Fatalf("PendingSyncCursor=%q, want the staged baseline so a resume need not re-walk for it", status.PendingSyncCursor)
+	}
+}
+
+// The staged baseline survives a resume and is promoted only once every page has
+// been walked — that is what keeps a rate-limited backfill from asking the
+// provider for a second baseline mid-walk.
+func TestIngestResumedSnapshotPromotesStagedBaselineOnCompletion(t *testing.T) {
+	f := &windowRecordingFetcher{pages: map[string]Page{
+		"p2": {Items: []Item{{Kind: kindGmailThread, ProviderID: "t2"}}},
+	}}
+	status := &SyncStatus{Source: "gmail", Checkpoint: "p2", CursorMode: CursorModeSnapshot, PendingSyncCursor: "hist-100"}
+	res, err := Ingest(IngestParams{
+		Context: context.Background(), Fetcher: f, Kind: kindGmailThread, Status: status,
+		Write: func(MappedMemory) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("resume failed: %v", err)
+	}
+	if res.Incremental {
+		t.Fatal("resumed snapshot reported itself incremental")
+	}
+	if res.Materialized != 1 {
+		t.Fatalf("materialized=%d, want the resumed page actually consumed", res.Materialized)
+	}
+	if len(f.windows) != 1 || f.windows[0].SyncCursor != "" {
+		t.Fatalf("resumed snapshot went to the incremental endpoint: windows=%+v", f.windows)
+	}
+	if status.IncrementalCursor != "hist-100" {
+		t.Fatalf("IncrementalCursor=%q, want the staged baseline promoted on completion", status.IncrementalCursor)
+	}
+	if status.PendingSyncCursor != "" || status.Checkpoint != "" || status.CursorMode != "" {
+		t.Fatalf("completed run left resume state behind: %+v", status)
+	}
+}
+
+// A page token cannot identify its own endpoint. Half-walked history carries a
+// history page token, and replaying it against the snapshot endpoint reads the
+// wrong slice of the mailbox.
+func TestIngestResumedHistoryReturnsToHistoryEndpoint(t *testing.T) {
+	f := &windowRecordingFetcher{pages: map[string]Page{
+		"h2": {Items: []Item{{Kind: kindGmailThread, ProviderID: "t9"}}, SyncCursor: "hist-200"},
+	}}
+	status := &SyncStatus{Source: "gmail", Checkpoint: "h2", CursorMode: CursorModeHistory, IncrementalCursor: "hist-100"}
+	res, err := Ingest(IngestParams{
+		Context: context.Background(), Fetcher: f, Kind: kindGmailThread, Status: status,
+		Write: func(MappedMemory) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("resume failed: %v", err)
+	}
+	if !res.Incremental {
+		t.Fatal("resumed history run did not report itself incremental")
+	}
+	if res.Materialized != 1 {
+		t.Fatalf("materialized=%d, want the resumed page actually consumed", res.Materialized)
+	}
+	if len(f.windows) != 1 || f.windows[0].SyncCursor != "hist-100" {
+		t.Fatalf("resumed history run did not return to the history endpoint: windows=%+v", f.windows)
+	}
+	if status.IncrementalCursor != "hist-200" {
+		t.Fatalf("IncrementalCursor=%q, want the completed history position", status.IncrementalCursor)
+	}
+}
+
+// expiredThenSnapshotFetcher rejects any history window, then serves a snapshot
+// whose first page carries a fresh baseline — the real shape of an incremental
+// cursor that aged out between runs.
+type expiredThenSnapshotFetcher struct{ windows []FetchWindow }
+
+func (f *expiredThenSnapshotFetcher) FetchPage(_ ItemKind, w FetchWindow, cursor string) (Page, error) {
+	f.windows = append(f.windows, w)
+	if w.SyncCursor != "" {
+		return Page{}, ErrIncrementalCursorExpired
+	}
+	return Page{
+		Items:      []Item{{Kind: kindGmailThread, ProviderID: "t1"}},
+		NextCursor: "p2",
+		SyncCursor: "hist-new",
+	}, nil
+}
+
+// Falling back from an expired history cursor switches endpoints mid-run. If the
+// run is then interrupted, everything persisted has to describe the SNAPSHOT it
+// actually walked: a checkpoint still stamped "history" sends the next resume
+// straight back to the endpoint whose cursor just expired.
+func TestIngestExpiredCursorFallbackStampsSnapshotMode(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	f := &expiredThenSnapshotFetcher{}
+	status := &SyncStatus{Source: "gmail", IncrementalCursor: "expired-42", CursorMode: CursorModeHistory}
+	_, err := Ingest(IngestParams{
+		Context: ctx, Fetcher: f, Kind: kindGmailThread, Status: status,
+		Map:   func(it Item, scope string, budget int) MappedMemory { cancel(); return MapItem(it, scope, budget) },
+		Write: func(MappedMemory) error { return nil },
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if status.CursorMode == CursorModeHistory {
+		t.Fatalf("interrupted fallback left CursorMode=history; the next resume would replay the expired endpoint: %+v", status)
+	}
+	if status.IncrementalCursor != "" {
+		t.Fatalf("IncrementalCursor=%q, want the expired cursor cleared and nothing committed mid-snapshot", status.IncrementalCursor)
+	}
+	if status.PendingSyncCursor != "hist-new" {
+		t.Fatalf("PendingSyncCursor=%q, want the baseline the fallback snapshot captured", status.PendingSyncCursor)
+	}
+	if len(f.windows) != 2 || f.windows[0].SyncCursor != "expired-42" || f.windows[1].SyncCursor != "" {
+		t.Fatalf("fallback did not move to the snapshot endpoint: %+v", f.windows)
+	}
+}

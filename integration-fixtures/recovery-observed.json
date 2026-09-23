@@ -1,0 +1,12 @@
+{
+  "kind": "synthetic_cli_observation",
+  "source_id": "src_a077a8b7003e602d",
+  "source_provenance": "document",
+  "source_text": "The Acorn pilot launch is planned for 2026-09-24.",
+  "correction_id": "mem_20260923_001250_33460678",
+  "correction_provenance": "authored",
+  "correction_excerpt": "The Acorn pilot launch was cancelled.",
+  "writer_disposition": "outdated",
+  "context_warning": "this does not establish truth or user adoption",
+  "fresh_process_read": true
+}
