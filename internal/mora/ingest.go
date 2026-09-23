@@ -730,7 +730,10 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 			if err != nil {
 				return err
 			}
-			return emitReceipt(stdout, "mora.sync.status", 1, syncStatusReceipt{Sources: syncStatusReceiptSources(configured, entries, dir, time.Now())})
+			return emitReceipt(stdout, "mora.sync.status", 1, syncStatusReceipt{
+				Sources:     syncStatusReceiptSources(configured, entries, dir, time.Now()),
+				Diagnostics: syncStatusDiagnostics(entries, dir),
+			})
 		}
 		if len(entries) == 0 {
 			fmt.Fprintln(stdout, "no sources synced yet")
@@ -749,9 +752,15 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		}
 		sty := newStyler(stdout, false)
 		for _, e := range entries {
-			st, err := memory.LoadStatus(filepath.Join(dir, e.Name()))
-			if err != nil {
+			st, diagnostic := memory.InspectStatusRecord(dir, e.Name())
+			if diagnostic != "" {
+				fmt.Fprintf(stdout, "sync state %s: %s (file preserved)\n", e.Name(), diagnostic)
+			}
+			if st == nil {
 				continue
+			}
+			if st.Source == "" {
+				st.Source = statusFilenameIdentity(e.Name())
 			}
 			state := syncStatusFileState(st, syncStatusFileThreshold(e.Name()), now)
 			stale := ""
@@ -914,7 +923,28 @@ func emitSyncSourceResult(cfg Config, stdout io.Writer, source string, jsonOut b
 // syncStatusReceipt is additive: Phase 2 (ISO-02) and Phase 7 (OBS-01) may add
 // fields in a minor release; removal or retyping requires a schema_version bump.
 type syncStatusReceipt struct {
-	Sources []syncStatusReceiptSource `json:"sources"`
+	Sources     []syncStatusReceiptSource `json:"sources"`
+	Diagnostics []syncStatusDiagnostic    `json:"diagnostics,omitempty"`
+}
+
+type syncStatusDiagnostic struct {
+	File   string `json:"file"`
+	Reason string `json:"reason"`
+}
+
+func syncStatusDiagnostics(entries []os.DirEntry, dir string) []syncStatusDiagnostic {
+	var diagnostics []syncStatusDiagnostic
+	for _, entry := range entries {
+		_, reason := memory.InspectStatusRecord(dir, entry.Name())
+		if reason != "" {
+			diagnostics = append(diagnostics, syncStatusDiagnostic{File: entry.Name(), Reason: reason})
+		}
+	}
+	return diagnostics
+}
+
+func statusFilenameIdentity(name string) string {
+	return strings.TrimSuffix(name, ".json")
 }
 
 type syncStatusReceiptSource struct {
@@ -948,9 +978,9 @@ func syncStatusReceiptSources(configured []Source, entries []os.DirEntry, dir st
 			continue
 		}
 		seenPaths[path] = true
-		st, err := memory.LoadStatus(path)
-		if err != nil {
-			continue
+		st, _ := memory.InspectStatusRecord(dir, filepath.Base(path))
+		if st == nil {
+			st = &memory.SyncStatus{}
 		}
 		sources = append(sources, syncStatusReceiptRow(st, source.Name, source.Type, source.Account, source.IsEnabled(), true, filepath.Base(path), now))
 	}
@@ -959,13 +989,13 @@ func syncStatusReceiptSources(configured []Source, entries []os.DirEntry, dir st
 		if seenPaths[path] {
 			continue
 		}
-		st, err := memory.LoadStatus(path)
-		if err != nil {
+		st, _ := memory.InspectStatusRecord(dir, entry.Name())
+		if st == nil {
 			continue
 		}
 		instanceID := st.Source
 		if instanceID == "" {
-			instanceID = strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+			instanceID = statusFilenameIdentity(entry.Name())
 		}
 		sources = append(sources, syncStatusReceiptRow(st, instanceID, "", "", true, false, entry.Name(), now))
 	}
@@ -1480,6 +1510,22 @@ func ingestGoogleDetailed(ctx context.Context, cfg Config, s Source, kind google
 	}
 	if identityErr = verifyGoogleSyncIdentity(s, kind, actual); identityErr != nil {
 		return sourceIngestResult{}, identityErr
+	}
+	if kind == google.KindGmailThread {
+		sources, loadErr := loadSources(cfg)
+		if loadErr != nil {
+			return sourceIngestResult{}, loadErr
+		}
+		if owner, duplicate := gmailMailboxOwner(sources, s, actual); duplicate {
+			return sourceIngestResult{}, fmt.Errorf("Gmail source %q and %q read the same mailbox and selection; disable one before syncing", owner.Name, s.Name)
+		}
+		if s.Email == "" {
+			// Legacy sources may lack the address that duplicate detection needs.
+			// Record only this source's observed identity before spending quota.
+			if err := setSourceEmailByName(cfg, s.Name, actual); err != nil {
+				return sourceIngestResult{}, err
+			}
+		}
 	}
 	st, statusErr := memory.LoadStatus(statusPath)
 	if statusErr != nil {

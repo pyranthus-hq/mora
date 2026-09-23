@@ -102,6 +102,18 @@ func setSourceEnabledByName(cfg Config, name string, enabled bool) error {
 	})
 }
 
+func setSourceEmailByName(cfg Config, name, email string) error {
+	return mutateSources(cfg, func(sources []Source) ([]Source, error) {
+		for i := range sources {
+			if sources[i].Name == name {
+				sources[i].Email = email
+				return sources, nil
+			}
+		}
+		return nil, fmt.Errorf("no source named %q", name)
+	})
+}
+
 // setSourceSinceDaysByName mirrors setSourceEnabledByName for the window
 // override — account-scoped, never the whole type family.
 func setSourceSinceDaysByName(cfg Config, name string, days int) error {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // SyncStatus is the per-source state surfaced by `mora sync status` and used to
@@ -81,6 +82,49 @@ func LoadStatus(path string) (*SyncStatus, error) {
 		return nil, err
 	}
 	return &s, nil
+}
+
+// InspectStatusRecord separates sync receipts from filesystem walk manifests
+// and interrupted .tmp writes in the shared sync directory. A diagnostic names
+// malformed legacy state without altering or deleting its file. A real legacy
+// receipt without Source remains readable under its stable filename identity.
+func InspectStatusRecord(dir, name string) (status *SyncStatus, diagnostic string) {
+	if !strings.HasSuffix(name, ".json") {
+		return nil, ""
+	}
+	path := filepath.Join(dir, name)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, "unreadable_status"
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(b, &fields); err != nil || fields == nil {
+		return nil, "invalid_status_json"
+	}
+	// A walk manifest maps file paths to metadata. Its name is ambiguous: a
+	// source named "notes.manifest" has the same suffix, so use content too.
+	_, source := fields["source"]
+	_, lastSynced := fields["last_synced"]
+	_, lastAttempt := fields["last_attempt_at"]
+	_, checkpoint := fields["checkpoint"]
+	_, cursor := fields["incremental_cursor"]
+	_, itemCount := fields["item_count"]
+	_, lastError := fields["last_error"]
+	_, lastSuccess := fields["last_success_at"]
+	if !(source || lastSynced || lastAttempt || checkpoint || cursor || itemCount || lastError || lastSuccess) {
+		if strings.HasSuffix(name, ".manifest.json") {
+			return nil, ""
+		}
+		return nil, "unrecognized_status"
+	}
+	var st SyncStatus
+	if err := json.Unmarshal(b, &st); err != nil {
+		return nil, "invalid_status_fields"
+	}
+	if strings.TrimSpace(st.Source) == "" {
+		return &st, "legacy_missing_source"
+	}
+	return &st, ""
 }
 
 func SaveStatus(path string, s *SyncStatus) error {
