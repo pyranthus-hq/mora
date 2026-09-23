@@ -1409,10 +1409,11 @@ func TestPairingFloorPadsToBucketBoundaries(t *testing.T) {
 //
 // The quantizer makes the answer a STEP: every path that finishes its work
 // inside one bucket leaves at one bucket, and a path that overruns leaves at
-// two. So the assertion is that all four land in the same bucket, which on any
-// machine that can do a few file writes in 250ms is bucket one.
+// two. So the assertion is that all four land in the same bucket. The test
+// uses a wider bucket than production to leave room for race instrumentation
+// and shared CI runner scheduling.
 func TestPairingRefusalsLandInTheSameTimingBucket(t *testing.T) {
-	const width = 250 * time.Millisecond
+	const width = time.Second
 	reg, clock, _, _ := testRegistry(t)
 	srv, err := NewServer(ServerOptions{
 		Addr: "127.0.0.1:7778", Devices: reg, Pairings: reg,

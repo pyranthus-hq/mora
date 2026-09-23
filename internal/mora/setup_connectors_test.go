@@ -3,6 +3,7 @@ package mora
 import (
 	"encoding/json"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -42,6 +43,9 @@ func TestSetupConnectorStepsPendingOnFreshVault(t *testing.T) {
 }
 
 func TestSetupConnectorStepsVerifiedAfterARead(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("enabling iMessage requires macOS")
+	}
 	withTempHome(t)
 	run(t, "init")
 	cfg, err := loadConfigFor(testCtx(t))
