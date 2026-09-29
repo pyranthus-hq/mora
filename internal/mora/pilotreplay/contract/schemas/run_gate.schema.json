@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/pyranthus-hq/mora/schemas/pilotreplay/mora.pilotreplay.run_gate.json",
+  "title": "mora.pilotreplay.run_gate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "gate_id",
+    "run_permission_granted",
+    "matrix_frozen",
+    "monetary_ceiling_frozen",
+    "policy"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "gate_id": {
+      "type": "string"
+    },
+    "run_permission_granted": {
+      "type": "boolean"
+    },
+    "permission_record_ref": {
+      "type": "string"
+    },
+    "matrix_frozen": {
+      "type": "boolean"
+    },
+    "monetary_ceiling_frozen": {
+      "type": "boolean"
+    },
+    "policy": {
+      "type": "object"
+    },
+    "approved_by": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "string"
+    }
+  }
+}

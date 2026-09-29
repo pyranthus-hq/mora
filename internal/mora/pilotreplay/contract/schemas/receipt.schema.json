@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/pyranthus-hq/mora/schemas/pilotreplay/mora.pilotreplay.receipt.json",
+  "title": "mora.pilotreplay.receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "receipt_id",
+    "generated_at",
+    "example_hashes",
+    "tests_passed",
+    "unresolved_limits",
+    "claims_efficacy"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "receipt_id": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "example_hashes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "tests_passed": {
+      "type": "boolean"
+    },
+    "unresolved_limits": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "claims_efficacy": {
+      "type": "boolean",
+      "const": false
+    },
+    "notes": {
+      "type": "string"
+    }
+  }
+}
