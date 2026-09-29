@@ -1,7 +1,7 @@
 title = "Mora Gitleaks configuration"
 
-# Retain every built-in detector. The only override below is a narrow false-
-# positive exception for synthetic redaction sentinels in one contract test.
+# Retain every built-in detector. Rule-specific exceptions below match both
+# an exact fixture path and the expected synthetic value or line.
 [extend]
 useDefault = true
 
@@ -18,3 +18,10 @@ id = "generic-api-key"
     paths = [
       '''^internal/mora/usage_mcp_contract_test\.go$''',
     ]
+
+    [[rules.allowlists]]
+    description = "Public synthetic receipt SHA-256 digests (byte-pinned golden)"
+    condition = "AND"
+    regexTarget = "secret"
+    regexes = ['''^[0-9a-f]{64}$''']
+    paths = ['''^docs/experiments/memory-replay/contract/receipt\.v1\.json$''']
