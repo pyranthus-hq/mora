@@ -9,9 +9,11 @@ import (
 	"strings"
 )
 
-// CaskAutoUpdatesReady is deliberately false until issue #291 lands. Keeping
-// this gate in the generator prevents a release or CI edit from advertising an
-// updater that Mora does not yet schedule or notify through.
+// CaskAutoUpdatesReady stays false until signed-host acceptance (#294) proves
+// the Brew-install update/notification contract. Keeping this gate in the
+// generator prevents a release or CI edit from advertising auto_updates before
+// that evidence exists. Issue #291 closed the schedule/policy work; it did not
+// finish Homebrew install acceptance.
 const (
 	CaskAutoUpdatesReady = false
 	maxCaskChecksumBytes = int64(1 << 20)
@@ -26,14 +28,14 @@ var (
 // post-staple Mora.app assets. It is byte-stable for identical inputs.
 //
 // autoUpdates is explicit because Homebrew's stanza is a product promise, not
-// formatting: true is refused until CaskAutoUpdatesReady is enabled by #291.
+// formatting: true is refused until CaskAutoUpdatesReady is enabled after #294.
 func GenerateCask(tag string, checksums io.Reader, autoUpdates bool) ([]byte, error) {
 	match := caskTagPattern.FindStringSubmatch(tag)
 	if match == nil {
 		return nil, fmt.Errorf("release tag %q must be canonical vMAJOR.MINOR.PATCH", tag)
 	}
 	if autoUpdates && !CaskAutoUpdatesReady {
-		return nil, fmt.Errorf("auto_updates requires Mora's scheduled updater (#291); refusing to advertise it")
+		return nil, fmt.Errorf("auto_updates requires signed-host Homebrew acceptance (#294); refusing to advertise it")
 	}
 	version := strings.TrimPrefix(tag, "v")
 	want := map[string]string{
