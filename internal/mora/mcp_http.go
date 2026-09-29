@@ -271,8 +271,15 @@ func agentInstructions(p agentProfile, base string) string {
 	if p.RawSources {
 		raw = "Connector evidence is visible to this connection."
 	}
-	return fmt.Sprintf("This connection is the %q agent profile. It can read scopes: %s. %s Tools outside this profile do not exist for it. An empty result means nothing matched inside this boundary, not that the owner's memory is empty.\n\n%s",
-		p.Name, scopes, raw, base)
+	// A proposal gives an agent nothing to wait for. Without this sentence a
+	// live agent scheduled a check every five minutes and called the gateway
+	// about 240 times in three hours looking for its own approval.
+	propose := ""
+	if p.Write == mcpWritePolicyPropose {
+		propose = " A proposed write is finished once it is queued: do not retry it, and do not read, search, list, or schedule checks to see whether it was approved; the owner reviews the queue."
+	}
+	return fmt.Sprintf("This connection is the %q agent profile. It can read scopes: %s. %s Tools outside this profile do not exist for it. An empty result means nothing matched inside this boundary, not that the owner's memory is empty.%s\n\n%s",
+		p.Name, scopes, raw, propose, base)
 }
 
 func mcpHTTPWriteJSON(w http.ResponseWriter, status int, v any) {

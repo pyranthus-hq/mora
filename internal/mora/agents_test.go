@@ -362,6 +362,9 @@ func TestMCPHTTPRequiresProfileTokenAndAllowedHost(t *testing.T) {
 	if !strings.Contains(instr, `"grok" agent profile`) || !strings.Contains(instr, "pending proposal queue") || strings.Contains(instr, "you do not need to ask permission") {
 		t.Fatalf("instructions do not describe the profile boundary: %s", instr)
 	}
+	if !strings.Contains(instr, "do not read, search, list, or schedule checks to see whether it was approved") {
+		t.Fatalf("instructions do not stop a propose profile from polling for approval: %s", instr)
+	}
 	rec = doMCPHTTP(t, h, "POST", "box.example.ts.net", token, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
 	body := rec.Body.String()
 	for _, want := range agentDefaultTools {
