@@ -152,6 +152,10 @@ jobs:
         env:
           CGO_ENABLED: "0"
         run: go vet ./...
+      - name: Repeat atomicio fallback regression tests
+        env:
+          CGO_ENABLED: "0"
+        run: go test -count=5 ./internal/atomicio/
       - name: go test
         env:
           CGO_ENABLED: "0"
