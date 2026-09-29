@@ -215,19 +215,10 @@ func TestPublicMethodSummaryClaimsEfficacyFalse(t *testing.T) {
 		t.Fatalf("public flags must stay false: %+v", s)
 	}
 	md := s.RenderMarkdown()
-	for _, needle := range []string{"#545", "claims_efficacy", "Adit", "≤45", "private eligibility"} {
-		if !strings.Contains(strings.ToLower(md), strings.ToLower(needle)) && !strings.Contains(md, needle) {
-			// soft: check key content
+	for _, needle := range []string{"#545", "Claims efficacy:** false", "Adit", "≤45", "Private eligibility:** `pending`"} {
+		if !strings.Contains(md, needle) {
+			t.Errorf("markdown must disclose %q", needle)
 		}
-	}
-	if !strings.Contains(md, "#545") {
-		t.Fatal("markdown must mention #545")
-	}
-	if !strings.Contains(md, "Adit") {
-		t.Fatal("markdown must mention Adit handoff")
-	}
-	if !strings.Contains(md, "Claims efficacy") {
-		t.Fatal("markdown must disclose claims_efficacy")
 	}
 
 	s.ClaimsEfficacy = true
