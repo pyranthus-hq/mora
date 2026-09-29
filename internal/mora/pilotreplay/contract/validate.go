@@ -1,6 +1,9 @@
 package contract
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // Validate checks CaseDocument invariants, including runner/oracle separation
 // and memory-snapshot vs delivered-context separation.
@@ -210,6 +213,16 @@ func (d *DeliveredContext) Validate(field string) error {
 		if d.Fidelity == FidelityUnknown {
 			return errf(CodeInvalidValue, field+".fidelity", "present exposure cannot be fidelity=unknown")
 		}
+	case ExposurePartial:
+		if len(d.Parts) == 0 {
+			return errf(CodeMissingField, field+".parts", "partial exposure requires at least one part")
+		}
+		if d.MissingReason == "" {
+			return errf(CodeMissingField, field+".missing_reason", "required for the missing remainder of partial exposure")
+		}
+		if d.Fidelity == FidelityFaithfulHistorical {
+			return errf(CodeFidelityUpgrade, field+".fidelity", "partial exposure cannot claim faithful_historical")
+		}
 	case ExposureMissing:
 		if len(d.Parts) != 0 {
 			return errf(CodeExposureMismatch, field+".parts", "missing exposure must have empty parts")
@@ -246,22 +259,9 @@ func (d *DeliveredContext) Validate(field string) error {
 	return validateNote(field+".missing_reason", d.MissingReason)
 }
 
-// rejectSilentFidelityUpgrade forbids treating a weaker snapshot fidelity as
-// justification for a stronger exposure fidelity claim.
+// rejectSilentFidelityUpgrade forbids promoting a reconstructed snapshot to
+// faithful historical exposure. Partial exports may have independently exact logs.
 func rejectSilentFidelityUpgrade(field, snapshotFid, exposureFid string) error {
-	rank := map[string]int{
-		FidelityUnknown:            0,
-		FidelityReconstruction:     1,
-		FidelityPartial:            2,
-		FidelityFaithfulHistorical: 3,
-	}
-	if rank[exposureFid] > rank[snapshotFid] && snapshotFid != FidelityUnknown {
-		// Exposure can be independently known; only forbid upgrading reconstruction to faithful
-		// when snapshot itself is reconstruction and exposure claims faithful without separate proof.
-		if snapshotFid == FidelityReconstruction && exposureFid == FidelityFaithfulHistorical {
-			return errf(CodeFidelityUpgrade, field, "do not silently upgrade reconstruction to faithful_historical")
-		}
-	}
 	if snapshotFid == FidelityReconstruction && exposureFid == FidelityFaithfulHistorical {
 		return errf(CodeFidelityUpgrade, field, "do not silently upgrade reconstruction to faithful_historical")
 	}
@@ -395,8 +395,16 @@ func (a *AttemptDocument) Validate() error {
 	if err := validateTimestamp("started_at", a.StartedAt, false); err != nil {
 		return err
 	}
-	if err := validateTimestamp("finished_at", a.FinishedAt, false); err != nil {
+	terminal := a.Status != AttemptPending && a.Status != AttemptRunning
+	if err := validateTimestamp("finished_at", a.FinishedAt, terminal); err != nil {
 		return err
+	}
+	if a.StartedAt != "" && a.FinishedAt != "" {
+		started, _ := time.Parse(time.RFC3339, a.StartedAt)
+		finished, _ := time.Parse(time.RFC3339, a.FinishedAt)
+		if finished.Before(started) {
+			return errf(CodeInvalidValue, "finished_at", "must not precede started_at")
+		}
 	}
 	if a.TimeoutSeconds <= 0 {
 		return errf(CodeInvalidValue, "timeout_seconds", "must be positive")
@@ -406,6 +414,9 @@ func (a *AttemptDocument) Validate() error {
 	}
 	switch a.Status {
 	case AttemptSkipped, AttemptUnavailable:
+		if a.CostUSDMicros != 0 {
+			return errf(CodeInvalidValue, "cost_usd_micros", "skipped/unavailable attempts must have zero cost")
+		}
 		if a.SkipReason == "" {
 			return errf(CodeMissingField, "skip_reason", "required for skipped/unavailable attempts")
 		}
@@ -413,6 +424,9 @@ func (a *AttemptDocument) Validate() error {
 			return errf(CodeInvalidValue, "provider_invoked", "skipped/unavailable attempts must not invoke the provider")
 		}
 	case AttemptSucceeded:
+		if a.ErrorCode != "" {
+			return errf(CodeInvalidValue, "error_code", "successful attempts must not carry an error code")
+		}
 		if !a.ProviderInvoked && a.SkipReason != "" {
 			return errf(CodeInvalidValue, "status", "succeeded attempts are not skips")
 		}
@@ -459,6 +473,9 @@ func ValidateAttemptOutcomePair(a AttemptDocument, o OutcomeDocument) error {
 	}
 	switch a.Status {
 	case AttemptSucceeded:
+		if a.ErrorCode != "" {
+			return errf(CodeInvalidValue, "error_code", "successful attempts must not carry an error code")
+		}
 		if o.Kind != OutcomePass && o.Kind != OutcomeFail && o.Kind != OutcomeInconclusive {
 			return errf(CodeInvalidValue, "outcome.kind", "succeeded attempt cannot pair with %s", o.Kind)
 		}

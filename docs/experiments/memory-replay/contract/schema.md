@@ -28,11 +28,20 @@ Every top-level document carries:
 
 ### Memory snapshot vs delivered context
 
-- `memory_snapshot` = what was stored (vault/export bytes + version).  
-- `delivered_context` = what the agent actually received (prompt / tool results).  
-- A memory hash alone does **not** establish exposure.  
+- `memory_snapshot` = what was stored (vault/export bytes + version).
+- `delivered_context` = what the agent actually received (prompt / tool results).
+- A memory hash alone does **not** establish exposure.
 - If exposure bytes are missing, set `exposure_availability=missing` and a
   `missing_reason`. Do **not** claim `fidelity=faithful_historical`.
+
+### Exposure availability
+
+| Value | Requirements |
+| --- | --- |
+| `present` | At least one captured part; fidelity must not be unknown |
+| `missing` | Empty parts and a missing reason; never faithful historical |
+| `partial` | At least one captured part and a missing reason for the remainder; never faithful historical |
+| `synthetic` | Synthetic flag true; never faithful historical |
 
 ### Fidelity
 
@@ -61,9 +70,10 @@ Statuses: `pending`, `running`, `succeeded`, `failed`, `timed_out`, `skipped`,
 `unavailable`.
 
 - `skipped` / `unavailable` require `skip_reason` and **must not** set
-  `provider_invoked=true`.  
+  `provider_invoked=true`; cost must be zero.
 - `failed` / `timed_out` require `error_code`.
-- `succeeded` requires `reset_observed` and `isolation_held`.  
+- `succeeded` requires `reset_observed` and `isolation_held`, and no `error_code`.
+- Every terminal status requires `finished_at` (decision time for skips and unavailable runs). When both timestamps exist, finish must not precede start.
 - Do not treat skips/timeouts/failures as successful outcomes.
 
 ## Outcome (`mora.pilotreplay.outcome`)
@@ -81,3 +91,10 @@ matrix, unfrozen monetary ceiling, or non-positive fail-closed spend ceiling
 
 Reports and receipts must set `claims_efficacy=false`. Receipts carry
 `example_hashes` and `unresolved_limits` only.
+
+The committed [receipt.v1.json](receipt.v1.json) freezes synthetic example hashes,
+schema version, and unresolved limits. `TestContractReceiptGolden` reproduces it
+byte-for-byte using `BuildContractReceipt("2026-01-16T00:00:00Z", true)`, JSON
+indentation of two spaces, and one trailing newline. Fixture edits require an
+explicitly reviewed receipt update; never refresh it automatically during tests.
+The fixed timestamp is a synthetic fixture value, not a historical execution time.
