@@ -124,3 +124,45 @@ func countLines(s string) int {
 	}
 	return n
 }
+
+func TestLastAuthStrictCorruption(t *testing.T) {
+	for _, row := range []string{"broken", "{}", "null", `{"account":"google"}`, `{"at":"2026-09-28T12:00:00Z"}`} {
+		t.Run(row, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := RecordAuth(dir, "google", time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)); err != nil {
+				t.Fatal(err)
+			}
+			f, err := os.OpenFile(filepath.Join(dir, authHistoryFile), os.O_APPEND|os.O_WRONLY, 0o600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = f.WriteString(row + "\n"); err != nil {
+				t.Fatal(err)
+			}
+			if err = f.Close(); err != nil {
+				t.Fatal(err)
+			}
+			at, found, err := LastAuthStrict(dir, "google")
+			if err == nil || found || !at.IsZero() {
+				t.Fatalf("corruption must be explicit, got %v %v %v", at, found, err)
+			}
+		})
+	}
+}
+
+func TestLastAuthStrictMissingAndAccounts(t *testing.T) {
+	dir := t.TempDir()
+	if at, found, err := LastAuthStrict(dir, "google"); err != nil || found || !at.IsZero() {
+		t.Fatalf("missing = %v %v %v", at, found, err)
+	}
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	if err := RecordAuth(dir, "google-work", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := LastAuthStrict(dir, "google"); err != nil || found {
+		t.Fatalf("cross-account = %v %v", found, err)
+	}
+	if at, found, err := LastAuthStrict(dir, "google-work"); err != nil || !found || !at.Equal(now) {
+		t.Fatalf("matching = %v %v %v", at, found, err)
+	}
+}

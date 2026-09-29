@@ -733,7 +733,7 @@ func observeGoogleAuthEvidence(cfg Config, tokenAccount string, now time.Time) g
 // the message body after "google auth (<account>):". Pure over cfg/tokenDir/now
 // so tests can pin the clock and fixtures without live OAuth.
 func googleAuthRecencyStatus(cfg Config, tokenDir, account string, now time.Time) (ok bool, msg string) {
-	at, found, err := google.LastAuth(tokenDir, account)
+	at, found, err := google.LastAuthStrict(tokenDir, account)
 	ev := observeGoogleAuthEvidence(cfg, account, now)
 
 	if err != nil {
@@ -743,16 +743,19 @@ func googleAuthRecencyStatus(cfg Config, tokenDir, account string, now time.Time
 		case ev.unauthorized:
 			return false, "auth history unreadable; authorization failed — run `mora connect google`"
 		case !ev.freshSuccessAt.IsZero():
-			return false, fmt.Sprintf("auth history unreadable; recent successful sync observed %s ago (credential appears active)",
+			return false, fmt.Sprintf("auth history unreadable; recent successful sync observed %s (credential appears active)",
 				humanizeAgo(now.Sub(ev.freshSuccessAt)))
 		case !ev.staleSuccessAt.IsZero():
-			return false, fmt.Sprintf("auth history unreadable; last successful sync was %s ago (stale)",
+			return false, fmt.Sprintf("auth history unreadable; last successful sync was %s (stale)",
 				humanizeAgo(now.Sub(ev.staleSuccessAt)))
 		default:
 			return false, "auth history unreadable; credential state unknown"
 		}
 	}
 
+	if found && ev.unauthorized {
+		return false, fmt.Sprintf("last authed %s (%s); authorization failed — run `mora connect google`", at.Format(time.RFC3339), humanizeAgo(now.Sub(at)))
+	}
 	if found {
 		return true, fmt.Sprintf("last authed %s (%s)", at.Format(time.RFC3339), humanizeAgo(now.Sub(at)))
 	}
@@ -762,12 +765,12 @@ func googleAuthRecencyStatus(cfg Config, tokenDir, account string, now time.Time
 	case ev.unauthorized:
 		return false, "no recorded auth history; authorization failed — run `mora connect google`"
 	case !ev.freshSuccessAt.IsZero():
-		// Legacy credential: history unavailable, but same-account sync proves
-		// the token currently works. Do NOT advise reauthorization.
-		return true, fmt.Sprintf("no recorded auth history (legacy credential); recent successful sync observed %s ago",
+		// Legacy credential: history unavailable, but same-account sync provides
+		// recent activity evidence, not a live authorization probe. Do NOT advise reauthorization.
+		return true, fmt.Sprintf("no recorded auth history (legacy credential); recent successful sync observed %s",
 			humanizeAgo(now.Sub(ev.freshSuccessAt)))
 	case !ev.staleSuccessAt.IsZero():
-		return false, fmt.Sprintf("no recorded auth history; last successful sync was %s ago (stale) — run `mora sync google` to verify",
+		return false, fmt.Sprintf("no recorded auth history; last successful sync was %s (stale) — run `mora sync google` to verify",
 			humanizeAgo(now.Sub(ev.staleSuccessAt)))
 	default:
 		// Token file present is not proof of authorization, and inventing an

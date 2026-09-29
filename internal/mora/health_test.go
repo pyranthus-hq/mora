@@ -1668,7 +1668,7 @@ func TestGoogleAuthRecencyDistinguishesLegacyFromBroken(t *testing.T) {
 			LastSynced:    successAt.Format(time.RFC3339),
 		})
 		_, msg := googleAuthRecencyStatus(cfg, tokenDir, "google", now)
-		if !strings.Contains(msg, "2 hours ago") {
+		if !strings.Contains(msg, "2 hours ago") || strings.Contains(msg, "ago ago") {
 			t.Fatalf("injected clock must drive age rendering, got %q", msg)
 		}
 		// Far-future clock would make the same success stale (>24h).
@@ -1701,5 +1701,54 @@ func TestGoogleSourceAccountFromTokenAccount(t *testing.T) {
 			t.Fatalf("googleSourceAccountFromTokenAccount(%q) = (%q, %v), want (%q, %v)",
 				tc.in, got, ok, tc.wantLabel, tc.wantOK)
 		}
+	}
+}
+
+// Exercise the rendered Doctor seam, not just the history parser.
+func TestGoogleAuthRecencyCorruptHistory(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	dir := filepath.Join(cfg.ConfigDir, "tokens")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "google.json"), []byte(`{"refresh_token":"fixture"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, history := range []string{"broken\n", "{}\n", "null\n", "{\"account\":\"google\"}\n"} {
+		if err := os.WriteFile(filepath.Join(dir, "auth-history.jsonl"), []byte(history), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		printGoogleAuthRecency(cfg, &out, time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC))
+		got := out.String()
+		if !strings.Contains(got, "auth history unreadable") || strings.Contains(got, "connect google") || strings.Contains(got, "last authed") {
+			t.Fatalf("corrupt history must be explicit and must not fabricate auth or advise reauth: %q", got)
+		}
+	}
+}
+
+func TestGoogleAuthRecencyFailureOverridesHistory(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	dir := filepath.Join(cfg.ConfigDir, "tokens")
+	if err := google.RecordAuth(dir, "google", now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	source := Source{Name: "gmail", Type: "gmail"}
+	if err := saveSources(cfg, []Source{source}); err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.SaveStatus(syncStatusPathFor(cfg, source), &memory.SyncStatus{
+		LastSuccessAt: now.Add(-30 * time.Minute).Format(time.RFC3339), LastAttemptAt: now.Format(time.RFC3339), LastError: "unauthorized", ErrorCode: errCodeConnectorUnauthorized, ErrorCount: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ok, msg := googleAuthRecencyStatus(cfg, dir, "google", now)
+	if ok || !strings.Contains(msg, "authorization failed") {
+		t.Fatalf("auth history must not hide later auth failure: %v %q", ok, msg)
 	}
 }
