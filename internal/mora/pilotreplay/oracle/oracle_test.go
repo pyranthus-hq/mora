@@ -420,6 +420,8 @@ func TestOutcomeDocumentPairing(t *testing.T) {
 	attempt.CaseID = "case-synth"
 	attempt.RepIndex = 0
 	attempt.Status = contract.AttemptSucceeded
+	attempt.StartedAt = "2026-09-01T12:00:00Z"
+	attempt.FinishedAt = "2026-09-01T12:00:01Z"
 	attempt.TimeoutSeconds = 60
 	attempt.ResetObserved = true
 	attempt.IsolationHeld = true
