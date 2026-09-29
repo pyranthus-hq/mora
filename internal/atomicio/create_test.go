@@ -3,8 +3,10 @@ package atomicio
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -280,5 +282,50 @@ func TestAtomicCreateSurfacesRealLinkError(t *testing.T) {
 	}
 	if names := dirBaseNames(t, dir); len(names) != 0 {
 		t.Fatalf("orphan temp left after real link error: %v", names)
+	}
+}
+
+// Readers may miss the file or see the Unix fallback's empty placeholder, but
+// must never accept complete frontmatter followed by a truncated body.
+func TestAtomicCreateFallbackReadVisibility(t *testing.T) {
+	forceLinkUnsupported(t)
+	body := append([]byte("---\nid: read-visibility\n---\n"), bytes.Repeat([]byte("complete body\n"), 1<<18)...)
+	for iter := 0; iter < 10; iter++ {
+		path := filepath.Join(t.TempDir(), "mem.md")
+		done := make(chan struct{})
+		result := make(chan error, 1)
+		go func() {
+			result <- atomicCreate(path, body, 0o644)
+			close(done)
+		}()
+		var readErr error
+	reading:
+		for {
+			got, err := os.ReadFile(path)
+			if err == nil && len(got) != 0 && !bytes.Equal(got, body) {
+				readErr = fmt.Errorf("observed partial body: %d of %d bytes", len(got), len(body))
+				break
+			}
+			if err != nil && !errors.Is(err, os.ErrNotExist) && !SharingViolationRetryable(err) {
+				readErr = err
+				break
+			}
+			select {
+			case <-done:
+				break reading
+			default:
+				runtime.Gosched()
+			}
+		}
+		if err := <-result; err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(got, body) {
+			t.Fatalf("final body: %d bytes, error %v", len(got), err)
+		}
 	}
 }
