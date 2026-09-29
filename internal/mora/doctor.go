@@ -137,8 +137,8 @@ func doctorCheckFailed(checks []doctorCheck, name string) bool {
 	return false
 }
 
-func planDoctorRepairs(checks []doctorCheck, cfg Config, tokenDir string) []doctorRepairAction {
-	actions := make([]doctorRepairAction, 0, 3)
+func planDoctorRepairs(checks []doctorCheck, cfg Config, tokenDir string, now time.Time) []doctorRepairAction {
+	actions := make([]doctorRepairAction, 0, 4)
 	if doctorCheckFailed(checks, "tokens_disjoint_from_vault") {
 		actions = append(actions, doctorRepairAction{
 			ID: "relocate_token_dir", Mutation: "relocate_outside_vault", Target: tokenDir,
@@ -157,6 +157,20 @@ func planDoctorRepairs(checks []doctorCheck, cfg Config, tokenDir string) []doct
 		actions = append(actions, doctorRepairAction{
 			ID: "rebuild_index", Mutation: "rebuild_derived_index", Target: dbPath(cfg),
 			Safe: true, ApprovalRequired: true,
+		})
+	}
+	// Orphaned ingest receipts: expired heartbeat + confirmed-dead owner. Rebuild-only
+	// does not prune them (#478 is same-kind Begin). Plan names exact run ids; apply
+	// never invents completion and retains uncovered journal evidence as failed.
+	if abandoned, err := listAbandonedDeadOwners(cfg, operationKindIngest, now, operationProcessAlive); err == nil && len(abandoned) > 0 {
+		runs := make([]string, 0, len(abandoned))
+		for _, r := range abandoned {
+			runs = append(runs, r.RunID)
+		}
+		actions = append(actions, doctorRepairAction{
+			ID: "retire_abandoned_ingest", Mutation: "retire_dead_owner_receipts",
+			Target: strings.Join(runs, ","),
+			Safe:   true, ApprovalRequired: true,
 		})
 	}
 	return actions
@@ -189,6 +203,33 @@ func applyDoctorRepairs(ctx context.Context, cfg Config, actions []doctorRepairA
 			_, err = rebuildIndex(ctx, cfg)
 			if err == nil {
 				_, err = os.Stat(action.Target)
+			}
+		case "retire_abandoned_ingest":
+			var uncovered map[string]bool
+			uncovered, err = uncoveredIngestRunIDs(cfg)
+			if err == nil {
+				_, err = retireAbandonedDeadOwners(cfg, operationKindIngest, doctorClock(), operationProcessAlive, uncovered)
+				if err == nil {
+					// Verify: none of the planned run ids remain eligible abandoned running receipts.
+					remaining, lerr := listAbandonedDeadOwners(cfg, operationKindIngest, doctorClock(), operationProcessAlive)
+					if lerr != nil {
+						err = lerr
+					} else {
+						planned := map[string]bool{}
+						for _, id := range strings.Split(action.Target, ",") {
+							id = strings.TrimSpace(id)
+							if id != "" {
+								planned[id] = true
+							}
+						}
+						for _, r := range remaining {
+							if planned[r.RunID] {
+								err = fmt.Errorf("abandoned ingest %s still eligible after repair", r.RunID)
+								break
+							}
+						}
+					}
+				}
 			}
 		default:
 			err = fmt.Errorf("unknown doctor repair action %q", action.ID)
@@ -497,7 +538,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		verification := []doctorVerification{}
 		var repairErr error
 		if *repair {
-			repairPlan = planDoctorRepairs(checks, cfg, tokenDir)
+			repairPlan = planDoctorRepairs(checks, cfg, tokenDir, now)
 			if !*dryRun {
 				verification, repairErr = applyDoctorRepairs(ctx, cfg, repairPlan)
 			}

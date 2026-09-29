@@ -138,3 +138,86 @@ func CompactJournal(cfg config.Config, sourceKey string, listed map[string]bool,
 	}
 	return "", nil
 }
+
+// UncoveredRunIDs reports ingest run ids whose journals still have publication
+// evidence that a rebuild has not covered: existing path lines that are absent
+// from listed. Header-only or fully-covered journals are omitted — those can be
+// retired by CompactJournal once no live lease remains. Callers that cannot prove
+// committed coverage must retain failure evidence for these runs rather than
+// inventing completion or erasing the receipt to silence health.
+func UncoveredRunIDs(cfg config.Config, listed map[string]bool, seams RecoverySeams) (map[string]bool, error) {
+	out := map[string]bool{}
+	entries, err := os.ReadDir(JournalRoot(cfg))
+	if errors.Is(err, os.ErrNotExist) {
+		return out, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if listed == nil {
+		listed = map[string]bool{}
+	}
+	folded := map[string][]string{}
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		for p, covered := range listed {
+			if covered {
+				folded[strings.ToLower(p)] = append(folded[strings.ToLower(p)], p)
+			}
+		}
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		path := JournalPath(cfg, e.Name())
+		b, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		var header string
+		uncovered := false
+		for _, raw := range strings.Split(string(b), "\n") {
+			line := strings.TrimSpace(raw)
+			if line == "" {
+				continue
+			}
+			if strings.HasPrefix(line, "run ") {
+				header = line
+				continue
+			}
+			p := seams.CleanPath(line)
+			covered := listed[p]
+			if !covered {
+				if candidates := folded[strings.ToLower(p)]; len(candidates) > 0 {
+					if info, err := os.Stat(p); err == nil {
+						for _, candidate := range candidates {
+							other, err := os.Stat(candidate)
+							if err == nil && os.SameFile(info, other) {
+								covered = true
+								break
+							}
+						}
+					}
+				}
+			}
+			if covered {
+				continue
+			}
+			if _, statErr := os.Stat(p); errors.Is(statErr, os.ErrNotExist) {
+				continue
+			}
+			uncovered = true
+			break
+		}
+		if !uncovered {
+			continue
+		}
+		if runID := HeaderRunID(header, seams.ValidToken); runID != "" {
+			out[runID] = true
+		}
+	}
+	return out, nil
+}

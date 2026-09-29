@@ -1,6 +1,7 @@
 package mora
 
 import (
+	ingestpkg "github.com/pyranthus-hq/mora/internal/ingest"
 	"github.com/pyranthus-hq/mora/internal/operation"
 	"time"
 )
@@ -63,3 +64,15 @@ func completeOperationAfterCoverage(cfg Config, runID string, now time.Time) err
 }
 
 func operationProgressActive(runID string) bool { return operation.Active(runID) }
+
+func listAbandonedDeadOwners(cfg Config, kind operationKind, now time.Time, live operationLiveness) ([]operation.Retirement, error) {
+	return operation.ListAbandonedDeadOwners(cfg, kind, now, live)
+}
+
+func retireAbandonedDeadOwners(cfg Config, kind operationKind, now time.Time, live operationLiveness, uncovered map[string]bool) ([]operation.Retirement, error) {
+	return operation.RetireAbandonedDeadOwners(cfg, kind, now, live, uncovered)
+}
+
+func uncoveredIngestRunIDs(cfg Config) (map[string]bool, error) {
+	return ingestpkg.UncoveredRunIDs(cfg, map[string]bool{}, ingestRecoverySeams())
+}

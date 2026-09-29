@@ -410,3 +410,195 @@ func TestPruneTerminalBound(t *testing.T) {
 		t.Fatalf("terminal receipts=%d want %d", count, TerminalKeep)
 	}
 }
+
+func TestRebuildOnlyDoesNotPruneOrphanedIngestReceipt(t *testing.T) {
+	// #498 residual: Doctor/index-rebuild is a different operation kind, so the
+	// shipped same-kind Begin prune (#478) never runs. An expired dead-owner
+	// awaiting_rebuild ingest receipt must survive rebuild-only work.
+	cfg := config.Config{StateDir: t.TempDir()}
+	oldProcessAlive := ProcessAlive
+	t.Cleanup(func() { ProcessAlive = oldProcessAlive })
+	ProcessAlive = func(int) bool { return false }
+
+	rec := Record{
+		SchemaVersion: SchemaVersion,
+		Kind:          KindIngest,
+		State:         Running,
+		RunID:         "op_orphan_rebuild",
+		OwnerPID:      4242,
+		StartedAt:     operationTestNow.Add(-time.Hour).Format(time.RFC3339Nano),
+		HeartbeatAt:   operationTestNow.Add(-HeartbeatTTL - time.Second).Format(time.RFC3339Nano),
+		Phase:         "awaiting_rebuild",
+		Counts:        Counts{Items: 3, Files: 1},
+	}
+	if err := SaveRecord(Path(cfg, KindIngest, rec.RunID), rec); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Begin(cfg, KindIndexRebuild, "listing", operationTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(Path(cfg, KindIngest, rec.RunID)); err != nil {
+		t.Fatalf("rebuild-only pruned ingest receipt: %v", err)
+	}
+	acts := Activities(cfg, operationTestNow, ProcessAlive)
+	found := false
+	for _, a := range acts {
+		if a.RunID == rec.RunID {
+			found = a.State == Stalled && a.FailureCode == "heartbeat_expired" && a.Phase == "awaiting_rebuild"
+		}
+	}
+	if !found {
+		t.Fatalf("orphan not visible as stalled awaiting_rebuild: %+v", acts)
+	}
+}
+
+func TestSameKindWriterPrunesOrphanWithoutCoverageClaim(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	oldProcessAlive := ProcessAlive
+	t.Cleanup(func() { ProcessAlive = oldProcessAlive })
+	ProcessAlive = func(int) bool { return false }
+
+	rec := Record{
+		SchemaVersion: SchemaVersion,
+		Kind:          KindIngest,
+		State:         Running,
+		RunID:         "op_orphan_writer",
+		OwnerPID:      4242,
+		StartedAt:     operationTestNow.Add(-time.Hour).Format(time.RFC3339Nano),
+		HeartbeatAt:   operationTestNow.Add(-HeartbeatTTL - time.Second).Format(time.RFC3339Nano),
+		Phase:         "awaiting_rebuild",
+		Counts:        Counts{Items: 9},
+	}
+	if err := SaveRecord(Path(cfg, KindIngest, rec.RunID), rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Begin(cfg, KindIngest, "fetching", operationTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(Path(cfg, KindIngest, rec.RunID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("same-kind writer left orphan: %v", err)
+	}
+}
+
+func TestRetireAbandonedDeadOwnersFailClosedAndUncoveredEvidence(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	oldProcessAlive := ProcessAlive
+	t.Cleanup(func() { ProcessAlive = oldProcessAlive })
+	ProcessAlive = func(pid int) bool { return pid == 4343 }
+
+	writeRunning := func(runID string, pid int, heartbeat time.Time, phase string, counts Counts) {
+		t.Helper()
+		rec := Record{
+			SchemaVersion: SchemaVersion,
+			Kind:          KindIngest,
+			State:         Running,
+			RunID:         runID,
+			OwnerPID:      pid,
+			StartedAt:     heartbeat.Add(-time.Minute).Format(time.RFC3339Nano),
+			HeartbeatAt:   heartbeat.Format(time.RFC3339Nano),
+			Phase:         phase,
+			Counts:        counts,
+		}
+		if err := SaveRecord(Path(cfg, KindIngest, runID), rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeRunning("op_dead_expired", 4242, operationTestNow.Add(-HeartbeatTTL-time.Second), "awaiting_rebuild", Counts{Items: 5, Files: 2})
+	writeRunning("op_uncovered", 4545, operationTestNow.Add(-HeartbeatTTL-time.Second), "awaiting_rebuild", Counts{Items: 8, Materialized: 4})
+	writeRunning("op_live_expired", 4343, operationTestNow.Add(-HeartbeatTTL-time.Second), "awaiting_rebuild", Counts{})
+	writeRunning("op_dead_recent", 4444, operationTestNow.Add(-time.Minute), "awaiting_rebuild", Counts{})
+	if err := os.WriteFile(Path(cfg, KindIngest, "op_corrupt"), []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	planned, err := ListAbandonedDeadOwners(cfg, KindIngest, operationTestNow, ProcessAlive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned) != 2 || planned[0].RunID != "op_dead_expired" || planned[1].RunID != "op_uncovered" {
+		t.Fatalf("plan = %+v", planned)
+	}
+
+	got, err := RetireAbandonedDeadOwners(cfg, KindIngest, operationTestNow, ProcessAlive, UncoveredRuns{"op_uncovered": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("retirements = %+v", got)
+	}
+	byID := map[string]Retirement{}
+	for _, r := range got {
+		byID[r.RunID] = r
+	}
+	if byID["op_dead_expired"].Action != RetirementRemoved {
+		t.Fatalf("covered-absent orphan action = %+v", byID["op_dead_expired"])
+	}
+	if _, err := os.Stat(Path(cfg, KindIngest, "op_dead_expired")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("absent-journal orphan survived: %v", err)
+	}
+	unc := byID["op_uncovered"]
+	if unc.Action != RetirementFailedUncovered || unc.Counts.Items != 8 || unc.Phase != "awaiting_rebuild" {
+		t.Fatalf("uncovered retirement = %+v", unc)
+	}
+	rec, err := LoadRecord(Path(cfg, KindIngest, "op_uncovered"))
+	if err != nil || rec.State != Failed || rec.FailureCode != FailureOwnerAbandoned || rec.Phase != "awaiting_rebuild" || rec.Counts.Items != 8 {
+		t.Fatalf("uncovered receipt = %+v err=%v", rec, err)
+	}
+	if rec.FinishedAt == "" {
+		t.Fatal("uncovered failure missing finished_at")
+	}
+	for _, runID := range []string{"op_live_expired", "op_dead_recent", "op_corrupt"} {
+		if _, err := os.Stat(Path(cfg, KindIngest, runID)); err != nil {
+			t.Fatalf("fail-closed receipt %s was mutated: %v", runID, err)
+		}
+	}
+
+	// Idempotent: nothing left that is eligible for removal/failure transition.
+	again, err := RetireAbandonedDeadOwners(cfg, KindIngest, operationTestNow, ProcessAlive, UncoveredRuns{"op_uncovered": true})
+	if err != nil || len(again) != 0 {
+		t.Fatalf("idempotent retire = %+v err=%v", again, err)
+	}
+	// Never invents completion.
+	acts := Activities(cfg, operationTestNow, ProcessAlive)
+	for _, a := range acts {
+		if a.RunID == "op_uncovered" && (a.State == Completed || a.FailureCode == "") {
+			t.Fatalf("invented completion: %+v", a)
+		}
+	}
+}
+
+func TestRetireAbandonedDeadOwnersReadOnlyHealthUnchanged(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	oldProcessAlive := ProcessAlive
+	t.Cleanup(func() { ProcessAlive = oldProcessAlive })
+	ProcessAlive = func(int) bool { return false }
+
+	rec := Record{
+		SchemaVersion: SchemaVersion,
+		Kind:          KindIngest,
+		State:         Running,
+		RunID:         "op_health_readonly",
+		OwnerPID:      4242,
+		StartedAt:     operationTestNow.Add(-time.Hour).Format(time.RFC3339Nano),
+		HeartbeatAt:   operationTestNow.Add(-HeartbeatTTL - time.Second).Format(time.RFC3339Nano),
+		Phase:         "awaiting_rebuild",
+	}
+	path := Path(cfg, KindIngest, rec.RunID)
+	if err := SaveRecord(path, rec); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = Activities(cfg, operationTestNow, ProcessAlive)
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("Activities mutated orphan receipt")
+	}
+}

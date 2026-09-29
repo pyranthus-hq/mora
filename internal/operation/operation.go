@@ -245,6 +245,158 @@ func pruneDeadOwnerRecordsLocked(cfg config.Config, kind Kind, now time.Time, li
 	return nil
 }
 
+// RetirementAction names how an abandoned running receipt was recovered.
+const (
+	RetirementRemoved         = "removed"
+	RetirementFailedUncovered = "failed_uncovered"
+	FailureOwnerAbandoned     = "owner_abandoned"
+)
+
+// Retirement is one abandoned-receipt recovery outcome. Removed receipts leave
+// no completion claim; uncovered receipts become terminal failed so publication
+// evidence survives instead of a fabricated success watermark.
+type Retirement struct {
+	RunID  string `json:"run_id"`
+	Action string `json:"action"`
+	Phase  string `json:"phase,omitempty"`
+	Counts Counts `json:"counts"`
+}
+
+// UncoveredRuns names ingest run ids whose journals still have uncovered
+// publication evidence. RetireAbandonedDeadOwners refuses to erase those
+// receipts; it marks them failed so health stays honest.
+type UncoveredRuns map[string]bool
+
+func abandonedDeadOwnerEligible(rec Record, kind Kind, runID string, now time.Time, live Liveness) bool {
+	if live == nil {
+		live = ProcessAlive
+	}
+	if rec.State != Running || rec.OwnerPID <= 0 {
+		return false
+	}
+	activity := classifyOperationRecord(rec, kind, runID, now, live)
+	heartbeat, err := time.Parse(time.RFC3339Nano, rec.HeartbeatAt)
+	if err != nil || activity.State != Stalled || now.Sub(heartbeat) <= HeartbeatTTL || live(rec.OwnerPID) {
+		return false
+	}
+	return true
+}
+
+// ListAbandonedDeadOwners is the read-only planning seam for Doctor dry-run.
+// It never mutates receipts; live/slow owners, recent deaths, PID reuse, and
+// malformed records are omitted (fail closed).
+func ListAbandonedDeadOwners(cfg config.Config, kind Kind, now time.Time, live Liveness) ([]Retirement, error) {
+	if err := operationStateRootErr(cfg); err != nil {
+		return nil, err
+	}
+	if !operationKindValid(kind) {
+		return nil, fmt.Errorf("invalid operation kind %q", kind)
+	}
+	if live == nil {
+		live = ProcessAlive
+	}
+	dir := filepath.Join(operationRoot(cfg), string(kind))
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []Retirement
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		runID := strings.TrimSuffix(entry.Name(), ".json")
+		rec, err := LoadRecord(filepath.Join(dir, entry.Name()))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil || !abandonedDeadOwnerEligible(rec, kind, runID, now, live) {
+			continue
+		}
+		out = append(out, Retirement{RunID: runID, Phase: rec.Phase, Counts: rec.Counts})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].RunID < out[j].RunID })
+	return out, nil
+}
+
+// RetireAbandonedDeadOwners recovers abandoned running receipts while holding
+// the per-kind guard. Requires BOTH an expired heartbeat and a confirmed-dead
+// owner — the same fail-closed gate as Begin's sibling prune.
+//
+// UncoveredRuns retain failure/publication evidence: those receipts become
+// terminal failed with FailureOwnerAbandoned and are never stamped completed.
+// Receipts without uncovered journal evidence are removed (dead liveness only;
+// no completion claim). Live/slow owners, recent deaths, PID reuse, and
+// malformed records are left untouched.
+func RetireAbandonedDeadOwners(cfg config.Config, kind Kind, now time.Time, live Liveness, uncovered UncoveredRuns) ([]Retirement, error) {
+	if err := operationStateRootErr(cfg); err != nil {
+		return nil, err
+	}
+	if !operationKindValid(kind) {
+		return nil, fmt.Errorf("invalid operation kind %q", kind)
+	}
+	if live == nil {
+		live = ProcessAlive
+	}
+	if uncovered == nil {
+		uncovered = UncoveredRuns{}
+	}
+	var out []Retirement
+	err := leasefile.WithGuard(operationGuardPath(cfg, kind), func() error {
+		dir := filepath.Join(operationRoot(cfg), string(kind))
+		entries, err := os.ReadDir(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			path := filepath.Join(dir, entry.Name())
+			runID := strings.TrimSuffix(entry.Name(), ".json")
+			rec, err := LoadRecord(path)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil || !abandonedDeadOwnerEligible(rec, kind, runID, now, live) {
+				continue
+			}
+			if uncovered[runID] {
+				stamp := now.UTC().Format(time.RFC3339Nano)
+				rec.State = Failed
+				rec.HeartbeatAt = stamp
+				rec.FinishedAt = stamp
+				rec.FailureCode = FailureOwnerAbandoned
+				// Preserve phase/counts as publication evidence; never invent completion.
+				if err := SaveRecord(path, rec); err != nil {
+					return err
+				}
+				out = append(out, Retirement{RunID: runID, Action: RetirementFailedUncovered, Phase: rec.Phase, Counts: rec.Counts})
+				continue
+			}
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			out = append(out, Retirement{RunID: runID, Action: RetirementRemoved, Phase: rec.Phase, Counts: rec.Counts})
+		}
+		return nil
+	})
+	if err != nil {
+		return out, err
+	}
+	if len(out) > 0 {
+		PruneTerminal(cfg, kind)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].RunID < out[j].RunID })
+	return out, nil
+}
+
 func Heartbeat(cfg config.Config, h Handle, phase string, counts Counts, now time.Time) error {
 	phase = strings.TrimSpace(phase)
 	if !validOperationToken(phase) {

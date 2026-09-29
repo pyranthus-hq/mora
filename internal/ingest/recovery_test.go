@@ -165,3 +165,26 @@ func TestCompactJournalCaseFoldDistinctFiles(t *testing.T) {
 		t.Fatalf("uncovered path lost: %s, %v", body, err)
 	}
 }
+
+func TestUncoveredRunIDsDistinguishesCoveredFromUncovered(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	covered := filepath.Join(t.TempDir(), "covered.md")
+	uncovered := filepath.Join(t.TempDir(), "uncovered.md")
+	for _, p := range []string{covered, uncovered} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeJournal(t, cfg, "gmail", "run r_cover 2026-01-01T00:00:00Z\n"+covered+"\n")
+	writeJournal(t, cfg, "filesystem", "run r_open 2026-01-01T00:00:00Z\n"+uncovered+"\n")
+	writeJournal(t, cfg, "empty", "run r_gone 2026-01-01T00:00:00Z\n/no/such/path.md\n")
+
+	seams := recoverySeams(false)
+	got, err := UncoveredRunIDs(cfg, map[string]bool{seams.CleanPath(covered): true}, seams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["r_cover"] || got["r_gone"] || !got["r_open"] || len(got) != 1 {
+		t.Fatalf("uncovered = %#v", got)
+	}
+}

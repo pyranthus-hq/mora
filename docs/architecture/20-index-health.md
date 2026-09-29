@@ -124,6 +124,16 @@ active/stalled/corrupt receipt), so an old failure cannot keep health red after 
 newer success. On-disk terminal retention is bounded to 16 per kind and pruned only
 by a terminal writer.
 
+The next writer of the same operation kind may remove an abandoned `running`
+receipt that has both an expired heartbeat and a confirmed-dead owner (see
+issue #471 / PR #478). That cleanup does not assert completion. Doctor
+`--repair` exposes a separate approved action, `retire_abandoned_ingest`, for
+the rebuild-only residual (#498): journal-absent orphans are removed as dead
+liveness only; orphans whose journals still have uncovered publication paths
+are marked terminal `failed` with `owner_abandoned` so evidence survives and
+health is never greened by inventing `completed` without committed coverage.
+Read-only `mora doctor` / health / status paths still never mutate receipts.
+
 Every `ingestSource` begins its receipt and a run-id-bound journal header before
 provider dispatch can publish a vault byte. A bounded heartbeat keeps long fetches and batch-wait time
 live; clean ingest stops at `awaiting_rebuild`. It becomes `completed` only when a
