@@ -32,7 +32,10 @@ func TestFilesystemRenderErrorPreservesPriorRecordAndManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("version two"), 0o644); err != nil {
+	// Different byte length so Size+ModTime incremental skip cannot treat the
+	// rewrite as unchanged. On overlayfs a same-size rewrite often keeps mtime,
+	// which would skip render entirely and hide the fail-closed scope check.
+	if err := os.WriteFile(path, []byte("version two!"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	source.Scope = "personal\nid: gmail_thread/forged"
