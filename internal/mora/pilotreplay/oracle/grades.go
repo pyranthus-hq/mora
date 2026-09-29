@@ -101,25 +101,15 @@ func AggregateOutcome(dims []DimensionResult) string {
 		case DimInconclusive:
 			hasInconclusive = true
 		case DimPass:
-			if d.Dimension != "" {
-				requiredPass++
-				requiredTotal++
-			}
+			// Counted in the required-dimension rollup below.
 		case DimNotApplicable:
 			// ignored for pass rollup
 		default:
 			hasInconclusive = true
 		}
-		if d.Status == DimPass || d.Status == DimFail || d.Status == DimInconclusive || d.Status == DimError {
-			if d.Status != DimPass {
-				// already counted above for pass; for fail/error/inconclusive
-				// ensure requiredTotal tracks scored dimensions that matter
-			}
-		}
+
 	}
-	// Recount required: every dimension that is not not_applicable.
-	requiredPass = 0
-	requiredTotal = 0
+	// Count required: every dimension that is not not_applicable.
 	for _, d := range dims {
 		if d.Status == DimNotApplicable {
 			continue

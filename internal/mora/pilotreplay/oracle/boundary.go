@@ -43,9 +43,6 @@ func BuildContenderView(c contract.CaseDocument) (ContenderView, error) {
 	if err := assertCaseOracleIsolation(c); err != nil {
 		return ContenderView{}, err
 	}
-	refs := append([]string{}, c.OraclePackage.HiddenTestRefs...)
-	refs = append(refs, c.OraclePackage.ExpectedAnswerRefs...)
-	refs = append(refs, c.OraclePackage.ReferencePatchRefs...)
 	// Contender may learn that hash-refs exist via runner staging metadata,
 	// but this view only carries package id + empty contents — never bodies.
 	return ContenderView{

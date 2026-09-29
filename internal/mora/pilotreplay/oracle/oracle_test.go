@@ -375,19 +375,22 @@ func TestAccessBoundaryNoGoldLeak(t *testing.T) {
 		}
 	}
 
-	// ContenderDeniedResources from contract still deny oracle resources.
+	// The oracle-specific deny list must retain every contract oracle/cutoff
+	// resource. Live-vault, production-write and external-action restrictions
+	// belong to the runner rather than this oracle projection.
 	for _, r := range contract.ContenderDeniedResources() {
+		if !strings.HasPrefix(r, "oracle_") && r != "post_cutoff_evidence" {
+			continue
+		}
 		found := false
-		for _, want := range ContenderMustNotSee() {
-			if r == want || strings.HasPrefix(want, r) || strings.Contains(want, strings.TrimPrefix(r, "oracle_")) {
+		for _, denied := range ContenderMustNotSee() {
+			if r == denied {
 				found = true
 				break
 			}
 		}
-		// Soft check: at least the classic deny list is non-empty and includes oracle_*.
-		_ = found
-		if strings.HasPrefix(r, "oracle_") || r == "post_cutoff_evidence" {
-			// ok expected
+		if !found {
+			t.Errorf("oracle contender deny list missing contract resource %q", r)
 		}
 	}
 	if len(contract.ContenderDeniedResources()) == 0 {
