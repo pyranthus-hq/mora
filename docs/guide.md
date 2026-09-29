@@ -1611,6 +1611,21 @@ feed. Each event row names the selected UTC instant in `event_at`; the receipt
 echoes `source`, `event_since_hours`, and `order: "source-event"`. Default
 listing without the window keeps its existing write-time ordering.
 
+A windowed receipt also states the bounds it applied, as `window_from` and
+`window_to`. Both come from the single clock read the selection used, so two
+rows returned by one call are never measured against different bounds, and both
+are present even when the window selected no rows — they describe the read, not
+the rows. They are serialised with `time.RFC3339Nano`, at the same precision as
+`event_at`; RFC3339Nano is variable width (trailing fractional zeros are removed,
+and zero nanoseconds omit the fraction), so compare parsed instants rather than
+strings.
+The bounds describe the closed interval `[window_from, window_to]`:
+inclusive at both edges, so a row whose `event_at` equals either bound exactly
+is in the window. A consumer re-applying the window must cut with `>=` and `<=`
+and use the stated `window_from` rather than recomputing it from `window_to`
+minus `event_since_hours`. A call without `event_since_hours` applied no window
+and carries neither key.
+
 With validated iMessage/WhatsApp evidence, `participation` reports `own_share`,
 `last_own_at`, `is_group`, `latest_sender`, and `message_evidence_count`. The
 denominator is retained evidence, not lifetime or fetched conversation size.
@@ -1627,7 +1642,8 @@ automation basis, and a content-free retained-evidence fingerprint. A malformed,
 stale, or unbound stamp is ignored and the same retained evidence is derived.
 
 MCP `list_memory` accepts `source` and `event_since_hours` with the same
-semantics and bounded row output. Its `since_hours` argument is a list-only
+semantics and bounded row output, and states the same `window_from` and
+`window_to` bounds on a windowed read. Its `since_hours` argument is a list-only
 alias and cannot be combined with `event_since_hours`. **Search**
 `since_hours` continues to mean memory creation/write time. MCP truncation
 receipts still report rows omitted for the response budget.
