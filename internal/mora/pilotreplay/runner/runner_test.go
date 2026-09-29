@@ -390,6 +390,47 @@ func TestAdmitPrivatePackageWithoutPublicCopy(t *testing.T) {
 	}
 }
 
+// Exercise foreign separator styles on every host, not only Windows CI.
+func TestProductionPathGuard(t *testing.T) {
+	for _, p := range []string{
+		"/Users/someone/Library/Application Support/mora/vault",
+		`C:\Users\x\Library\Application Support\mora\vault`,
+		`C:\Users\x\.mora\`,
+		`C:\Users\x\.mora`,
+		`C:\Users\x\.mora\vault`,
+		`C:/Users/x/.mora/`,
+		"/home/x/.mora/",
+		"/home/x/.mora",
+		`C:\Users\x\mora\vault`,
+		`C:\Users\x\credentials.json`,
+		`C:\Users\x\client_secret.json`,
+		`C:\USERS\X\.MORA\vault`,
+	} {
+		t.Run(p, func(t *testing.T) {
+			if !looksLikeProductionPath(p) {
+				t.Fatalf("expected production path rejection: %q", p)
+			}
+			// Both callers must reject before filesystem access.
+			if _, err := PrepareWorkspace(p); err == nil {
+				t.Fatal("workspace accepted production path")
+			} else if e, ok := err.(*Error); !ok || e.Code != CodePathRejected {
+				t.Fatalf("expected path rejection, got %v", err)
+			}
+			r := newTestRunner(t)
+			if _, err := r.AdmitCasePackage(AdmitOptions{SourcePath: p}); err == nil {
+				t.Fatal("admission accepted production path")
+			} else if e, ok := err.(*Error); !ok || e.Code != CodePathRejected {
+				t.Fatalf("expected path rejection, got %v", err)
+			}
+		})
+	}
+	for _, p := range []string{"/tmp/replay", `C:\Temp\replay`, "/home/x/.mora-backup", `C:\Users\x\.mora-backup`} {
+		if looksLikeProductionPath(p) {
+			t.Errorf("unexpected production path rejection: %q", p)
+		}
+	}
+}
+
 func TestRejectOracleInRunnerPackage(t *testing.T) {
 	r := newTestRunner(t)
 	c := contract.ExampleNegativeHiddenInRunner()
