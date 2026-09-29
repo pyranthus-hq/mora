@@ -3,7 +3,9 @@ package mora
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -64,7 +66,9 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 		if admitErr != nil {
 			inv.err = admitErr
 			trace.event = usageEvent{Tool: name}
-			appendAgentReceipt(cfg, profile.Name, agentReceipt{At: agentNow(), Tool: name, Action: "refused", Query: agentQueryOf(args), Error: admitErr.Error()})
+			if err := appendAgentReceipt(cfg, profile.Name, agentReceipt{At: agentNow(), Tool: name, Action: "refused", Query: agentQueryOf(args), Error: admitErr.Error()}); err != nil {
+				inv.err = errors.Join(admitErr, fmt.Errorf("agent receipt not written: %w", err))
+			}
 			return inv
 		}
 		args = shaped
@@ -108,7 +112,18 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 		if inv.err != nil {
 			receipt.Error = inv.err.Error()
 		}
-		appendAgentReceipt(cfg, profile.Name, receipt)
+		if err := appendAgentReceipt(cfg, profile.Name, receipt); err != nil {
+			if receipt.Action == "read" {
+				// No record of the read, no rows: the owner must be able to
+				// account for everything a profile was handed.
+				inv.value = nil
+				inv.err = fmt.Errorf("agent profile %q: the read receipt could not be written, so no rows are returned: %w", profile.Name, err)
+			} else {
+				// The write or proposal already happened. Failing the call now
+				// would invite a retry and a duplicate, so report it instead.
+				fmt.Fprintf(os.Stderr, "mora: agent %q %s receipt not written: %v\n", profile.Name, receipt.Action, err)
+			}
+		}
 	}
 	if trace.event.Tool == "" {
 		// Some handlers (including mutations) have no tool-specific structural

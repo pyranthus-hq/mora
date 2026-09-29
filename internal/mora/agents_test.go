@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -124,6 +126,31 @@ func TestAgentFilterHidesPositionsAndCountsOfHiddenRows(t *testing.T) {
 	}
 }
 
+// TestAgentReadFailsClosedWithoutReceipt pins the accountability rule: when the
+// receipt line cannot be written, a read returns no rows, while a proposal that
+// already happened still reports success so the agent does not retry it.
+func TestAgentReadFailsClosedWithoutReceipt(t *testing.T) {
+	cfg := seedAgentFixture(t)
+	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A plain file where the receipts directory belongs makes every append fail.
+	if err := os.WriteFile(filepath.Join(cfg.StateDir, "agents"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := withAgentProfile(testCtx(t), museProfile())
+	got, err := callMCPTool(ctx, "search_memory", map[string]any{"query": "widgetrun"})
+	if err == nil || !strings.Contains(err.Error(), "read receipt could not be written") {
+		t.Fatalf("search without a receipt = %v, %v; want a refusal", got, err)
+	}
+	if strings.Contains(mustJSON(t, got), "mem_granted") {
+		t.Fatalf("rows returned without a receipt: %s", mustJSON(t, got))
+	}
+	if _, err := callMCPTool(ctx, "write_memory", map[string]any{"title": "t", "text": "x"}); err != nil {
+		t.Fatalf("proposal after a receipt failure: %v", err)
+	}
+}
+
 func TestMCPServeHTTPRefusesToStartWithoutProfiles(t *testing.T) {
 	coreBIngestInitCfg(t)
 	var out bytes.Buffer
@@ -231,7 +258,7 @@ func TestAgentsCLIStoresOnlyTokenHashAndRevokes(t *testing.T) {
 	if strings.Contains(string(raw), token) {
 		t.Fatal("agents.json stores the plaintext token")
 	}
-	if info, _ := os.Stat(agentsStorePath(cfg)); info.Mode().Perm() != 0o600 {
+	if info, _ := os.Stat(agentsStorePath(cfg)); runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("agents.json mode = %v, want 0600", info.Mode().Perm())
 	}
 	store, _ := loadAgentsStore(cfg)

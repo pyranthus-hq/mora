@@ -457,21 +457,24 @@ type agentReceipt struct {
 	Error      string        `json:"error,omitempty"`
 }
 
-func appendAgentReceipt(cfg Config, profile string, r agentReceipt) {
+// appendAgentReceipt adds one line to the profile's receipt log. It reports
+// every failure, including a failed close, because a lost line is a read the
+// owner can no longer account for.
+func appendAgentReceipt(cfg Config, profile string, r agentReceipt) error {
 	path := agentReceiptsPath(cfg, profile)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return
+		return err
 	}
 	b, err := json.Marshal(r)
 	if err != nil {
-		return
+		return err
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
-		return
+		return err
 	}
-	defer f.Close()
-	_, _ = f.Write(append(b, '\n'))
+	_, writeErr := f.Write(append(b, '\n'))
+	return errors.Join(writeErr, f.Close())
 }
 
 func truncateRunes(s string, n int) string {
