@@ -333,6 +333,12 @@ mora config mcp-write-policy readonly
 
 Review proposals with `mora mcp proposals list`, `approve`, and `reject`.
 
+To give one agent its own limits, use an agent profile: the scopes it can read,
+whether it can see connector evidence, and its own write policy.
+`mora mcp serve --profile <name>` applies a profile to a local agent, and
+`mora mcp serve-http` serves cloud agents through a tunnel that you run. See
+[Agent profiles](docs/guide.md#agent-profiles).
+
 ## Durable loops
 
 Long-running automation can record a lease and a result. This prevents two

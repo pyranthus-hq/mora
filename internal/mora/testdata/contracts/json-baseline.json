@@ -16,6 +16,34 @@
     "status": "static_only"
   },
   {
+    "path": "agents",
+    "status": "empty"
+  },
+  {
+    "path": "agents add",
+    "status": "flag_error"
+  },
+  {
+    "path": "agents list",
+    "status": "parses"
+  },
+  {
+    "path": "agents log",
+    "status": "empty"
+  },
+  {
+    "path": "agents revoke",
+    "status": "empty"
+  },
+  {
+    "path": "agents rotate",
+    "status": "empty"
+  },
+  {
+    "path": "agents update",
+    "status": "flag_error"
+  },
+  {
     "path": "backup",
     "status": "parses"
   },
@@ -282,6 +310,10 @@
   {
     "path": "mcp serve",
     "status": "static_only"
+  },
+  {
+    "path": "mcp serve-http",
+    "status": "empty"
   },
   {
     "path": "merge",
