@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -337,8 +338,8 @@ func TestRunnerReceiptNotEfficacyClaim(t *testing.T) {
 	if !strings.Contains(sr.Notes, "not a historical efficacy") {
 		t.Fatalf("notes=%q", sr.Notes)
 	}
-	if len(sr.UnresolvedLimits) == 0 {
-		t.Fatal("expected named isolation limits")
+	if !slices.Contains(sr.UnresolvedLimits, "filesystem writes outside the disposable workspace root are not test-verified") {
+		t.Fatalf("session receipt missing filesystem isolation limit: %v", sr.UnresolvedLimits)
 	}
 }
 
@@ -347,12 +348,14 @@ func TestAdmitPrivatePackageWithoutPublicCopy(t *testing.T) {
 	c := SynthFailureCase()
 
 	priv := t.TempDir()
+	// Runtime-specific content avoids matching this test source in the public tree.
+	sentinel := "private-package-payload-" + priv
 	b, _ := json.MarshalIndent(c, "", "  ")
 	if err := os.WriteFile(filepath.Join(priv, "case.json"), b, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// Extra private file that must not appear in public fixture trees.
-	if err := os.WriteFile(filepath.Join(priv, "private_note.txt"), []byte("private-package-payload-sentinel-543"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(priv, "private_note.txt"), []byte(sentinel), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -371,34 +374,44 @@ func TestAdmitPrivatePackageWithoutPublicCopy(t *testing.T) {
 	// including artifacts and preserved reset inputs, for copies outside staging.
 	for name, want := range map[string]string{
 		"case.json":        string(b),
-		"private_note.txt": "private-package-payload-sentinel-543",
+		"private_note.txt": sentinel,
 	} {
 		got, err := os.ReadFile(filepath.Join(adm.StagedDir, name))
 		if err != nil || string(got) != want {
 			t.Fatalf("staged %s differs from source: %v", name, err)
 		}
 	}
-	err = filepath.WalkDir(filepath.Dir(r.ws.Layout.Root), func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if path == r.ws.Layout.PrivateAdm {
-			return filepath.SkipDir
-		}
-		if d.IsDir() {
+	// Resolve the module root explicitly, then inspect public trees as well as
+	// disposable output. This is bounded leak coverage, not a filesystem sandbox.
+	repoRoot := testRepoRoot(t)
+	for _, root := range []string{
+		filepath.Dir(r.ws.Layout.Root),
+		filepath.Join(repoRoot, "docs", "experiments", "memory-replay", "runner"),
+		filepath.Join(repoRoot, "internal", "mora", "pilotreplay"),
+	} {
+		err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if path == r.ws.Layout.PrivateAdm {
+				return filepath.SkipDir
+			}
+			if d.IsDir() {
+				return nil
+			}
+			body, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if strings.Contains(string(body), sentinel) || strings.Contains(string(body), string(b)) {
+				t.Errorf("private payload copied outside PrivateAdm: %s", path)
+			}
 			return nil
-		}
-		body, err := os.ReadFile(path)
+		})
 		if err != nil {
-			return err
+			t.Fatal(err)
 		}
-		if strings.Contains(string(body), "private-package-payload-sentinel-543") || strings.Contains(string(body), string(b)) {
-			t.Errorf("private payload copied outside PrivateAdm: %s", path)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
+
 	}
 
 	// Reject admitting from public fixture trees.
@@ -414,6 +427,26 @@ func TestAdmitPrivatePackageWithoutPublicCopy(t *testing.T) {
 	_, err = New(Options{ParentDir: "/Users/someone/Library/Application Support/mora/vault"})
 	if err == nil {
 		t.Fatal("expected reject production-looking parent")
+	}
+}
+
+func testRepoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if info, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil && !info.IsDir() {
+			return dir
+		} else if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("cannot resolve repository root: go.mod not found")
+		}
+		dir = parent
 	}
 }
 
