@@ -15,6 +15,11 @@ import (
 func TestAuthoredEventCLIAndMCPOptIn(t *testing.T) {
 	cfg := seedRecencyVault(t)
 	run(t, "write", "--title", "authored probe", "--text", "synthetic probe")
+	// Compare flag-off receipts for the same window, including its precise bounds.
+	now := time.Now()
+	oldClock := briefClock
+	briefClock = func() time.Time { return now }
+	t.Cleanup(func() { briefClock = oldClock })
 	decode := func(raw string) map[string]any {
 		t.Helper()
 		var out map[string]any
