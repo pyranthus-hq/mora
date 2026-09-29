@@ -24,15 +24,15 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # pinned performance reference must be available
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
       - name: 10K, 100K, and 1M ingest regression budgets
-        env:
-          MORA_ENFORCE_INGEST_BENCH: "1"
-        run: go test ./internal/memory -run 'TestIngestReferenceBenchmarkRegression|TestIncremental1000RecordsUnder500MB|TestIngestNoOpUnderTwoSeconds' -count=1
+        run: bash scripts/regress/ingest-performance.sh
 
   app-bundle-contract:
     # Apple plist/archive tools are part of the contract, but signing, notary,
