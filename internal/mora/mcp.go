@@ -523,8 +523,8 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 }
 
 func mcpListMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
-	start := time.Now()
 	now := briefClock()
+	start := time.Now()
 	hours, err := parseActivityHours(args, true, now)
 	if err != nil {
 		return nil, err
@@ -589,6 +589,7 @@ func mcpListMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 		out["source"] = filter.Source
 		out["event_since_hours"] = hours
 		out["order"] = "source-event"
+		out["window_from"], out["window_to"] = activityWindowBounds(now, hours)
 		if _, alias := args["since_hours"]; alias {
 			out["since_hours"] = hours
 		}

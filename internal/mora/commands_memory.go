@@ -198,6 +198,7 @@ func newMemoriesPayload(items []Memory) memoriesPayload {
 	return memoriesPayload{Memories: out}
 }
 func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	now := briefClock()
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	scope := fs.String("scope", "", "scope")
@@ -224,7 +225,6 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if *source != "" {
 		filterArgs["source"] = *source
 	}
-	now := briefClock()
 	filter, err := parseSearchFilters(filterArgs, now)
 	if err != nil {
 		return err
@@ -247,13 +247,16 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if *jsonOut {
 		items = withProvenance(items)
 		if *eventHours > 0 {
+			from, to := activityWindowBounds(now, *eventHours)
 			return emitReceipt(stdout, "mora.list", 1, struct {
 				Memories              []Memory `json:"memories"`
 				Source                string   `json:"source"`
 				EventSinceHours       int      `json:"event_since_hours"`
 				IncludeAuthoredWrites bool     `json:"include_authored_writes,omitempty"`
 				Order                 string   `json:"order"`
-			}{items, *source, *eventHours, *includeAuthored, "source-event"})
+				WindowFrom            string   `json:"window_from"`
+				WindowTo              string   `json:"window_to"`
+			}{items, *source, *eventHours, *includeAuthored, "source-event", from, to})
 		}
 		if *source != "" {
 			return emitReceipt(stdout, "mora.list", 1, struct {

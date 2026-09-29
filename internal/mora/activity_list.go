@@ -54,6 +54,17 @@ func boundedActivityInt(value any, maximum int, name string) (int, error) {
 	return int(number), nil
 }
 
+// activityWindowBounds restates the closed interval selectActivityEvents
+// applied, derived from the same clock read the selection used so a receipt
+// never measures its rows against a second read. RFC3339Nano keeps the
+// sub-second precision rows already carry: the upper bound is inclusive, so a
+// row's event_at can equal it exactly, and a bound truncated to the second
+// would sort that row outside the window it was selected in.
+func activityWindowBounds(now time.Time, hours int) (from, to string) {
+	return now.Add(-time.Duration(hours) * time.Hour).UTC().Format(time.RFC3339Nano),
+		now.UTC().Format(time.RFC3339Nano)
+}
+
 func selectActivityEvents(items []Memory, now time.Time, hours, limit int, options ...activity.Options) []Memory {
 	var opts activity.Options
 	if len(options) > 0 {
