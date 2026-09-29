@@ -73,6 +73,7 @@ func (r *Runner) RunTrial(ctx context.Context, req TrialRequest) (AttemptReceipt
 	}
 
 	attempt := contract.NewAttemptDocument()
+	attempt.StartedAt = time.Now().UTC().Format(time.RFC3339)
 	attempt.AttemptID = "attempt-" + sanitizeID(req.Case.CaseID) + "-" + sanitizeID(req.Condition.ConditionID) + "-" + itoa(req.RepIndex)
 	attempt.ConditionID = req.Condition.ConditionID
 	attempt.CaseID = req.Case.CaseID
@@ -106,6 +107,7 @@ func (r *Runner) RunTrial(ctx context.Context, req TrialRequest) (AttemptReceipt
 		attempt.ErrorCode = decision.ErrorCode
 		attempt.ResetObserved = false
 		attempt.IsolationHeld = true
+		attempt.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 		receipt.Attempt = attempt
 		receipt.ProviderStarted = false
 		receipt.RunnerNotes = "terminated before provider execution"
@@ -122,6 +124,7 @@ func (r *Runner) RunTrial(ctx context.Context, req TrialRequest) (AttemptReceipt
 			attempt.ProviderInvoked = false
 			attempt.ResetObserved = false
 			attempt.IsolationHeld = false
+			attempt.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 			receipt.Attempt = attempt
 			receipt.Isolation.ResetObserved = false
 			receipt.Isolation.InitialHashesMatched = false
@@ -146,6 +149,7 @@ func (r *Runner) RunTrial(ctx context.Context, req TrialRequest) (AttemptReceipt
 		attempt.ErrorCode = CodeAdmitReject
 		attempt.ProviderInvoked = false
 		attempt.IsolationHeld = true
+		attempt.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 		receipt.Attempt = attempt
 		_ = r.writeReceipt(receipt)
 		return receipt, err
@@ -158,6 +162,7 @@ func (r *Runner) RunTrial(ctx context.Context, req TrialRequest) (AttemptReceipt
 		attempt.ErrorCode = codeOf(err)
 		attempt.ProviderInvoked = false
 		attempt.IsolationHeld = true
+		attempt.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 		receipt.Attempt = attempt
 		receipt.Exposure = exp
 		_ = r.writeReceipt(receipt)
@@ -184,6 +189,7 @@ func (r *Runner) RunTrial(ctx context.Context, req TrialRequest) (AttemptReceipt
 		attempt.ErrorCode = CodeOracleLeak
 		attempt.ProviderInvoked = false
 		attempt.IsolationHeld = false
+		attempt.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 		receipt.Attempt = attempt
 		receipt.Isolation.OracleLeakDetected = true
 		receipt.Isolation.OracleLeakPaths = paths
@@ -192,7 +198,6 @@ func (r *Runner) RunTrial(ctx context.Context, req TrialRequest) (AttemptReceipt
 	}
 
 	started := time.Now().UTC()
-	attempt.StartedAt = started.Format(time.RFC3339)
 	attempt.Status = contract.AttemptRunning
 
 	timeout := TimeoutFor(req.Gate, req.TimeoutSeconds)
