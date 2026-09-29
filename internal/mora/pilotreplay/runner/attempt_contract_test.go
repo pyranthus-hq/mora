@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -40,6 +41,13 @@ func TestTrialReceiptContract(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		{"oracle_scan_error", contract.AttemptFailed, CodeWorkspace, func(t *testing.T, r *Runner, req *TrialRequest) {
+			req.SkipReset = true
+			req.Case.RunnerPackage.ContenderVisiblePaths = []string{}
+			if err := os.RemoveAll(r.ws.Layout.Contender); err != nil {
+				t.Fatal(err)
+			}
+		}},
 		{"normal", contract.AttemptFailed, "task_failure", nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -59,6 +67,21 @@ func TestTrialReceiptContract(t *testing.T) {
 			} else if err == nil {
 				t.Fatal("expected refusal error")
 			}
+			if tt.name == "inject_failure" || tt.name == "admit_reject" || tt.name == "oracle_scan_error" {
+				wantField := "case"
+				if tt.name == "inject_failure" {
+					wantField = "condition.case_id"
+				} else if tt.name == "oracle_scan_error" {
+					wantField = "walk"
+				}
+				var runErr *Error
+				if !errors.As(err, &runErr) || runErr.Field != wantField {
+					t.Fatalf("error = %v, want field %q", err, wantField)
+				}
+			}
+			if err := rec.Attempt.Validate(); err != nil {
+				t.Errorf("returned attempt contract: %v", err)
+			}
 			if rec.Attempt.Status != tt.status || rec.Attempt.ErrorCode != tt.code {
 				t.Fatalf("status/code = %s/%s, want %s/%s (err=%v)", rec.Attempt.Status, rec.Attempt.ErrorCode, tt.status, tt.code, err)
 			}
@@ -77,6 +100,9 @@ func TestTrialReceiptContract(t *testing.T) {
 				}
 				if rec.Attempt.Status != tt.status || rec.Attempt.ErrorCode != tt.code {
 					t.Errorf("saved status/code changed: %+v", rec.Attempt)
+				}
+				if tt.name == "oracle_scan_error" && (rec.Attempt.IsolationHeld || rec.Attempt.ProviderInvoked || rec.ProviderStarted || rec.Isolation.OracleLeakDetected) {
+					t.Errorf("scan failure must stop before execution without claiming isolation or a detected leak: %+v", rec)
 				}
 				start, startErr := time.Parse(time.RFC3339, rec.Attempt.StartedAt)
 				finish, finishErr := time.Parse(time.RFC3339, rec.Attempt.FinishedAt)

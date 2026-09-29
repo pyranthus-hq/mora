@@ -183,6 +183,13 @@ func (r *Runner) RunTrial(ctx context.Context, req TrialRequest) (AttemptReceipt
 
 	// Isolation pre-check: no oracle in contender before run.
 	if leak, paths, lerr := r.ws.ContenderHasOracleMaterial(); lerr != nil {
+		attempt.Status = contract.AttemptFailed
+		attempt.ErrorCode = codeOf(lerr)
+		attempt.ProviderInvoked = false
+		attempt.IsolationHeld = false
+		attempt.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		receipt.Attempt = attempt
+		_ = r.writeReceipt(receipt)
 		return receipt, lerr
 	} else if leak {
 		attempt.Status = contract.AttemptFailed
