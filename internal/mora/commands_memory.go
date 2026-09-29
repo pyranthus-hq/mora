@@ -242,12 +242,15 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if *jsonOut {
 		items = withProvenance(items)
 		if *eventHours > 0 {
+			from, to := activityWindowBounds(now, *eventHours)
 			return emitReceipt(stdout, "mora.list", 1, struct {
 				Memories        []Memory `json:"memories"`
 				Source          string   `json:"source"`
 				EventSinceHours int      `json:"event_since_hours"`
 				Order           string   `json:"order"`
-			}{items, *source, *eventHours, "source-event"})
+				WindowFrom      string   `json:"window_from"`
+				WindowTo        string   `json:"window_to"`
+			}{items, *source, *eventHours, "source-event", from, to})
 		}
 		if *source != "" {
 			return emitReceipt(stdout, "mora.list", 1, struct {
