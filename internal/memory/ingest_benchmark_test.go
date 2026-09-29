@@ -79,16 +79,17 @@ func TestIngestReferenceBenchmarkRegression(t *testing.T) {
 	for _, corpus := range []string{"10K", "100K", "1M"} {
 		t.Run(corpus, func(t *testing.T) {
 			var ratios []float64
-			for i := 0; i < 5; i++ {
+			for i := 0; i < 6; i++ {
 				// Separate processes give both binaries the same GC startup state.
-				// Alternate order so warming/load drift does not favor one side.
+				// Six pairs give each binary three first and three second runs.
+				// Timed samples keep measured work comparable across corpus sizes.
 				binaries := []string{reference, candidate}
 				if i%2 != 0 {
 					binaries[0], binaries[1] = binaries[1], binaries[0]
 				}
 				var samples [2]float64
 				for j, binary := range binaries {
-					cmd := exec.Command(binary, "-test.run=^$", "-test.bench=^BenchmarkIngestCorpus"+corpus+"$", "-test.benchtime=3x")
+					cmd := exec.Command(binary, "-test.run=^$", "-test.bench=^BenchmarkIngestCorpus"+corpus+"$", "-test.benchtime=3s")
 					out, err := cmd.CombinedOutput()
 					if err != nil {
 						t.Fatalf("%s benchmark: %v\n%s", binary, err, out)
@@ -106,7 +107,8 @@ func TestIngestReferenceBenchmarkRegression(t *testing.T) {
 				ratios = append(ratios, ratio)
 			}
 			sort.Float64s(ratios)
-			median := ratios[len(ratios)/2]
+			middle := len(ratios) / 2
+			median := (ratios[middle-1] + ratios[middle]) / 2
 			t.Logf("median candidate/reference ratio: %.3f (limit 1.200)", median)
 			if median > 1.2 {
 				t.Errorf("%s-memory median candidate/reference ratio %.3f exceeds 1.200 (20%% regression)", corpus, median)
