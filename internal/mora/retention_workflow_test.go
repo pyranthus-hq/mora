@@ -3,6 +3,7 @@ package mora
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"os"
 	"testing"
 	"time"
@@ -205,7 +206,19 @@ func TestRecoveryManifestEncryptionRoundTripAndTamperFails(t *testing.T) {
 	if err != nil || string(got.Entries[0].Data) != "secret memory" {
 		t.Fatalf("round trip=%+v err=%v", got, err)
 	}
-	encrypted.Ciphertext = encrypted.Ciphertext[:len(encrypted.Ciphertext)-2] + "AA"
+	before := encrypted.Ciphertext
+	ciphertext, err := base64.StdEncoding.DecodeString(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ciphertext) == 0 {
+		t.Fatal("empty ciphertext")
+	}
+	ciphertext[len(ciphertext)-1] ^= 1
+	encrypted.Ciphertext = base64.StdEncoding.EncodeToString(ciphertext)
+	if encrypted.Ciphertext == before {
+		t.Fatal("tamper did not modify the ciphertext")
+	}
 	if _, err := decryptRecoveryManifest(cfg, encrypted); err == nil {
 		t.Fatal("tampered ciphertext decrypted")
 	}
