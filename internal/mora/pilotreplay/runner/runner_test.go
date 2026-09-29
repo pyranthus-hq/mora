@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,9 +158,6 @@ func TestAttemptAndExposureReceipts(t *testing.T) {
 	}
 
 	// Distinct I/O across the three roles.
-	if receipts[0].ExitClass == receipts[1].ExitClass && receipts[1].ExitClass == receipts[2].ExitClass {
-		// failure → task_failure; controls → ok — so first should differ
-	}
 	if receipts[0].ExitClass != "task_failure" {
 		t.Fatalf("failure case exit_class=%s want task_failure", receipts[0].ExitClass)
 	}
@@ -354,7 +352,7 @@ func TestAdmitPrivatePackageWithoutPublicCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Extra private file that must not appear in public fixture trees.
-	if err := os.WriteFile(filepath.Join(priv, "private_note.txt"), []byte("private"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(priv, "private_note.txt"), []byte("private-package-payload-sentinel-543"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -365,13 +363,42 @@ func TestAdmitPrivatePackageWithoutPublicCopy(t *testing.T) {
 	if adm.StagedDir == "" {
 		t.Fatal("expected staged dir under PrivateAdm")
 	}
-	if !strings.HasPrefix(adm.StagedDir, r.ws.Layout.PrivateAdm) {
-		t.Fatalf("staged=%s want under %s", adm.StagedDir, r.ws.Layout.PrivateAdm)
+	rel, err := filepath.Rel(r.ws.Layout.PrivateAdm, adm.StagedDir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		t.Fatalf("staged=%s want under %s (rel=%q, err=%v)", adm.StagedDir, r.ws.Layout.PrivateAdm, rel, err)
 	}
-	// Must not have copied into docs or cases package paths.
-	publicProbe := filepath.Join("docs", "experiments", "memory-replay", "runner", "private_note.txt")
-	if _, err := os.Stat(filepath.Join("../../../..", publicProbe)); err == nil {
-		// best-effort; primary check is staging location
+	// Confirm both payloads were staged intact, then inspect all runner output,
+	// including artifacts and preserved reset inputs, for copies outside staging.
+	for name, want := range map[string]string{
+		"case.json":        string(b),
+		"private_note.txt": "private-package-payload-sentinel-543",
+	} {
+		got, err := os.ReadFile(filepath.Join(adm.StagedDir, name))
+		if err != nil || string(got) != want {
+			t.Fatalf("staged %s differs from source: %v", name, err)
+		}
+	}
+	err = filepath.WalkDir(filepath.Dir(r.ws.Layout.Root), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == r.ws.Layout.PrivateAdm {
+			return filepath.SkipDir
+		}
+		if d.IsDir() {
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(body), "private-package-payload-sentinel-543") || strings.Contains(string(body), string(b)) {
+			t.Errorf("private payload copied outside PrivateAdm: %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	// Reject admitting from public fixture trees.
@@ -399,6 +426,9 @@ func TestProductionPathGuard(t *testing.T) {
 		`C:\Users\x\.mora`,
 		`C:\Users\x\.mora\vault`,
 		`C:/Users/x/.mora/`,
+		".mora/vault",
+		".mora",
+		`.mora\vault`,
 		"/home/x/.mora/",
 		"/home/x/.mora",
 		`C:\Users\x\mora\vault`,
@@ -469,12 +499,12 @@ func TestRejectedPathAccess(t *testing.T) {
 	c.RunnerPackage.ContenderVisiblePaths = []string{"../escape.txt"}
 	_, err := r.AdmitCasePackage(AdmitOptions{Case: &c, AllowSynthetic: true})
 	if err != nil {
-		// contract may or may not reject; inject must
+		t.Fatalf("admit case before injection: %v", err)
 	}
 	cond := ConditionsFor(c.CaseID)[0]
 	_, err = r.InjectCondition(c, cond)
-	if err == nil {
-		t.Fatal("expected path rejection")
+	if e, ok := err.(*Error); !ok || e.Code != CodePathRejected {
+		t.Fatalf("expected rejected_path_access, got %v", err)
 	}
 }
 
