@@ -114,10 +114,10 @@ func PrepareWorkspace(parentDir string) (*Workspace, error) {
 
 func looksLikeProductionPath(p string) bool {
 	// Treat both separator styles conservatively on every host. ToSlash alone
-	// does not normalize Windows input on Unix. Append a boundary so a parent
+	// does not normalize Windows input on Unix. Add boundaries so a relative path or parent
 	// ending in .mora is rejected even after Clean removes its trailing slash.
 	clean := filepath.Clean(strings.ReplaceAll(p, `\`, "/"))
-	lower := strings.ToLower(filepath.ToSlash(clean)) + "/"
+	lower := "/" + strings.ToLower(filepath.ToSlash(clean)) + "/"
 	denySubstrings := []string{
 		"/library/application support/mora",
 		"/.mora/",
