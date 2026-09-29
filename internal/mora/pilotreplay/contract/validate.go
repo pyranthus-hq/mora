@@ -5,7 +5,7 @@ import "fmt"
 // Validate checks CaseDocument invariants, including runner/oracle separation
 // and memory-snapshot vs delivered-context separation.
 func (c *CaseDocument) Validate() error {
-	if err := c.Header.validate(SchemaCase); err != nil {
+	if err := c.validate(SchemaCase); err != nil {
 		return err
 	}
 	if err := validateID("case_id", c.CaseID); err != nil {
@@ -337,7 +337,7 @@ func (c *ControlSpec) Validate(field, role string) error {
 
 // Validate checks ConditionDocument.
 func (c *ConditionDocument) Validate() error {
-	if err := c.Header.validate(SchemaCondition); err != nil {
+	if err := c.validate(SchemaCondition); err != nil {
 		return err
 	}
 	if err := validateID("condition_id", c.ConditionID); err != nil {
@@ -372,7 +372,7 @@ func (c *ConditionDocument) Validate() error {
 
 // Validate checks AttemptDocument. Status vocabulary distinguishes terminals.
 func (a *AttemptDocument) Validate() error {
-	if err := a.Header.validate(SchemaAttempt); err != nil {
+	if err := a.validate(SchemaAttempt); err != nil {
 		return err
 	}
 	if err := validateID("attempt_id", a.AttemptID); err != nil {
@@ -416,9 +416,9 @@ func (a *AttemptDocument) Validate() error {
 		if !a.ProviderInvoked && a.SkipReason != "" {
 			return errf(CodeInvalidValue, "status", "succeeded attempts are not skips")
 		}
-	case AttemptTimedOut:
+	case AttemptFailed, AttemptTimedOut:
 		if a.ErrorCode == "" {
-			// allow empty but recommend; soft — require finished_at
+			return errf(CodeMissingField, "error_code", "required for failed/timed_out attempts")
 		}
 	}
 	if a.Status == AttemptSucceeded && !a.ResetObserved {
@@ -432,7 +432,7 @@ func (a *AttemptDocument) Validate() error {
 
 // Validate checks OutcomeDocument. Successful outcomes are distinct from skip/timeout/fail.
 func (o *OutcomeDocument) Validate() error {
-	if err := o.Header.validate(SchemaOutcome); err != nil {
+	if err := o.validate(SchemaOutcome); err != nil {
 		return err
 	}
 	if err := validateID("outcome_id", o.OutcomeID); err != nil {
@@ -547,7 +547,7 @@ func (c *CostAccounting) Validate(field string) error {
 // Validate checks RunGate. Rejects absent permission or spend ceiling before
 // any provider invocation is authorized.
 func (g *RunGate) Validate() error {
-	if err := g.Header.validate(SchemaRunGate); err != nil {
+	if err := g.validate(SchemaRunGate); err != nil {
 		return err
 	}
 	if err := validateID("gate_id", g.GateID); err != nil {
@@ -622,7 +622,7 @@ func (r *AccessRow) Validate(field string) error {
 
 // Validate checks ReportDocument.
 func (r *ReportDocument) Validate() error {
-	if err := r.Header.validate(SchemaReport); err != nil {
+	if err := r.validate(SchemaReport); err != nil {
 		return err
 	}
 	if err := validateID("report_id", r.ReportID); err != nil {
@@ -659,7 +659,7 @@ func (r *ReportDocument) Validate() error {
 
 // Validate checks ContractReceipt.
 func (r *ContractReceipt) Validate() error {
-	if err := r.Header.validate(SchemaReceipt); err != nil {
+	if err := r.validate(SchemaReceipt); err != nil {
 		return err
 	}
 	if err := validateID("receipt_id", r.ReceiptID); err != nil {

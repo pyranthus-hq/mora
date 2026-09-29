@@ -249,7 +249,7 @@ func validateCommitSHA(field, sha string) error {
 
 func isHex(s string) bool {
 	for _, c := range s {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 	}
@@ -267,7 +267,7 @@ func validateHash(field, h string, required bool) error {
 		return errf(CodeInvalidValue, field, "want %d hex chars, got %d", MaxHashHexBytes, len(h))
 	}
 	for _, c := range h {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return errf(CodeInvalidValue, field, "hash must be lowercase hex")
 		}
 	}

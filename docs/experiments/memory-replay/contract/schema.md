@@ -62,6 +62,7 @@ Statuses: `pending`, `running`, `succeeded`, `failed`, `timed_out`, `skipped`,
 
 - `skipped` / `unavailable` require `skip_reason` and **must not** set
   `provider_invoked=true`.  
+- `failed` / `timed_out` require `error_code`.
 - `succeeded` requires `reset_observed` and `isolation_held`.  
 - Do not treat skips/timeouts/failures as successful outcomes.
 

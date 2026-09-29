@@ -513,3 +513,18 @@ func TestImportsAreStdlibOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestFailedAndTimedOutAttemptsRequireErrorCode(t *testing.T) {
+	for _, attempt := range []AttemptDocument{ExampleFailedAttempt(), ExampleTimedOutAttempt()} {
+		t.Run(attempt.Status, func(t *testing.T) {
+			if err := attempt.Validate(); err != nil {
+				t.Fatalf("valid attempt rejected: %v", err)
+			}
+			attempt.ErrorCode = ""
+			err := attempt.Validate()
+			if err == nil || !strings.Contains(err.Error(), "error_code") || !strings.Contains(err.Error(), CodeMissingField) {
+				t.Fatalf("missing error code: got %v, want missing-field error for error_code", err)
+			}
+		})
+	}
+}
