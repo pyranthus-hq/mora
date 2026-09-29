@@ -860,3 +860,60 @@ func proposalIDOf(v any) string {
 	id, _ := p["id"].(string)
 	return id
 }
+
+// Remote defaults for agent profiles (#539): hide raw sources, propose writes,
+// and deny deletion. A profile that loosens any of these must be visible in
+// Doctor so an operator can see the explicit relaxation without reading the
+// store by hand.
+func (p agentProfile) remoteDefaultRelaxations() []string {
+	var out []string
+	if p.RawSources {
+		out = append(out, "raw_sources=on")
+	}
+	if p.Write == mcpWritePolicyOpen {
+		out = append(out, "write=open")
+	}
+	if p.allowsTool("delete_memory") {
+		out = append(out, "delete_memory=allowed")
+	}
+	return out
+}
+
+// agentRemoteRelaxation is one active profile that loosens a remote default.
+// Doctor publishes these in --json and prints them in the human report.
+type agentRemoteRelaxation struct {
+	Name         string   `json:"name"`
+	RawSources   bool     `json:"raw_sources"`
+	Write        string   `json:"write"`
+	DeleteMemory bool     `json:"delete_memory"`
+	Relaxations  []string `json:"relaxations"`
+}
+
+// collectAgentRemoteRelaxations returns active profiles that loosen remote
+// defaults, sorted by name. A missing store is an empty list (no profiles
+// yet). A corrupt store is returned as an error so Doctor can surface it.
+func collectAgentRemoteRelaxations(cfg Config) ([]agentRemoteRelaxation, error) {
+	store, err := loadAgentsStore(cfg)
+	if err != nil {
+		return nil, err
+	}
+	out := []agentRemoteRelaxation{}
+	for _, p := range store.Profiles {
+		if p.RevokedAt != "" {
+			continue
+		}
+		relax := p.remoteDefaultRelaxations()
+		if len(relax) == 0 {
+			continue
+		}
+		out = append(out, agentRemoteRelaxation{
+			Name:         p.Name,
+			RawSources:   p.RawSources,
+			Write:        p.Write,
+			DeleteMemory: p.allowsTool("delete_memory"),
+			Relaxations:  relax,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}

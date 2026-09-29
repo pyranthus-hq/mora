@@ -336,7 +336,9 @@ Review proposals with `mora mcp proposals list`, `approve`, and `reject`.
 To give one agent its own limits, use an agent profile: the scopes it can read,
 whether it can see connector evidence, and its own write policy.
 `mora mcp serve --profile <name>` applies a profile to a local agent, and
-`mora mcp serve-http` serves cloud agents through a tunnel that you run. See
+`mora mcp serve-http` serves cloud agents through a tunnel that you run.
+`mora remote expose` prints the tunnel commands and executes none of them; Doctor
+names any profile that loosens the remote defaults. See
 [Agent profiles](docs/guide.md#agent-profiles).
 
 ## Durable loops

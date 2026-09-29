@@ -163,6 +163,14 @@
     {
       "json_contract": "exempt",
       "kind": "subcommand",
+      "path": "remote expose",
+      "payload": "",
+      "platform": "all",
+      "reason": "print-only tunnel helper; its mora.remote.expose receipt is pinned by TestRemoteExposePrintsTunnelCommands and the no-exec property by TestRemoteExposeDoesNotRunTunnels"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
       "path": "schedule install",
       "payload": "",
       "platform": "native-seam",
@@ -319,6 +327,14 @@
       "payload": "",
       "platform": "all",
       "reason": "removed in #137; tombstone row retained so the dispatch drift test still pins the token"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "remote",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "json_contract": "exempt",
