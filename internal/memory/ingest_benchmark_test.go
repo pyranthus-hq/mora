@@ -3,9 +3,11 @@ package memory
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -66,41 +68,83 @@ func TestIngestReferenceBenchmarkRegression(t *testing.T) {
 	if os.Getenv("MORA_ENFORCE_INGEST_BENCH") != "1" {
 		t.Skip("reference benchmark gate is opt-in")
 	}
-	// Median Apple M1 Pro baselines captured 2026-08-24. GitHub's hosted
-	// macos-15-arm64 runner has a separately measured reference profile; mixing
-	// the two would turn machine variance into a false product regression.
-	baselines := []struct {
-		records  int
-		duration time.Duration
-	}{
-		{10_000, 9_272_833 * time.Nanosecond},
-		{100_000, 53_075_959 * time.Nanosecond},
-		{1_000_000, 530_479_750 * time.Nanosecond},
+	reference := os.Getenv("MORA_INGEST_REFERENCE_BINARY")
+	if reference == "" {
+		t.Fatal("same-run reference required: run bash scripts/regress/ingest-performance.sh")
 	}
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		baselines = []struct {
-			records  int
-			duration time.Duration
-		}{
-			{10_000, 11_857_042 * time.Nanosecond},
-			{100_000, 96_326_833 * time.Nanosecond},
-			{1_000_000, 944_189_625 * time.Nanosecond},
-		}
+	candidate, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, baseline := range baselines {
-		var samples []time.Duration
-		for i := 0; i < 3; i++ {
-			started := time.Now()
-			if err := runBenchmarkCorpus(baseline.records); err != nil {
-				t.Fatal(err)
+	for _, corpus := range []string{"10K", "100K", "1M"} {
+		t.Run(corpus, func(t *testing.T) {
+			var ratios []float64
+			for i := 0; i < 6; i++ {
+				// Separate processes give both binaries the same GC startup state.
+				// Six pairs give each binary three first and three second runs.
+				// Timed samples keep measured work comparable across corpus sizes.
+				binaries := []string{reference, candidate}
+				if i%2 != 0 {
+					binaries[0], binaries[1] = binaries[1], binaries[0]
+				}
+				var samples [2]float64
+				for j, binary := range binaries {
+					cmd := exec.Command(binary, "-test.run=^$", "-test.bench=^BenchmarkIngestCorpus"+corpus+"$", "-test.benchtime=3s")
+					out, err := cmd.CombinedOutput()
+					if err != nil {
+						t.Fatalf("%s benchmark: %v\n%s", binary, err, out)
+					}
+					samples[j], err = ingestBenchmarkNS(string(out), "BenchmarkIngestCorpus"+corpus)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if i%2 != 0 {
+					samples[0], samples[1] = samples[1], samples[0]
+				}
+				ratio := samples[1] / samples[0]
+				t.Logf("pair %d: reference %.0f ns/op, candidate %.0f ns/op, ratio %.3f", i+1, samples[0], samples[1], ratio)
+				ratios = append(ratios, ratio)
 			}
-			samples = append(samples, time.Since(started))
+			sort.Float64s(ratios)
+			middle := len(ratios) / 2
+			median := (ratios[middle-1] + ratios[middle]) / 2
+			t.Logf("median candidate/reference ratio: %.3f (limit 1.200)", median)
+			if median > 1.2 {
+				t.Errorf("%s-memory median candidate/reference ratio %.3f exceeds 1.200 (20%% regression)", corpus, median)
+			}
+		})
+	}
+}
+
+// Reject missing/malformed measurements instead of silently passing a broken
+// reference binary or a renamed benchmark. Values come from Go's benchmark runner.
+func ingestBenchmarkNS(output, name string) (float64, error) {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 || strings.Split(fields[0], "-")[0] != name {
+			continue
 		}
-		sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
-		limit := baseline.duration + baseline.duration/5
-		if samples[1] > limit {
-			t.Errorf("%d-memory median %s exceeds baseline %s by more than 20%%", baseline.records, samples[1], baseline.duration)
+		if fields[3] != "ns/op" {
+			break
 		}
+		ns, err := strconv.ParseFloat(fields[2], 64)
+		if err == nil && ns > 0 && ns < float64(time.Hour) {
+			return ns, nil
+		}
+		break
+	}
+	return 0, fmt.Errorf("missing or invalid %s measurement: %s", name, output)
+}
+
+func TestIngestBenchmarkMeasurement(t *testing.T) {
+	for _, output := range []string{"PASS", "BenchmarkOther-2 3 100 ns/op", "BenchmarkIngestCorpus10K-2 3 0 ns/op", "BenchmarkIngestCorpus10K-2 3 NaN ns/op", "BenchmarkIngestCorpus10K-2 3 +Inf ns/op", "BenchmarkIngestCorpus10K-2 3 100 ms/op"} {
+		if _, err := ingestBenchmarkNS(output, "BenchmarkIngestCorpus10K"); err == nil {
+			t.Fatalf("accepted invalid measurement %q", output)
+		}
+	}
+	if ns, err := ingestBenchmarkNS("BenchmarkIngestCorpus10K-2 3 12345 ns/op 10 B/op", "BenchmarkIngestCorpus10K"); err != nil || ns != 12345 {
+		t.Fatalf("measurement = %v, %v", ns, err)
 	}
 }
 
