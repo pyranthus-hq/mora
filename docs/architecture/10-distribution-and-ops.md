@@ -334,6 +334,66 @@ The permission transition is explicit:
   routine app upgrades preserve the grant; the release pipeline alone is not
   evidence that macOS did so.
 
+## Signed-host FDA continuity canary (#167)
+
+Static artifact/contract/docs/canary-script preparation can run without Darwin.
+A real N→N+1 Full Disk Access continuity proof cannot: it needs a consented
+macOS host, baseline protected-source access, and two signed Mora.app releases.
+Adit owns that host session. **Share one session with #294** (Homebrew install /
+update ownership); do not wait on each other's preparation, and do not invent a
+green live result from CI, notarization, or this documentation alone.
+
+Pin public release hashes anytime (Linux OK):
+
+```sh
+scripts/regress/fda-continuity-canary.sh PIN
+# override pair: N_TAG=v0.15.0 N1_TAG=v0.15.1 ARCH=arm64 scripts/regress/fda-continuity-canary.sh PIN
+```
+
+Default candidate pair (includes the #477 relay fix in N+1):
+
+| | Tag | Commit | `checksums-app.txt` |
+|---|---|---|---|
+| N | `v0.15.0` | `33b83e63325223f8928806a9820e0de69b1646d4` | [checksums-app.txt](https://github.com/pyranthus-hq/mora/releases/download/v0.15.0/checksums-app.txt) |
+| N+1 | `v0.15.1` | `094e47d683d5faf049cff09034169a0e1daabf59` | [checksums-app.txt](https://github.com/pyranthus-hq/mora/releases/download/v0.15.1/checksums-app.txt) |
+
+Identify N/N+1 on any host from those manifests (both architectures):
+
+- `mora_<ver>_darwin_amd64_app.zip` / `mora_<ver>_darwin_arm64_app.zip` sha256 lines
+- Annotated tag → peeled commit via `gh api repos/pyranthus-hq/mora/git/ref/tags/<tag>`
+- On Darwin before trust: `codesign --verify --strict`, designated requirement
+  (`identifier "com.pyranthus.mora"`, team `VS8M5VJBZ5`, Apple anchor), hardened
+  runtime, secure timestamp, notarized requirement, `stapler validate`
+
+Exact host steps (also printed by the PIN script) live in
+`scripts/regress/fda-continuity-canary.sh`. Evidence boundaries:
+
+1. **Pre-upgrade** designated requirement + successful interactive iMessage and
+   Apple Calendar reads (no new FDA grant).
+2. **Supported atomic whole-app upgrade** (`mora upgrade` on the app route, or
+   the Brew path during the shared #294 session). No inner-binary-only swap,
+   re-sign, or quarantine strip.
+3. **Post-upgrade** unchanged DR/team/id, CLI resolves into `Mora.app`, both
+   protected sources succeed interactively **and** through the installed
+   unattended schedule; durable producer/`SyncStatus` show genuine new
+   `LastSuccessAt` (process launch alone is insufficient).
+4. **Fail-closed** unrelated signer / broken-bundle fixtures must not advance
+   `LastSuccessAt` (or leave that sub-gate explicitly unmet).
+5. Publish **sanitized** versions, hashes, DR, timestamps, item counts, error
+   codes — never message/calendar bodies or private host paths.
+
+SQLite open error 14 is **not** by itself an FDA denial; doctor reports
+`cause_unverified` when cause cannot be proved. Unit/CI green cannot close #167.
+
+On an installed Darwin app (identity only; still not a continuity verdict):
+
+```sh
+scripts/regress/fda-continuity-canary.sh HOST
+# consented live sync teeing only: LIVE=1 scripts/regress/fda-continuity-canary.sh HOST
+```
+
+---
+
 ### `scripts/package.sh` — the OAuth-embed footgun
 
 `package.sh` packages a single target and, critically, **embeds the real Google OAuth client at build time** when `MORA_GOOGLE_CREDENTIALS` is set. `internal/google/client.json` is a committed **non-secret** `DEV_PLACEHOLDER` (the embed target at `oauth.go:28`, detected at `oauth.go:77`). The script copies the real client over the placeholder, builds, then **always restores the placeholder via a `trap … EXIT INT TERM`** (`package.sh:25-32`) so real creds are never left in the tree or committed. The trap uses an **absolute** `$EMBED` path on purpose — the script `cd`s into `$DIST` before the trap fires, and a relative path would restore from the wrong directory (`package.sh:21-24`). When given real creds it then **asserts the built binary actually embeds the real client id** (`package.sh:40-46`), because the `DEV_PLACEHOLDER` string is itself a detection constant compiled into every binary and so can't be used as a negative test. `build-release.sh` does **not** do this embed step — it always ships the placeholder.
@@ -384,9 +444,10 @@ normal Homebrew artifact conflicts remain fail-closed.
 This is intentionally **generation only**. Neither GoReleaser nor the release
 workflow carries a tap token or publishes a Cask. `--auto-updates` is an
 explicit generator option, but it fails closed while `CaskAutoUpdatesReady` is
-false. Issue #291 must land and prove scheduled update/check/notification
-behavior before that gate changes. Issue #294's later post-publish job must
-also verify the release is public before it may update the tap.
+false. Issue #294 must prove scheduled update/check/notification behavior
+(and the signed-host Brew canary) before that gate changes. The Homebrew
+post-publish job must also verify the release is public before it may update
+the tap. Share the signed-host session with #167 for FDA continuity evidence.
 
 ## License — Apache-2.0
 
@@ -459,3 +520,5 @@ behind a blanket "zero egress" claim.
 - [Eval & testing](./09-eval-and-testing.md) — the `go test -race` gate and the size/budget regression tests.
 - [Sync & freshness](./11-sync-and-freshness.md) — honest-snapshot sync, the other place the binary touches the network.
 - [Overview](./00-overview.md) — how the binary fits the whole system.
+- [Homebrew Cask handoff](../homebrew.md) — #294 Brew canary; share signed-host session with #167.
+- `scripts/regress/fda-continuity-canary.sh` — pin N/N+1 hashes and print host handoff commands.
