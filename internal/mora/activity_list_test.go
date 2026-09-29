@@ -113,7 +113,10 @@ func TestActivityMCPWindowRejectsInvalidAndConflictingInputs(t *testing.T) {
 }
 
 func TestActivityCLIAndMCPEventContract(t *testing.T) {
-	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	// Sub-second nanos here so the golden states the window bounds at the
+	// precision briefClock actually reads them. A second-precision golden would
+	// read as licence to truncate, which drops rows sitting on the bound.
+	now := time.Date(2026, 9, 10, 12, 0, 0, 482913741, time.UTC)
 	m := Memory{ID: "imessage_chat/fixture", Scope: "global", Type: "conversation", Title: "activity fixture", Text: "hello", Provider: "imessage", Source: "imessage", CreatedAt: "2026-09-01T00:00:00Z", Meta: map[string]any{
 		"occurred_at": "2025-01-01T00:00:00Z", "is_group": true,
 		"message_evidence": []map[string]any{{"evidence_ref": "imessage_chat/fixture#1", "at": "2026-09-10T11:00:00Z", "sender": "Owner", "from_me": true, "block_start": 0, "block_end": 5}},
