@@ -306,6 +306,7 @@ func ExampleSkippedAttempt() AttemptDocument {
 	a.CaseID = "case-synth-failure-001"
 	a.RepIndex = 1
 	a.Status = AttemptSkipped
+	a.FinishedAt = "2026-01-16T12:00:00Z"
 	a.TimeoutSeconds = 600
 	a.ProviderInvoked = false
 	a.SkipReason = "run gate denied"
@@ -340,6 +341,7 @@ func ExampleUnavailableAttempt() AttemptDocument {
 	a.CaseID = "case-synth-failure-001"
 	a.RepIndex = 3
 	a.Status = AttemptUnavailable
+	a.FinishedAt = "2026-01-16T14:00:00Z"
 	a.TimeoutSeconds = 600
 	a.ProviderInvoked = false
 	a.SkipReason = "provider capacity unavailable"
