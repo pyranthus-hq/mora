@@ -1501,8 +1501,8 @@ func TestPairingRefusalsLandInTheSameTimingBucket(t *testing.T) {
 			t.Fatalf("%q landed in bucket %d and %q in bucket %d — the paths are separable by a stopwatch\n%v",
 				name, bucket, first, buckets[first], buckets)
 		}
-		if bucket < 1 {
-			t.Fatalf("%q answered inside the first bucket boundary (%v); the pad did not run\n%v", name, width, buckets)
+		if bucket != 1 {
+			t.Fatalf("%q answered in bucket %d, want bucket 1 (width %v)\n%v", name, bucket, width, buckets)
 		}
 	}
 }
@@ -1523,8 +1523,8 @@ func TestPairingRefusalsLandInTheSameTimingBucket(t *testing.T) {
 // padToBucket's use at the route — not the function, the use — turns this red.
 func TestPairingSlowPathLandsOnTheNextBucketBoundary(t *testing.T) {
 	const width = 250 * time.Millisecond
-	// Comfortably past one boundary and comfortably short of the next, so
-	// neither jitter nor a slow machine can move the answer.
+	// Keep the injected work away from a boundary so a minimum pad is
+	// distinguishable from a quantizer; real registry work may add buckets.
 	const overrun = width + 80*time.Millisecond
 
 	srv, reg, _ := confirmServer(t)
@@ -1534,23 +1534,12 @@ func TestPairingSlowPathLandsOnTheNextBucketBoundary(t *testing.T) {
 	wrong.PairingCode = "wrong-code"
 	srv.confirms = &slowConfirmer{Confirmer: reg, delay: overrun}
 
-	start := time.Now()
-	rec := postConfirm(t, srv, wrong)
-	elapsed := time.Since(start)
+	rec, elapsed := timedPairingResponse(t, srv, wrong)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("the slow refusal = %d, want 401\n%s", rec.Code, rec.Body.String())
 	}
 
-	// Bucket TWO, exactly. A minimum would answer in bucket one, at about the
-	// overrun; anything past bucket two means the pad slept a whole extra
-	// boundary.
-	if bucket := int(elapsed / width); bucket != 2 {
-		t.Fatalf("a refusal that overran one bucket answered in %v (bucket %d), want bucket 2 — "+
-			"the pad is behaving as a minimum rather than a quantizer", elapsed, bucket)
-	}
-	if elapsed < 2*width {
-		t.Fatalf("answered in %v, before the %v boundary", elapsed, 2*width)
-	}
+	assertPairingBucketBoundary(t, elapsed, width, overrun)
 }
 
 // TestPairingSlowSuccessLandsOnTheNextBucketBoundary is the same proof for the
@@ -1565,15 +1554,54 @@ func TestPairingSlowSuccessLandsOnTheNextBucketBoundary(t *testing.T) {
 	c := pendingPairing(t, reg, "phone")
 	srv.confirms = &slowConfirmer{Confirmer: reg, delay: overrun}
 
-	start := time.Now()
-	rec := postConfirm(t, srv, c)
-	elapsed := time.Since(start)
+	rec, elapsed := timedPairingResponse(t, srv, c)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("the slow success = %d, want 200\n%s", rec.Code, rec.Body.String())
 	}
-	if bucket := int(elapsed / width); bucket != 2 {
-		t.Fatalf("a success that overran one bucket answered in %v (bucket %d), want bucket 2", elapsed, bucket)
+	assertPairingBucketBoundary(t, elapsed, width, overrun)
+}
+
+// assertPairingBucketBoundary allows registry work to span additional buckets,
+// but still rejects a response at the unpadded work time. The tolerance covers
+// timer scheduling and request/response overhead, not another bucket.
+func assertPairingBucketBoundary(t *testing.T, elapsed, width, overrun time.Duration) {
+	t.Helper()
+	const tolerance = 25 * time.Millisecond
+	minimum := (overrun/width + 1) * width
+	if elapsed < minimum {
+		t.Fatalf("answered in %v, before the %v boundary after injected work %v", elapsed, minimum, overrun)
 	}
+	if remainder := elapsed % width; remainder > tolerance {
+		t.Fatalf("answered in %v, %v past a %v bucket boundary (tolerance %v); want a quantizer, not a minimum",
+			elapsed, remainder, width, tolerance)
+	}
+}
+
+// timedPairingResponse measures response release, excluding the success path's
+// markSeen disk write after the response has already been written.
+func timedPairingResponse(t *testing.T, srv *Server, c PairingConfirmation) (*httptest.ResponseRecorder, time.Duration) {
+	t.Helper()
+	req := request(http.MethodPost, RouteConfirm, "", bytes.NewReader(marshalConfirmation(t, c)))
+	handler := srv.Handler()
+	rec := &pairingReleaseRecorder{ResponseRecorder: httptest.NewRecorder()}
+	start := time.Now()
+	handler.ServeHTTP(rec, req)
+	if rec.released.IsZero() {
+		t.Fatal("pairing response did not write a status")
+	}
+	return rec.ResponseRecorder, rec.released.Sub(start)
+}
+
+type pairingReleaseRecorder struct {
+	*httptest.ResponseRecorder
+	released time.Time
+}
+
+func (r *pairingReleaseRecorder) WriteHeader(code int) {
+	if r.released.IsZero() {
+		r.released = time.Now()
+	}
+	r.ResponseRecorder.WriteHeader(code)
 }
 
 // slowConfirmer makes Confirm overrun a bucket. It is the seam an injected slow

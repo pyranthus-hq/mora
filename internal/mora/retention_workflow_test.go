@@ -1,8 +1,10 @@
 package mora
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"os"
 	"testing"
 	"time"
@@ -205,7 +207,21 @@ func TestRecoveryManifestEncryptionRoundTripAndTamperFails(t *testing.T) {
 	if err != nil || string(got.Entries[0].Data) != "secret memory" {
 		t.Fatalf("round trip=%+v err=%v", got, err)
 	}
-	encrypted.Ciphertext = encrypted.Ciphertext[:len(encrypted.Ciphertext)-2] + "AA"
+	// Flip a ciphertext bit, not base64 text: replacing a suffix can be a
+	// no-op and can test base64 parsing instead of AEAD authentication.
+	ciphertext, err := base64.StdEncoding.DecodeString(encrypted.Ciphertext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ciphertext) == 0 {
+		t.Fatal("empty ciphertext")
+	}
+	tampered := bytes.Clone(ciphertext)
+	tampered[len(tampered)-1] ^= 1
+	if bytes.Equal(ciphertext, tampered) {
+		t.Fatal("tamper did not change ciphertext bytes")
+	}
+	encrypted.Ciphertext = base64.StdEncoding.EncodeToString(tampered)
 	if _, err := decryptRecoveryManifest(cfg, encrypted); err == nil {
 		t.Fatal("tampered ciphertext decrypted")
 	}
