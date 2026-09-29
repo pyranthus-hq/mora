@@ -171,6 +171,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdDisconnect(ctx, args[1:], stdout, stderr)
 	case "mcp":
 		return cmdMCP(ctx, args[1:], stdout, stderr, stdin)
+	case "agents":
+		return cmdAgents(ctx, args[1:], stdout, stderr)
 	case "serve":
 		return cmdServe(ctx, args[1:], stdout, stderr)
 	case "integrations":

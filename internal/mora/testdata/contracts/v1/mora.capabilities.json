@@ -19,6 +19,54 @@
     {
       "json_contract": "exempt",
       "kind": "subcommand",
+      "path": "agents add",
+      "payload": "",
+      "platform": "all",
+      "reason": "prints a new bearer token once; no two runs produce the same output, and a secret must never enter a golden document"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "agents list",
+      "payload": "",
+      "platform": "all",
+      "reason": "profile rows carry creation times that differ on every run; its --json output is not yet a published payload"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "agents log",
+      "payload": "",
+      "platform": "all",
+      "reason": "receipt lines carry call times that differ on every run; its --json output is not yet a published payload"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "agents revoke",
+      "payload": "",
+      "platform": "all",
+      "reason": "text-only confirmation of a profile-store change"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "agents rotate",
+      "payload": "",
+      "platform": "all",
+      "reason": "prints a new bearer token once; no two runs produce the same output, and a secret must never enter a golden document"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "agents update",
+      "payload": "",
+      "platform": "all",
+      "reason": "text-only confirmation of a profile-store change"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
       "path": "companion expose",
       "payload": "",
       "platform": "all",
@@ -107,6 +155,14 @@
     {
       "json_contract": "exempt",
       "kind": "subcommand",
+      "path": "mcp serve-http",
+      "payload": "",
+      "platform": "all",
+      "reason": "long-running Streamable HTTP server; its protocol is the contract"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
       "path": "schedule install",
       "payload": "",
       "platform": "native-seam",
@@ -148,6 +204,14 @@
       "json_contract": "exempt",
       "kind": "subcommand",
       "path": "usage queries",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "agents",
       "payload": "",
       "platform": "all",
       "reason": "dispatch-only group; a bare invocation is a usage error"

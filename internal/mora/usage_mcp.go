@@ -53,18 +53,62 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 	}
 	inv.loggable = true
 	traced := context.WithValue(ctx, mcpUsageTraceKey{}, trace)
+	// Agent profiles (#539): the transport bound this call to a profile, so the
+	// profile, not the caller, decides the tool, the scope, raw-source
+	// visibility and how a write lands. The vault-wide write policy only
+	// applies to unprofiled clients.
+	profile, profiled := agentProfileFrom(ctx)
+	policy := configMCPWritePolicy(cfg)
+	if profiled {
+		shaped, admitErr := admitAgentCall(profile, name, args)
+		if admitErr != nil {
+			inv.err = admitErr
+			trace.event = usageEvent{Tool: name}
+			appendAgentReceipt(cfg, profile.Name, agentReceipt{At: agentNow(), Tool: name, Action: "refused", Query: agentQueryOf(args), Error: admitErr.Error()})
+			return inv
+		}
+		args = shaped
+		policy = profile.Write
+	}
 	policyHandled := false
-	action, policyErr := mcppkg.MutationAction(configMCPWritePolicy(cfg), name)
+	proposed := false
+	action, policyErr := mcppkg.MutationAction(policy, name)
 	switch action {
 	case mcppkg.ActionRefuse:
 		inv.err = policyErr
 		policyHandled = true
 	case mcppkg.ActionPropose:
-		inv.value, inv.err = stageMCPWriteProposal(cfg, args)
+		proposedBy := ""
+		if profiled {
+			proposedBy = profile.Name
+		}
+		inv.value, inv.err = stageMCPWriteProposalBy(cfg, args, proposedBy)
 		policyHandled = true
+		proposed = true
 	}
 	if !policyHandled {
 		inv.value, inv.err = def.Handler(traced, cfg, args)
+	}
+	if profiled {
+		receipt := agentReceipt{At: agentNow(), Tool: name, Action: "read", Query: agentQueryOf(args)}
+		switch {
+		case proposed:
+			receipt.Action = "proposed"
+			receipt.ProposalID = proposalIDOf(inv.value)
+		case action == mcppkg.ActionRefuse:
+			receipt.Action = "refused"
+		case name == "write_memory" || name == "delete_memory":
+			receipt.Action = "wrote"
+		}
+		if inv.err == nil && !proposed {
+			var rows []agentRowRef
+			inv.value, rows, inv.err = filterAgentResult(profile, name, args, inv.value)
+			receipt.Rows = rows
+		}
+		if inv.err != nil {
+			receipt.Error = inv.err.Error()
+		}
+		appendAgentReceipt(cfg, profile.Name, receipt)
 	}
 	if trace.event.Tool == "" {
 		// Some handlers (including mutations) have no tool-specific structural

@@ -583,6 +583,84 @@ mora mcp proposals approve <proposal-id>
 mora mcp proposals reject <proposal-id>
 ```
 
+### Agent profiles
+
+A profile gives one agent its own limits. Without a profile, an agent can read
+the whole vault and gets the vault-wide write policy. With a profile, Mora
+enforces the limits at its tool gate, not in the agent's prompt:
+
+- `--read-scopes`: the scopes the agent can read, for example
+  `project:acme,global`. Use `all` for every scope.
+- `--raw-sources`: show connector evidence (mail, messages, calendar entries,
+  copied files). It is off by default, so the agent sees only memories that you
+  or your agents wrote.
+- `--write`: `propose` (the default), `readonly`, or `open`. This replaces the
+  vault-wide policy for this agent only.
+- `--tools`: the tools the agent can call. The default is `search_memory`,
+  `read_memory`, `list_memory`, and `write_memory`. Mora can filter the results
+  of these four record by record. Any other tool, `delete_memory` included,
+  needs `--read-scopes all` and `--raw-sources`. `delete_memory` also needs
+  `--write open`.
+
+```bash
+mora agents add grok --read-scopes project:acme,global
+mora agents list
+mora agents update grok --write readonly
+mora agents log grok --since 168h
+mora agents rotate grok
+mora agents revoke grok
+```
+
+`add` and `rotate` print a new token once. Mora keeps only the token's SHA-256
+hash, in `<config_dir>/agents.json` with file mode `0600`. `update` keeps the
+current token. `revoke` stops the profile at once.
+
+Run a local agent under a profile:
+
+```bash
+claude mcp add mora-grok -s user -- mora mcp serve --profile grok
+```
+
+A record the profile cannot read acts as if it does not exist: search and list
+leave it out, and `read_memory` answers "not found". A profile that writes with
+`propose` adds its writes to the same queue as the vault-wide `propose` policy,
+marked with the agent's name, and an approved memory gets the source
+`agent:<name>`.
+
+Each call adds one line to `<state_dir>/agents/<name>.jsonl`: the tool, what
+the agent asked for (its query, the ID it read, or the title it wrote, cut to
+200 characters), the result (`read`, `proposed`, `wrote`, or `refused`), and
+the IDs and scopes of the records the agent received. The line never contains
+the text of a record the agent received. `mora agents log` prints these lines.
+
+### Remote MCP for cloud agents
+
+Cloud agents, for example Grok Bot and Muse, run on the vendor's computers and
+cannot start a process on yours. `mora mcp serve-http` serves the same tools
+over Streamable HTTP, with one profile for each token:
+
+```bash
+mora mcp serve-http --port 7780 --allow-host <your-machine>.<tailnet>.ts.net
+```
+
+- The server binds only to `127.0.0.1`. To reach it from the internet, run a
+  tunnel that you control, for example
+  `tailscale funnel --bg --https=443 http://127.0.0.1:7780`. Mora never opens a
+  public port itself.
+- Each request needs `Authorization: Bearer <token>`. The token selects exactly
+  one profile, and no request argument can widen that profile.
+- The server does not start when no profile is active.
+- It answers `POST /mcp` with plain JSON. It has no SSE stream (`GET` returns
+  405), accepts no batches, and refuses any request that has an `Origin` header,
+  because its callers are servers, not browsers.
+- `--allow-host` names the public host names that your tunnel forwards. Other
+  `Host` headers get 403.
+- The `initialize` reply tells the agent which scopes it can read, so that it
+  reads an empty result as "nothing matched here", not "nothing exists".
+
+When a cloud agent reads a result, that result is under the vendor's data rules.
+Give a cloud agent only the scopes that you would give to that vendor.
+
 ### Loopback HTTP
 
 A sandboxed browser may not be able to start a local process. It can use the
