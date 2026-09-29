@@ -69,9 +69,10 @@ func TestTrialReceiptContract(t *testing.T) {
 			}
 			if tt.name == "inject_failure" || tt.name == "admit_reject" || tt.name == "oracle_scan_error" {
 				wantField := "case"
-				if tt.name == "inject_failure" {
+				switch tt.name {
+				case "inject_failure":
 					wantField = "condition.case_id"
-				} else if tt.name == "oracle_scan_error" {
+				case "oracle_scan_error":
 					wantField = "walk"
 				}
 				var runErr *Error
