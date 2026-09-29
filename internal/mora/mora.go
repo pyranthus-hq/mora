@@ -1101,21 +1101,19 @@ var linkPublish = os.Link
 // or ERROR_NOT_SUPPORTED (Windows) — never os.ErrExist. vault_dir is
 // user-configurable, so a hard failure here would regress `mora write` / MCP
 // write_memory below where the old atomicWrite (plain os.Rename) worked. On that
-// (and only that) error class we preserve the no-clobber guarantee WITHOUT a hard
-// link: (1) claim the path with os.OpenFile(O_CREATE|O_EXCL) — an atomic
-// create-exclusive that fails EEXIST if a racer or a colliding id already owns it,
-// so we surface os.ErrExist exactly like the link path; then (2) rename our staged
-// temp onto our OWN claimed placeholder. The rename is safe from clobber because
-// every same-path racer already lost at the O_EXCL claim, so it can only replace
-// our own empty placeholder, never a rival's memory — and it keeps content
-// atomicity (no torn frontmatter). TRADEOFF, documented honestly: between (1) and
-// (2) a concurrent reader can observe an EMPTY placeholder file. That degrades
-// gracefully — parseMemory returns "missing frontmatter" on it and every
-// index/list/find caller (rebuildIndex, findMemory, listMemories, digest,
-// meetingprep, graph, share) skips a parse error with `continue`, so the
-// placeholder is ignored (never a crash) and picked up once the rename lands. Only
-// no-hardlink filesystems ever reach this branch; POSIX/NTFS keep the pure-link
-// path with no such window.
+// (and only that) error class we preserve the no-clobber guarantee without a
+// hard link. Windows moves the complete staged file with MoveFileEx without
+// REPLACE_EXISTING or COPY_ALLOWED: an existing destination makes it fail,
+// and no intermediate body is published. Unix claims path with O_CREATE|O_EXCL
+// then atomically renames the staged file over its own empty placeholder.
+// POSIX rename never removes the destination between claim and publication.
+// The staged file's explicit mode survives publication on both paths.
+//
+// On the Unix fallback only, readers can observe an empty placeholder (also
+// possible after a crash). parseMemory rejects that as missing frontmatter;
+// readers that skip parse errors omit it until publication completes. Neither
+// fallback writes body bytes into the published path, so readers cannot accept
+// valid frontmatter with a partially written body.
 //
 // A link error that is NEITHER os.ErrExist NOR the link-unsupported class is a
 // real fault and surfaces as-is — never masked as a collision or silently routed

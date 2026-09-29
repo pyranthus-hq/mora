@@ -157,6 +157,10 @@ jobs:
           CGO_ENABLED: "0"
         # This job already runs native Windows vet immediately above.
         run: go test -vet=off -count=1 -timeout=20m ./...
+      - name: atomicio fallback single-winner stress (PYR-97)
+        env:
+          CGO_ENABLED: "0"
+        run: go test -vet=off -count=5 -timeout=10m ./internal/atomicio/
 
   readable-golden-reason:
     # This is deliberately data-only: it inspects changed paths and the PR body,
