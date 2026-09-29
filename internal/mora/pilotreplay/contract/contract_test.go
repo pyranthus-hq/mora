@@ -1,7 +1,9 @@
 package contract
 
 import (
+	"bytes"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -460,11 +462,9 @@ func TestJSONRoundTripPositiveCase(t *testing.T) {
 	}
 }
 
-func TestPackageIsLeaf(t *testing.T) {
+func TestFrozenPlanningConstants(t *testing.T) {
 	t.Parallel()
-	// Compile-time: this package imports only stdlib. Runtime check via go list in a
-	// separate test would need shell; keep a doc assertion via import graph comment.
-	// Ensure synthetic constants stay non-empty.
+	// Pin the initial schema and planning defaults.
 	if SchemaVersion != 1 {
 		t.Fatalf("SchemaVersion=%d", SchemaVersion)
 	}
@@ -504,9 +504,9 @@ func TestSkippedUnavailableDoNotInvokeProvider(t *testing.T) {
 	}
 }
 
-func TestImportsAreStdlibOnly(t *testing.T) {
+func TestSchemaNamePrefixes(t *testing.T) {
 	t.Parallel()
-	// Guarded by package design; keep a runtime reminder that Schema names stay stable.
+	// All document schema names use the published namespace.
 	for _, name := range []string{SchemaCase, SchemaCondition, SchemaAttempt, SchemaOutcome, SchemaReport, SchemaReceipt, SchemaRunGate} {
 		if name == "" || !strings.HasPrefix(name, "mora.pilotreplay.") {
 			t.Fatalf("unexpected schema name %q", name)
@@ -526,5 +526,88 @@ func TestFailedAndTimedOutAttemptsRequireErrorCode(t *testing.T) {
 				t.Fatalf("missing error code: got %v, want missing-field error for error_code", err)
 			}
 		})
+	}
+}
+
+func TestPartialExposureRequiresHonestReconstruction(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		mutate      func(*DeliveredContext)
+		field, code string
+	}{
+		{"empty", func(d *DeliveredContext) { d.Parts = []DeliveredPart{} }, "parts", CodeMissingField},
+		{"unexplained", func(d *DeliveredContext) { d.MissingReason = "" }, "missing_reason", CodeMissingField},
+		{"faithful", func(d *DeliveredContext) { d.Fidelity = FidelityFaithfulHistorical }, "fidelity", CodeFidelityUpgrade},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := ExamplePositiveFailureCase()
+			c.MemorySnapshot.Synthetic = false
+			c.MemorySnapshot.Fidelity = FidelityFaithfulHistorical
+			c.DeliveredContext.Synthetic = false
+			c.DeliveredContext.ExposureAvailability = ExposurePartial
+			c.DeliveredContext.Fidelity = FidelityPartial
+			c.DeliveredContext.MissingReason = "provider log remainder unavailable"
+			if err := c.Validate(); err != nil {
+				t.Fatalf("valid partial case: %v", err)
+			}
+			tc.mutate(&c.DeliveredContext)
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.field) || !strings.Contains(err.Error(), tc.code) {
+				t.Fatalf("got %v, want %s for %s", err, tc.code, tc.field)
+			}
+		})
+	}
+}
+
+func TestContractReceiptGolden(t *testing.T) {
+	receipt, err := BuildContractReceipt("2026-01-16T00:00:00Z", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := json.MarshalIndent(receipt, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = append(got, '\n')
+	want, err := os.ReadFile("../../../../docs/experiments/memory-replay/contract/receipt.v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("frozen contract receipt drifted; review fixture changes and explicitly regenerate receipt.v1.json")
+	}
+}
+
+func TestTerminalAttemptMetadata(t *testing.T) {
+	for _, a := range []AttemptDocument{ExamplePositiveAttemptSucceeded(), ExampleFailedAttempt(), ExampleTimedOutAttempt(), ExampleSkippedAttempt(), ExampleUnavailableAttempt()} {
+		t.Run(a.Status, func(t *testing.T) {
+			// Supply a decision time even when no execution started.
+			a.FinishedAt = "2026-01-16T15:00:00Z"
+			if err := a.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			missing := a
+			missing.FinishedAt = ""
+			if err := missing.Validate(); err == nil || !strings.Contains(err.Error(), "finished_at") {
+				t.Fatalf("missing finish: %v", err)
+			}
+			reversed := a
+			reversed.StartedAt = "2026-01-16T16:00:00Z"
+			if err := reversed.Validate(); err == nil || !strings.Contains(err.Error(), "finished_at") {
+				t.Fatalf("reversed time: %v", err)
+			}
+		})
+	}
+	a := ExamplePositiveAttemptSucceeded()
+	a.ErrorCode = "harness_error"
+	if err := a.Validate(); err == nil || !strings.Contains(err.Error(), "error_code") {
+		t.Fatalf("success with error: %v", err)
+	}
+	for _, a := range []AttemptDocument{ExampleSkippedAttempt(), ExampleUnavailableAttempt()} {
+		a.FinishedAt = "2026-01-16T15:00:00Z"
+		a.CostUSDMicros = 1
+		if err := a.Validate(); err == nil || !strings.Contains(err.Error(), "cost_usd_micros") {
+			t.Fatalf("uninvoked cost: %v", err)
+		}
 	}
 }
