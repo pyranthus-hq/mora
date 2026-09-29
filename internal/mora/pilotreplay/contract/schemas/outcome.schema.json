@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/pyranthus-hq/mora/schemas/pilotreplay/mora.pilotreplay.outcome.json",
+  "title": "mora.pilotreplay.outcome",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "outcome_id",
+    "attempt_id",
+    "kind",
+    "checker_id"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "outcome_id": {
+      "type": "string"
+    },
+    "attempt_id": {
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "pass",
+        "fail",
+        "error",
+        "skipped",
+        "unavailable",
+        "timed_out",
+        "inconclusive"
+      ]
+    },
+    "checker_id": {
+      "type": "string"
+    },
+    "score": {
+      "type": "number"
+    },
+    "detail_ref": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "string"
+    }
+  }
+}

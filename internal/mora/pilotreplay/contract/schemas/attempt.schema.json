@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/pyranthus-hq/mora/schemas/pilotreplay/mora.pilotreplay.attempt.json",
+  "title": "mora.pilotreplay.attempt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "attempt_id",
+    "condition_id",
+    "case_id",
+    "rep_index",
+    "status",
+    "timeout_seconds",
+    "cost_usd_micros",
+    "provider_invoked",
+    "reset_observed",
+    "isolation_held"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "attempt_id": {
+      "type": "string"
+    },
+    "condition_id": {
+      "type": "string"
+    },
+    "case_id": {
+      "type": "string"
+    },
+    "rep_index": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "status": {
+      "enum": [
+        "pending",
+        "running",
+        "succeeded",
+        "failed",
+        "timed_out",
+        "skipped",
+        "unavailable"
+      ]
+    },
+    "started_at": {
+      "type": "string"
+    },
+    "finished_at": {
+      "type": "string"
+    },
+    "timeout_seconds": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "cost_usd_micros": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "provider_invoked": {
+      "type": "boolean"
+    },
+    "skip_reason": {
+      "type": "string"
+    },
+    "error_code": {
+      "type": "string"
+    },
+    "reset_observed": {
+      "type": "boolean"
+    },
+    "isolation_held": {
+      "type": "boolean"
+    },
+    "notes": {
+      "type": "string"
+    }
+  }
+}
