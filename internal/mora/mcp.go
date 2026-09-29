@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/pyranthus-hq/mora/internal/activity"
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
@@ -522,11 +523,22 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 }
 
 func mcpListMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
-	start := time.Now()
 	now := briefClock()
+	start := time.Now()
 	hours, err := parseActivityHours(args, true, now)
 	if err != nil {
 		return nil, err
+	}
+	includeAuthored := false
+	if value, exists := args["include_authored_writes"]; exists {
+		var ok bool
+		includeAuthored, ok = value.(bool)
+		if !ok {
+			return nil, fmt.Errorf("include_authored_writes must be a boolean")
+		}
+	}
+	if includeAuthored && hours == 0 {
+		return nil, fmt.Errorf("include_authored_writes requires event_since_hours")
 	}
 	filterArgs := map[string]any{}
 	if source, ok := args["source"]; ok {
@@ -547,7 +559,7 @@ func mcpListMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 		}
 	}
 	retrievalStarted := time.Now()
-	res, err := listActivityMemories(cfg, strArg(args, "scope", ""), limit, filter, hours, now)
+	res, err := listActivityMemories(cfg, strArg(args, "scope", ""), limit, filter, hours, now, activity.Options{IncludeAuthoredWrites: includeAuthored})
 	if err == nil {
 		res, err = decorateDispositions(cfg, res, now, filter)
 	}
@@ -569,6 +581,9 @@ func mcpListMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 	if filter.Source != "" {
 		out["source"] = filter.Source
 		out["health"] = compactHealthFiltered(cfg, now, filter)
+	}
+	if includeAuthored {
+		out["include_authored_writes"] = true
 	}
 	if hours > 0 {
 		out["source"] = filter.Source

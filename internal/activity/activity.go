@@ -24,7 +24,14 @@ type EventSource string
 const (
 	EventSourceMessageEvidence EventSource = "message_evidence"
 	EventSourceOccurredAt      EventSource = "occurred_at"
+	EventSourceAuthoredWrite   EventSource = "authored_write"
 )
+
+// Options controls explicit event-list extensions. The zero value preserves
+// connector-only derivation, including stamps and all existing callers.
+type Options struct {
+	IncludeAuthoredWrites bool
+}
 
 // Participation is the shared evidence-backed conversation DTO.
 type Participation = memory.Participation
@@ -58,6 +65,21 @@ type Result struct {
 // An unknown, malformed, or future selected time is ineligible. now itself is
 // inclusive: an event at now is eligible. CreatedAt is never a fallback.
 func Derive(m memory.Memory, now time.Time) Projection {
+	return DeriveWithOptions(m, now, Options{})
+}
+
+// DeriveWithOptions optionally places authored records at their stored CreatedAt.
+// It uses derived provenance, never a caller-supplied provenance label or stamp.
+// Imported authored mirrors can be re-dated by resync; this is opt-in only.
+func DeriveWithOptions(m memory.Memory, now time.Time, opts Options) Projection {
+	if opts.IncludeAuthoredWrites && memory.DeriveProvenance(m) == memory.ProvenanceAuthored {
+		p := Projection{}
+		if at, ok := parseTime(m.CreatedAt); ok && !at.IsZero() {
+			p.EventAt, p.EventSource = at, EventSourceAuthoredWrite
+			p.Eligible = !at.After(now)
+		}
+		return p
+	}
 	p := deriveEvidence(m)
 	if stamped, ok := validStamp(m); ok {
 		// A stamp is generated from the same retained evidence. Prefer it only
@@ -150,9 +172,14 @@ func Select(memories []memory.Memory, now time.Time) []Result {
 // SelectRange returns eligible activity rows in the inclusive [from, now] range.
 // A zero from disables the lower bound.
 func SelectRange(memories []memory.Memory, from, now time.Time) []Result {
+	return SelectRangeWithOptions(memories, from, now, Options{})
+}
+
+// SelectRangeWithOptions applies explicit extensions before ordering and limiting.
+func SelectRangeWithOptions(memories []memory.Memory, from, now time.Time, opts Options) []Result {
 	out := make([]Result, 0, len(memories))
 	for _, m := range memories {
-		p := Derive(m, now)
+		p := DeriveWithOptions(m, now, opts)
 		if p.Eligible && (from.IsZero() || !p.EventAt.Before(from)) {
 			out = append(out, Result{Memory: m, Projection: p})
 		}

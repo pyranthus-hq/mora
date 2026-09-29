@@ -64,6 +64,7 @@ var toolCatalog = []ToolDefinition{
 			{"limit", "integer", "Max memories to return (default 10; event mode 1-1000)", false},
 			{"source", "string", "Optional connector or connector:account filter; echoed in the receipt", false},
 			{"event_since_hours", "integer", "Explicit source events in the last 1-8784 hours; orders by source event before limiting, excludes unknown/future times", false},
+			{"include_authored_writes", "boolean", "Opt into authored CreatedAt placements with distinct event_source; requires an event window. Default false. Imported agent-note mirrors may be re-dated by resync", false},
 			{"since_hours", "integer", "List-only alias for event_since_hours; cannot be combined with it. Search since_hours still means memory creation time", false},
 		},
 	},
