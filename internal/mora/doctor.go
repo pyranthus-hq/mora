@@ -14,6 +14,7 @@ import (
 
 	doctorpkg "github.com/pyranthus-hq/mora/internal/doctor"
 	"github.com/pyranthus-hq/mora/internal/google"
+	healthpkg "github.com/pyranthus-hq/mora/internal/health"
 	"github.com/pyranthus-hq/mora/internal/imessage"
 	"github.com/pyranthus-hq/mora/internal/whatsapp"
 )
@@ -617,7 +618,14 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 // last completed an auth/reauth (recorded by google.SaveToken). Connected
 // accounts are the token files in the tokens dir — one per account, the same
 // derivation google.LastAuth uses (filename minus ".json", with "google" being
-// the default/legacy account). Additive and non-fatal: any error is swallowed.
+// the default/legacy account).
+//
+// A missing auth-history row is NOT the same as a broken credential: tokens
+// created before auth-history recording can still authorize successful syncs.
+// When history is absent, doctor looks at same-account source activity and
+// distinguishes "legacy credential with observed activity" from "no evidence"
+// and from a real authorization failure — without inventing an interactive-auth
+// timestamp or treating token-file presence alone as proof of authorization.
 func printGoogleAuthRecency(cfg Config, stdout io.Writer, now time.Time) {
 	tokenDir := filepath.Join(cfg.ConfigDir, "tokens")
 	entries, err := os.ReadDir(tokenDir)
@@ -635,17 +643,136 @@ func printGoogleAuthRecency(cfg Config, stdout io.Writer, now time.Time) {
 	sort.Strings(accounts) // deterministic order
 	sty := newStyler(stdout, false)
 	for _, account := range accounts {
-		at, ok, err := google.LastAuth(tokenDir, account)
-		if err != nil {
+		lineOK, msg := googleAuthRecencyStatus(cfg, tokenDir, account, now)
+		prefix := sty.warn("warn")
+		if lineOK {
+			prefix = sty.ok("ok  ")
+		}
+		fmt.Fprintf(stdout, "%s google auth (%s): %s\n", prefix, account, msg)
+	}
+}
+
+// googleSourceAccountFromTokenAccount maps a token-basename account
+// ("google", "google-work") to the Source.Account label ("", "work"). ok is
+// false when the basename is not a known Google token naming — prefer unknown
+// over inventing a cross-account mapping.
+func googleSourceAccountFromTokenAccount(tokenAccount string) (string, bool) {
+	if tokenAccount == "google" {
+		return "", true
+	}
+	if strings.HasPrefix(tokenAccount, "google-") {
+		label := strings.TrimPrefix(tokenAccount, "google-")
+		if label == "" {
+			return "", false
+		}
+		return label, true
+	}
+	return "", false
+}
+
+// googleAuthEvidence is same-account sync evidence consulted when auth-history
+// has no row (or is unreadable). It never fabricates an interactive-auth time.
+type googleAuthEvidence struct {
+	unauthorized   bool
+	freshSuccessAt time.Time
+	staleSuccessAt time.Time
+}
+
+// observeGoogleAuthEvidence inspects gmail/calendar SyncStatus rows whose
+// Source.Account matches the token account. One account never validates another.
+// A recent LastSuccessAt within the connector freshness window counts as
+// observable activity even when a later non-auth error marked the source failed;
+// connector.unauthorized still wins as a real auth failure.
+func observeGoogleAuthEvidence(cfg Config, tokenAccount string, now time.Time) googleAuthEvidence {
+	label, mapped := googleSourceAccountFromTokenAccount(tokenAccount)
+	if !mapped {
+		return googleAuthEvidence{}
+	}
+	sources, err := loadSources(cfg)
+	if err != nil {
+		// Prefer unknown over false healthy when the source registry is unreadable.
+		return googleAuthEvidence{}
+	}
+	var ev googleAuthEvidence
+	var bestFresh, bestAny time.Time
+	for _, s := range sources {
+		if (s.Type != "gmail" && s.Type != "calendar") || s.Account != label {
 			continue
 		}
-		if !ok {
-			fmt.Fprintf(stdout, "%s google auth (%s): no recorded auth yet (run `mora connect google`)\n",
-				sty.warn("warn"), account)
+		h := sourceHealthFor(cfg, s, healthInstanceKeyForSource(s), now)
+		if h.ErrorCode == errCodeConnectorUnauthorized {
+			ev.unauthorized = true
+		}
+		if h.LastSuccessAt == "" {
 			continue
 		}
-		fmt.Fprintf(stdout, "%s google auth (%s): last authed %s (%s)\n",
-			sty.ok("ok  "), account, at.Format(time.RFC3339), humanizeAgo(now.Sub(at)))
+		t, perr := time.Parse(time.RFC3339, h.LastSuccessAt)
+		if perr != nil {
+			continue
+		}
+		if t.After(bestAny) {
+			bestAny = t
+		}
+		age := now.Sub(t)
+		if age < 0 {
+			age = 0
+		}
+		if age <= healthpkg.Threshold(s.Type) && t.After(bestFresh) {
+			bestFresh = t
+		}
+	}
+	if !bestFresh.IsZero() {
+		ev.freshSuccessAt = bestFresh
+	} else if !bestAny.IsZero() {
+		ev.staleSuccessAt = bestAny
+	}
+	return ev
+}
+
+// googleAuthRecencyStatus returns whether the doctor line is ok (vs warn) and
+// the message body after "google auth (<account>):". Pure over cfg/tokenDir/now
+// so tests can pin the clock and fixtures without live OAuth.
+func googleAuthRecencyStatus(cfg Config, tokenDir, account string, now time.Time) (ok bool, msg string) {
+	at, found, err := google.LastAuth(tokenDir, account)
+	ev := observeGoogleAuthEvidence(cfg, account, now)
+
+	if err != nil {
+		// History present but unreadable: tell the truth; do not invent an auth
+		// time and do not push reauth solely because the ledger could not be read.
+		switch {
+		case ev.unauthorized:
+			return false, "auth history unreadable; authorization failed — run `mora connect google`"
+		case !ev.freshSuccessAt.IsZero():
+			return false, fmt.Sprintf("auth history unreadable; recent successful sync observed %s ago (credential appears active)",
+				humanizeAgo(now.Sub(ev.freshSuccessAt)))
+		case !ev.staleSuccessAt.IsZero():
+			return false, fmt.Sprintf("auth history unreadable; last successful sync was %s ago (stale)",
+				humanizeAgo(now.Sub(ev.staleSuccessAt)))
+		default:
+			return false, "auth history unreadable; credential state unknown"
+		}
+	}
+
+	if found {
+		return true, fmt.Sprintf("last authed %s (%s)", at.Format(time.RFC3339), humanizeAgo(now.Sub(at)))
+	}
+
+	// No recorded auth event for this account.
+	switch {
+	case ev.unauthorized:
+		return false, "no recorded auth history; authorization failed — run `mora connect google`"
+	case !ev.freshSuccessAt.IsZero():
+		// Legacy credential: history unavailable, but same-account sync proves
+		// the token currently works. Do NOT advise reauthorization.
+		return true, fmt.Sprintf("no recorded auth history (legacy credential); recent successful sync observed %s ago",
+			humanizeAgo(now.Sub(ev.freshSuccessAt)))
+	case !ev.staleSuccessAt.IsZero():
+		return false, fmt.Sprintf("no recorded auth history; last successful sync was %s ago (stale) — run `mora sync google` to verify",
+			humanizeAgo(now.Sub(ev.staleSuccessAt)))
+	default:
+		// Token file present is not proof of authorization, and inventing an
+		// interactive-auth date is forbidden. Stay distinct from auth_failed.
+		return false, "no recorded auth history; no successful sync observed for this account"
 	}
 }
 
