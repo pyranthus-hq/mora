@@ -1177,6 +1177,20 @@
       "platform": "native-seam",
       "json_contract": "receipt",
       "payload": "mora.integrations.disconnect"
+    },
+    {
+      "path": "remote",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "path": "remote expose",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "print-only tunnel helper; its mora.remote.expose receipt is pinned by TestRemoteExposePrintsTunnelCommands and the no-exec property by TestRemoteExposeDoesNotRunTunnels"
     }
   ]
 }

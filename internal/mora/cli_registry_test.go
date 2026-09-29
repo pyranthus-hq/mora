@@ -177,6 +177,7 @@ func TestCLIRegistryMatchesProductionDispatch(t *testing.T) {
 		{"serve", "cmdServe", []string{"args[0]"}},
 		{"hook", "cmdHook", []string{"args[0]"}},
 		{"loop", "cmdLoop", []string{"sub"}},
+		{"remote", "cmdRemote", []string{"args[0]"}},
 	} {
 		assertDispatchSet(t, registry, funcs, family.prefix, family.function, family.discriminants...)
 	}

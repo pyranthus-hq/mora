@@ -434,13 +434,13 @@
     },
     {
       "name": "agent profiles",
-      "paths": ["agents", "agents add", "agents update", "agents list", "agents revoke", "agents rotate", "agents log", "mcp serve-http"],
+      "paths": ["agents", "agents add", "agents update", "agents list", "agents revoke", "agents rotate", "agents log", "mcp serve-http", "remote", "remote expose"],
       "evidence": {
-        "success": {"status": "test", "tests": ["TestAgentsCLIStoresOnlyTokenHashAndRevokes", "TestMCPHTTPRequiresProfileTokenAndAllowedHost"], "reason": "add, update, list, rotate and revoke run through cmdAgents against a temp home; serve-http is driven through its real handler."},
-        "json": {"status": "test", "tests": ["TestMCPHTTPRequiresProfileTokenAndAllowedHost"], "reason": "serve-http answers JSON-RPC over HTTP; the agents verbs are exempt from the CLI JSON contract."},
+        "success": {"status": "test", "tests": ["TestAgentsCLIStoresOnlyTokenHashAndRevokes", "TestMCPHTTPRequiresProfileTokenAndAllowedHost", "TestRemoteExposePrintsTunnelCommands", "TestDoctorFlagsAgentRemoteDefaultRelaxations"], "reason": "add/update/list/rotate/revoke run through cmdAgents; serve-http through its handler; remote expose prints tunnel argv only; doctor names relaxing profiles."},
+        "json": {"status": "test", "tests": ["TestMCPHTTPRequiresProfileTokenAndAllowedHost", "TestRemoteExposePrintsTunnelCommands", "TestDoctorFlagsAgentRemoteDefaultRelaxations"], "reason": "serve-http answers JSON-RPC; remote expose and doctor publish structured relaxations / tunnel argv; agents verbs remain CLI-JSON exempt."},
         "state": {"status": "test", "tests": ["TestAgentsCLIStoresOnlyTokenHashAndRevokes", "TestAgentReceiptsRecordRowsNeverText", "TestAgentProfileProposesEvenWhenVaultPolicyIsOpen"], "reason": "Durable state is agents.json in ConfigDir (token hashes only) and per-agent receipts in StateDir."},
         "error": {"status": "test", "tests": ["TestAgentProfileValidation"]},
-        "refusal": {"status": "test", "tests": ["TestAgentProfileNeverReturnsRawSourcesOrForeignScopes", "TestMCPHTTPRequiresProfileTokenAndAllowedHost"], "reason": "A profile never receives raw sources or foreign scopes, and serve-http refuses missing or wrong tokens, foreign hosts, browser origins and batches."}
+        "refusal": {"status": "test", "tests": ["TestAgentProfileNeverReturnsRawSourcesOrForeignScopes", "TestMCPHTTPRequiresProfileTokenAndAllowedHost", "TestRemoteExposeDoesNotRunTunnels", "TestRemoteExposeRefusesBadPort"], "reason": "A profile never receives raw sources or foreign scopes; serve-http refuses missing/wrong tokens; remote expose never execs tunnels and refuses a bad port."}
       }
     },
     {

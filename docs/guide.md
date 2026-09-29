@@ -644,9 +644,9 @@ mora mcp serve-http --port 7780 --allow-host <your-machine>.<tailnet>.ts.net
 ```
 
 - The server binds only to `127.0.0.1`. To reach it from the internet, run a
-  tunnel that you control, for example
-  `tailscale funnel --bg --https=443 http://127.0.0.1:7780`. Mora never opens a
-  public port itself.
+  tunnel that you control. `mora remote expose` prints the Tailscale Funnel and
+  Cloudflare tunnel commands (and the matching `mora mcp serve-http --allow-host`
+  line) and executes none of them. Mora never opens a public port itself.
 - Each request needs `Authorization: Bearer <token>`. The token selects exactly
   one profile, and no request argument can widen that profile.
 - The server does not start when no profile is active.
@@ -657,6 +657,12 @@ mora mcp serve-http --port 7780 --allow-host <your-machine>.<tailnet>.ts.net
   `Host` headers get 403.
 - The `initialize` reply tells the agent which scopes it can read, so that it
   reads an empty result as "nothing matched here", not "nothing exists".
+
+Remote defaults for every profile are: hide raw sources, propose writes, and
+deny deletion. If a profile loosens any of those (`--raw-sources`, `--write open`,
+or `delete_memory` on the allowlist), `mora doctor` names the profile and the
+relaxations in both human and `--json` output (`agent_relaxations`, plus
+non-critical `agent_remote_defaults:<name>` checks).
 
 When a cloud agent reads a result, that result is under the vendor's data rules.
 Give a cloud agent only the scopes that you would give to that vendor.

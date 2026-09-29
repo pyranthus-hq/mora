@@ -58,6 +58,13 @@ type doctorReport struct {
 	Repairable    bool                 `json:"repairable"`
 	RepairPlan    []doctorRepairAction `json:"repair_plan"`
 	Verification  []doctorVerification `json:"verification"`
+	// AgentRelaxations lists active agent profiles that loosen the remote
+	// defaults (raw sources on, write open, deletion allowed). Always a
+	// non-null array — `[]` when no profile relaxes. Non-critical checks
+	// `agent_remote_defaults:<name>` accompany each entry. Overlap note:
+	// #548/#554 also edit doctor.go (auth history / orphaned receipts);
+	// this field and its checks are additive on the agent-profiles branch.
+	AgentRelaxations []agentRemoteRelaxation `json:"agent_relaxations"`
 }
 
 type doctorObservation struct {
@@ -464,6 +471,19 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 	idxH.Shares = shareIndexHealthAll(cfg, now)
 
+	// Agent profile remote-default relaxations (#539): advisory only. Loosening
+	// raw_sources / write=open / delete_memory is intentional, but Doctor must
+	// name every active profile that does so. A missing agents.json is fine
+	// (no profiles); a corrupt store is a non-critical warn.
+	agentRelax, agentStoreErr := collectAgentRemoteRelaxations(cfg)
+	if agentStoreErr != nil {
+		agentRelax = []agentRemoteRelaxation{}
+		checks = append(checks, doctorCheck{Name: "agents_store_readable", OK: false, Critical: false})
+	}
+	for _, r := range agentRelax {
+		checks = append(checks, doctorCheck{Name: "agent_remote_defaults:" + r.Name, OK: false, Critical: false})
+	}
+
 	// Whole-product storage accountant (Packet H3b): doctor's storage_status and
 	// share admission measure the same footprint. A walk/stat failure is a critical
 	// `unknown`, never a silent undercount. This MUST precede the `healthy` collapse
@@ -523,6 +543,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			Producers: prodHealth,
 			Observed:  observed, Diagnosis: diagnoses,
 			Repairable: hasSafeDoctorRepair(repairPlan), RepairPlan: repairPlan, Verification: verification,
+			AgentRelaxations: agentRelax,
 		}
 		if rec, present, _ := readBlockRecord(cfg); present {
 			rep.RebuildBlock = &rec
@@ -593,6 +614,15 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		fmt.Fprintf(stdout, "%s share %q publishes scope %s (age-encrypted to %d recipient key(s)) on `mora share push`\n",
 			sty.warn("warn"), p.Name, p.Scope, len(p.Recipients))
 		fmt.Fprintln(stdout, "     ciphertext only, but keep the remote PRIVATE + user-controlled.")
+	}
+	// Agent profile remote-default relaxations (#539): name every active profile
+	// that loosens hide-raw / propose-writes / deny-deletion. Advisory only.
+	if agentStoreErr != nil {
+		fmt.Fprintf(stdout, "%s agents store unreadable: %v\n", sty.warn("warn"), agentStoreErr)
+	}
+	for _, r := range agentRelax {
+		fmt.Fprintf(stdout, "%s agent profile %q relaxes remote defaults: %s\n",
+			sty.warn("warn"), r.Name, strings.Join(r.Relaxations, ", "))
 	}
 	// Google auth recency: tokens last weeks so a reauth is rare and invisible —
 	// surface "last authed / how long ago" per connected account so the user can
