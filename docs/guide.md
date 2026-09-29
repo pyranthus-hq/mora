@@ -1538,7 +1538,10 @@ A windowed receipt also states the bounds it applied, as `window_from` and
 rows returned by one call are never measured against different bounds, and both
 are present even when the window selected no rows — they describe the read, not
 the rows. They are serialised with `time.RFC3339Nano`, at the same precision as
-`event_at`, and describe the closed interval `[window_from, window_to]`:
+`event_at`; RFC3339Nano is variable width (trailing fractional zeros are removed,
+and zero nanoseconds omit the fraction), so compare parsed instants rather than
+strings.
+The bounds describe the closed interval `[window_from, window_to]`:
 inclusive at both edges, so a row whose `event_at` equals either bound exactly
 is in the window. A consumer re-applying the window must cut with `>=` and `<=`
 and use the stated `window_from` rather than recomputing it from `window_to`

@@ -22,7 +22,11 @@ func boundsEvent(id, at string) Memory {
 func pinBoundsClock(t *testing.T) {
 	t.Helper()
 	old := briefClock
-	briefClock = func() time.Time { return boundsClock }
+	calls := 0
+	briefClock = func() time.Time {
+		calls++
+		return boundsClock.Add(time.Duration(calls-1) * time.Second)
+	}
 	t.Cleanup(func() { briefClock = old })
 }
 
@@ -49,47 +53,51 @@ func parseBound(t *testing.T, label string, value any) time.Time {
 // the bounds are the ones the selection used, and the receipt is usable as the
 // closed interval the kernel actually cut.
 func TestListReceiptStatesTheWindowItApplied(t *testing.T) {
-	// The newest row sits exactly on the inclusive upper bound, with nanos.
-	atNow := boundsClock.UTC().Format(time.RFC3339Nano)
-	cfg := seedRecencyVault(t,
-		boundsEvent("on-the-bound", atNow),
-		boundsEvent("inside", boundsClock.Add(-6*time.Hour).UTC().Format(time.RFC3339Nano)),
-		boundsEvent("outside", boundsClock.Add(-48*time.Hour).UTC().Format(time.RFC3339Nano)))
-	pinBoundsClock(t)
+	for _, argument := range []string{"event_since_hours", "since_hours"} {
+		t.Run(argument, func(t *testing.T) {
+			// The newest row sits exactly on the inclusive upper bound, with nanos.
+			atNow := boundsClock.UTC().Format(time.RFC3339Nano)
+			cfg := seedRecencyVault(t,
+				boundsEvent("on-the-bound", atNow),
+				boundsEvent("inside", boundsClock.Add(-6*time.Hour).UTC().Format(time.RFC3339Nano)),
+				boundsEvent("outside", boundsClock.Add(-48*time.Hour).UTC().Format(time.RFC3339Nano)))
+			pinBoundsClock(t)
 
-	result, err := mcpListMemory(testCtx(t), cfg, map[string]any{"source": "calendar", "event_since_hours": 24, "limit": 200})
-	if err != nil {
-		t.Fatal(err)
-	}
-	out := result.(map[string]any)
-	from := parseBound(t, "window_from", out["window_from"])
-	to := parseBound(t, "window_to", out["window_to"])
+			result, err := mcpListMemory(testCtx(t), cfg, map[string]any{"source": "calendar", argument: 24, "limit": 200})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := result.(map[string]any)
+			from := parseBound(t, "window_from", out["window_from"])
+			to := parseBound(t, "window_to", out["window_to"])
 
-	if !to.Equal(boundsClock) {
-		t.Fatalf("window_to=%s is not the read instant %s", to, boundsClock)
-	}
-	if to.Sub(from) != 24*time.Hour {
-		t.Fatalf("window span %s does not equal the applied event_since_hours", to.Sub(from))
-	}
-	if from.Nanosecond() != boundsClock.Nanosecond() {
-		t.Fatalf("window_from lost sub-second precision: %s", from)
-	}
+			if !to.Equal(boundsClock) {
+				t.Fatalf("window_to=%s is not the read instant %s", to, boundsClock)
+			}
+			if to.Sub(from) != 24*time.Hour {
+				t.Fatalf("window span %s does not equal the applied event_since_hours", to.Sub(from))
+			}
+			if from.Nanosecond() != boundsClock.Nanosecond() {
+				t.Fatalf("window_from lost sub-second precision: %s", from)
+			}
 
-	rows := out["memories"].([]Memory)
-	if len(rows) != 2 || rows[0].ID != "on-the-bound" {
-		t.Fatalf("unexpected selection: %+v", rows)
-	}
-	// The receipt must round-trip as a closed interval: every row the kernel
-	// kept satisfies window_from <= event_at <= window_to. The row sitting on
-	// the bound is the one a truncated window_to would push out.
-	for _, row := range rows {
-		at, err := time.Parse(time.RFC3339Nano, row.EventAt)
-		if err != nil {
-			t.Fatalf("row %s event_at=%q: %v", row.ID, row.EventAt, err)
-		}
-		if at.Before(from) || at.After(to) {
-			t.Fatalf("row %s at %s falls outside the stated window [%s, %s]", row.ID, row.EventAt, from, to)
-		}
+			rows := out["memories"].([]Memory)
+			if len(rows) != 2 || rows[0].ID != "on-the-bound" {
+				t.Fatalf("unexpected selection: %+v", rows)
+			}
+			// The receipt must round-trip as a closed interval: every row the kernel
+			// kept satisfies window_from <= event_at <= window_to. The row sitting on
+			// the bound is the one a truncated window_to would push out.
+			for _, row := range rows {
+				at, err := time.Parse(time.RFC3339Nano, row.EventAt)
+				if err != nil {
+					t.Fatalf("row %s event_at=%q: %v", row.ID, row.EventAt, err)
+				}
+				if at.Before(from) || at.After(to) {
+					t.Fatalf("row %s at %s falls outside the stated window [%s, %s]", row.ID, row.EventAt, from, to)
+				}
+			}
+		})
 	}
 }
 
