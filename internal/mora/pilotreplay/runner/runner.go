@@ -27,6 +27,7 @@ func New(opts Options) (*Runner, error) {
 		return nil, err
 	}
 	limits := []string{
+		"filesystem writes outside the disposable workspace root are not test-verified",
 		"OS-level network namespace isolation is not verified by this runner; treat unverified network containment as a named blocker for real private cases.",
 		"No production vaults, connector stores or external write credentials are used; disposable dirs only.",
 		"Paid/external model calls are impossible in ordinary product commands and ordinary test runs.",
