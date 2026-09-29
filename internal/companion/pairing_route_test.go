@@ -1501,8 +1501,8 @@ func TestPairingRefusalsLandInTheSameTimingBucket(t *testing.T) {
 			t.Fatalf("%q landed in bucket %d and %q in bucket %d — the paths are separable by a stopwatch\n%v",
 				name, bucket, first, buckets[first], buckets)
 		}
-		if bucket < 1 {
-			t.Fatalf("%q answered inside the first bucket boundary (%v); the pad did not run\n%v", name, width, buckets)
+		if bucket != 1 {
+			t.Fatalf("%q answered in bucket %d, want bucket 1 (width %v)\n%v", name, bucket, width, buckets)
 		}
 	}
 }
