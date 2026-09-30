@@ -150,13 +150,85 @@ func TestAgentReadFailsClosedWithoutReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proposal after a receipt failure: %v", err)
 	}
-	result := got.(map[string]any)
+	result, ok := got.(map[string]any)
+	if !ok {
+		t.Fatalf("proposal result = %T; want object", got)
+	}
 	warning, _ := result["receipt_warning"].(string)
 	if !strings.Contains(warning, `mora: agent "muse" proposed receipt not written: `) || !strings.Contains(warning, filepath.Join(cfg.StateDir, "agents")) {
 		t.Fatalf("proposal receipt warning = %q; want agent, action and append error", warning)
 	}
 	if proposalIDOf(got) == "" {
 		t.Fatalf("proposal result lost after receipt failure: %s", mustJSON(t, got))
+	}
+}
+
+// A saved write must retain both diagnostics without inviting a duplicate retry.
+func TestAgentWritePreservesIndexWarningWithoutReceipt(t *testing.T) {
+	cfg := seedAgentFixture(t)
+	poisonInserts(t, cfg)
+	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.StateDir, "agents"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := museProfile()
+	p.Write = mcpWritePolicyOpen
+	got, err := callMCPTool(withAgentProfile(testCtx(t), p), "write_memory", map[string]any{
+		"title": "Saved with warnings", "text": "saved despite index and receipt failures",
+	})
+	if err != nil {
+		t.Fatalf("saved write must still succeed: %v", err)
+	}
+	result, ok := got.(map[string]any)
+	if !ok {
+		t.Fatalf("write result = %T; want object", got)
+	}
+	if stale, _ := result["index_stale"].(bool); !stale {
+		t.Fatalf("write lost index_stale: %v", result)
+	}
+	warning, _ := result["warning"].(string)
+	if !strings.Contains(warning, "mora index rebuild") || !strings.Contains(warning, "forced rebuild failure") {
+		t.Fatalf("index warning lost: %q", warning)
+	}
+	receiptWarning, _ := result["receipt_warning"].(string)
+	if !strings.Contains(receiptWarning, `mora: agent "muse" wrote receipt not written: `) || !strings.Contains(receiptWarning, filepath.Join(cfg.StateDir, "agents")) {
+		t.Fatalf("write receipt warning = %q; want agent, action and append error", receiptWarning)
+	}
+	memory, ok := result["memory"].(map[string]any)
+	if !ok || memory["id"] == "" || memory["id"] == nil || memory["title"] != "Saved with warnings" {
+		t.Fatalf("saved memory lost from write result: %v", result)
+	}
+	files, err := allMemoryFiles(cfg)
+	if err != nil || len(files) != 4 {
+		t.Fatalf("vault files after one write = %v, %v; want four", files, err)
+	}
+}
+
+func TestAgentFailedWriteIncludesReceiptError(t *testing.T) {
+	cfg := seedAgentFixture(t)
+	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.StateDir, "agents"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := museProfile()
+	p.Write = mcpWritePolicyOpen
+	got, err := callMCPTool(withAgentProfile(testCtx(t), p), "write_memory", map[string]any{"title": "Missing text"})
+	if err == nil || !strings.Contains(err.Error(), "title and text required") {
+		t.Fatalf("failed write = %v, %v; want original validation error", got, err)
+	}
+	if !strings.Contains(err.Error(), `mora: agent "muse" wrote receipt not written: `) || !strings.Contains(err.Error(), filepath.Join(cfg.StateDir, "agents")) {
+		t.Fatalf("failed write lost receipt diagnostic: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("failed write returned a success value: %v", got)
+	}
+	files, err := allMemoryFiles(cfg)
+	if err != nil || len(files) != 3 {
+		t.Fatalf("vault files after failed write = %v, %v; want original three", files, err)
 	}
 }
 

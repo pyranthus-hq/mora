@@ -127,7 +127,14 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 					// Successful mutations and proposals return object results.
 					// Keep any existing index warning and expose this diagnostic
 					// to both native callers and the MCP result envelope.
-					inv.value.(map[string]any)["receipt_warning"] = warning
+					result, ok := inv.value.(map[string]any)
+					if !ok || result == nil {
+						// Preserve success even if a future handler returns a
+						// different result shape after completing its mutation.
+						result = map[string]any{"result": inv.value}
+						inv.value = result
+					}
+					result["receipt_warning"] = warning
 				}
 			}
 		}
