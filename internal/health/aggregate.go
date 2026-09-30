@@ -119,7 +119,9 @@ func AggregateState(h Health) string {
 		}
 	}
 	for _, a := range h.Activities {
-		if a.State == operation.Stalled || a.State == operation.Failed {
+		// An operator-acknowledged owner_abandoned receipt stays visible as
+		// evidence but no longer convicts health (#498): the state was reviewed.
+		if (a.State == operation.Stalled || a.State == operation.Failed) && !a.Acknowledged() {
 			unhealthy = true
 		}
 	}

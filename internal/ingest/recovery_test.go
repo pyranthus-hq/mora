@@ -165,3 +165,61 @@ func TestCompactJournalCaseFoldDistinctFiles(t *testing.T) {
 		t.Fatalf("uncovered path lost: %s, %v", body, err)
 	}
 }
+
+func TestUncoveredRunIDsDistinguishesCoveredFromUncovered(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	covered := filepath.Join(t.TempDir(), "covered.md")
+	uncovered := filepath.Join(t.TempDir(), "uncovered.md")
+	for _, p := range []string{covered, uncovered} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeJournal(t, cfg, "gmail", "run r_cover 2026-01-01T00:00:00Z\n"+covered+"\n")
+	writeJournal(t, cfg, "filesystem", "run r_open 2026-01-01T00:00:00Z\n"+uncovered+"\n")
+	writeJournal(t, cfg, "empty", "run r_gone 2026-01-01T00:00:00Z\n/no/such/path.md\n")
+
+	seams := recoverySeams(false)
+	got, err := UncoveredRunIDs(cfg, map[string]bool{seams.CleanPath(covered): true}, seams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["r_cover"] || got["r_gone"] || !got["r_open"] || len(got) != 1 {
+		t.Fatalf("uncovered = %#v", got)
+	}
+}
+
+// Force the platform case-folding branch on every OS. Hard links model two
+// case variants naming one inode; distinct files must never count as covered.
+func TestUncoveredRunIDsCaseFoldIdentity(t *testing.T) {
+	for _, sameFile := range []bool{true, false} {
+		name := "distinct_files"
+		if sameFile {
+			name = "same_file"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			lower, upper := filepath.Join(root, "a.md"), filepath.Join(root, "A.md")
+			if err := os.WriteFile(lower, []byte("evidence"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(upper); err == nil {
+				if !sameFile {
+					t.Skip("requires a case-sensitive volume")
+				}
+			} else if sameFile {
+				if err := os.Link(lower, upper); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(upper, []byte("different"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := config.Config{StateDir: t.TempDir()}
+			writeJournal(t, cfg, "filesystem", "run r_test now\n"+upper+"\n")
+			got, err := uncoveredRunIDs(cfg, map[string]bool{lower: true}, recoverySeams(false), true)
+			if err != nil || got["r_test"] == sameFile {
+				t.Fatalf("sameFile=%v uncovered=%v err=%v", sameFile, got, err)
+			}
+		})
+	}
+}

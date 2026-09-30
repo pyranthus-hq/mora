@@ -78,19 +78,35 @@ type Record struct {
 	Phase         string `json:"phase"`
 	Counts        Counts `json:"counts"`
 	FailureCode   string `json:"failure_code,omitempty"`
+	// AcknowledgedAt records an operator's explicit review of a terminal
+	// owner_abandoned receipt (#498). It is never written by a writer, never
+	// inferred from age, and never turns a failure into a success: State stays
+	// Failed and FailureCode is preserved. Only the acknowledgement stops the
+	// receipt from reddening health and lets bounded terminal retention age it
+	// out. Optional, so records written before this field still load.
+	AcknowledgedAt string `json:"acknowledged_at,omitempty"`
 }
 
 // Activity is the sanitized, read-only health projection.
 type Activity struct {
-	Kind          Kind   `json:"kind"`
-	State         State  `json:"state"`
-	RunID         string `json:"run_id"`
-	StartedAt     string `json:"started_at,omitempty"`
-	LastHeartbeat string `json:"last_heartbeat,omitempty"`
-	FinishedAt    string `json:"finished_at,omitempty"`
-	Phase         string `json:"phase,omitempty"`
-	Counts        Counts `json:"counts"`
-	FailureCode   string `json:"failure_code,omitempty"`
+	Kind           Kind   `json:"kind"`
+	State          State  `json:"state"`
+	RunID          string `json:"run_id"`
+	StartedAt      string `json:"started_at,omitempty"`
+	LastHeartbeat  string `json:"last_heartbeat,omitempty"`
+	FinishedAt     string `json:"finished_at,omitempty"`
+	Phase          string `json:"phase,omitempty"`
+	Counts         Counts `json:"counts"`
+	FailureCode    string `json:"failure_code,omitempty"`
+	AcknowledgedAt string `json:"acknowledged_at,omitempty"`
+}
+
+// Acknowledged reports an operator's explicit review of a terminal
+// owner_abandoned receipt. Only that failure code can carry an acknowledgement
+// (classifyOperationRecord rejects any other), so an ordinary failure or a
+// stalled run can never be silenced through this field.
+func (a Activity) Acknowledged() bool {
+	return a.State == Failed && a.FailureCode == FailureOwnerAbandoned && a.AcknowledgedAt != ""
 }
 
 type Handle struct {
@@ -164,7 +180,20 @@ func newOperationRunID(now time.Time) string {
 	return "op_" + now.UTC().Format("20060102_150405") + "_" + hex.EncodeToString(suffix[:])
 }
 
+// Begin starts an operation. Without an ingest coverage probe, abandoned ingest
+// evidence is retained; index rebuild receipts need no journal coverage.
 func Begin(cfg config.Config, kind Kind, phase string, now time.Time) (Handle, error) {
+	return begin(cfg, kind, phase, now, nil)
+}
+
+// BeginIngest probes journal coverage under the receipt guard before cleanup.
+// A nil probe, nil verdict, probe error, or any uncovered evidence retains all
+// eligible receipts: journals identify only their first writer, not later runs.
+func BeginIngest(cfg config.Config, phase string, now time.Time, probe func() (UncoveredRuns, error)) (Handle, error) {
+	return begin(cfg, KindIngest, phase, now, probe)
+}
+
+func begin(cfg config.Config, kind Kind, phase string, now time.Time, probe func() (UncoveredRuns, error)) (Handle, error) {
 	if err := operationStateRootErr(cfg); err != nil {
 		return Handle{}, err
 	}
@@ -190,7 +219,12 @@ func Begin(cfg config.Config, kind Kind, phase string, now time.Time) (Handle, e
 		// it already holds the per-kind guard, so it cannot race another receipt
 		// transition. Require BOTH an expired heartbeat and a dead owner; a slow
 		// live writer, PID reuse, and corrupt evidence all fail closed.
-		if err := pruneDeadOwnerRecordsLocked(cfg, kind, now, ProcessAlive); err != nil {
+		retain := kind == KindIngest
+		if retain && probe != nil {
+			uncovered, err := probe()
+			retain = err != nil || uncovered == nil || len(uncovered) > 0
+		}
+		if err := pruneDeadOwnerRecordsLocked(cfg, kind, now, ProcessAlive, retain); err != nil {
 			return err
 		}
 		if _, err := os.Stat(path); err == nil {
@@ -205,10 +239,10 @@ func Begin(cfg config.Config, kind Kind, phase string, now time.Time) (Handle, e
 	return h, nil
 }
 
-// pruneDeadOwnerRecordsLocked removes abandoned running receipts before a new
+// pruneDeadOwnerRecordsLocked recovers abandoned running receipts before a new
 // writer starts. The caller must hold operationGuardPath(cfg, kind). It does not
 // repair or reinterpret malformed records; those remain visible to Activities.
-func pruneDeadOwnerRecordsLocked(cfg config.Config, kind Kind, now time.Time, live Liveness) error {
+func pruneDeadOwnerRecordsLocked(cfg config.Config, kind Kind, now time.Time, live Liveness, retain bool) error {
 	if live == nil {
 		live = ProcessAlive
 	}
@@ -230,19 +264,327 @@ func pruneDeadOwnerRecordsLocked(cfg config.Config, kind Kind, now time.Time, li
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
-		if err != nil || rec.State != Running || rec.OwnerPID <= 0 {
+		if err != nil || !abandonedDeadOwnerEligible(rec, kind, runID, now, live) {
 			continue
 		}
-		activity := classifyOperationRecord(rec, kind, runID, now, live)
-		heartbeat, err := time.Parse(time.RFC3339Nano, rec.HeartbeatAt)
-		if err != nil || activity.State != Stalled || now.Sub(heartbeat) <= HeartbeatTTL || live(rec.OwnerPID) {
-			continue
-		}
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := retireAbandonedRecordLocked(path, rec, now, retain); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// RetirementAction names how an abandoned running receipt was recovered.
+const (
+	RetirementRemoved         = "removed"
+	RetirementFailedUncovered = "failed_uncovered"
+	FailureOwnerAbandoned     = "owner_abandoned"
+)
+
+// Retirement is one abandoned-receipt recovery outcome. Removed receipts leave
+// no completion claim; uncovered receipts become terminal failed so publication
+// evidence survives instead of a fabricated success watermark.
+type Retirement struct {
+	RunID  string `json:"run_id"`
+	Action string `json:"action"`
+	Phase  string `json:"phase,omitempty"`
+	Counts Counts `json:"counts"`
+}
+
+// UncoveredRuns names ingest run ids whose journals still have uncovered
+// publication evidence. RetireAbandonedDeadOwners refuses to erase those
+// receipts; it marks them failed so health stays honest.
+type UncoveredRuns map[string]bool
+
+func abandonedDeadOwnerEligible(rec Record, kind Kind, runID string, now time.Time, live Liveness) bool {
+	if live == nil {
+		live = ProcessAlive
+	}
+	if rec.State != Running || rec.OwnerPID <= 0 {
+		return false
+	}
+	activity := classifyOperationRecord(rec, kind, runID, now, live)
+	heartbeat, err := time.Parse(time.RFC3339Nano, rec.HeartbeatAt)
+	if err != nil || activity.State != Stalled || now.Sub(heartbeat) <= HeartbeatTTL || live(rec.OwnerPID) {
+		return false
+	}
+	return true
+}
+
+// AbandonedReceipt is a recovery candidate, not an executed retirement action.
+type AbandonedReceipt struct {
+	RunID  string `json:"run_id"`
+	Phase  string `json:"phase,omitempty"`
+	Counts Counts `json:"counts"`
+}
+
+// ListAbandonedDeadOwners is the read-only planning seam for Doctor dry-run.
+// It never mutates receipts; live/slow owners, recent deaths, PID reuse, and
+// malformed records are omitted (fail closed).
+func ListAbandonedDeadOwners(cfg config.Config, kind Kind, now time.Time, live Liveness) ([]AbandonedReceipt, error) {
+	if err := operationStateRootErr(cfg); err != nil {
+		return nil, err
+	}
+	if !operationKindValid(kind) {
+		return nil, fmt.Errorf("invalid operation kind %q", kind)
+	}
+	if live == nil {
+		live = ProcessAlive
+	}
+	dir := filepath.Join(operationRoot(cfg), string(kind))
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []AbandonedReceipt
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		runID := strings.TrimSuffix(entry.Name(), ".json")
+		rec, err := LoadRecord(filepath.Join(dir, entry.Name()))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil || !abandonedDeadOwnerEligible(rec, kind, runID, now, live) {
+			continue
+		}
+		out = append(out, AbandonedReceipt{RunID: runID, Phase: rec.Phase, Counts: rec.Counts})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].RunID < out[j].RunID })
+	return out, nil
+}
+
+// RetireAbandonedDeadOwners recovers abandoned running receipts while holding
+// the per-kind guard. Requires BOTH an expired heartbeat and a confirmed-dead
+// owner — the same fail-closed gate as Begin's sibling prune.
+//
+// UncoveredRuns retain failure/publication evidence: those receipts become
+// terminal failed with FailureOwnerAbandoned and are never stamped completed.
+// Receipts without uncovered journal evidence are removed (dead liveness only;
+// no completion claim). Live/slow owners, recent deaths, PID reuse, and
+// malformed records are left untouched. A non-nil planned map limits mutations
+// to the named runs and expected dispositions; changed plans are left untouched.
+func RetireAbandonedDeadOwners(cfg config.Config, kind Kind, now time.Time, live Liveness, uncovered UncoveredRuns, planned map[string]string) ([]Retirement, error) {
+	if err := operationStateRootErr(cfg); err != nil {
+		return nil, err
+	}
+	if !operationKindValid(kind) {
+		return nil, fmt.Errorf("invalid operation kind %q", kind)
+	}
+	if live == nil {
+		live = ProcessAlive
+	}
+	if uncovered == nil {
+		uncovered = UncoveredRuns{}
+	}
+	var out []Retirement
+	err := leasefile.WithGuard(operationGuardPath(cfg, kind), func() error {
+		dir := filepath.Join(operationRoot(cfg), string(kind))
+		entries, err := os.ReadDir(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			path := filepath.Join(dir, entry.Name())
+			runID := strings.TrimSuffix(entry.Name(), ".json")
+			rec, err := LoadRecord(path)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil || !abandonedDeadOwnerEligible(rec, kind, runID, now, live) {
+				continue
+			}
+			action := RetirementRemoved
+			if uncovered[runID] {
+				action = RetirementFailedUncovered
+			}
+			if planned != nil && planned[runID] != action {
+				continue
+			}
+			if err := retireAbandonedRecordLocked(path, rec, now, uncovered[runID]); err != nil {
+				return err
+			}
+			out = append(out, Retirement{RunID: runID, Action: action, Phase: rec.Phase, Counts: rec.Counts})
+		}
+		return nil
+	})
+	if err != nil {
+		return out, err
+	}
+	if len(out) > 0 {
+		PruneTerminal(cfg, kind)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].RunID < out[j].RunID })
+	return out, nil
+}
+
+// retireAbandonedRecordLocked shares the guarded transition between Doctor and
+// Begin. Preserve phase/counts; abandoning ownership never proves completion.
+func retireAbandonedRecordLocked(path string, rec Record, now time.Time, retain bool) error {
+	if retain {
+		stamp := now.UTC().Format(time.RFC3339Nano)
+		rec.State = Failed
+		rec.HeartbeatAt = stamp
+		rec.FinishedAt = stamp
+		rec.FailureCode = FailureOwnerAbandoned
+		return SaveRecord(path, rec)
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// AcknowledgementRecorded / AcknowledgementAlready name how one reviewed
+// receipt was handled. "already_acknowledged" keeps a repeated apply honest: it
+// reports the original review stamp instead of claiming fresh work.
+const (
+	AcknowledgementRecorded = "acknowledged"
+	AcknowledgementAlready  = "already_acknowledged"
+)
+
+// Acknowledgement is one operator-reviewed abandoned receipt. AcknowledgedAt is
+// the stamp actually on disk, so a repeated apply reports the first review time.
+type Acknowledgement struct {
+	RunID          string `json:"run_id"`
+	Action         string `json:"action"`
+	Phase          string `json:"phase,omitempty"`
+	Counts         Counts `json:"counts"`
+	AcknowledgedAt string `json:"acknowledged_at"`
+}
+
+// acknowledgeableActivity reports whether a classified record is a terminal
+// owner_abandoned receipt — the only shape an operator may acknowledge. Corrupt
+// records classify with a different failure code, so they fail closed.
+func acknowledgeableActivity(a Activity) bool {
+	return a.State == Failed && a.FailureCode == FailureOwnerAbandoned && a.FinishedAt != ""
+}
+
+// ListUnacknowledgedAbandoned is the read-only planning seam for the Doctor
+// acknowledge action (#498). It reports terminal owner_abandoned receipts the
+// operator has not reviewed yet — the permanently-red state that no writer,
+// rebuild, or age-based prune can ever clear. It never mutates a receipt.
+func ListUnacknowledgedAbandoned(cfg config.Config, kind Kind, now time.Time) ([]AbandonedReceipt, error) {
+	if err := operationStateRootErr(cfg); err != nil {
+		return nil, err
+	}
+	if !operationKindValid(kind) {
+		return nil, fmt.Errorf("invalid operation kind %q", kind)
+	}
+	dir := filepath.Join(operationRoot(cfg), string(kind))
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []AbandonedReceipt
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		runID := strings.TrimSuffix(entry.Name(), ".json")
+		rec, err := LoadRecord(filepath.Join(dir, entry.Name()))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			continue
+		}
+		a := classifyOperationRecord(rec, kind, runID, now, ProcessAlive)
+		if !acknowledgeableActivity(a) || a.AcknowledgedAt != "" {
+			continue
+		}
+		out = append(out, AbandonedReceipt{RunID: runID, Phase: rec.Phase, Counts: rec.Counts})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].RunID < out[j].RunID })
+	return out, nil
+}
+
+// AcknowledgeAbandoned records an operator's explicit review of the named
+// terminal owner_abandoned receipts while holding the per-kind guard.
+//
+// It never invents completion: State stays Failed and FailureCode, phase, and
+// counts are preserved untouched. The only change is the acknowledged_at stamp,
+// which stops the receipt reddening health and returns it to bounded terminal
+// retention. planned is required and names exact run ids — there is no "all"
+// form and no age-based trigger, because the whole point of #498 is that this
+// evidence only ever disappears behind a deliberate human decision.
+//
+// A receipt that is already acknowledged is reported, not re-stamped; a missing,
+// non-terminal, differently-failed, or malformed receipt is left untouched and
+// omitted, so a caller can verify the requested set against what was achieved.
+func AcknowledgeAbandoned(cfg config.Config, kind Kind, now time.Time, planned []string) ([]Acknowledgement, error) {
+	if err := operationStateRootErr(cfg); err != nil {
+		return nil, err
+	}
+	if !operationKindValid(kind) {
+		return nil, fmt.Errorf("invalid operation kind %q", kind)
+	}
+	if len(planned) == 0 {
+		return nil, errors.New("acknowledging an abandoned receipt requires explicit run ids")
+	}
+	targets := map[string]bool{}
+	for _, runID := range planned {
+		if !validOperationToken(runID) {
+			return nil, fmt.Errorf("invalid acknowledged run id %q", runID)
+		}
+		targets[runID] = true
+	}
+	ids := make([]string, 0, len(targets))
+	for runID := range targets {
+		ids = append(ids, runID)
+	}
+	sort.Strings(ids)
+	stamp := now.UTC().Format(time.RFC3339Nano)
+	var out []Acknowledgement
+	err := leasefile.WithGuard(operationGuardPath(cfg, kind), func() error {
+		for _, runID := range ids {
+			path := Path(cfg, kind, runID)
+			rec, err := LoadRecord(path)
+			if errors.Is(err, os.ErrNotExist) {
+				continue // already removed by bounded retention; nothing to review
+			}
+			if err != nil {
+				continue // malformed evidence is never rewritten
+			}
+			if !acknowledgeableActivity(classifyOperationRecord(rec, kind, runID, now, ProcessAlive)) {
+				continue
+			}
+			if rec.AcknowledgedAt != "" {
+				out = append(out, Acknowledgement{RunID: runID, Action: AcknowledgementAlready,
+					Phase: rec.Phase, Counts: rec.Counts, AcknowledgedAt: rec.AcknowledgedAt})
+				continue
+			}
+			rec.AcknowledgedAt = stamp
+			if err := SaveRecord(path, rec); err != nil {
+				return err
+			}
+			out = append(out, Acknowledgement{RunID: runID, Action: AcknowledgementRecorded,
+				Phase: rec.Phase, Counts: rec.Counts, AcknowledgedAt: stamp})
+		}
+		return nil
+	})
+	if err != nil {
+		return out, err
+	}
+	// Acknowledged receipts rejoin bounded terminal history, so this is the
+	// terminal-writer transition that is allowed to prune.
+	if len(out) > 0 {
+		PruneTerminal(cfg, kind)
+	}
+	return out, nil
 }
 
 func Heartbeat(cfg config.Config, h Handle, phase string, counts Counts, now time.Time) error {
@@ -403,13 +745,21 @@ func Activities(cfg config.Config, now time.Time, live Liveness) []Activity {
 			out = append(out, classifyOperationRecord(rec, kind, pathRunID, now, live))
 		}
 	}
-	// Retain every active/stalled/corrupt record plus only the newest valid
+	// Retain every active/stalled/corrupt/abandoned record plus the newest valid
 	// terminal record per kind. Older terminals remain on disk as bounded audit
-	// evidence, but an old failure must not keep health red after a newer success.
+	// evidence. Ordinary old failures yield to newer successes; owner_abandoned
+	// receipts never compete for the one-per-kind slot, acknowledged or not.
+	// Acknowledgement must not evict an unrelated terminal record from this slot:
+	// an acknowledged receipt is green, so whatever it displaced would vanish from
+	// Activities entirely — silencing an older, unreviewed ordinary failure. What
+	// bounds an acknowledged receipt is PruneTerminal, which re-admits it to the
+	// TerminalKeep bucket on disk; and AggregateState, BannerAll and the doctor
+	// check each consult Acknowledged() themselves, so it still stops reddening
+	// health without being filtered here.
 	latestTerminal := map[Kind]Activity{}
 	var current []Activity
 	for _, a := range out {
-		if (a.State == Failed || a.State == Completed) && a.FinishedAt != "" {
+		if a.FailureCode != FailureOwnerAbandoned && (a.State == Failed || a.State == Completed) && a.FinishedAt != "" {
 			prev, ok := latestTerminal[a.Kind]
 			if !ok || a.FinishedAt > prev.FinishedAt || (a.FinishedAt == prev.FinishedAt && a.RunID > prev.RunID) {
 				latestTerminal[a.Kind] = a
@@ -471,6 +821,11 @@ func classifyOperationRecord(rec Record, pathKind Kind, pathRunID string, now ti
 			return bad("incoherent_state")
 		}
 	}
+	// Only a terminal owner_abandoned receipt can be acknowledged. Anywhere else
+	// the field is incoherent evidence, not a licence to green the check.
+	if rec.AcknowledgedAt != "" && (rec.State != Failed || rec.FailureCode != FailureOwnerAbandoned) {
+		return bad("incoherent_state")
+	}
 	if rec.Counts.Items < 0 || rec.Counts.Files < 0 || rec.Counts.Errors < 0 {
 		return bad("invalid_counts")
 	}
@@ -482,11 +837,19 @@ func classifyOperationRecord(rec Record, pathKind Kind, pathRunID string, now ti
 		if ferr != nil || finished.Before(started) || finished.Before(heartbeat) || finished.After(now.Add(time.Minute)) {
 			return bad("invalid_timestamp")
 		}
+		// A review cannot predate the failure it reviewed, nor come from the future.
+		if rec.AcknowledgedAt != "" {
+			acknowledged, aerr := time.Parse(time.RFC3339Nano, rec.AcknowledgedAt)
+			if aerr != nil || acknowledged.Before(finished) || acknowledged.After(now.Add(time.Minute)) {
+				return bad("invalid_timestamp")
+			}
+		}
 	}
 	a := Activity{
 		Kind: rec.Kind, State: rec.State, RunID: rec.RunID,
 		StartedAt: rec.StartedAt, LastHeartbeat: rec.HeartbeatAt, FinishedAt: rec.FinishedAt,
 		Phase: sanitizeOperationPhase(rec.Phase), Counts: rec.Counts, FailureCode: rec.FailureCode,
+		AcknowledgedAt: rec.AcknowledgedAt,
 	}
 	if rec.State == Running {
 		switch {
@@ -627,6 +990,23 @@ func CompleteAfterCoverage(cfg config.Config, runID string, now time.Time) error
 	return err
 }
 
+// coherentAcknowledgement reports whether rec carries an acknowledgement a reader
+// may act on: only a terminal failed / owner_abandoned receipt can hold one, and
+// the stamp must parse and not predate the failure it reviewed. Pruning uses this
+// rather than a bare AcknowledgedAt != "" check so a stamp that health classifies
+// as corrupt (classifyOperationRecord returns incoherent_state/invalid_timestamp)
+// cannot buy the receipt its way into bounded retention. The future-stamp half of
+// that check needs a clock the pruner does not have; such a record is still
+// corrupt to health, so it stays red and visible either way.
+func coherentAcknowledgement(rec Record) bool {
+	if rec.AcknowledgedAt == "" || rec.State != Failed || rec.FailureCode != FailureOwnerAbandoned {
+		return false
+	}
+	finished, ferr := time.Parse(time.RFC3339Nano, rec.FinishedAt)
+	acknowledged, aerr := time.Parse(time.RFC3339Nano, rec.AcknowledgedAt)
+	return ferr == nil && aerr == nil && !acknowledged.Before(finished)
+}
+
 // PruneTerminal bounds retained completion evidence. It runs only
 // after a writer publishes a terminal transition; health/status reads stay pure.
 func PruneTerminal(cfg config.Config, kind Kind) {
@@ -643,7 +1023,10 @@ func PruneTerminal(cfg config.Config, kind Kind) {
 		}
 		path := filepath.Join(dir, e.Name())
 		rec, err := LoadRecord(path)
-		if err == nil && (rec.State == Failed || rec.State == Completed) {
+		// Uncovered abandonment is recovery evidence, not bounded completion
+		// history. A later successful run must not age it out — only an explicit
+		// operator acknowledgement returns it to bounded terminal retention.
+		if err == nil && (rec.FailureCode != FailureOwnerAbandoned || coherentAcknowledgement(rec)) && (rec.State == Failed || rec.State == Completed) {
 			terms = append(terms, terminal{path: path, finished: rec.FinishedAt})
 		}
 	}

@@ -124,6 +124,89 @@ active/stalled/corrupt receipt), so an old failure cannot keep health red after 
 newer success. On-disk terminal retention is bounded to 16 per kind and pruned only
 by a terminal writer.
 
+The next writer of the same operation kind may remove an abandoned `running`
+receipt that has both an expired heartbeat and a confirmed-dead owner (see
+issue #471 / PR #478). That cleanup does not assert completion. Doctor
+`--repair` exposes a separate approved action, `retire_abandoned_ingest`, for
+the rebuild-only residual (#498): journal-absent orphans are removed as dead
+liveness only; orphans whose journals still have uncovered publication paths
+are marked terminal `failed` with `owner_abandoned` so evidence survives and
+health is never greened by inventing `completed` without committed coverage.
+Read-only `mora doctor` / health / status paths still never mutate receipts.
+
+### Operator recovery for a retained `owner_abandoned` receipt
+
+A receipt retained as terminal `failed` / `owner_abandoned` is **red forever** by
+design: `Activities` always surfaces it, `PruneTerminal` deliberately never ages
+it out, the receipt is no longer `running` so no retirement is ever re-planned,
+and `CompleteAfterCoverage` returns early on `failed` so no later ingest or
+rebuild clears it either. The only exit is a deliberate human decision, so
+doctor names both the state and the way out instead of printing a bare field
+dump. Human `mora doctor` prints, under the activity line:
+
+- **cause** — the ingest owner process died mid-run (heartbeat expired, owner
+  gone) and nothing will ever clear the receipt on its own;
+- **data impact** — `RecordPublishedPath` journals a vault path only *after* the
+  file is published, so the files that run already wrote are durable **in the
+  vault**; it is the derived index that has not covered them. Whatever the run
+  had not fetched yet never arrived at all;
+- **recovery** — `mora index rebuild` indexes what landed (a rebuild is what
+  covers a journaled path, via `CompactJournal`), then `mora sync <source-type>`
+  refetches the rest. Receipts carry no source identity, so the source is a
+  placeholder, never a guess — and `mora sync` takes a source *type* from a fixed
+  vocabulary, not an instance name, so the guidance points at `mora sync`'s own
+  usage list. Then `mora doctor --repair --dry-run --json` to preview and
+  `mora doctor --repair --yes --json` to acknowledge.
+
+The published count in the data-impact line is `counts.materialized`, never
+`counts.files`: `files` is an **index_rebuild** field (`len(files)` in the vault)
+and no ingest writer sets it, so reading it reported "0 published" on every real
+receipt — the exact opposite of why the receipt was retained. `materialized` is
+what ingest records as published (`items` mirrors it), and it is itself `0` when
+the owner died before the `awaiting_rebuild` heartbeat reported real counts — the
+common case, since the `ingesting` heartbeat writes empty counts. Retention alone
+proves work landed (`UncoveredRunIDs` needs an uncovered journal *path* line, not
+just a header), so with no counts the line says the number is unknown rather than
+claiming nothing landed.
+
+Acknowledgement is Doctor's `acknowledge_abandoned_ingest` `--repair` action, a
+sibling of `retire_abandoned_ingest` on the same plan / `--yes` / idempotent
+apply / before-after verification plumbing. `ListUnacknowledgedAbandoned` plans
+it read-only over exact run ids; `AcknowledgeAbandoned` requires that explicit
+id list — there is no "all" form and no age-based trigger. The apply adds only
+`acknowledged_at` to the record: `state` stays `failed`, `failure_code` stays
+`owner_abandoned`, and phase/counts are untouched, so no `completed` is invented
+and no coverage is claimed. Verification re-reads the unacknowledged set and
+fails the action if any planned receipt is still in it. A receipt already
+acknowledged is reported as `already_acknowledged` with its original stamp
+rather than re-stamped, which makes a repeated apply idempotent; a second
+`--repair` run plans nothing.
+
+Only a terminal `owner_abandoned` receipt may carry `acknowledged_at`;
+classification rejects the field anywhere else, and rejects a stamp that
+predates the failure or comes from the future. An acknowledged receipt stops
+reddening `operation_healthy:<kind>:<run>`, `AggregateState`, and the health
+banner, and it rejoins ordinary bounded terminal retention (so acknowledgement —
+and nothing else — is also what bounds accumulation). An **un**acknowledged one
+still never ages out. The receipt itself stays visible in `activities` with its
+truthful `failed` / `owner_abandoned` state plus the acknowledgement stamp until
+bounded retention retires it. Read-only `mora doctor` / health / status paths
+print this guidance without mutating anything; the acknowledgement happens only
+under `--repair` with `--yes`.
+
+`owner_abandoned` receipts never compete for `Activities`' one newest-terminal
+slot per kind, acknowledged or not. That slot is where ordinary old failures yield
+to newer successes; letting an acknowledged receipt win it would evict whatever
+held it, and because the acknowledged receipt is green the evicted record would
+vanish from `doctor` and stop counting in `AggregateState` — silencing an older,
+unreviewed ordinary failure. `PruneTerminal` is what bounds an acknowledged
+receipt (it re-admits it to the `TerminalKeep` bucket on disk), and
+`AggregateState`, `BannerAll` and the doctor check each consult `Acknowledged()`
+themselves, so the receipt stops reddening health without any filtering in
+`Activities`. `PruneTerminal` reads the stamp through the same coherence rules
+classification applies, so a stamp health calls corrupt cannot buy a receipt into
+bounded retention and age off disk while doctor still shows it red.
+
 Every `ingestSource` begins its receipt and a run-id-bound journal header before
 provider dispatch can publish a vault byte. A bounded heartbeat keeps long fetches and batch-wait time
 live; clean ingest stops at `awaiting_rebuild`. It becomes `completed` only when a
