@@ -119,7 +119,7 @@ func TestDoctorRebuildRepairCoveredJournalConverges(t *testing.T) {
 	if err := os.WriteFile(memory, []byte("---\nid: covered\ntitle: Covered memory\ntype: note\n---\nA journaled memory.\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	journal := ingestpkg.JournalPath(cfg, "filesystem:covered")
+	journal := ingestpkg.JournalPath(cfg, ingestpkg.SourceKey("filesystem", "covered"))
 	if err := os.MkdirAll(filepath.Dir(journal), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestDoctorRepairsContinueAfterRebuildVerificationFailure(t *testing.T) {
 	if err := os.WriteFile(outside, []byte("outside vault"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	journal := ingestpkg.JournalPath(cfg, "filesystem:uncovered")
+	journal := ingestpkg.JournalPath(cfg, ingestpkg.SourceKey("filesystem", "uncovered"))
 	if err := os.MkdirAll(filepath.Dir(journal), 0700); err != nil {
 		t.Fatal(err)
 	}
