@@ -815,8 +815,14 @@ The JSON report separates raw `observed` probe results from typed `diagnosis`.
 When Mora cannot prove a cause, it reports `cause_unverified`; it does not infer
 a permission problem from connector error prose. `--repair --dry-run --json`
 returns the exact safe mutation plan without changing state. Applying that plan
-requires `--yes`, records before/after verification for every action, and is
-idempotent. Doctor never applies unsafe or destructive repairs.
+requires `--yes` and records before/after verification for every action. An index
+rebuild is verified only when `index_db`, `index_fresh`, and
+`index_matches_vault` pass afterward. If a check remains failed, repair exits
+with an error and reports `verified: false` with a `detail` explaining the
+unresolved condition and why another repair would be planned. For example, a
+journal path outside the vault cannot be covered by rebuilding; its evidence
+is preserved for investigation. Successful repairs are not planned again while
+their checks remain healthy. Doctor never applies unsafe or destructive repairs.
 
 `mora doctor --json` emits the `mora.doctor.report` v1 receipt — the same report
 it always printed, now with `schema` and `schema_version` beside its existing
