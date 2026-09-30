@@ -145,6 +145,9 @@ func CompactJournal(cfg config.Config, sourceKey string, listed map[string]bool,
 // retired by CompactJournal once no live lease remains. Callers that cannot prove
 // committed coverage must retain failure evidence for these runs rather than
 // inventing completion or erasing the receipt to silence health.
+// Headers identify only the first writer: later runs may append to the same
+// journal. The empty key represents uncovered evidence without a valid header.
+// A nonempty result therefore cannot prove that any other receipt is safe to erase.
 func UncoveredRunIDs(cfg config.Config, listed map[string]bool, seams RecoverySeams) (map[string]bool, error) {
 	out := map[string]bool{}
 	entries, err := os.ReadDir(JournalRoot(cfg))
@@ -215,9 +218,7 @@ func UncoveredRunIDs(cfg config.Config, listed map[string]bool, seams RecoverySe
 		if !uncovered {
 			continue
 		}
-		if runID := HeaderRunID(header, seams.ValidToken); runID != "" {
-			out[runID] = true
-		}
+		out[HeaderRunID(header, seams.ValidToken)] = true
 	}
 	return out, nil
 }

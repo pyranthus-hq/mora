@@ -69,10 +69,23 @@ func listAbandonedDeadOwners(cfg Config, kind operationKind, now time.Time, live
 	return operation.ListAbandonedDeadOwners(cfg, kind, now, live)
 }
 
-func retireAbandonedDeadOwners(cfg Config, kind operationKind, now time.Time, live operationLiveness, uncovered map[string]bool) ([]operation.Retirement, error) {
-	return operation.RetireAbandonedDeadOwners(cfg, kind, now, live, uncovered)
+func retireAbandonedDeadOwners(cfg Config, kind operationKind, now time.Time, live operationLiveness, uncovered map[string]bool, planned map[string]string) ([]operation.Retirement, error) {
+	return operation.RetireAbandonedDeadOwners(cfg, kind, now, live, uncovered, planned)
 }
 
 func uncoveredIngestRunIDs(cfg Config) (map[string]bool, error) {
-	return ingestpkg.UncoveredRunIDs(cfg, map[string]bool{}, ingestRecoverySeams())
+	uncovered, err := ingestpkg.UncoveredRunIDs(cfg, map[string]bool{}, ingestRecoverySeams())
+	if err != nil || len(uncovered) == 0 {
+		return uncovered, err
+	}
+	// Journals have only the first writer's header and receipts have no source
+	// identity. Retain every abandoned ingest receipt when attribution is ambiguous.
+	abandoned, err := listAbandonedDeadOwners(cfg, operationKindIngest, doctorClock(), operationProcessAlive)
+	if err != nil {
+		return nil, err
+	}
+	for _, rec := range abandoned {
+		uncovered[rec.RunID] = true
+	}
+	return uncovered, nil
 }

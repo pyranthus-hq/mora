@@ -230,7 +230,7 @@ func TestDoctorRetireAbandonedIngestDryRunApplyAndIdempotent(t *testing.T) {
 	for _, action := range dryReport.RepairPlan {
 		if action.ID == "retire_abandoned_ingest" {
 			found = action.Safe && action.ApprovalRequired && action.Mutation == "retire_dead_owner_receipts" &&
-				strings.Contains(action.Target, "op_doctor_orphan") && strings.Contains(action.Target, "op_doctor_uncovered")
+				action.Target == "op_doctor_orphan=failed_uncovered,op_doctor_uncovered=failed_uncovered"
 		}
 	}
 	if !found || !dryReport.Repairable || len(dryReport.Verification) != 0 {
@@ -257,8 +257,8 @@ func TestDoctorRetireAbandonedIngestDryRunApplyAndIdempotent(t *testing.T) {
 	if !verified {
 		t.Fatalf("verification = %+v", applied.Verification)
 	}
-	if _, err := os.Stat(operation.Path(cfg, operationKindIngest, orphan.RunID)); !os.IsNotExist(err) {
-		t.Fatalf("journal-absent orphan not removed: %v", err)
+	if rec, err := operation.LoadRecord(operation.Path(cfg, operationKindIngest, orphan.RunID)); err != nil || rec.State != operationFailed {
+		t.Fatalf("ambiguous orphan not retained: %+v, %v", rec, err)
 	}
 	rec, err := operation.LoadRecord(operation.Path(cfg, operationKindIngest, uncovered.RunID))
 	if err != nil || rec.State != operationFailed || rec.FailureCode != operation.FailureOwnerAbandoned || rec.Counts.Items != 7 {
@@ -314,5 +314,165 @@ func TestDoctorReadOnlyDoesNotRetireAbandonedIngest(t *testing.T) {
 	after, _ := os.ReadFile(path)
 	if string(before) != string(after) {
 		t.Fatal("read-only doctor mutated orphan receipt")
+	}
+}
+
+func TestDoctorRetirementReviewRegressions(t *testing.T) {
+	for _, journalHeader := range []string{"op_earlier_run", ""} {
+		t.Run("ambiguous_"+journalHeader, func(t *testing.T) {
+			withTempHome(t)
+			run(t, "init")
+			cfg := mustConfig(t)
+			now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+			setDoctorClock(t, now)
+			oldAlive := operationProcessAlive
+			t.Cleanup(func() { operationProcessAlive = oldAlive })
+			operationProcessAlive = func(int) bool { return false }
+			rec := operationRecord{SchemaVersion: operationSchemaVersion, Kind: operationKindIngest, State: operationRunning, RunID: "op_later_run", OwnerPID: 4242, StartedAt: now.Add(-time.Hour).Format(time.RFC3339Nano), HeartbeatAt: now.Add(-time.Hour).Format(time.RFC3339Nano), Phase: "awaiting_rebuild", Counts: operationCounts{Items: 9}}
+			path := operation.Path(cfg, operationKindIngest, rec.RunID)
+			if err := saveOperationRecord(path, rec); err != nil {
+				t.Fatal(err)
+			}
+			published := filepath.Join(t.TempDir(), "published.md")
+			if err := os.WriteFile(published, []byte("x"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			journal := filepath.Join(cfg.StateDir, "ingest", "filesystem", "journal.log")
+			if err := os.MkdirAll(filepath.Dir(journal), 0700); err != nil {
+				t.Fatal(err)
+			}
+			body := published + "\n"
+			if journalHeader != "" {
+				body = "run " + journalHeader + " now\n" + body
+			}
+			if err := os.WriteFile(journal, []byte(body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			plan := planDoctorRepairs(nil, cfg, "", now)
+			if len(plan) != 1 || plan[0].Target != "op_later_run=failed_uncovered" {
+				t.Errorf("preview does not disclose retention: %+v", plan)
+			}
+			results, err := applyDoctorRepairs(context.Background(), cfg, plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := operation.LoadRecord(path)
+			if err != nil || got.State != operationFailed || got.Counts.Items != 9 {
+				t.Fatalf("ambiguous receipt lost: %+v, %v; verification=%+v", got, err, results)
+			}
+		})
+	}
+	t.Run("terminal_transition_is_not_retirement", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+		setDoctorClock(t, now)
+		oldAlive := operationProcessAlive
+		t.Cleanup(func() { operationProcessAlive = oldAlive })
+		operationProcessAlive = func(int) bool { return false }
+		rec := operationRecord{SchemaVersion: operationSchemaVersion, Kind: operationKindIngest, State: operationRunning, RunID: "op_changed", OwnerPID: 4242, StartedAt: now.Add(-time.Hour).Format(time.RFC3339Nano), HeartbeatAt: now.Add(-time.Hour).Format(time.RFC3339Nano), Phase: "awaiting_rebuild"}
+		path := operation.Path(cfg, operationKindIngest, rec.RunID)
+		if err := saveOperationRecord(path, rec); err != nil {
+			t.Fatal(err)
+		}
+		plan := planDoctorRepairs(nil, cfg, "", now)
+		if len(plan) != 1 || plan[0].Target != "op_changed=removed" {
+			t.Errorf("preview does not disclose removal: %+v", plan)
+		}
+		rec.State = operationCompleted
+		rec.Phase = "journal_retired"
+		rec.FinishedAt = now.Format(time.RFC3339Nano)
+		if err := saveOperationRecord(path, rec); err != nil {
+			t.Fatal(err)
+		}
+		results, err := applyDoctorRepairs(context.Background(), cfg, plan)
+		if err == nil || len(results) != 1 || results[0].Verified {
+			t.Fatalf("claimed work not performed: %+v, %v", results, err)
+		}
+	})
+}
+
+func TestDoctorRetirementPlanScopeAndRebuildOrder(t *testing.T) {
+	for _, scenario := range []string{"remove", "evidence_changed", "rebuild"} {
+		t.Run(scenario, func(t *testing.T) {
+			withTempHome(t)
+			run(t, "init")
+			cfg := mustConfig(t)
+			now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+			setDoctorClock(t, now)
+			oldAlive := operationProcessAlive
+			t.Cleanup(func() { operationProcessAlive = oldAlive })
+			operationProcessAlive = func(int) bool { return false }
+			rec := operationRecord{SchemaVersion: operationSchemaVersion, Kind: operationKindIngest, State: operationRunning, RunID: "op_planned", OwnerPID: 4242, StartedAt: now.Add(-time.Hour).Format(time.RFC3339Nano), HeartbeatAt: now.Add(-time.Hour).Format(time.RFC3339Nano), Phase: "awaiting_rebuild", Counts: operationCounts{Items: 3}}
+			path := operation.Path(cfg, operationKindIngest, rec.RunID)
+			if err := saveOperationRecord(path, rec); err != nil {
+				t.Fatal(err)
+			}
+			publish := func() {
+				t.Helper()
+				file := filepath.Join(cfg.VaultDir, "review-fixture.md")
+				if err := os.WriteFile(file, []byte("---\nid: review-fixture\ntitle: Review fixture\ntype: note\n---\nFixture body.\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				journal := filepath.Join(cfg.StateDir, "ingest", "filesystem", "journal.log")
+				if err := os.MkdirAll(filepath.Dir(journal), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(journal, []byte("run op_planned now\n"+file+"\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var checks []doctorCheck
+			if scenario == "rebuild" {
+				publish()
+				checks = []doctorCheck{{Name: "index_fresh", OK: false}}
+			}
+			plan := planDoctorRepairs(checks, cfg, "", now)
+			if scenario == "evidence_changed" {
+				publish()
+			}
+			if scenario == "rebuild" && (len(plan) != 2 || plan[0].ID != "retire_abandoned_ingest" || plan[1].ID != "rebuild_index") {
+				t.Fatalf("unsafe ordering: %+v", plan)
+			}
+			// A newly discovered abandoned receipt was not approved by this plan.
+			rec.RunID = "op_unplanned"
+			unplanned := operation.Path(cfg, operationKindIngest, rec.RunID)
+			if err := saveOperationRecord(unplanned, rec); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(unplanned)
+			if err != nil {
+				t.Fatal(err)
+			}
+			results, err := applyDoctorRepairs(context.Background(), cfg, plan)
+			if scenario == "evidence_changed" {
+				if err == nil || results[0].Verified || !strings.Contains(results[0].Detail, "skipped op_planned") {
+					t.Fatalf("changed evidence accepted: %+v, %v", results, err)
+				}
+				got, err := operation.LoadRecord(path)
+				if err != nil || got.State != operationRunning {
+					t.Fatalf("changed plan mutated receipt: %+v, %v", got, err)
+				}
+			} else {
+				if err != nil || !results[0].Verified || len(results[0].Retirements) != 1 {
+					t.Fatalf("retirement not verified: %+v, %v", results, err)
+				}
+				if scenario == "remove" {
+					if _, err := os.Stat(path); !os.IsNotExist(err) {
+						t.Fatalf("receipt not removed: %v", err)
+					}
+				} else {
+					got, err := operation.LoadRecord(path)
+					if err != nil || got.State != operationFailed || got.FailureCode != operation.FailureOwnerAbandoned {
+						t.Fatalf("rebuild replaced retirement: %+v, %v", got, err)
+					}
+				}
+			}
+			after, err := os.ReadFile(unplanned)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("unplanned receipt mutated: %s, %v", after, err)
+			}
+		})
 	}
 }

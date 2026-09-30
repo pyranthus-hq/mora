@@ -16,6 +16,7 @@ import (
 	"github.com/pyranthus-hq/mora/internal/google"
 	healthpkg "github.com/pyranthus-hq/mora/internal/health"
 	"github.com/pyranthus-hq/mora/internal/imessage"
+	"github.com/pyranthus-hq/mora/internal/operation"
 	"github.com/pyranthus-hq/mora/internal/whatsapp"
 )
 
@@ -84,10 +85,12 @@ type doctorRepairAction struct {
 }
 
 type doctorVerification struct {
-	ActionID string `json:"action_id"`
-	Before   string `json:"before"`
-	After    string `json:"after"`
-	Verified bool   `json:"verified"`
+	ActionID    string                 `json:"action_id"`
+	Before      string                 `json:"before"`
+	After       string                 `json:"after"`
+	Verified    bool                   `json:"verified"`
+	Retirements []operation.Retirement `json:"retirements,omitempty"`
+	Detail      string                 `json:"detail,omitempty"`
 }
 
 func buildDoctorDiagnostics(checks []doctorCheck, sources []sourceHealth, now time.Time) ([]doctorObservation, []doctorDiagnosis) {
@@ -153,24 +156,30 @@ func planDoctorRepairs(checks []doctorCheck, cfg Config, tokenDir string, now ti
 			})
 		}
 	}
-	if doctorCheckFailed(checks, "index_db") || doctorCheckFailed(checks, "index_fresh") || doctorCheckFailed(checks, "index_matches_vault") {
-		actions = append(actions, doctorRepairAction{
-			ID: "rebuild_index", Mutation: "rebuild_derived_index", Target: dbPath(cfg),
-			Safe: true, ApprovalRequired: true,
-		})
-	}
 	// Orphaned ingest receipts: expired heartbeat + confirmed-dead owner. Rebuild-only
 	// does not prune them (#478 is same-kind Begin). Plan names exact run ids; apply
 	// never invents completion and retains uncovered journal evidence as failed.
-	if abandoned, err := listAbandonedDeadOwners(cfg, operationKindIngest, now, operationProcessAlive); err == nil && len(abandoned) > 0 {
+	uncovered, coverageErr := uncoveredIngestRunIDs(cfg)
+	if abandoned, err := listAbandonedDeadOwners(cfg, operationKindIngest, now, operationProcessAlive); err == nil && coverageErr == nil && len(abandoned) > 0 {
 		runs := make([]string, 0, len(abandoned))
 		for _, r := range abandoned {
-			runs = append(runs, r.RunID)
+			disposition := operation.RetirementRemoved
+			if uncovered[r.RunID] {
+				disposition = operation.RetirementFailedUncovered
+			}
+			runs = append(runs, r.RunID+"="+disposition)
 		}
 		actions = append(actions, doctorRepairAction{
 			ID: "retire_abandoned_ingest", Mutation: "retire_dead_owner_receipts",
 			Target: strings.Join(runs, ","),
 			Safe:   true, ApprovalRequired: true,
+		})
+	}
+	// Retire before rebuild can compact journals or complete their header runs.
+	if doctorCheckFailed(checks, "index_db") || doctorCheckFailed(checks, "index_fresh") || doctorCheckFailed(checks, "index_matches_vault") {
+		actions = append(actions, doctorRepairAction{
+			ID: "rebuild_index", Mutation: "rebuild_derived_index", Target: dbPath(cfg),
+			Safe: true, ApprovalRequired: true,
 		})
 	}
 	return actions
@@ -205,29 +214,36 @@ func applyDoctorRepairs(ctx context.Context, cfg Config, actions []doctorRepairA
 				_, err = os.Stat(action.Target)
 			}
 		case "retire_abandoned_ingest":
+			planned := map[string]string{}
+			for _, target := range strings.Split(action.Target, ",") {
+				id, disposition, ok := strings.Cut(target, "=")
+				if !ok || !validOperationToken(id) || (disposition != operation.RetirementRemoved && disposition != operation.RetirementFailedUncovered) {
+					err = fmt.Errorf("invalid retirement target %q; re-plan repair", target)
+					break
+				}
+				planned[id] = disposition
+			}
+			if err != nil {
+				break
+			}
 			var uncovered map[string]bool
 			uncovered, err = uncoveredIngestRunIDs(cfg)
 			if err == nil {
-				_, err = retireAbandonedDeadOwners(cfg, operationKindIngest, doctorClock(), operationProcessAlive, uncovered)
+				result.Retirements, err = retireAbandonedDeadOwners(cfg, operationKindIngest, doctorClock(), operationProcessAlive, uncovered, planned)
 				if err == nil {
-					// Verify: none of the planned run ids remain eligible abandoned running receipts.
-					remaining, lerr := listAbandonedDeadOwners(cfg, operationKindIngest, doctorClock(), operationProcessAlive)
-					if lerr != nil {
-						err = lerr
-					} else {
-						planned := map[string]bool{}
-						for _, id := range strings.Split(action.Target, ",") {
-							id = strings.TrimSpace(id)
-							if id != "" {
-								planned[id] = true
-							}
+					actual := map[string]string{}
+					for _, retired := range result.Retirements {
+						actual[retired.RunID] = retired.Action
+					}
+					var skipped []string
+					for id, disposition := range planned {
+						if actual[id] != disposition {
+							skipped = append(skipped, id)
 						}
-						for _, r := range remaining {
-							if planned[r.RunID] {
-								err = fmt.Errorf("abandoned ingest %s still eligible after repair", r.RunID)
-								break
-							}
-						}
+					}
+					sort.Strings(skipped)
+					if len(skipped) > 0 {
+						err = fmt.Errorf("skipped %s: receipt no longer eligible or publication evidence changed; re-plan repair", strings.Join(skipped, ","))
 					}
 				}
 			}
@@ -237,6 +253,9 @@ func applyDoctorRepairs(ctx context.Context, cfg Config, actions []doctorRepairA
 		if err == nil {
 			result.After = "passed"
 			result.Verified = true
+		}
+		if err != nil {
+			result.Detail = err.Error()
 		}
 		verification = append(verification, result)
 		if err != nil {

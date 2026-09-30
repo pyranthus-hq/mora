@@ -330,8 +330,9 @@ func ListAbandonedDeadOwners(cfg config.Config, kind Kind, now time.Time, live L
 // terminal failed with FailureOwnerAbandoned and are never stamped completed.
 // Receipts without uncovered journal evidence are removed (dead liveness only;
 // no completion claim). Live/slow owners, recent deaths, PID reuse, and
-// malformed records are left untouched.
-func RetireAbandonedDeadOwners(cfg config.Config, kind Kind, now time.Time, live Liveness, uncovered UncoveredRuns) ([]Retirement, error) {
+// malformed records are left untouched. A non-nil planned map limits mutations
+// to the named runs and expected dispositions; changed plans are left untouched.
+func RetireAbandonedDeadOwners(cfg config.Config, kind Kind, now time.Time, live Liveness, uncovered UncoveredRuns, planned map[string]string) ([]Retirement, error) {
 	if err := operationStateRootErr(cfg); err != nil {
 		return nil, err
 	}
@@ -365,6 +366,13 @@ func RetireAbandonedDeadOwners(cfg config.Config, kind Kind, now time.Time, live
 				continue
 			}
 			if err != nil || !abandonedDeadOwnerEligible(rec, kind, runID, now, live) {
+				continue
+			}
+			action := RetirementRemoved
+			if uncovered[runID] {
+				action = RetirementFailedUncovered
+			}
+			if planned != nil && planned[runID] != action {
 				continue
 			}
 			if uncovered[runID] {

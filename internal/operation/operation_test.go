@@ -513,6 +513,27 @@ func TestRetireAbandonedDeadOwnersFailClosedAndUncoveredEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	writeRunning("op_no_pid", 0, operationTestNow.Add(-time.Hour), "awaiting_rebuild", Counts{})
+	writeRunning("op_negative_pid", -1, operationTestNow.Add(-time.Hour), "awaiting_rebuild", Counts{})
+	writeRunning("op_bad_heartbeat", 4242, operationTestNow.Add(-time.Hour), "awaiting_rebuild", Counts{})
+	badPath := Path(cfg, KindIngest, "op_bad_heartbeat")
+	bad, err := LoadRecord(badPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad.HeartbeatAt = "not-a-timestamp"
+	if err := SaveRecord(badPath, bad); err != nil {
+		t.Fatal(err)
+	}
+	unchanged := map[string]string{}
+	for _, id := range []string{"op_live_expired", "op_dead_recent", "op_corrupt", "op_no_pid", "op_negative_pid", "op_bad_heartbeat"} {
+		body, err := os.ReadFile(Path(cfg, KindIngest, id))
+		if err != nil {
+			t.Fatal(err)
+		}
+		unchanged[id] = string(body)
+	}
+
 	planned, err := ListAbandonedDeadOwners(cfg, KindIngest, operationTestNow, ProcessAlive)
 	if err != nil {
 		t.Fatal(err)
@@ -521,7 +542,7 @@ func TestRetireAbandonedDeadOwnersFailClosedAndUncoveredEvidence(t *testing.T) {
 		t.Fatalf("plan = %+v", planned)
 	}
 
-	got, err := RetireAbandonedDeadOwners(cfg, KindIngest, operationTestNow, ProcessAlive, UncoveredRuns{"op_uncovered": true})
+	got, err := RetireAbandonedDeadOwners(cfg, KindIngest, operationTestNow, ProcessAlive, UncoveredRuns{"op_uncovered": true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,14 +570,15 @@ func TestRetireAbandonedDeadOwnersFailClosedAndUncoveredEvidence(t *testing.T) {
 	if rec.FinishedAt == "" {
 		t.Fatal("uncovered failure missing finished_at")
 	}
-	for _, runID := range []string{"op_live_expired", "op_dead_recent", "op_corrupt"} {
-		if _, err := os.Stat(Path(cfg, KindIngest, runID)); err != nil {
-			t.Fatalf("fail-closed receipt %s was mutated: %v", runID, err)
+	for runID, before := range unchanged {
+		after, err := os.ReadFile(Path(cfg, KindIngest, runID))
+		if err != nil || string(after) != before {
+			t.Fatalf("fail-closed receipt %s mutated: %s, %v", runID, after, err)
 		}
 	}
 
 	// Idempotent: nothing left that is eligible for removal/failure transition.
-	again, err := RetireAbandonedDeadOwners(cfg, KindIngest, operationTestNow, ProcessAlive, UncoveredRuns{"op_uncovered": true})
+	again, err := RetireAbandonedDeadOwners(cfg, KindIngest, operationTestNow, ProcessAlive, UncoveredRuns{"op_uncovered": true}, nil)
 	if err != nil || len(again) != 0 {
 		t.Fatalf("idempotent retire = %+v err=%v", again, err)
 	}
