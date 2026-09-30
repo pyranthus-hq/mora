@@ -149,6 +149,10 @@ func CompactJournal(cfg config.Config, sourceKey string, listed map[string]bool,
 // journal. The empty key represents uncovered evidence without a valid header.
 // A nonempty result therefore cannot prove that any other receipt is safe to erase.
 func UncoveredRunIDs(cfg config.Config, listed map[string]bool, seams RecoverySeams) (map[string]bool, error) {
+	return uncoveredRunIDs(cfg, listed, seams, runtime.GOOS == "darwin" || runtime.GOOS == "windows")
+}
+
+func uncoveredRunIDs(cfg config.Config, listed map[string]bool, seams RecoverySeams, foldCase bool) (map[string]bool, error) {
 	out := map[string]bool{}
 	entries, err := os.ReadDir(JournalRoot(cfg))
 	if errors.Is(err, os.ErrNotExist) {
@@ -161,7 +165,7 @@ func UncoveredRunIDs(cfg config.Config, listed map[string]bool, seams RecoverySe
 		listed = map[string]bool{}
 	}
 	folded := map[string][]string{}
-	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+	if foldCase {
 		for p, covered := range listed {
 			if covered {
 				folded[strings.ToLower(p)] = append(folded[strings.ToLower(p)], p)

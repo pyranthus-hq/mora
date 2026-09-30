@@ -46,6 +46,12 @@ func beginOperation(cfg Config, kind operationKind, phase string, now time.Time)
 	return operation.Begin(cfg, kind, phase, now)
 }
 
+func beginIngestOperation(cfg Config, phase string, now time.Time) (operationHandle, error) {
+	return operation.BeginIngest(cfg, phase, now, func() (operation.UncoveredRuns, error) {
+		return ingestpkg.UncoveredRunIDs(cfg, nil, ingestRecoverySeams())
+	})
+}
+
 func finishOperation(cfg Config, h operationHandle, state operationState, phase string, counts operationCounts, failureCode string, now time.Time) error {
 	return operation.Finish(cfg, h, state, phase, counts, failureCode, now)
 }
@@ -65,7 +71,7 @@ func completeOperationAfterCoverage(cfg Config, runID string, now time.Time) err
 
 func operationProgressActive(runID string) bool { return operation.Active(runID) }
 
-func listAbandonedDeadOwners(cfg Config, kind operationKind, now time.Time, live operationLiveness) ([]operation.Retirement, error) {
+func listAbandonedDeadOwners(cfg Config, kind operationKind, now time.Time, live operationLiveness) ([]operation.AbandonedReceipt, error) {
 	return operation.ListAbandonedDeadOwners(cfg, kind, now, live)
 }
 

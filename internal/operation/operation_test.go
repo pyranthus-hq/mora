@@ -127,7 +127,7 @@ func TestBeginPrunesOnlyExpiredDeadOwnerRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Begin(cfg, KindIngest, "fetching", operationTestNow); err != nil {
+	if _, err := BeginIngest(cfg, "fetching", operationTestNow, func() (UncoveredRuns, error) { return UncoveredRuns{}, nil }); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(Path(cfg, KindIngest, "op_dead_expired")); !errors.Is(err, os.ErrNotExist) {
@@ -453,7 +453,7 @@ func TestRebuildOnlyDoesNotPruneOrphanedIngestReceipt(t *testing.T) {
 	}
 }
 
-func TestSameKindWriterPrunesOrphanWithoutCoverageClaim(t *testing.T) {
+func TestSameKindWriterPrunesOrphanWithNoUncoveredEvidence(t *testing.T) {
 	cfg := config.Config{StateDir: t.TempDir()}
 	oldProcessAlive := ProcessAlive
 	t.Cleanup(func() { ProcessAlive = oldProcessAlive })
@@ -473,7 +473,7 @@ func TestSameKindWriterPrunesOrphanWithoutCoverageClaim(t *testing.T) {
 	if err := SaveRecord(Path(cfg, KindIngest, rec.RunID), rec); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Begin(cfg, KindIngest, "fetching", operationTestNow); err != nil {
+	if _, err := BeginIngest(cfg, "fetching", operationTestNow, func() (UncoveredRuns, error) { return UncoveredRuns{}, nil }); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(Path(cfg, KindIngest, rec.RunID)); !errors.Is(err, os.ErrNotExist) {
@@ -622,5 +622,58 @@ func TestRetireAbandonedDeadOwnersReadOnlyHealthUnchanged(t *testing.T) {
 	}
 	if !bytes.Equal(before, after) {
 		t.Fatal("Activities mutated orphan receipt")
+	}
+}
+
+func TestBeginUnknownCoverageIsIngestOnly(t *testing.T) {
+	oldAlive := ProcessAlive
+	ProcessAlive = func(int) bool { return false }
+	t.Cleanup(func() { ProcessAlive = oldAlive })
+	for _, kind := range []Kind{KindIngest, KindIndexRebuild} {
+		t.Run(string(kind), func(t *testing.T) {
+			cfg := config.Config{StateDir: t.TempDir()}
+			stamp := operationTestNow.Add(-time.Hour).Format(time.RFC3339Nano)
+			rec := Record{SchemaVersion: SchemaVersion, Kind: kind, State: Running, RunID: "op_unknown", OwnerPID: 4242, StartedAt: stamp, HeartbeatAt: stamp, Phase: "awaiting_rebuild", Counts: Counts{Items: 9}}
+			path := Path(cfg, kind, rec.RunID)
+			if err := SaveRecord(path, rec); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Begin(cfg, kind, "starting", operationTestNow); err != nil {
+				t.Fatal(err)
+			}
+			got, err := LoadRecord(path)
+			if kind == KindIndexRebuild {
+				if !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("rebuild receipt not pruned: %+v %v", got, err)
+				}
+				return
+			}
+			if err != nil || got.State != Failed || got.FailureCode != FailureOwnerAbandoned || got.Phase != rec.Phase || got.Counts != rec.Counts {
+				t.Fatalf("unknown ingest evidence lost: %+v %v", got, err)
+			}
+			// Ordinary completed receipts remain bounded without aging out this evidence.
+			for i := 0; i < TerminalKeep+1; i++ {
+				at := operationTestNow.Add(time.Duration(i+1) * time.Minute)
+				h, err := Begin(cfg, kind, "starting", at)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := Finish(cfg, h, Completed, "done", Counts{}, "", at); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := LoadRecord(path); err != nil {
+				t.Fatalf("terminal pruning erased uncovered evidence: %v", err)
+			}
+			visible := false
+			for _, activity := range Activities(cfg, operationTestNow.Add(time.Hour), ProcessAlive) {
+				if activity.RunID == rec.RunID && activity.FailureCode == FailureOwnerAbandoned {
+					visible = true
+				}
+			}
+			if !visible {
+				t.Fatal("newer success hid uncovered abandonment from health")
+			}
+		})
 	}
 }

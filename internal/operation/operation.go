@@ -164,7 +164,20 @@ func newOperationRunID(now time.Time) string {
 	return "op_" + now.UTC().Format("20060102_150405") + "_" + hex.EncodeToString(suffix[:])
 }
 
+// Begin starts an operation. Without an ingest coverage probe, abandoned ingest
+// evidence is retained; index rebuild receipts need no journal coverage.
 func Begin(cfg config.Config, kind Kind, phase string, now time.Time) (Handle, error) {
+	return begin(cfg, kind, phase, now, nil)
+}
+
+// BeginIngest probes journal coverage under the receipt guard before cleanup.
+// A nil probe, nil verdict, probe error, or any uncovered evidence retains all
+// eligible receipts: journals identify only their first writer, not later runs.
+func BeginIngest(cfg config.Config, phase string, now time.Time, probe func() (UncoveredRuns, error)) (Handle, error) {
+	return begin(cfg, KindIngest, phase, now, probe)
+}
+
+func begin(cfg config.Config, kind Kind, phase string, now time.Time, probe func() (UncoveredRuns, error)) (Handle, error) {
 	if err := operationStateRootErr(cfg); err != nil {
 		return Handle{}, err
 	}
@@ -190,7 +203,12 @@ func Begin(cfg config.Config, kind Kind, phase string, now time.Time) (Handle, e
 		// it already holds the per-kind guard, so it cannot race another receipt
 		// transition. Require BOTH an expired heartbeat and a dead owner; a slow
 		// live writer, PID reuse, and corrupt evidence all fail closed.
-		if err := pruneDeadOwnerRecordsLocked(cfg, kind, now, ProcessAlive); err != nil {
+		retain := kind == KindIngest
+		if retain && probe != nil {
+			uncovered, err := probe()
+			retain = err != nil || uncovered == nil || len(uncovered) > 0
+		}
+		if err := pruneDeadOwnerRecordsLocked(cfg, kind, now, ProcessAlive, retain); err != nil {
 			return err
 		}
 		if _, err := os.Stat(path); err == nil {
@@ -205,10 +223,10 @@ func Begin(cfg config.Config, kind Kind, phase string, now time.Time) (Handle, e
 	return h, nil
 }
 
-// pruneDeadOwnerRecordsLocked removes abandoned running receipts before a new
+// pruneDeadOwnerRecordsLocked recovers abandoned running receipts before a new
 // writer starts. The caller must hold operationGuardPath(cfg, kind). It does not
 // repair or reinterpret malformed records; those remain visible to Activities.
-func pruneDeadOwnerRecordsLocked(cfg config.Config, kind Kind, now time.Time, live Liveness) error {
+func pruneDeadOwnerRecordsLocked(cfg config.Config, kind Kind, now time.Time, live Liveness, retain bool) error {
 	if live == nil {
 		live = ProcessAlive
 	}
@@ -230,15 +248,10 @@ func pruneDeadOwnerRecordsLocked(cfg config.Config, kind Kind, now time.Time, li
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
-		if err != nil || rec.State != Running || rec.OwnerPID <= 0 {
+		if err != nil || !abandonedDeadOwnerEligible(rec, kind, runID, now, live) {
 			continue
 		}
-		activity := classifyOperationRecord(rec, kind, runID, now, live)
-		heartbeat, err := time.Parse(time.RFC3339Nano, rec.HeartbeatAt)
-		if err != nil || activity.State != Stalled || now.Sub(heartbeat) <= HeartbeatTTL || live(rec.OwnerPID) {
-			continue
-		}
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := retireAbandonedRecordLocked(path, rec, now, retain); err != nil {
 			return err
 		}
 	}
@@ -282,10 +295,17 @@ func abandonedDeadOwnerEligible(rec Record, kind Kind, runID string, now time.Ti
 	return true
 }
 
+// AbandonedReceipt is a recovery candidate, not an executed retirement action.
+type AbandonedReceipt struct {
+	RunID  string `json:"run_id"`
+	Phase  string `json:"phase,omitempty"`
+	Counts Counts `json:"counts"`
+}
+
 // ListAbandonedDeadOwners is the read-only planning seam for Doctor dry-run.
 // It never mutates receipts; live/slow owners, recent deaths, PID reuse, and
 // malformed records are omitted (fail closed).
-func ListAbandonedDeadOwners(cfg config.Config, kind Kind, now time.Time, live Liveness) ([]Retirement, error) {
+func ListAbandonedDeadOwners(cfg config.Config, kind Kind, now time.Time, live Liveness) ([]AbandonedReceipt, error) {
 	if err := operationStateRootErr(cfg); err != nil {
 		return nil, err
 	}
@@ -303,7 +323,7 @@ func ListAbandonedDeadOwners(cfg config.Config, kind Kind, now time.Time, live L
 	if err != nil {
 		return nil, err
 	}
-	var out []Retirement
+	var out []AbandonedReceipt
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -316,7 +336,7 @@ func ListAbandonedDeadOwners(cfg config.Config, kind Kind, now time.Time, live L
 		if err != nil || !abandonedDeadOwnerEligible(rec, kind, runID, now, live) {
 			continue
 		}
-		out = append(out, Retirement{RunID: runID, Phase: rec.Phase, Counts: rec.Counts})
+		out = append(out, AbandonedReceipt{RunID: runID, Phase: rec.Phase, Counts: rec.Counts})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].RunID < out[j].RunID })
 	return out, nil
@@ -375,23 +395,10 @@ func RetireAbandonedDeadOwners(cfg config.Config, kind Kind, now time.Time, live
 			if planned != nil && planned[runID] != action {
 				continue
 			}
-			if uncovered[runID] {
-				stamp := now.UTC().Format(time.RFC3339Nano)
-				rec.State = Failed
-				rec.HeartbeatAt = stamp
-				rec.FinishedAt = stamp
-				rec.FailureCode = FailureOwnerAbandoned
-				// Preserve phase/counts as publication evidence; never invent completion.
-				if err := SaveRecord(path, rec); err != nil {
-					return err
-				}
-				out = append(out, Retirement{RunID: runID, Action: RetirementFailedUncovered, Phase: rec.Phase, Counts: rec.Counts})
-				continue
-			}
-			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			if err := retireAbandonedRecordLocked(path, rec, now, uncovered[runID]); err != nil {
 				return err
 			}
-			out = append(out, Retirement{RunID: runID, Action: RetirementRemoved, Phase: rec.Phase, Counts: rec.Counts})
+			out = append(out, Retirement{RunID: runID, Action: action, Phase: rec.Phase, Counts: rec.Counts})
 		}
 		return nil
 	})
@@ -403,6 +410,23 @@ func RetireAbandonedDeadOwners(cfg config.Config, kind Kind, now time.Time, live
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].RunID < out[j].RunID })
 	return out, nil
+}
+
+// retireAbandonedRecordLocked shares the guarded transition between Doctor and
+// Begin. Preserve phase/counts; abandoning ownership never proves completion.
+func retireAbandonedRecordLocked(path string, rec Record, now time.Time, retain bool) error {
+	if retain {
+		stamp := now.UTC().Format(time.RFC3339Nano)
+		rec.State = Failed
+		rec.HeartbeatAt = stamp
+		rec.FinishedAt = stamp
+		rec.FailureCode = FailureOwnerAbandoned
+		return SaveRecord(path, rec)
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func Heartbeat(cfg config.Config, h Handle, phase string, counts Counts, now time.Time) error {
@@ -563,13 +587,14 @@ func Activities(cfg config.Config, now time.Time, live Liveness) []Activity {
 			out = append(out, classifyOperationRecord(rec, kind, pathRunID, now, live))
 		}
 	}
-	// Retain every active/stalled/corrupt record plus only the newest valid
+	// Retain every active/stalled/corrupt/uncovered record plus the newest valid
 	// terminal record per kind. Older terminals remain on disk as bounded audit
-	// evidence, but an old failure must not keep health red after a newer success.
+	// evidence. Ordinary old failures yield to newer successes; uncovered
+	// abandonment remains visible because a later run does not prove recovery.
 	latestTerminal := map[Kind]Activity{}
 	var current []Activity
 	for _, a := range out {
-		if (a.State == Failed || a.State == Completed) && a.FinishedAt != "" {
+		if a.FailureCode != FailureOwnerAbandoned && (a.State == Failed || a.State == Completed) && a.FinishedAt != "" {
 			prev, ok := latestTerminal[a.Kind]
 			if !ok || a.FinishedAt > prev.FinishedAt || (a.FinishedAt == prev.FinishedAt && a.RunID > prev.RunID) {
 				latestTerminal[a.Kind] = a
@@ -803,7 +828,9 @@ func PruneTerminal(cfg config.Config, kind Kind) {
 		}
 		path := filepath.Join(dir, e.Name())
 		rec, err := LoadRecord(path)
-		if err == nil && (rec.State == Failed || rec.State == Completed) {
+		// Uncovered abandonment is recovery evidence, not bounded completion
+		// history. A later successful run must not age it out.
+		if err == nil && rec.FailureCode != FailureOwnerAbandoned && (rec.State == Failed || rec.State == Completed) {
 			terms = append(terms, terminal{path: path, finished: rec.FinishedAt})
 		}
 	}

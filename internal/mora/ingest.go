@@ -1200,7 +1200,7 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 	// The activity receipt and matching journal header are both durable before
 	// dispatch can publish a vault file. Even a zero-item run gets a header, so
 	// its success can be closed only by the covering committed rebuild.
-	h, err := beginOperation(cfg, operationKindIngest, "starting", cfg.OperationClock())
+	h, err := beginIngestOperation(cfg, "starting", cfg.OperationClock())
 	if err != nil {
 		// The connector failure boundary (CON-07). Every source failure passes
 		// through here exactly once, so this is where an untyped one acquires a
