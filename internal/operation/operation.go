@@ -203,12 +203,7 @@ func begin(cfg config.Config, kind Kind, phase string, now time.Time, probe func
 		// it already holds the per-kind guard, so it cannot race another receipt
 		// transition. Require BOTH an expired heartbeat and a dead owner; a slow
 		// live writer, PID reuse, and corrupt evidence all fail closed.
-		retain := kind == KindIngest
-		if retain && probe != nil {
-			uncovered, err := probe()
-			retain = err != nil || uncovered == nil || len(uncovered) > 0
-		}
-		if err := pruneDeadOwnerRecordsLocked(cfg, kind, now, ProcessAlive, retain); err != nil {
+		if err := pruneDeadOwnerRecordsLocked(cfg, kind, now, ProcessAlive, probe); err != nil {
 			return err
 		}
 		if _, err := os.Stat(path); err == nil {
@@ -226,7 +221,7 @@ func begin(cfg config.Config, kind Kind, phase string, now time.Time, probe func
 // pruneDeadOwnerRecordsLocked recovers abandoned running receipts before a new
 // writer starts. The caller must hold operationGuardPath(cfg, kind). It does not
 // repair or reinterpret malformed records; those remain visible to Activities.
-func pruneDeadOwnerRecordsLocked(cfg config.Config, kind Kind, now time.Time, live Liveness, retain bool) error {
+func pruneDeadOwnerRecordsLocked(cfg config.Config, kind Kind, now time.Time, live Liveness, probe func() (UncoveredRuns, error)) error {
 	if live == nil {
 		live = ProcessAlive
 	}
@@ -238,6 +233,8 @@ func pruneDeadOwnerRecordsLocked(cfg config.Config, kind Kind, now time.Time, li
 	if err != nil {
 		return err
 	}
+	retain := kind == KindIngest
+	probed := false
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -250,6 +247,13 @@ func pruneDeadOwnerRecordsLocked(cfg config.Config, kind Kind, now time.Time, li
 		}
 		if err != nil || !abandonedDeadOwnerEligible(rec, kind, runID, now, live) {
 			continue
+		}
+		// Journal scans are needed only for an eligible ingest receipt. Cache
+		// the fail-closed verdict for all candidates under this same guard.
+		if kind == KindIngest && !probed && probe != nil {
+			uncovered, err := probe()
+			retain = err != nil || uncovered == nil || len(uncovered) > 0
+			probed = true
 		}
 		if err := retireAbandonedRecordLocked(path, rec, now, retain); err != nil {
 			return err

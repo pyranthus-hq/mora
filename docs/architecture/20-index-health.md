@@ -126,7 +126,11 @@ by a terminal writer.
 
 The next writer of the same operation kind may remove an abandoned `running`
 receipt that has both an expired heartbeat and a confirmed-dead owner (see
-issue #471 / PR #478). That cleanup does not assert completion. Doctor
+issue #471 / PR #478). For ingest, removal additionally requires a successful
+journal coverage probe with no remaining publication paths. An uncovered or
+unreadable journal instead preserves eligible receipts as terminal `failed` /
+`owner_abandoned`. The probe runs once under the receipt guard only when an
+eligible abandoned ingest receipt exists. That cleanup does not assert completion. Doctor
 `--repair` exposes a separate approved action, `retire_abandoned_ingest`, for
 the rebuild-only residual (#498): journal-absent orphans are removed as dead
 liveness only; orphans whose journals still have uncovered publication paths

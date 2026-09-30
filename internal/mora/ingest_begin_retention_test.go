@@ -58,3 +58,25 @@ func TestIngestBeginRetainsUncoveredAbandonedReceipt(t *testing.T) {
 		})
 	}
 }
+
+func TestIngestBeginRemovesCoveredAbandonedReceipt(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	now := time.Now().UTC()
+	cfg.SetOperationClock(func() time.Time { return now })
+	oldAlive := operation.ProcessAlive
+	operation.ProcessAlive = func(int) bool { return false }
+	t.Cleanup(func() { operation.ProcessAlive = oldAlive })
+	rec := operation.Record{SchemaVersion: operation.SchemaVersion, Kind: operation.KindIngest, State: operation.Running, RunID: "op_covered", OwnerPID: 4242, StartedAt: now.Add(-90 * time.Minute).Format(time.RFC3339Nano), HeartbeatAt: now.Add(-90 * time.Minute).Format(time.RFC3339Nano), Phase: "awaiting_rebuild"}
+	path := operation.Path(cfg, operation.KindIngest, rec.RunID)
+	if err := operation.SaveRecord(path, rec); err != nil {
+		t.Fatal(err)
+	}
+	// A committed rebuild has already retired the journal; only its abandoned
+	// receipt remains. Exercise dispatch so bypassing beginIngestOperation fails.
+	_, _ = ingestSourceDetailed(context.Background(), cfg, Source{}, io.Discard)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("covered abandoned receipt was not removed: %v", err)
+	}
+}
