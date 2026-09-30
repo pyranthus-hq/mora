@@ -48,7 +48,7 @@ func beginOperation(cfg Config, kind operationKind, phase string, now time.Time)
 
 func beginIngestOperation(cfg Config, phase string, now time.Time) (operationHandle, error) {
 	return operation.BeginIngest(cfg, phase, now, func() (operation.UncoveredRuns, error) {
-		return ingestpkg.UncoveredRunIDs(cfg, nil, ingestRecoverySeams())
+		return ingestpkg.UncoveredRunIDs(cfg, ingestRecoverySeams())
 	})
 }
 
@@ -80,7 +80,7 @@ func retireAbandonedDeadOwners(cfg Config, kind operationKind, now time.Time, li
 }
 
 func uncoveredIngestRunIDs(cfg Config) (map[string]bool, error) {
-	uncovered, err := ingestpkg.UncoveredRunIDs(cfg, map[string]bool{}, ingestRecoverySeams())
+	uncovered, err := ingestpkg.UncoveredRunIDs(cfg, ingestRecoverySeams())
 	if err != nil || len(uncovered) == 0 {
 		return uncovered, err
 	}
