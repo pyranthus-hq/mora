@@ -143,11 +143,20 @@ func TestAgentReadFailsClosedWithoutReceipt(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "read receipt could not be written") {
 		t.Fatalf("search without a receipt = %v, %v; want a refusal", got, err)
 	}
-	if strings.Contains(mustJSON(t, got), "mem_granted") {
+	if got != nil {
 		t.Fatalf("rows returned without a receipt: %s", mustJSON(t, got))
 	}
-	if _, err := callMCPTool(ctx, "write_memory", map[string]any{"title": "t", "text": "x"}); err != nil {
+	got, err = callMCPTool(ctx, "write_memory", map[string]any{"title": "t", "text": "x"})
+	if err != nil {
 		t.Fatalf("proposal after a receipt failure: %v", err)
+	}
+	result := got.(map[string]any)
+	warning, _ := result["receipt_warning"].(string)
+	if !strings.Contains(warning, `mora: agent "muse" proposed receipt not written: `) || !strings.Contains(warning, filepath.Join(cfg.StateDir, "agents")) {
+		t.Fatalf("proposal receipt warning = %q; want agent, action and append error", warning)
+	}
+	if proposalIDOf(got) == "" {
+		t.Fatalf("proposal result lost after receipt failure: %s", mustJSON(t, got))
 	}
 }
 

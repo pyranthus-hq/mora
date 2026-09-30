@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -121,7 +120,15 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 			} else {
 				// The write or proposal already happened. Failing the call now
 				// would invite a retry and a duplicate, so report it instead.
-				fmt.Fprintf(os.Stderr, "mora: agent %q %s receipt not written: %v\n", profile.Name, receipt.Action, err)
+				warning := fmt.Sprintf("mora: agent %q %s receipt not written: %v", profile.Name, receipt.Action, err)
+				if inv.err != nil {
+					inv.err = errors.Join(inv.err, errors.New(warning))
+				} else {
+					// Successful mutations and proposals return object results.
+					// Keep any existing index warning and expose this diagnostic
+					// to both native callers and the MCP result envelope.
+					inv.value.(map[string]any)["receipt_warning"] = warning
+				}
 			}
 		}
 	}
