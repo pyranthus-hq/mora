@@ -134,6 +134,53 @@ are marked terminal `failed` with `owner_abandoned` so evidence survives and
 health is never greened by inventing `completed` without committed coverage.
 Read-only `mora doctor` / health / status paths still never mutate receipts.
 
+### Operator recovery for a retained `owner_abandoned` receipt
+
+A receipt retained as terminal `failed` / `owner_abandoned` is **red forever** by
+design: `Activities` always surfaces it, `PruneTerminal` deliberately never ages
+it out, the receipt is no longer `running` so no retirement is ever re-planned,
+and `CompleteAfterCoverage` returns early on `failed` so no later ingest or
+rebuild clears it either. The only exit is a deliberate human decision, so
+doctor names both the state and the way out instead of printing a bare field
+dump. Human `mora doctor` prints, under the activity line:
+
+- **cause** — the ingest owner process died mid-run (heartbeat expired, owner
+  gone) and nothing will ever clear the receipt on its own;
+- **data impact** — `RecordPublishedPath` journals a vault path only *after* the
+  file is published, so the files that run already wrote are durable **in the
+  vault**; it is the derived index that has not covered them. Whatever the run
+  had not fetched yet never arrived at all;
+- **recovery** — `mora index rebuild` indexes what landed (a rebuild is what
+  covers a journaled path, via `CompactJournal`), then `mora sync <source>`
+  refetches the rest. Receipts carry no source identity, so the source is a
+  placeholder, never a guess. Then `mora doctor --repair --dry-run --json` to
+  preview and `mora doctor --repair --yes --json` to acknowledge.
+
+Acknowledgement is Doctor's `acknowledge_abandoned_ingest` `--repair` action, a
+sibling of `retire_abandoned_ingest` on the same plan / `--yes` / idempotent
+apply / before-after verification plumbing. `ListUnacknowledgedAbandoned` plans
+it read-only over exact run ids; `AcknowledgeAbandoned` requires that explicit
+id list — there is no "all" form and no age-based trigger. The apply adds only
+`acknowledged_at` to the record: `state` stays `failed`, `failure_code` stays
+`owner_abandoned`, and phase/counts are untouched, so no `completed` is invented
+and no coverage is claimed. Verification re-reads the unacknowledged set and
+fails the action if any planned receipt is still in it. A receipt already
+acknowledged is reported as `already_acknowledged` with its original stamp
+rather than re-stamped, which makes a repeated apply idempotent; a second
+`--repair` run plans nothing.
+
+Only a terminal `owner_abandoned` receipt may carry `acknowledged_at`;
+classification rejects the field anywhere else, and rejects a stamp that
+predates the failure or comes from the future. An acknowledged receipt stops
+reddening `operation_healthy:<kind>:<run>`, `AggregateState`, and the health
+banner, and it rejoins ordinary bounded terminal retention (so acknowledgement —
+and nothing else — is also what bounds accumulation). An **un**acknowledged one
+still never ages out. The receipt itself stays visible in `activities` with its
+truthful `failed` / `owner_abandoned` state plus the acknowledgement stamp until
+bounded retention retires it. Read-only `mora doctor` / health / status paths
+print this guidance without mutating anything; the acknowledgement happens only
+under `--repair` with `--yes`.
+
 Every `ingestSource` begins its receipt and a run-id-bound journal header before
 provider dispatch can publish a vault byte. A bounded heartbeat keeps long fetches and batch-wait time
 live; clean ingest stops at `awaiting_rebuild`. It becomes `completed` only when a

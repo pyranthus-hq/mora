@@ -95,6 +95,11 @@ func BannerAll(h Health) string {
 		consider(producerBannerRank(*w), w.AgeHours, producerBannerLine(*w))
 	}
 	for _, a := range h.Activities {
+		// A reviewed (acknowledged) owner_abandoned receipt must not keep shouting
+		// a red banner the operator has already acted on (#498).
+		if a.Acknowledged() {
+			continue
+		}
 		switch a.State {
 		case operation.Failed:
 			consider(0, 0, fmt.Sprintf("🔴 MORA HEALTH: %s operation FAILED (%s). Run: mora doctor", strings.ReplaceAll(string(a.Kind), "_", " "), a.FailureCode))

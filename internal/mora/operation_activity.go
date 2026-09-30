@@ -79,6 +79,14 @@ func retireAbandonedDeadOwners(cfg Config, kind operationKind, now time.Time, li
 	return operation.RetireAbandonedDeadOwners(cfg, kind, now, live, uncovered, planned)
 }
 
+func listUnacknowledgedAbandoned(cfg Config, kind operationKind, now time.Time) ([]operation.AbandonedReceipt, error) {
+	return operation.ListUnacknowledgedAbandoned(cfg, kind, now)
+}
+
+func acknowledgeAbandoned(cfg Config, kind operationKind, now time.Time, planned []string) ([]operation.Acknowledgement, error) {
+	return operation.AcknowledgeAbandoned(cfg, kind, now, planned)
+}
+
 func uncoveredIngestRunIDs(cfg Config) (map[string]bool, error) {
 	uncovered, err := ingestpkg.UncoveredRunIDs(cfg, map[string]bool{}, ingestRecoverySeams())
 	if err != nil || len(uncovered) == 0 {

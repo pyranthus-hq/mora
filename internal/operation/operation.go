@@ -78,19 +78,35 @@ type Record struct {
 	Phase         string `json:"phase"`
 	Counts        Counts `json:"counts"`
 	FailureCode   string `json:"failure_code,omitempty"`
+	// AcknowledgedAt records an operator's explicit review of a terminal
+	// owner_abandoned receipt (#498). It is never written by a writer, never
+	// inferred from age, and never turns a failure into a success: State stays
+	// Failed and FailureCode is preserved. Only the acknowledgement stops the
+	// receipt from reddening health and lets bounded terminal retention age it
+	// out. Optional, so records written before this field still load.
+	AcknowledgedAt string `json:"acknowledged_at,omitempty"`
 }
 
 // Activity is the sanitized, read-only health projection.
 type Activity struct {
-	Kind          Kind   `json:"kind"`
-	State         State  `json:"state"`
-	RunID         string `json:"run_id"`
-	StartedAt     string `json:"started_at,omitempty"`
-	LastHeartbeat string `json:"last_heartbeat,omitempty"`
-	FinishedAt    string `json:"finished_at,omitempty"`
-	Phase         string `json:"phase,omitempty"`
-	Counts        Counts `json:"counts"`
-	FailureCode   string `json:"failure_code,omitempty"`
+	Kind           Kind   `json:"kind"`
+	State          State  `json:"state"`
+	RunID          string `json:"run_id"`
+	StartedAt      string `json:"started_at,omitempty"`
+	LastHeartbeat  string `json:"last_heartbeat,omitempty"`
+	FinishedAt     string `json:"finished_at,omitempty"`
+	Phase          string `json:"phase,omitempty"`
+	Counts         Counts `json:"counts"`
+	FailureCode    string `json:"failure_code,omitempty"`
+	AcknowledgedAt string `json:"acknowledged_at,omitempty"`
+}
+
+// Acknowledged reports an operator's explicit review of a terminal
+// owner_abandoned receipt. Only that failure code can carry an acknowledgement
+// (classifyOperationRecord rejects any other), so an ordinary failure or a
+// stalled run can never be silenced through this field.
+func (a Activity) Acknowledged() bool {
+	return a.State == Failed && a.FailureCode == FailureOwnerAbandoned && a.AcknowledgedAt != ""
 }
 
 type Handle struct {
@@ -429,6 +445,148 @@ func retireAbandonedRecordLocked(path string, rec Record, now time.Time, retain 
 	return nil
 }
 
+// AcknowledgementRecorded / AcknowledgementAlready name how one reviewed
+// receipt was handled. "already_acknowledged" keeps a repeated apply honest: it
+// reports the original review stamp instead of claiming fresh work.
+const (
+	AcknowledgementRecorded = "acknowledged"
+	AcknowledgementAlready  = "already_acknowledged"
+)
+
+// Acknowledgement is one operator-reviewed abandoned receipt. AcknowledgedAt is
+// the stamp actually on disk, so a repeated apply reports the first review time.
+type Acknowledgement struct {
+	RunID          string `json:"run_id"`
+	Action         string `json:"action"`
+	Phase          string `json:"phase,omitempty"`
+	Counts         Counts `json:"counts"`
+	AcknowledgedAt string `json:"acknowledged_at"`
+}
+
+// acknowledgeableActivity reports whether a classified record is a terminal
+// owner_abandoned receipt — the only shape an operator may acknowledge. Corrupt
+// records classify with a different failure code, so they fail closed.
+func acknowledgeableActivity(a Activity) bool {
+	return a.State == Failed && a.FailureCode == FailureOwnerAbandoned && a.FinishedAt != ""
+}
+
+// ListUnacknowledgedAbandoned is the read-only planning seam for the Doctor
+// acknowledge action (#498). It reports terminal owner_abandoned receipts the
+// operator has not reviewed yet — the permanently-red state that no writer,
+// rebuild, or age-based prune can ever clear. It never mutates a receipt.
+func ListUnacknowledgedAbandoned(cfg config.Config, kind Kind, now time.Time) ([]AbandonedReceipt, error) {
+	if err := operationStateRootErr(cfg); err != nil {
+		return nil, err
+	}
+	if !operationKindValid(kind) {
+		return nil, fmt.Errorf("invalid operation kind %q", kind)
+	}
+	dir := filepath.Join(operationRoot(cfg), string(kind))
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []AbandonedReceipt
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		runID := strings.TrimSuffix(entry.Name(), ".json")
+		rec, err := LoadRecord(filepath.Join(dir, entry.Name()))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			continue
+		}
+		a := classifyOperationRecord(rec, kind, runID, now, ProcessAlive)
+		if !acknowledgeableActivity(a) || a.AcknowledgedAt != "" {
+			continue
+		}
+		out = append(out, AbandonedReceipt{RunID: runID, Phase: rec.Phase, Counts: rec.Counts})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].RunID < out[j].RunID })
+	return out, nil
+}
+
+// AcknowledgeAbandoned records an operator's explicit review of the named
+// terminal owner_abandoned receipts while holding the per-kind guard.
+//
+// It never invents completion: State stays Failed and FailureCode, phase, and
+// counts are preserved untouched. The only change is the acknowledged_at stamp,
+// which stops the receipt reddening health and returns it to bounded terminal
+// retention. planned is required and names exact run ids — there is no "all"
+// form and no age-based trigger, because the whole point of #498 is that this
+// evidence only ever disappears behind a deliberate human decision.
+//
+// A receipt that is already acknowledged is reported, not re-stamped; a missing,
+// non-terminal, differently-failed, or malformed receipt is left untouched and
+// omitted, so a caller can verify the requested set against what was achieved.
+func AcknowledgeAbandoned(cfg config.Config, kind Kind, now time.Time, planned []string) ([]Acknowledgement, error) {
+	if err := operationStateRootErr(cfg); err != nil {
+		return nil, err
+	}
+	if !operationKindValid(kind) {
+		return nil, fmt.Errorf("invalid operation kind %q", kind)
+	}
+	if len(planned) == 0 {
+		return nil, errors.New("acknowledging an abandoned receipt requires explicit run ids")
+	}
+	targets := map[string]bool{}
+	for _, runID := range planned {
+		if !validOperationToken(runID) {
+			return nil, fmt.Errorf("invalid acknowledged run id %q", runID)
+		}
+		targets[runID] = true
+	}
+	ids := make([]string, 0, len(targets))
+	for runID := range targets {
+		ids = append(ids, runID)
+	}
+	sort.Strings(ids)
+	stamp := now.UTC().Format(time.RFC3339Nano)
+	var out []Acknowledgement
+	err := leasefile.WithGuard(operationGuardPath(cfg, kind), func() error {
+		for _, runID := range ids {
+			path := Path(cfg, kind, runID)
+			rec, err := LoadRecord(path)
+			if errors.Is(err, os.ErrNotExist) {
+				continue // already removed by bounded retention; nothing to review
+			}
+			if err != nil {
+				continue // malformed evidence is never rewritten
+			}
+			if !acknowledgeableActivity(classifyOperationRecord(rec, kind, runID, now, ProcessAlive)) {
+				continue
+			}
+			if rec.AcknowledgedAt != "" {
+				out = append(out, Acknowledgement{RunID: runID, Action: AcknowledgementAlready,
+					Phase: rec.Phase, Counts: rec.Counts, AcknowledgedAt: rec.AcknowledgedAt})
+				continue
+			}
+			rec.AcknowledgedAt = stamp
+			if err := SaveRecord(path, rec); err != nil {
+				return err
+			}
+			out = append(out, Acknowledgement{RunID: runID, Action: AcknowledgementRecorded,
+				Phase: rec.Phase, Counts: rec.Counts, AcknowledgedAt: stamp})
+		}
+		return nil
+	})
+	if err != nil {
+		return out, err
+	}
+	// Acknowledged receipts rejoin bounded terminal history, so this is the
+	// terminal-writer transition that is allowed to prune.
+	if len(out) > 0 {
+		PruneTerminal(cfg, kind)
+	}
+	return out, nil
+}
+
 func Heartbeat(cfg config.Config, h Handle, phase string, counts Counts, now time.Time) error {
 	phase = strings.TrimSpace(phase)
 	if !validOperationToken(phase) {
@@ -590,11 +748,13 @@ func Activities(cfg config.Config, now time.Time, live Liveness) []Activity {
 	// Retain every active/stalled/corrupt/uncovered record plus the newest valid
 	// terminal record per kind. Older terminals remain on disk as bounded audit
 	// evidence. Ordinary old failures yield to newer successes; uncovered
-	// abandonment remains visible because a later run does not prove recovery.
+	// abandonment remains visible because a later run does not prove recovery —
+	// until the operator explicitly acknowledges it, which returns the receipt to
+	// ordinary bounded terminal history.
 	latestTerminal := map[Kind]Activity{}
 	var current []Activity
 	for _, a := range out {
-		if a.FailureCode != FailureOwnerAbandoned && (a.State == Failed || a.State == Completed) && a.FinishedAt != "" {
+		if (a.FailureCode != FailureOwnerAbandoned || a.Acknowledged()) && (a.State == Failed || a.State == Completed) && a.FinishedAt != "" {
 			prev, ok := latestTerminal[a.Kind]
 			if !ok || a.FinishedAt > prev.FinishedAt || (a.FinishedAt == prev.FinishedAt && a.RunID > prev.RunID) {
 				latestTerminal[a.Kind] = a
@@ -656,6 +816,11 @@ func classifyOperationRecord(rec Record, pathKind Kind, pathRunID string, now ti
 			return bad("incoherent_state")
 		}
 	}
+	// Only a terminal owner_abandoned receipt can be acknowledged. Anywhere else
+	// the field is incoherent evidence, not a licence to green the check.
+	if rec.AcknowledgedAt != "" && (rec.State != Failed || rec.FailureCode != FailureOwnerAbandoned) {
+		return bad("incoherent_state")
+	}
 	if rec.Counts.Items < 0 || rec.Counts.Files < 0 || rec.Counts.Errors < 0 {
 		return bad("invalid_counts")
 	}
@@ -667,11 +832,19 @@ func classifyOperationRecord(rec Record, pathKind Kind, pathRunID string, now ti
 		if ferr != nil || finished.Before(started) || finished.Before(heartbeat) || finished.After(now.Add(time.Minute)) {
 			return bad("invalid_timestamp")
 		}
+		// A review cannot predate the failure it reviewed, nor come from the future.
+		if rec.AcknowledgedAt != "" {
+			acknowledged, aerr := time.Parse(time.RFC3339Nano, rec.AcknowledgedAt)
+			if aerr != nil || acknowledged.Before(finished) || acknowledged.After(now.Add(time.Minute)) {
+				return bad("invalid_timestamp")
+			}
+		}
 	}
 	a := Activity{
 		Kind: rec.Kind, State: rec.State, RunID: rec.RunID,
 		StartedAt: rec.StartedAt, LastHeartbeat: rec.HeartbeatAt, FinishedAt: rec.FinishedAt,
 		Phase: sanitizeOperationPhase(rec.Phase), Counts: rec.Counts, FailureCode: rec.FailureCode,
+		AcknowledgedAt: rec.AcknowledgedAt,
 	}
 	if rec.State == Running {
 		switch {
@@ -829,8 +1002,10 @@ func PruneTerminal(cfg config.Config, kind Kind) {
 		path := filepath.Join(dir, e.Name())
 		rec, err := LoadRecord(path)
 		// Uncovered abandonment is recovery evidence, not bounded completion
-		// history. A later successful run must not age it out.
-		if err == nil && rec.FailureCode != FailureOwnerAbandoned && (rec.State == Failed || rec.State == Completed) {
+		// history. A later successful run must not age it out — only an explicit
+		// operator acknowledgement returns it to bounded terminal retention.
+		acknowledged := rec.AcknowledgedAt != "" && rec.State == Failed && rec.FailureCode == FailureOwnerAbandoned
+		if err == nil && (rec.FailureCode != FailureOwnerAbandoned || acknowledged) && (rec.State == Failed || rec.State == Completed) {
 			terms = append(terms, terminal{path: path, finished: rec.FinishedAt})
 		}
 	}

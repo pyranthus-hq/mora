@@ -85,12 +85,13 @@ type doctorRepairAction struct {
 }
 
 type doctorVerification struct {
-	ActionID    string                 `json:"action_id"`
-	Before      string                 `json:"before"`
-	After       string                 `json:"after"`
-	Verified    bool                   `json:"verified"`
-	Retirements []operation.Retirement `json:"retirements,omitempty"`
-	Detail      string                 `json:"detail,omitempty"`
+	ActionID         string                      `json:"action_id"`
+	Before           string                      `json:"before"`
+	After            string                      `json:"after"`
+	Verified         bool                        `json:"verified"`
+	Retirements      []operation.Retirement      `json:"retirements,omitempty"`
+	Acknowledgements []operation.Acknowledgement `json:"acknowledgements,omitempty"`
+	Detail           string                      `json:"detail,omitempty"`
 }
 
 func buildDoctorDiagnostics(checks []doctorCheck, sources []sourceHealth, now time.Time) ([]doctorObservation, []doctorDiagnosis) {
@@ -175,6 +176,22 @@ func planDoctorRepairs(checks []doctorCheck, cfg Config, tokenDir string, now ti
 			Safe:   true, ApprovalRequired: true,
 		})
 	}
+	// The terminal owner_abandoned receipts that action retains are red forever:
+	// no writer, rebuild, or age-based prune can ever clear one (#498). An explicit
+	// named acknowledgement is the operator's only exit. It is planned separately
+	// from the retirement above, and off this run's pre-retirement state, so a
+	// receipt is never acknowledged in the same breath that created it.
+	if reviewed, err := listUnacknowledgedAbandoned(cfg, operationKindIngest, now); err == nil && len(reviewed) > 0 {
+		runs := make([]string, 0, len(reviewed))
+		for _, r := range reviewed {
+			runs = append(runs, r.RunID)
+		}
+		actions = append(actions, doctorRepairAction{
+			ID: "acknowledge_abandoned_ingest", Mutation: "acknowledge_abandoned_receipts",
+			Target: strings.Join(runs, ","),
+			Safe:   true, ApprovalRequired: true,
+		})
+	}
 	// Retire before rebuild can compact journals or complete their header runs.
 	if doctorCheckFailed(checks, "index_db") || doctorCheckFailed(checks, "index_fresh") || doctorCheckFailed(checks, "index_matches_vault") {
 		actions = append(actions, doctorRepairAction{
@@ -247,6 +264,42 @@ func applyDoctorRepairs(ctx context.Context, cfg Config, actions []doctorRepairA
 					}
 				}
 			}
+		case "acknowledge_abandoned_ingest":
+			var planned []string
+			for _, target := range strings.Split(action.Target, ",") {
+				if !validOperationToken(target) {
+					err = fmt.Errorf("invalid acknowledgement target %q; re-plan repair", target)
+					break
+				}
+				planned = append(planned, target)
+			}
+			if err != nil {
+				break
+			}
+			result.Acknowledgements, err = acknowledgeAbandoned(cfg, operationKindIngest, doctorClock(), planned)
+			if err == nil {
+				// Verify against the after state, not the returned rows: every planned
+				// receipt must have left the unacknowledged set. A receipt that changed
+				// shape under us (or could not be stamped) is reported, never glossed.
+				var remaining []operation.AbandonedReceipt
+				remaining, err = listUnacknowledgedAbandoned(cfg, operationKindIngest, doctorClock())
+				if err == nil {
+					stillRed := map[string]bool{}
+					for _, r := range remaining {
+						stillRed[r.RunID] = true
+					}
+					var skipped []string
+					for _, id := range planned {
+						if stillRed[id] {
+							skipped = append(skipped, id)
+						}
+					}
+					sort.Strings(skipped)
+					if len(skipped) > 0 {
+						err = fmt.Errorf("skipped %s: receipt is no longer a reviewable abandoned ingest receipt; re-plan repair", strings.Join(skipped, ","))
+					}
+				}
+			}
 		default:
 			err = fmt.Errorf("unknown doctor repair action %q", action.ID)
 		}
@@ -276,6 +329,47 @@ var doctorClock = time.Now
 // runner; tests swap it (t.Cleanup-restore, never t.Parallel) to capture argv
 // without spawning a process, mirroring notify_test.go's recordingRunner.
 var doctorNotifyRunner notifyRunner = osascriptRunner
+
+// operationActivityHealthy decides whether one activity keeps
+// operation_healthy:<kind>:<run> green. An acknowledged owner_abandoned receipt
+// is the single exception: the state is still a truthful terminal failure and
+// the receipt stays visible, but the operator has reviewed it, so it no longer
+// holds the check red forever (#498). Nothing else can be acknowledged.
+func operationActivityHealthy(a operationActivity) bool {
+	if a.State == operationStalled {
+		return false
+	}
+	return a.State != operationFailed || a.Acknowledged()
+}
+
+// abandonedIngestRecoveryLines is the operator recovery guidance for a retained
+// terminal failed / owner_abandoned ingest receipt (#498). Every other
+// permanently-red doctor condition names its remedy and the exact command; this
+// one used to print a bare field dump with no resolving action at all.
+//
+// The recovery is deliberately specific about what the data state actually is.
+// RecordPublishedPath journals a vault path only AFTER the file is published, so
+// files this run already wrote are durable in the vault — it is the derived index
+// that has not covered them, and `mora index rebuild` is what covers a journaled
+// path (recovery.CompactJournal runs from the rebuild). Whatever the dead run had
+// not fetched yet is a different gap, and only re-running that source's sync can
+// close it. Receipts carry no source identity, so the source is named as a
+// placeholder rather than guessed.
+//
+// `mora doctor --repair` requires `--json`, so the printed commands include it.
+func abandonedIngestRecoveryLines(a operationActivity) []string {
+	if a.Acknowledged() {
+		return []string{fmt.Sprintf("acknowledged %s by an operator — retained as evidence and now subject to ordinary terminal retention", a.AcknowledgedAt)}
+	}
+	return []string{
+		"the ingest owner process died mid-run (heartbeat expired, owner gone); no writer, rebuild, or",
+		"prune will ever clear this receipt, so it is intentionally red until you act on it",
+		fmt.Sprintf("data impact: the %d file(s) this run had already published are in the vault but no rebuild has", a.Counts.Files),
+		"indexed them, and anything it had not fetched yet never arrived — this run's work is incomplete",
+		"recover: `mora index rebuild` to index what landed, then `mora sync <source>` to refetch the rest;",
+		"once reviewed, `mora doctor --repair --dry-run --json` to preview and `mora doctor --repair --yes --json` to acknowledge",
+	}
+}
 
 // sourceHealthDetailLine renders one unhealthy source's human-readable line,
 // e.g. "gmail        FAILED — last success 52h ago — database or disk is full (13)".
@@ -479,8 +573,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	checks = append(checks, doctorCheck{Name: "index_embedder", OK: idxH.Embedder.Match, Critical: true})
 	activities := operationActivities(cfg, now, operationProcessAlive)
 	for _, a := range activities {
-		ok := a.State != operationStalled && a.State != operationFailed
-		checks = append(checks, doctorCheck{Name: "operation_healthy:" + string(a.Kind) + ":" + a.RunID, OK: ok, Critical: true})
+		checks = append(checks, doctorCheck{Name: "operation_healthy:" + string(a.Kind) + ":" + a.RunID, OK: operationActivityHealthy(a), Critical: true})
 	}
 	// ▸R per source TYPE with a corpus but no ENABLED instance: the zero-sources
 	// case is the extreme; the realistic one is disabling ONE connector and silently
@@ -628,6 +721,14 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		fmt.Fprintf(stdout, "     operation %-13s %-9s run=%s phase=%s started=%s heartbeat=%s items=%d files=%d errors=%d\n",
 			a.Kind, a.State, a.RunID, a.Phase, a.StartedAt, a.LastHeartbeat,
 			a.Counts.Items, a.Counts.Files, a.Counts.Errors)
+		// A permanently-red owner_abandoned receipt gets the same treatment as every
+		// other unresolvable condition in this file: cause, data impact, and the exact
+		// command that resolves it. Printing is read-only; nothing here mutates.
+		if a.FailureCode == operation.FailureOwnerAbandoned {
+			for _, line := range abandonedIngestRecoveryLines(a) {
+				fmt.Fprintf(stdout, "     %s\n", line)
+			}
+		}
 	}
 	if rec, present, _ := readBlockRecord(cfg); present {
 		fmt.Fprintf(stdout, "%s index_rebuild BLOCKED (%s; vault %s, index held %d) — fix vault_dir in config.toml then `mora index rebuild`; `--force` only if the current vault is correct (it discards the %d indexed memories)\n",
