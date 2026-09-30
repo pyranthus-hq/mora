@@ -23,7 +23,7 @@ func TestDoctorRebuildRepairUncoveredJournal(t *testing.T) {
 	if err := os.WriteFile(outside, []byte("outside vault"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	journal := ingestpkg.JournalPath(cfg, "filesystem:uncovered")
+	journal := ingestpkg.JournalPath(cfg, ingestpkg.SourceKey("filesystem", "uncovered"))
 	if err := os.MkdirAll(filepath.Dir(journal), 0700); err != nil {
 		t.Fatal(err)
 	}
