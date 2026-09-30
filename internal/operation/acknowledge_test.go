@@ -132,6 +132,74 @@ func TestAcknowledgedAbandonedStopsReddeningAndRejoinsRetention(t *testing.T) {
 	}
 }
 
+// Acknowledging one receipt must never delete an unrelated one from Activities.
+// owner_abandoned receipts do not compete for the newest-terminal-per-kind slot,
+// acknowledged or not: an acknowledged one is green, so anything it displaced would
+// disappear from doctor and stop counting in AggregateState — silencing an older,
+// unreviewed ordinary failure nobody ever looked at.
+func TestAcknowledgementNeverEvictsAnUnrelatedTerminalReceipt(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	finished := acknowledgeTestNow.Add(-3 * time.Hour)
+	stamp := finished.UTC().Format(time.RFC3339Nano)
+	ordinary := Record{
+		SchemaVersion: SchemaVersion, Kind: KindIngest, State: Failed, RunID: "op_diskfull", OwnerPID: 4242,
+		StartedAt: finished.Add(-time.Hour).UTC().Format(time.RFC3339Nano), HeartbeatAt: stamp,
+		FinishedAt: stamp, Phase: "ingesting", Counts: Counts{Items: 2, Examined: 5, Materialized: 2},
+		FailureCode: "disk_full",
+	}
+	if err := SaveRecord(Path(cfg, KindIngest, ordinary.RunID), ordinary); err != nil {
+		t.Fatal(err)
+	}
+	// Newer than the ordinary failure, so it would win the slot if it competed.
+	saveAbandoned(t, cfg, "op_abandoned", acknowledgeTestNow.Add(-time.Hour))
+	if _, err := AcknowledgeAbandoned(cfg, KindIngest, acknowledgeTestNow, []string{"op_abandoned"}); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]Activity{}
+	for _, a := range Activities(cfg, acknowledgeTestNow.Add(time.Minute), func(int) bool { return false }) {
+		seen[a.RunID] = a
+	}
+	if _, ok := seen["op_diskfull"]; !ok {
+		t.Fatalf("acknowledging op_abandoned silenced an unreviewed failure: %+v", seen)
+	}
+	if seen["op_diskfull"].Acknowledged() {
+		t.Fatal("an ordinary failure must never read as acknowledged")
+	}
+	if !seen["op_abandoned"].Acknowledged() {
+		t.Fatalf("acknowledged receipt = %+v", seen["op_abandoned"])
+	}
+}
+
+// PruneTerminal must read an acknowledgement the same way health does. A stamp
+// health rejects as corrupt cannot buy the receipt into bounded retention, or a
+// record doctor still shows red would age off disk underneath it.
+func TestPruneTerminalIgnoresAnIncoherentAcknowledgement(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	for i := 0; i <= TerminalKeep; i++ {
+		saveAbandoned(t, cfg, "op_bulk_"+string(rune('a'+i)), acknowledgeTestNow.Add(-time.Duration(i+2)*time.Hour))
+		if _, err := AcknowledgeAbandoned(cfg, KindIngest, acknowledgeTestNow, []string{"op_bulk_" + string(rune('a'+i))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Oldest of all, so retention would drop it first if the stamp counted.
+	tampered := saveAbandoned(t, cfg, "op_tampered", acknowledgeTestNow.Add(-24*time.Hour))
+	tampered.AcknowledgedAt = "yesterday" // classifyOperationRecord: invalid_timestamp
+	path := Path(cfg, KindIngest, tampered.RunID)
+	if err := SaveRecord(path, tampered); err != nil {
+		t.Fatal(err)
+	}
+	PruneTerminal(cfg, KindIngest)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("a receipt health calls corrupt was pruned as acknowledged history: %v", err)
+	}
+	acts := Activities(cfg, acknowledgeTestNow, func(int) bool { return false })
+	for _, a := range acts {
+		if a.RunID == tampered.RunID && (a.FailureCode != "invalid_timestamp" || a.Acknowledged()) {
+			t.Fatalf("tampered receipt = %+v", a)
+		}
+	}
+}
+
 func TestAcknowledgeAbandonedRefusesEverythingElse(t *testing.T) {
 	cfg := config.Config{StateDir: t.TempDir()}
 	if _, err := AcknowledgeAbandoned(cfg, KindIngest, acknowledgeTestNow, nil); err == nil {
@@ -198,6 +266,9 @@ func TestAcknowledgedAtOnlyCoherentOnAbandonedFailure(t *testing.T) {
 		}, "incoherent_state"},
 		{"ordinary_failure_cannot_be_acknowledged", func(r *Record) {
 			r.FailureCode = "operation_failed"
+		}, "incoherent_state"},
+		{"running_cannot_be_acknowledged", func(r *Record) {
+			r.State, r.FinishedAt, r.FailureCode, r.Phase = Running, "", "", "fetching"
 		}, "incoherent_state"},
 		{"review_cannot_predate_the_failure", func(r *Record) {
 			r.AcknowledgedAt = acknowledgeTestNow.Add(-4 * time.Hour).Format(time.RFC3339Nano)

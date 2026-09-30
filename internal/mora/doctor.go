@@ -354,21 +354,41 @@ func operationActivityHealthy(a operationActivity) bool {
 // path (recovery.CompactJournal runs from the rebuild). Whatever the dead run had
 // not fetched yet is a different gap, and only re-running that source's sync can
 // close it. Receipts carry no source identity, so the source is named as a
-// placeholder rather than guessed.
+// placeholder; `mora sync` takes a source TYPE from a fixed vocabulary, not an
+// instance name, so the guidance points at its usage rather than inventing a name.
+//
+// The published count is Counts.Materialized, never Counts.Files: Files is an
+// index_rebuild field (len(files) in the vault) and no ingest writer sets it, so
+// printing it reported 0 published items on every real receipt — the exact
+// opposite of why the receipt was retained. Materialized is what ingest records as
+// published (Items mirrors it), and it is still 0 when the owner died before the
+// awaiting_rebuild heartbeat reported counts. Retention itself proves work landed
+// (UncoveredRunIDs needs an uncovered journal PATH line, not just a header), so the
+// zero-count case says the count is unknown rather than claiming nothing landed.
 //
 // `mora doctor --repair` requires `--json`, so the printed commands include it.
 func abandonedIngestRecoveryLines(a operationActivity) []string {
 	if a.Acknowledged() {
 		return []string{fmt.Sprintf("acknowledged %s by an operator — retained as evidence and now subject to ordinary terminal retention", a.AcknowledgedAt)}
 	}
-	return []string{
+	lines := []string{
 		"the ingest owner process died mid-run (heartbeat expired, owner gone); no writer, rebuild, or",
 		"prune will ever clear this receipt, so it is intentionally red until you act on it",
-		fmt.Sprintf("data impact: the %d file(s) this run had already published are in the vault but no rebuild has", a.Counts.Files),
-		"indexed them, and anything it had not fetched yet never arrived — this run's work is incomplete",
-		"recover: `mora index rebuild` to index what landed, then `mora sync <source>` to refetch the rest;",
-		"once reviewed, `mora doctor --repair --dry-run --json` to preview and `mora doctor --repair --yes --json` to acknowledge",
 	}
+	if n := a.Counts.Materialized; n > 0 {
+		lines = append(lines,
+			fmt.Sprintf("data impact: the %d item(s) this run had already published are in the vault but no", n),
+			"rebuild has indexed them, and anything it had not fetched yet never arrived")
+	} else {
+		lines = append(lines,
+			"data impact: this run died before it reported counts; whatever it had already published is in",
+			"the vault but no rebuild has indexed it, and anything it had not fetched yet never arrived")
+	}
+	return append(lines,
+		"this run's work is incomplete — recover: `mora index rebuild` to index what landed, then",
+		"`mora sync <source-type>` (run `mora sync` for the list) to refetch the rest; once reviewed,",
+		"`mora doctor --repair --dry-run --json` to preview and `mora doctor --repair --yes --json` to acknowledge",
+	)
 }
 
 // sourceHealthDetailLine renders one unhealthy source's human-readable line,
@@ -724,7 +744,10 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		// A permanently-red owner_abandoned receipt gets the same treatment as every
 		// other unresolvable condition in this file: cause, data impact, and the exact
 		// command that resolves it. Printing is read-only; nothing here mutates.
-		if a.FailureCode == operation.FailureOwnerAbandoned {
+		// Terminal failed only — no production path pairs owner_abandoned with a
+		// running/stalled state, and a hand-edited record must not be told its owner
+		// died when the receipt still claims to be live.
+		if a.State == operationFailed && a.FailureCode == operation.FailureOwnerAbandoned {
 			for _, line := range abandonedIngestRecoveryLines(a) {
 				fmt.Fprintf(stdout, "     %s\n", line)
 			}

@@ -745,16 +745,21 @@ func Activities(cfg config.Config, now time.Time, live Liveness) []Activity {
 			out = append(out, classifyOperationRecord(rec, kind, pathRunID, now, live))
 		}
 	}
-	// Retain every active/stalled/corrupt/uncovered record plus the newest valid
+	// Retain every active/stalled/corrupt/abandoned record plus the newest valid
 	// terminal record per kind. Older terminals remain on disk as bounded audit
-	// evidence. Ordinary old failures yield to newer successes; uncovered
-	// abandonment remains visible because a later run does not prove recovery —
-	// until the operator explicitly acknowledges it, which returns the receipt to
-	// ordinary bounded terminal history.
+	// evidence. Ordinary old failures yield to newer successes; owner_abandoned
+	// receipts never compete for the one-per-kind slot, acknowledged or not.
+	// Acknowledgement must not evict an unrelated terminal record from this slot:
+	// an acknowledged receipt is green, so whatever it displaced would vanish from
+	// Activities entirely — silencing an older, unreviewed ordinary failure. What
+	// bounds an acknowledged receipt is PruneTerminal, which re-admits it to the
+	// TerminalKeep bucket on disk; and AggregateState, BannerAll and the doctor
+	// check each consult Acknowledged() themselves, so it still stops reddening
+	// health without being filtered here.
 	latestTerminal := map[Kind]Activity{}
 	var current []Activity
 	for _, a := range out {
-		if (a.FailureCode != FailureOwnerAbandoned || a.Acknowledged()) && (a.State == Failed || a.State == Completed) && a.FinishedAt != "" {
+		if a.FailureCode != FailureOwnerAbandoned && (a.State == Failed || a.State == Completed) && a.FinishedAt != "" {
 			prev, ok := latestTerminal[a.Kind]
 			if !ok || a.FinishedAt > prev.FinishedAt || (a.FinishedAt == prev.FinishedAt && a.RunID > prev.RunID) {
 				latestTerminal[a.Kind] = a
@@ -985,6 +990,23 @@ func CompleteAfterCoverage(cfg config.Config, runID string, now time.Time) error
 	return err
 }
 
+// coherentAcknowledgement reports whether rec carries an acknowledgement a reader
+// may act on: only a terminal failed / owner_abandoned receipt can hold one, and
+// the stamp must parse and not predate the failure it reviewed. Pruning uses this
+// rather than a bare AcknowledgedAt != "" check so a stamp that health classifies
+// as corrupt (classifyOperationRecord returns incoherent_state/invalid_timestamp)
+// cannot buy the receipt its way into bounded retention. The future-stamp half of
+// that check needs a clock the pruner does not have; such a record is still
+// corrupt to health, so it stays red and visible either way.
+func coherentAcknowledgement(rec Record) bool {
+	if rec.AcknowledgedAt == "" || rec.State != Failed || rec.FailureCode != FailureOwnerAbandoned {
+		return false
+	}
+	finished, ferr := time.Parse(time.RFC3339Nano, rec.FinishedAt)
+	acknowledged, aerr := time.Parse(time.RFC3339Nano, rec.AcknowledgedAt)
+	return ferr == nil && aerr == nil && !acknowledged.Before(finished)
+}
+
 // PruneTerminal bounds retained completion evidence. It runs only
 // after a writer publishes a terminal transition; health/status reads stay pure.
 func PruneTerminal(cfg config.Config, kind Kind) {
@@ -1004,8 +1026,7 @@ func PruneTerminal(cfg config.Config, kind Kind) {
 		// Uncovered abandonment is recovery evidence, not bounded completion
 		// history. A later successful run must not age it out — only an explicit
 		// operator acknowledgement returns it to bounded terminal retention.
-		acknowledged := rec.AcknowledgedAt != "" && rec.State == Failed && rec.FailureCode == FailureOwnerAbandoned
-		if err == nil && (rec.FailureCode != FailureOwnerAbandoned || acknowledged) && (rec.State == Failed || rec.State == Completed) {
+		if err == nil && (rec.FailureCode != FailureOwnerAbandoned || coherentAcknowledgement(rec)) && (rec.State == Failed || rec.State == Completed) {
 			terms = append(terms, terminal{path: path, finished: rec.FinishedAt})
 		}
 	}

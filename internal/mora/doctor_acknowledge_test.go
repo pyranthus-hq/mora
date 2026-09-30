@@ -16,6 +16,11 @@ import (
 // saveAbandonedIngestReceipt writes the permanently-red state #498 retains: a
 // terminal failed / owner_abandoned ingest receipt. No writer, rebuild, or prune
 // can clear it, so Doctor must both explain it and offer a way out.
+//
+// Counts carry the shape a real ingest writer produces (ingest.go:1260): Items
+// mirrors Materialized, Examined is the walk, and Files is NEVER set — it is an
+// index_rebuild field. Hand-writing Files here is what let guidance read it and
+// still pass; keep it unset so the test fails if that drifts back.
 func saveAbandonedIngestReceipt(t *testing.T, cfg Config, runID string, now time.Time) operationRecord {
 	t.Helper()
 	stamp := now.Add(-2 * time.Hour).Format(time.RFC3339Nano)
@@ -23,7 +28,7 @@ func saveAbandonedIngestReceipt(t *testing.T, cfg Config, runID string, now time
 		SchemaVersion: operationSchemaVersion, Kind: operationKindIngest, State: operationFailed,
 		RunID: runID, OwnerPID: 4242,
 		StartedAt: now.Add(-3 * time.Hour).Format(time.RFC3339Nano), HeartbeatAt: stamp, FinishedAt: stamp,
-		Phase: "awaiting_rebuild", Counts: operationCounts{Items: 9, Files: 3},
+		Phase: "awaiting_rebuild", Counts: operationCounts{Items: 9, Examined: 12, Materialized: 9},
 		FailureCode: operation.FailureOwnerAbandoned,
 	}
 	if err := saveOperationRecord(operation.Path(cfg, operationKindIngest, runID), rec); err != nil {
@@ -53,10 +58,10 @@ func TestDoctorGuidesRecoveryForAbandonedIngestReceipt(t *testing.T) {
 	}
 	for _, want := range []string{
 		"owner process died mid-run",                         // cause
-		"in the vault but no rebuild has",                    // data impact
-		"3 file(s) this run had already published",           // data impact, from the receipt's own counts
+		"are in the vault but no",                            // data impact
+		"9 item(s) this run had already published",           // data impact, from the count ingest really writes
 		"`mora index rebuild`",                               // index what landed
-		"`mora sync <source>`",                               // refetch what never arrived
+		"`mora sync <source-type>`",                          // refetch what never arrived (a type, not an instance)
 		"`mora doctor --repair --dry-run --json`",            // preview (--repair requires --json)
 		"`mora doctor --repair --yes --json` to acknowledge", // resolve
 	} {
@@ -64,11 +69,55 @@ func TestDoctorGuidesRecoveryForAbandonedIngestReceipt(t *testing.T) {
 			t.Fatalf("recovery guidance missing %q:\n%s", want, text)
 		}
 	}
+	// The receipt was retained BECAUSE work landed uncovered. Never report 0.
+	if strings.Contains(text, "0 item(s)") || strings.Contains(text, "file(s) this run") {
+		t.Fatalf("guidance reported a zero/index_rebuild count:\n%s", text)
+	}
 	// Read-only doctor prints guidance and mutates nothing.
 	rec, err := operation.LoadRecord(operation.Path(cfg, operationKindIngest, "op_later_run"))
 	if err != nil || rec.AcknowledgedAt != "" || rec.State != operationFailed ||
 		rec.FailureCode != operation.FailureOwnerAbandoned {
 		t.Fatalf("read-only doctor mutated the receipt: %+v, %v", rec, err)
+	}
+}
+
+// The common abandonment shape has NO counts at all: the "ingesting" heartbeat
+// writes operationCounts{} (ingest.go:1236) and the owner dies before the
+// "awaiting_rebuild" heartbeat reports real ones. Retention still proves work
+// landed — UncoveredRunIDs needs an uncovered journal path line — so the guidance
+// must say the count is unknown, never that zero items were published.
+func TestDoctorGuidanceNeverClaimsZeroPublishedItems(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	now := time.Date(2026, 9, 29, 15, 0, 0, 0, time.UTC)
+	setDoctorClock(t, now)
+	rec := saveAbandonedIngestReceipt(t, cfg, "op_no_counts", now)
+	rec.Phase, rec.Counts = "ingesting", operationCounts{}
+	if err := saveOperationRecord(operation.Path(cfg, operationKindIngest, rec.RunID), rec); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := cmdDoctor(testCtx(t), nil, &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "warn operation_healthy:ingest:op_no_counts") {
+		t.Fatalf("countless abandoned receipt did not redden its check:\n%s", text)
+	}
+	for _, want := range []string{
+		"died before it reported counts",
+		"whatever it had already published is in",
+		"`mora index rebuild`",
+		"`mora doctor --repair --yes --json` to acknowledge",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("recovery guidance missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "0 item(s)") {
+		t.Fatalf("guidance told the operator nothing landed:\n%s", text)
 	}
 }
 
@@ -178,7 +227,7 @@ func TestDoctorNeverAcknowledgesAReceiptItJustRetired(t *testing.T) {
 		RunID: "op_orphan", OwnerPID: 4242,
 		StartedAt:   now.Add(-time.Hour).Format(time.RFC3339Nano),
 		HeartbeatAt: now.Add(-operationHeartbeatTTL - time.Second).Format(time.RFC3339Nano),
-		Phase:       "awaiting_rebuild", Counts: operationCounts{Items: 4, Files: 1},
+		Phase:       "awaiting_rebuild", Counts: operationCounts{Items: 4, Examined: 6, Materialized: 4},
 	}
 	path := operation.Path(cfg, operationKindIngest, orphan.RunID)
 	if err := saveOperationRecord(path, orphan); err != nil {
@@ -239,13 +288,23 @@ func TestDoctorAcknowledgeRequiresRepairApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{nil, {"--json"}, {"--strict", "--json"}, {"--repair", "--dry-run", "--json"}} {
-		// --strict exits non-zero on an unhealthy vault; the mutation check is the point.
+	for _, args := range [][]string{nil, {"--json"}, {"--strict"}, {"--strict", "--json"}, {"--pulse"}, {"--repair", "--dry-run", "--json"}} {
+		// --strict/--pulse exit non-zero on an unhealthy vault; the mutation check is the point.
 		_ = cmdDoctor(testCtx(t), args, io.Discard, io.Discard)
 		after, err := os.ReadFile(path)
 		if err != nil || !bytes.Equal(before, after) {
 			t.Fatalf("doctor %v mutated the receipt: %s, %v", args, after, err)
 		}
+	}
+	// The other read-only surfaces that consume the same activities: the health
+	// rollup every status/banner caller goes through, and `mora sync status`.
+	if h := healthOf(cfg, now); h.State == "" {
+		t.Fatal("healthOf returned no state")
+	}
+	_ = cmdSync(testCtx(t), []string{"status"}, io.Discard, io.Discard)
+	afterReads, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(before, afterReads) {
+		t.Fatalf("a read-only health/status surface mutated the receipt: %s, %v", afterReads, err)
 	}
 	if err := cmdDoctor(testCtx(t), []string{"--repair", "--json"}, io.Discard, io.Discard); err == nil {
 		t.Fatal("--repair without --yes must refuse")

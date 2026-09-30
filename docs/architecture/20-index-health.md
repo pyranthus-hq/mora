@@ -151,10 +151,23 @@ dump. Human `mora doctor` prints, under the activity line:
   vault**; it is the derived index that has not covered them. Whatever the run
   had not fetched yet never arrived at all;
 - **recovery** — `mora index rebuild` indexes what landed (a rebuild is what
-  covers a journaled path, via `CompactJournal`), then `mora sync <source>`
+  covers a journaled path, via `CompactJournal`), then `mora sync <source-type>`
   refetches the rest. Receipts carry no source identity, so the source is a
-  placeholder, never a guess. Then `mora doctor --repair --dry-run --json` to
-  preview and `mora doctor --repair --yes --json` to acknowledge.
+  placeholder, never a guess — and `mora sync` takes a source *type* from a fixed
+  vocabulary, not an instance name, so the guidance points at `mora sync`'s own
+  usage list. Then `mora doctor --repair --dry-run --json` to preview and
+  `mora doctor --repair --yes --json` to acknowledge.
+
+The published count in the data-impact line is `counts.materialized`, never
+`counts.files`: `files` is an **index_rebuild** field (`len(files)` in the vault)
+and no ingest writer sets it, so reading it reported "0 published" on every real
+receipt — the exact opposite of why the receipt was retained. `materialized` is
+what ingest records as published (`items` mirrors it), and it is itself `0` when
+the owner died before the `awaiting_rebuild` heartbeat reported real counts — the
+common case, since the `ingesting` heartbeat writes empty counts. Retention alone
+proves work landed (`UncoveredRunIDs` needs an uncovered journal *path* line, not
+just a header), so with no counts the line says the number is unknown rather than
+claiming nothing landed.
 
 Acknowledgement is Doctor's `acknowledge_abandoned_ingest` `--repair` action, a
 sibling of `retire_abandoned_ingest` on the same plan / `--yes` / idempotent
@@ -180,6 +193,19 @@ truthful `failed` / `owner_abandoned` state plus the acknowledgement stamp until
 bounded retention retires it. Read-only `mora doctor` / health / status paths
 print this guidance without mutating anything; the acknowledgement happens only
 under `--repair` with `--yes`.
+
+`owner_abandoned` receipts never compete for `Activities`' one newest-terminal
+slot per kind, acknowledged or not. That slot is where ordinary old failures yield
+to newer successes; letting an acknowledged receipt win it would evict whatever
+held it, and because the acknowledged receipt is green the evicted record would
+vanish from `doctor` and stop counting in `AggregateState` — silencing an older,
+unreviewed ordinary failure. `PruneTerminal` is what bounds an acknowledged
+receipt (it re-admits it to the `TerminalKeep` bucket on disk), and
+`AggregateState`, `BannerAll` and the doctor check each consult `Acknowledged()`
+themselves, so the receipt stops reddening health without any filtering in
+`Activities`. `PruneTerminal` reads the stamp through the same coherence rules
+classification applies, so a stamp health calls corrupt cannot buy a receipt into
+bounded retention and age off disk while doctor still shows it red.
 
 Every `ingestSource` begins its receipt and a run-id-bound journal header before
 provider dispatch can publish a vault byte. A bounded heartbeat keeps long fetches and batch-wait time
