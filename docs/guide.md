@@ -822,7 +822,9 @@ with an error and reports `verified: false` with a `detail` explaining the
 unresolved condition and why another repair would be planned. For example, a
 journal path outside the vault cannot be covered by rebuilding; its evidence
 is preserved for investigation. Successful repairs are not planned again while
-their checks remain healthy. Doctor never applies unsafe or destructive repairs.
+their checks remain healthy. `doctor --repair --yes` also exits 1 during a
+legitimate in-flight ingest if pending operations or non-empty journals keep the
+index dirty after repair. Doctor never applies unsafe or destructive repairs.
 
 `mora doctor --json` emits the `mora.doctor.report` v1 receipt — the same report
 it always printed, now with `schema` and `schema_version` beside its existing

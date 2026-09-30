@@ -173,6 +173,7 @@ func hasSafeDoctorRepair(actions []doctorRepairAction) bool {
 
 func applyDoctorRepairs(ctx context.Context, cfg Config, actions []doctorRepairAction) ([]doctorVerification, error) {
 	verification := make([]doctorVerification, 0, len(actions))
+	var repairErrors []error
 	for _, action := range actions {
 		if !action.Safe {
 			continue
@@ -202,10 +203,10 @@ func applyDoctorRepairs(ctx context.Context, cfg Config, actions []doctorRepairA
 		}
 		verification = append(verification, result)
 		if err != nil {
-			return verification, fmt.Errorf("doctor repair %s: %w", action.ID, err)
+			repairErrors = append(repairErrors, fmt.Errorf("doctor repair %s: %w", action.ID, err))
 		}
 	}
-	return verification, nil
+	return verification, errors.Join(repairErrors...)
 }
 
 // verifyDoctorIndexRepair re-evaluates the predicates that can plan a rebuild.
