@@ -19,7 +19,7 @@ files. Generated `dist/` output is not part of this source-of-truth surface.
 | File | Responsibility |
 |---|---|
 | `cmd/mora/main.go` | Entrypoint: stamps `-ldflags` version/commit/date into `mora.BuildVersion`, then delegates to `mora.Run(ctx, args, stdout, stderr, stdin)` with streams as parameters (the byte-clean test seam). |
-| `go.mod` | Module `github.com/pyranthus-hq/mora`, `go 1.25.8`; `modernc.org/sqlite v1.29.0` is the **only** SQL engine (no cgo driver in the graph) — this is what keeps `CGO_ENABLED=0` possible. |
+| `go.mod` | Module `github.com/pyranthus-hq/mora`, `go 1.26.0`; `modernc.org/sqlite v1.60.1` is the **only** SQL engine (no cgo driver in the graph) — this is what keeps `CGO_ENABLED=0` possible. |
 | `AGENTS.md` | Agent/reviewer charter: hard rules (no-cycle, pure-Go, read-only/zero-egress, honest-snapshot). |
 | `internal/mora/mora.go` | The hub: CLI dispatch (`Run`) and the static connector catalog. Cohesive subsystems live in same-package siblings including `ingest.go`, `index.go`, `mcp.go`, `search.go`, `digest.go`, and `doctor.go`. |
 
