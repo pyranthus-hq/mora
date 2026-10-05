@@ -17,6 +17,7 @@ import (
 // may run in CI and must not block, open a browser, mutate the host, or replace
 // the binary that is executing it.
 var contractBaselineNonExecutable = map[string]string{
+	"conversation watch": "long-running capture stream",
 	"mcp":                "long-running JSON-RPC server",
 	"mcp serve":          "long-running JSON-RPC server",
 	"serve":              "long-running loopback HTTP server entrypoint",

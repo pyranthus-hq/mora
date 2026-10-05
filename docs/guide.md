@@ -520,6 +520,72 @@ requests; they do not guarantee a session-start brief. The Claude marketplace
 wrapper intentionally keeps MCP setup explicit rather than adding an automatic
 `.mcp.json` startup declaration.
 
+### Preserve work conversations locally
+
+Conversation capture is opt-in. It reads Codex rollout JSONL or Claude project
+JSONL without changing the agent's files. Only explicitly selected files, or
+sessions whose working directory lies inside an allowlisted work directory, are
+captured. It does not enable Gmail, messages, calendars, or other personal sources.
+
+```bash
+# Select a work directory and label its conversations.
+mora conversation enable --provider codex --source-root "$HOME/.codex/sessions" --cwd-root /absolute/path/to/work --scope project:work
+mora conversation enable --provider claude --source-root "$HOME/.claude/projects" --cwd-root /absolute/path/to/work --scope project:work
+# Or select one transcript explicitly, without enabling its neighbours.
+mora conversation enable --provider codex --file /absolute/path/to/rollout.jsonl --scope project:work
+mora conversation sync
+mora conversation status
+mora conversation list --scope project:work
+mora conversation search --query "exact correction" --scope project:work
+mora conversation view --session codex/SESSION_ID --max-bytes 32000
+mora conversation zoom --session codex/SESSION_ID --start 42 --count 1
+# Rebuild the disposable FTS projection if search reports it missing/stale.
+mora conversation reindex
+# For continuous capture, run this through your local service manager.
+mora conversation watch --interval 30s
+```
+
+All conversation commands emit versioned JSON receipts; watch emits a stream of
+sync receipts. An unsuccessful capture exits nonzero and persists its errors in
+`mora conversation status`; watch prints each failure to stderr and keeps trying.
+Partial trailing JSONL records wait for the producer's newline. Corrupt complete
+records and changed archived prefixes are errors, not silently rewritten history.
+Keep sources readable and check the capture timestamp before assuming current
+coverage. Do not grant an entire home directory as a working-directory allowlist
+when you intend only work conversations.
+
+Original messages and tool calls/results live under Mora's **local data directory**
+in `conversations/archive`; navigation trees and a rebuildable FTS index sit
+beside them. Capture and retrieval refuse an archive directory overlapping the
+vault, including symlink aliases; vault Git sync and backup enforce the same
+boundary. These archives are not published by `share push`, are not authored
+memories, and do not enter the person/commitment graph. Back this directory up
+separately if you need durable recovery; existing Markdown-vault backup and
+forget/retention operations do not manage it. Archives can contain sensitive tool
+output: keep their directory private. Captured reasoning and system/developer
+messages are excluded; duplicate event mirrors and Claude sidechains are ignored.
+Codex fork files retain their child provider identity even when their copied
+header names the parent session. Raw JSON formatting changes are compared as
+values rather than mistaken for historical edits.
+Text is preserved without truncation; non-text blocks appear as typed labels in
+the searchable text and retain their accepted payload in the local archive.
+
+Each conversation has a binary tree of **lossy local extractive previews**, at
+512 UTF-8 bytes per node. A smaller view may further shorten displayed previews
+while preserving every node's message range. This is not an LLM-written synthesis
+or a replacement chat harness: Mora makes no external model call, and does not
+reset the agent's context each turn. Full-original FTS can find details absent
+from every summary. Inspect exact originals before treating a historical claim
+as current truth or authorization.
+
+Once enabled, ordinary MCP brief/search/context and installed Claude recall hooks
+use this archive automatically. Four read-only MCP tools expose list/search/view/
+zoom. Exact-message MCP reads are paged (`offset`, `max_bytes`, `next_offset`),
+while CLI zoom returns the whole original. Reconnect existing MCP clients after
+installing a new binary so they discover new tools. To stop capture, stop its
+local job and remove the relevant entries from `conversations.json` in Mora's
+config directory; originals stay intact until you deliberately remove them.
+
 ### Ask Mora what it can do
 
 An agent does not have to guess. One command answers it:

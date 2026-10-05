@@ -65,6 +65,9 @@ var contractEnvelopeOrder = []string{
 // These rows still get the schema-shape assertion below — the
 // `contract.platform_policy` the registry prescribes.
 var contractEnvelopeNonExecutable = map[string]string{
+	"conversation enable":     "requires an explicitly selected transcript/work allowlist; synthetic receipts covered by TestConversationCLIAndMCPRecallUseOriginals",
+	"conversation view":       "requires an archived session; synthetic populated receipts covered by TestConversationCLIAndMCPRecallUseOriginals",
+	"conversation zoom":       "requires an archived session; synthetic exact-read receipts covered by TestConversationCLIAndMCPRecallUseOriginals",
 	"integrations connect":    "mutates host client configuration and requires an absolute binary path",
 	"integrations disconnect": "mutates host client configuration",
 	"delete":                  "destructive memory mutation",

@@ -104,6 +104,11 @@ func hookSessionStart(ctx context.Context, stdout io.Writer, stdin io.Reader) er
 		}
 		return nil
 	}
+	if continuity, err := conversationContinuity(cfg, "", "", 8000); err != nil {
+		body += "\nConversation continuity unavailable; run mora conversation status."
+	} else if continuity != "" {
+		body += "\n" + continuity
+	}
 	if strings.TrimSpace(body) == "" {
 		return nil
 	}
@@ -139,6 +144,13 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 	var body string
 	if serr == nil && searchCtx.Err() == nil {
 		body = formatRecallContext(mems, threshold, hookNow())
+	}
+	if continuity, err := conversationContinuity(cfg, "", prompt, hookRecallByteLimit/2); err != nil {
+		body = "Conversation continuity unavailable; run mora conversation status.\n" + body
+	} else if continuity != "" {
+		if len(body)+len(continuity)+len(banner)+2 <= hookRecallByteLimit {
+			body += "\n" + continuity
+		}
 	}
 	body = prependBannerLine(banner, body)
 	if body == "" {

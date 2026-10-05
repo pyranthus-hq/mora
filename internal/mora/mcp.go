@@ -127,19 +127,23 @@ type mcpToolDef struct {
 // preserved in tools/list for readability; callMCPTool derives its dispatch map
 // from this slice (mcpToolIndex), so a tool added here needs no second edit.
 var mcpToolHandlers = map[string]func(context.Context, Config, map[string]any) (any, error){
-	"write_memory":    mcpWriteMemory,
-	"read_memory":     mcpReadMemory,
-	"search_memory":   mcpSearchMemory,
-	"calendar_events": mcpCalendarEvents,
-	"list_memory":     mcpListMemory,
-	"delete_memory":   mcpDeleteMemory,
-	"context_memory":  mcpContextMemory,
-	"think":           mcpThink,
-	"list_entities":   mcpListEntities,
-	"get_entity":      mcpGetEntity,
-	"digest":          mcpDigest,
-	"brief":           mcpBrief,
-	"meeting_prep":    mcpMeetingPrep,
+	"write_memory":         mcpWriteMemory,
+	"read_memory":          mcpReadMemory,
+	"search_memory":        mcpSearchMemory,
+	"calendar_events":      mcpCalendarEvents,
+	"list_memory":          mcpListMemory,
+	"delete_memory":        mcpDeleteMemory,
+	"context_memory":       mcpContextMemory,
+	"think":                mcpThink,
+	"list_entities":        mcpListEntities,
+	"get_entity":           mcpGetEntity,
+	"digest":               mcpDigest,
+	"brief":                mcpBrief,
+	"meeting_prep":         mcpMeetingPrep,
+	"list_conversations":   mcpConversationList,
+	"search_conversations": mcpConversationSearch,
+	"view_conversation":    mcpConversationView,
+	"zoom_conversation":    mcpConversationZoom,
 }
 
 // mcpToolRegistry binds package-owned public metadata to Mora-owned handlers.
@@ -461,6 +465,13 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 		health = compactHealthFiltered(cfg, now, filters)
 	}
 	out := map[string]any{"results": budgeted, "freshness": sourceFreshness(cfg), "health": health}
+	if filters.Source == "" && filters.SinceHours == 0 && filters.EventSinceHours == 0 && len(filters.ExcludeDispositions) == 0 {
+		if hits, e := conversationSearchHits(cfg, query, scope, 3000); e != nil {
+			out["conversation_error"] = "Conversation search unavailable; run mora conversation status."
+		} else if len(hits) > 0 {
+			out["conversation_results"] = hits
+		}
+	}
 	manifest := evidenceManifest(budgeted, res)
 	out["evidence_manifest"] = manifest
 	links := make([]string, 0, len(manifest))
@@ -624,7 +635,18 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 	// deeper pool. The current-state and no-query paths do not, so run the same
 	// conservative pass over what this call retrieved. It only adds pointers.
 	items = annotateLaterRelated(items)
-	text := buildContext(cfg, items, charBudget, query != "")
+	continuity := ""
+	if filters.Source == "" && filters.SinceHours == 0 && filters.EventSinceHours == 0 && len(filters.ExcludeDispositions) == 0 && intent != contextIntentOpenLoops {
+		continuity, err = conversationContinuity(cfg, scope, query, charBudget/4)
+		if err != nil {
+			continuity = "Conversation continuity unavailable; run mora conversation status."
+			err = nil
+		}
+	}
+	text := buildContext(cfg, items, charBudget-len(continuity)-1, query != "")
+	if continuity != "" {
+		text += "\n" + continuity
+	}
 	resultCount := len(items)
 	if intent == contextIntentOpenLoops {
 		text = renderOpenCommitmentContext(commitments, charBudget)
@@ -796,15 +818,25 @@ func mcpBrief(ctx context.Context, cfg Config, args map[string]any) (any, error)
 		return nil, err
 	}
 	budgetChars := mcpDigestBudgetChars(cfg, intArg(args, "max_tokens", 0))
+	continuity, budgetChars := conversationBriefPayload(cfg, args, budgetChars)
 	recordMCPUsage(ctx, cfg, usageEvent{Tool: "brief", Results: len(d.Sections), Millis: time.Since(start).Milliseconds()})
 	// Reuse the Phase-15 budget machinery VERBATIM (additive — the digest case and
 	// its helpers are untouched): envelope-gated synthesis_prompt, max_tokens
 	// budget, T0-safe by construction (16-03 adds the gate row). Model-free: the
 	// synthesis_prompt is a STRING the agent runs with its own model — no sampling.
 	if boolArg(args, "envelope", false) {
-		return budgetEnvelopePayload(cfg, d, budgetChars), nil
+		envelope := budgetEnvelopePayload(cfg, d, budgetChars)
+		if continuity == "" {
+			return envelope, nil
+		}
+		return withConversationEnvelope(envelope, continuity, conversationCaptureWarning(cfg))
 	}
-	return digestMCPPayload(cfg, d, budgetChars), nil
+	out := digestMCPPayload(cfg, d, budgetChars)
+	if continuity != "" {
+		out["conversation_continuity"] = continuity
+		out["conversation_capture"] = conversationCaptureWarning(cfg)
+	}
+	return out, nil
 }
 
 func mcpMeetingPrep(ctx context.Context, cfg Config, args map[string]any) (any, error) {
