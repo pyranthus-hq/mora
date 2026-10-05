@@ -148,9 +148,21 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 	if continuity, err := conversationContinuity(cfg, "", prompt, hookRecallByteLimit/2); err != nil {
 		body = "Conversation continuity unavailable; run mora conversation status.\n" + body
 	} else if continuity != "" {
-		if len(body)+len(continuity)+len(banner)+2 <= hookRecallByteLimit {
-			body += "\n" + continuity
+		// Reserve conversation evidence before filling the rest with saved
+		// memories. Drop complete memory lines, never exact zoom pointers.
+		available := hookRecallByteLimit - len(continuity) - len(banner) - 2
+		for len(body) > available {
+			at := strings.LastIndex(body, "\n")
+			if at < 0 {
+				body = ""
+				break
+			}
+			body = body[:at]
 		}
+		if body == "[Mora recall]" {
+			body = ""
+		}
+		body += "\n" + continuity
 	}
 	body = prependBannerLine(banner, body)
 	if body == "" {

@@ -2,6 +2,7 @@ package mora
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -240,5 +241,24 @@ func TestConversationContinuityFullTreeFitsIncludingFraming(t *testing.T) {
 	text, err := conversationContinuity(cfg, "project:work", "", 2000)
 	if err != nil || len(text) > 2000 || !strings.Contains(text, "codex/full") {
 		t.Fatalf("saturated view dropped: length=%d err=%v", len(text), err)
+	}
+}
+
+func TestConversationHookReservesSpaceWhenMemoryRecallIsFull(t *testing.T) {
+	seedConversation(t)
+	hkSetSearch(t, func(context.Context, Config, string, string, int, ...searchFilters) ([]Memory, error) {
+		return []Memory{{ID: "one", Title: "Saved history", Text: strings.Repeat("existing memory ", 40), Source: "authored", Scope: "project:work"}, {ID: "two", Title: "Other saved history", Text: strings.Repeat("existing memory ", 40), Source: "authored", Scope: "project:work"}, {ID: "three", Title: "Last saved history", Text: strings.Repeat("existing memory ", 40), Source: "authored", Scope: "project:work"}}, nil
+	})
+	var out bytes.Buffer
+	if err := hookRecall(testCtx(t), nil, &out, strings.NewReader(`{"prompt":"rareorchid correction"}`)); err != nil {
+		t.Fatal(err)
+	}
+	var envelope hookEnvelope
+	if err := json.Unmarshal(out.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	text := envelope.HookSpecificOutput.AdditionalContext
+	if len(text) > hookRecallByteLimit || !strings.Contains(text, "codex/fixture message 0") {
+		t.Fatalf("memory results displaced conversation: %q", text)
 	}
 }

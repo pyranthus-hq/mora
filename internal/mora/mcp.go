@@ -640,7 +640,6 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 		continuity, err = conversationContinuity(cfg, scope, query, charBudget/4)
 		if err != nil {
 			continuity = "Conversation continuity unavailable; run mora conversation status."
-			err = nil
 		}
 	}
 	text := buildContext(cfg, items, charBudget-len(continuity)-1, query != "")

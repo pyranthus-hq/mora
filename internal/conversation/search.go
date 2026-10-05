@@ -58,7 +58,7 @@ func (s Store) indexSession(meta Session, messages []Message, force bool) error 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err = tx.Exec("DELETE FROM messages WHERE session=?", meta.ID); err != nil {
 		return err
 	}
