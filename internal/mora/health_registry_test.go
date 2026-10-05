@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	conv "github.com/pyranthus-hq/mora/internal/conversation"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
@@ -32,6 +33,10 @@ import (
 // vault seeded with a "read-target"/"delete-target" memory pair.
 func mcpSurfaceArgs(name string) map[string]any {
 	switch name {
+	case "search_conversations":
+		return map[string]any{"query": "surface"}
+	case "view_conversation", "zoom_conversation":
+		return map[string]any{"session": "codex/health", "start": 0, "count": 1}
 	case "write_memory":
 		return map[string]any{"title": "Surface probe", "text": "surface probe body"}
 	case "read_memory":
@@ -113,6 +118,9 @@ func bannerWithinFirstLines(t *testing.T, label, out string) {
 func driveEverySurface(t *testing.T, ctx context.Context, cfg Config) {
 	t.Helper()
 
+	if err := conversationStore(cfg).Import(conv.Session{ID: "codex/health", Provider: "codex", Scope: "global", Source: "synthetic"}, []conv.Message{{Kind: "user", Text: "surface probe"}}); err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range mcpToolNames() {
 		if mcpHealthExemptTools[name] {
 			continue

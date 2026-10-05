@@ -175,6 +175,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdServe(ctx, args[1:], stdout, stderr)
 	case "integrations":
 		return cmdIntegrations(ctx, args[1:], stdout)
+	case "conversation":
+		return cmdConversation(ctx, args[1:], stdout, stderr)
 	case "hook":
 		return cmdHook(ctx, args[1:], stdout, stderr, stdin)
 	case "loop":
@@ -303,6 +305,7 @@ USAGE:
   mora companion list|status       # the paired devices, and whether a pairing window is open
   mora companion revoke <id>       # end one device's access
   mora companion serve             # the narrow loopback listener a paired phone reads (Today/context/health only)
+  mora conversation enable|sync|watch|status|list|view|search|zoom|reindex
   mora hook install|uninstall|status
   mora upgrade                     # manually self-update to the latest release
   mora upgrade --check             # check + cache published stable release availability
@@ -453,6 +456,11 @@ func cmdBrief(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	body, generated, err := resolveBrief(cfg, now, opts)
 	if err != nil {
 		return err
+	}
+	if *entity == "" && *sinceDays == 0 {
+		if continuity, e := conversationContinuity(cfg, *scope, "", 8000); e == nil && continuity != "" {
+			body += "\n" + continuity
+		}
 	}
 	logUsage(cfg, usageEvent{Tool: "brief"})
 	if *jsonOut {
