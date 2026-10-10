@@ -627,6 +627,14 @@
     {
       "json_contract": "receipt",
       "kind": "subcommand",
+      "path": "share sync",
+      "payload": "mora.share.sync",
+      "platform": "git-or-bucket-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
       "path": "sources add",
       "payload": "mora.sources.add",
       "platform": "all",
@@ -1872,6 +1880,10 @@
     },
     {
       "name": "mora.share.subscribe",
+      "version": 1
+    },
+    {
+      "name": "mora.share.sync",
       "version": 1
     },
     {

@@ -37,12 +37,12 @@ func cmdSchedule(ctx context.Context, args []string, stdout, stderr io.Writer) e
 		return listSchedules(stdout, cfg, *jsonOut)
 	case "install":
 		if len(args) != 2 {
-			return errors.New("usage: mora schedule install <pulse-daily|doctor-pulse|index-hourly|backup-daily|lint-weekly|ingest-hourly|git-daily|update-daily>")
+			return errors.New("usage: mora schedule install <pulse-daily|doctor-pulse|index-hourly|backup-daily|lint-weekly|ingest-hourly|git-daily|update-daily|share-sync>")
 		}
 		return installSchedule(stdout, cfg, args[1])
 	case "uninstall":
 		if len(args) != 2 {
-			return errors.New("usage: mora schedule uninstall <pulse-daily|doctor-pulse|index-hourly|backup-daily|lint-weekly|ingest-hourly|git-daily|update-daily>")
+			return errors.New("usage: mora schedule uninstall <pulse-daily|doctor-pulse|index-hourly|backup-daily|lint-weekly|ingest-hourly|git-daily|update-daily|share-sync>")
 		}
 		return uninstallSchedule(stdout, cfg, args[1])
 	case "run":
@@ -162,7 +162,8 @@ func listSchedules(stdout io.Writer, cfg Config, jsonOutput ...bool) error {
 func installSchedule(stdout io.Writer, cfg Config, job string) error {
 	// As with config loading, fail closed in tests that lose their injected
 	// home. The sentinel is nil in production, so user installs are unchanged.
-	if probe := realHomeConfig.Load(); probe != nil && runtimeGOOS() == "darwin" && cfg.HomeDir() == probe.HomeDir() {
+	writesHome := runtimeGOOS() == "darwin" || (runtimeGOOS() != "windows" && schedulepkg.HasSystemdTimer(job))
+	if probe := realHomeConfig.Load(); probe != nil && writesHome && cfg.HomeDir() == probe.HomeDir() {
 		return errors.New("hermeticity violation: schedule install resolved the REAL home; inject Config.SetHomeDir")
 	}
 	return schedulepkg.Install(stdout, cfg, job, scheduleSeams())
@@ -191,6 +192,10 @@ func scheduledEntries(cfg Config) ([]scheduleListEntry, error) {
 			_, err := os.Stat(filepath.Join(home, "Library", "LaunchAgents", "com.mora."+job+".plist"))
 			installed[job] = err == nil
 		}
+	default:
+		for _, job := range jobs {
+			installed[job] = schedulepkg.HasSystemdTimer(job) && schedulepkg.SystemdTimerInstalled(cfg, job)
+		}
 	}
 	for _, job := range jobs {
 		entries = append(entries, scheduleListEntry{
@@ -204,6 +209,8 @@ func scheduleCadence(job string) string {
 	switch job {
 	case "index-hourly", "ingest-hourly":
 		return "hourly"
+	case "share-sync":
+		return "every 15 minutes"
 	case "pulse-daily":
 		return "daily at 08:00"
 	case "doctor-pulse":
@@ -223,6 +230,9 @@ func nextScheduleRun(job string, now time.Time) string {
 	local := now.Local()
 	if job == "index-hourly" || job == "ingest-hourly" {
 		return local.Truncate(time.Hour).Add(time.Hour).Format(time.RFC3339)
+	}
+	if job == "share-sync" {
+		return local.Truncate(15 * time.Minute).Add(15 * time.Minute).Format(time.RFC3339)
 	}
 	hour := 8
 	weekday := -1
