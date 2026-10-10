@@ -19,8 +19,9 @@ const shareSyncUsage = "usage: mora share sync"
 // shareSyncPush and shareSyncPull are the verbs one sync drives. Tests replace
 // them to observe the orchestration without a git remote.
 var (
-	shareSyncPush = sharePush
-	shareSyncPull = sharePull
+	shareSyncPush    = sharePush
+	shareSyncPull    = sharePull
+	shareSyncTryLock = leasefile.TryLock
 )
 
 // shareSyncLockPath is the per-installation lock that stops a slow sync from
@@ -47,7 +48,10 @@ func shareSync(ctx context.Context, cfg Config, args []string, stdout io.Writer,
 		return err
 	}
 	defer lock.Close()
-	if err := leasefile.TryLock(lock); err != nil {
+	if err := shareSyncTryLock(lock); err != nil {
+		if !leasefile.IsContended(err) {
+			return fmt.Errorf("share sync: cannot lock %s: %w", shareSyncLockPath(cfg), err)
+		}
 		fmt.Fprintf(stdout, "%s share sync: skipped: another share sync is running (%s)\n", now(), shareSyncLockPath(cfg))
 		return nil
 	}

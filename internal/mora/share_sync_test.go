@@ -194,6 +194,27 @@ func TestShareSyncSkipsWhileAnotherRunHoldsTheLock(t *testing.T) {
 	}
 }
 
+// TestShareSyncFailsWhenTheLockItselfFails: only contention is a skip. A lock
+// that cannot be taken at all must fail the run, or every scheduled fire would
+// report success while nothing syncs.
+func TestShareSyncFailsWhenTheLockItselfFails(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	addSubscriptionEntry(t, mustConfig(t), "neil")
+	calls := withShareSyncVerbs(t, nil)
+	orig := shareSyncTryLock
+	shareSyncTryLock = func(*os.File) error { return errors.New("no locks available") }
+	t.Cleanup(func() { shareSyncTryLock = orig })
+
+	out, err := runErr(t, "share", "sync")
+	if err == nil || !strings.Contains(err.Error(), "no locks available") {
+		t.Fatalf("lock failure must fail the run, got err=%v out=%q", err, out)
+	}
+	if len(*calls) != 0 || strings.Contains(out, "skipped") {
+		t.Fatalf("calls=%#v out=%q", *calls, out)
+	}
+}
+
 // TestShareSyncPullsARealGitRemote runs the real pull verb end to end against a
 // local git remote: the publisher adds a memory and the next sync imports it.
 func TestShareSyncPullsARealGitRemote(t *testing.T) {
