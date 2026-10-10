@@ -62,6 +62,9 @@ func BuildContext(cfg config.Config, items []memory.Memory, budget int, hasQuery
 	for _, m := range items {
 		var warning, body strings.Builder
 		fmt.Fprintf(&warning, "%s\n", provenanceLine(m))
+		if m.Owner != "" {
+			fmt.Fprintf(&warning, "Shared: from subscribed share %q; read-only, not in your own vault.\n", m.Owner)
+		}
 		if line := adoptionLine(m); line != "" {
 			fmt.Fprintf(&warning, "%s\n", line)
 		}

@@ -424,10 +424,15 @@ func cmdContext(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	}
 	tokenBudget, charBudget := resolveContextBudgetTokens(cfg, *budget)
 	var items []Memory
+	// The query path reads subscribed shares like search and think do. Without
+	// a query there is nothing to rank a shared corpus against, so the output
+	// points at the shares instead (nil, and absent, with none).
+	var shared *sharedCorporaPointer
 	if *query != "" {
-		items, err = hybridSearch(ctx, cfg, *query, *scope, 10)
+		items, err = contextSearchWithShares(ctx, cfg, *query, *scope, 10, searchFilters{})
 	} else {
 		items, err = listMemories(cfg, *scope, 10)
+		shared = sharedCorporaPointerFor(cfg)
 	}
 	if err != nil {
 		return err
@@ -451,16 +456,21 @@ func cmdContext(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		// is a TOKEN budget resolved through resolveContextBudgetTokens, items is
 		// bounded by contextReceipts, and budget_unit is therefore truthful. Plan
 		// 01-07 adds the envelope ONLY — no budget semantics were touched.
-		return emitReceipt(stdout, "mora.context", 1, map[string]any{
+		payload := map[string]any{
 			"context":     text,
 			"items":       receipts,
 			"budget_unit": budgetUnitTokens,
 			"budget":      tokenBudget,
 			"used":        used,
-		})
+		}
+		if shared != nil {
+			payload["shared_corpora"] = shared
+		}
+		return emitReceipt(stdout, "mora.context", 1, payload)
 	}
 	printHealthBannerLine(stdout, cfg, time.Now())
 	fmt.Fprint(stdout, buildContext(cfg, items, charBudget, *query != ""))
+	printSharedCorporaPointer(stdout, shared, "this context")
 	return nil
 }
 
@@ -516,7 +526,11 @@ func cmdThink(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 func printThink(w io.Writer, res ThinkResult) {
 	fmt.Fprintf(w, "Q: %s\n\nEvidence (%d):\n", res.Query, len(res.Evidence))
 	for _, e := range res.Evidence {
-		fmt.Fprintf(w, "  [%s] %s — %s\n", e.StableID, e.Title, e.Snippet)
+		title := e.Title
+		if e.Owner != "" {
+			title = "[" + e.Owner + "] " + title
+		}
+		fmt.Fprintf(w, "  [%s] %s — %s\n", e.StableID, title, e.Snippet)
 	}
 	if res.Gaps.Empty() {
 		fmt.Fprintln(w, "\nGaps: none detected.")

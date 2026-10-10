@@ -54,9 +54,34 @@ func TestContextQueryCLIUnionsSharedCorpusWithAttribution(t *testing.T) {
 	if !strings.Contains(out, `Shared: from subscribed share "neil"`) {
 		t.Fatalf("context --query missing share attribution:\n%s", out)
 	}
+}
+
+func TestContextQueryCLIJSONItemsCarryShareOwner(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	subscribeAcme(t, cfg)
+
+	var rep struct {
+		Items []struct {
+			ID    string `json:"id"`
+			Owner string `json:"owner"`
+		} `json:"items"`
+		SharedCorpora *sharedCorporaPointer `json:"shared_corpora"`
+	}
 	jout := run(t, "context", "--query", "acme widgets", "--json")
-	if !strings.Contains(jout, `"owner": "neil"`) || !strings.Contains(jout, sharedAcmeID) {
-		t.Fatalf("context --json items missing the owner-attributed shared row:\n%s", jout)
+	if err := json.Unmarshal([]byte(jout), &rep); err != nil {
+		t.Fatalf("context --json: %v", err)
+	}
+	var found bool
+	for _, it := range rep.Items {
+		found = found || (it.ID == sharedAcmeID && it.Owner == "neil")
+	}
+	if !found {
+		t.Fatalf("context --json items missing the owner-attributed shared row: %+v", rep.Items)
+	}
+	if rep.SharedCorpora != nil {
+		t.Fatalf("a query that already read the shares must not also point at them: %+v", rep.SharedCorpora)
 	}
 }
 
@@ -251,17 +276,38 @@ func TestCLIBriefPointsAtSharesWhenSubscribed(t *testing.T) {
 	if out := run(t, "brief", "--fresh"); strings.Contains(out, "subscribed share") {
 		t.Fatalf("zero-share brief mentions shares:\n%s", out)
 	}
-	if out := run(t, "brief", "--fresh", "--json"); strings.Contains(out, "shared_corpora") {
-		t.Fatalf("zero-share brief --json grew shared_corpora:\n%s", out)
-	}
-
 	subscribeAcme(t, cfg)
 	out := run(t, "brief", "--fresh")
 	if !strings.Contains(out, "1 subscribed share (1 memory) is not summarized in this brief") || !strings.Contains(out, "mora search") {
 		t.Fatalf("brief does not point at subscribed shares:\n%s", out)
 	}
-	jout := run(t, "brief", "--fresh", "--json")
-	if !strings.Contains(jout, `"shared_corpora"`) || !strings.Contains(jout, `"name": "neil"`) {
-		t.Fatalf("brief --json missing shared_corpora:\n%s", jout)
+}
+
+func TestCLIBriefJSONPointsAtSharesWhenSubscribed(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+
+	decode := func() map[string]json.RawMessage {
+		var rep map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(run(t, "brief", "--fresh", "--json")), &rep); err != nil {
+			t.Fatalf("brief --json: %v", err)
+		}
+		return rep
+	}
+	if _, ok := decode()["shared_corpora"]; ok {
+		t.Fatal("zero-share brief --json grew shared_corpora")
+	}
+	subscribeAcme(t, cfg)
+	raw, ok := decode()["shared_corpora"]
+	if !ok {
+		t.Fatal("brief --json missing shared_corpora")
+	}
+	var p sharedCorporaPointer
+	if err := json.Unmarshal(raw, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Subscriptions != 1 || p.Memories != 1 || len(p.Shares) != 1 || p.Shares[0].Name != "neil" || !p.Shares[0].Pulled {
+		t.Fatalf("brief --json shared_corpora wrong: %+v", p)
 	}
 }

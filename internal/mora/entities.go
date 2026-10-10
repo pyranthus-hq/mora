@@ -421,6 +421,9 @@ type contextItemJSON struct {
 	// receipt, the same compact four-key ref shape as search_memory/think —
 	// not a second candidate shape. Empty/absent for non-head receipts.
 	Corroborating []CorroboratingRef `json:"corroborating,omitempty"`
+	// Owner names the subscribed share a row came from; empty (and absent)
+	// for the user's own vault.
+	Owner string `json:"owner,omitempty"`
 }
 
 // contextReceipts returns one receipt per packed memory, in pack order,
@@ -434,7 +437,7 @@ func contextReceipts(items []Memory, budgetChars int) []contextItemJSON {
 	used := 2 // enclosing "[]"
 	const jsonSep = 2
 	for _, m := range items {
-		row := contextItemJSON{ID: m.ID, Title: m.Title, CreatedAt: m.CreatedAt, Corroborating: m.Corroborating}
+		row := contextItemJSON{ID: m.ID, Title: m.Title, CreatedAt: m.CreatedAt, Corroborating: m.Corroborating, Owner: m.Owner}
 		cost := jsonLen(row) + jsonSep
 		if used+cost > budgetChars {
 			break
