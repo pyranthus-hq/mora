@@ -478,7 +478,52 @@ source. This keeps the snapshot honest.
 
 ### MCP over standard input and output
 
-MCP is a standard way for an agent to call tools. Use:
+MCP is a standard way for an agent to call tools. The quickest way to connect
+every agent on a machine is:
+
+```bash
+mora agents wire --dry-run   # print the diff; write nothing
+mora agents wire             # print the diff, then write it
+mora agents unwire           # take back what wire added (--all: every Mora entry)
+```
+
+`agents wire` looks for these agents and changes only Mora's own entries:
+
+| Agent | Found at | What wire writes |
+| --- | --- | --- |
+| Claude Code | `~/.claude` | `mcpServers.mora` in `~/.claude.json`; the instruction block in `~/.claude/CLAUDE.md` |
+| Codex | `~/.codex`, `$CODEX_HOME`, and each Orca-managed home (`<Orca data>/codex-accounts/<id>/home`) | `[mcp_servers.mora]` plus read-tool approvals in `config.toml`; the instruction block in `AGENTS.md` |
+| Pi | `~/.pi/agent` | a CLI instruction block in `AGENTS.md` (Pi has no MCP) |
+
+The instruction block sits between `<!-- BEGIN MORA ... -->` and
+`<!-- END MORA -->` markers. Wire replaces it in place on every run, so it
+stays current, and leaves the rest of the file alone. It tells the agent to use
+the MCP tools rather than the shell, to search first, how shared memories are
+labelled, and never to read Mora's files directly.
+
+An existing Mora registration is kept as it is. Wire only adds a registration
+that is missing, using `--binary` or the running executable. Wire records what
+it added in Mora's state directory (`agents-wire.json`, never the vault).
+`unwire` removes the marked block and exactly what that record lists, so a
+registration you made by hand stays. `unwire --all` also removes Mora's MCP
+entries that wire did not add. A file left empty is deleted.
+
+**Headless Codex.** Codex asks before every MCP call by default. `codex exec`
+runs with approval policy `never`, so a Mora call fails with "MCP tool call
+requires approval, but approval policy is never". Wire pre-approves each
+read-only tool:
+
+```toml
+[mcp_servers.mora.tools.search_memory]
+approval_mode = "approve"
+```
+
+It does the same for `read_memory`, `list_memory`, `context_memory`, `think`,
+`brief`, `digest`, `calendar_events`, `list_entities`, `get_entity`, and
+`meeting_prep`. `write_memory` and `delete_memory` keep Codex's own approval
+policy. A tool you already configured keeps your setting.
+
+To register one client by hand instead:
 
 ```bash
 claude mcp add mora -s user -- mora mcp serve
@@ -803,7 +848,8 @@ mora doctor --repair --dry-run --json
 mora doctor --repair --yes --json
 ```
 
-For AI client registration, use `mora integrations list|connect|disconnect`; see
+For AI client registration, use `mora agents wire` (see "Give Mora to an agent")
+or `mora integrations list|connect|disconnect`; see
 [First-run contracts](companion-contract.md#first-run-contracts-k8-k9) for arguments and receipts.
 
 `doctor` checks paths, the vault, index, source age, token placement, storage,

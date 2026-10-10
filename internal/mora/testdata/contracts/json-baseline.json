@@ -16,6 +16,18 @@
     "status": "static_only"
   },
   {
+    "path": "agents",
+    "status": "empty"
+  },
+  {
+    "path": "agents unwire",
+    "status": "parses"
+  },
+  {
+    "path": "agents wire",
+    "status": "parses"
+  },
+  {
     "path": "backup",
     "status": "parses"
   },

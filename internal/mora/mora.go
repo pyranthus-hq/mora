@@ -175,6 +175,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdServe(ctx, args[1:], stdout, stderr)
 	case "integrations":
 		return cmdIntegrations(ctx, args[1:], stdout)
+	case "agents":
+		return cmdAgents(ctx, args[1:], stdout)
 	case "hook":
 		return cmdHook(ctx, args[1:], stdout, stderr, stdin)
 	case "loop":
@@ -296,6 +298,9 @@ USAGE:
   mora usage off|on
   mora disconnect google
   mora mcp serve
+  mora agents wire --dry-run       # show how Claude Code, Codex (incl. Orca homes) and Pi would be wired to Mora
+  mora agents wire                 # register MCP, pre-approve Codex read tools, write the Mora instruction block
+  mora agents unwire               # take back what wire added (--all also removes hand-made Mora entries)
   mora mcp proposals list          # inspect writes staged by propose-mode MCP clients
   mora serve http                  # loopback HTTP for sandboxed AI browsers (Aside); token in ~/.config/mora/http.json
   mora serve http install          # run it as an auto-restarting background service (launchd/systemd); also: uninstall|status

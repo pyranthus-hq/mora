@@ -554,6 +554,54 @@
       }
     },
     {
+      "name": "agent wiring",
+      "paths": [
+        "agents",
+        "agents wire",
+        "agents unwire"
+      ],
+      "evidence": {
+        "success": {
+          "status": "test",
+          "tests": [
+            "TestAgentsWireDryRunShowsDiffAndWritesNothing",
+            "TestAgentsWireTwiceThenUnwire",
+            "TestAgentsUnwireKeepsAHandRegistrationUnlessAll"
+          ]
+        },
+        "json": {
+          "status": "test",
+          "tests": [
+            "TestAgentsWireTwiceThenUnwire"
+          ],
+          "reason": "The second wire --json receipt decodes as mora.agents.wire with pending 0 and one unchanged row per managed file."
+        },
+        "state": {
+          "status": "test",
+          "tests": [
+            "TestAgentsWireDryRunShowsDiffAndWritesNothing",
+            "TestAgentsWireTwiceThenUnwire",
+            "TestAgentsUnwireKeepsAHandRegistrationUnlessAll"
+          ],
+          "reason": "Driven through Run against a temp HOME with CODEX_HOME and ORCA_USER_DATA_PATH cleared: dry run writes nothing, wire writes seven files, a second wire changes none, and unwire restores the original files while keeping a registration wire did not add; unwire --all removes it."
+        },
+        "error": {
+          "status": "test",
+          "tests": [
+            "TestAgentsUsageErrors"
+          ],
+          "reason": "A bare agents, an unknown verb, a relative --binary and a stray positional each return a usage error before any agent file is read or written."
+        },
+        "refusal": {
+          "status": "test",
+          "tests": [
+            "TestAgentsUsageErrors"
+          ],
+          "reason": "The same refusals happen before planning, so no agent configuration is touched."
+        }
+      }
+    },
+    {
       "name": "first-run",
       "paths": [
         "doctor check",

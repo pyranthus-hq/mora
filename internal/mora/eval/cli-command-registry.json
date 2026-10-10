@@ -1121,6 +1121,27 @@
       "platform": "native-seam",
       "json_contract": "receipt",
       "payload": "mora.integrations.disconnect"
+    },
+    {
+      "path": "agents",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "path": "agents wire",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.agents.wire"
+    },
+    {
+      "path": "agents unwire",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.agents.unwire"
     }
   ]
 }

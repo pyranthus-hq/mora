@@ -36,6 +36,11 @@ type Seams struct {
 	ReadFile   func(string) ([]byte, error)
 	WriteFile  func(path string, data []byte, mode os.FileMode) error
 	HookStatus func(settingsPath string) (installed bool, supported bool)
+	// Getenv, ReadDir and Remove serve `mora agents wire`; a nil Getenv reads
+	// no environment, and nil ReadDir/Remove fall back to the os package.
+	Getenv  func(string) string
+	ReadDir func(string) ([]os.DirEntry, error)
+	Remove  func(string) error
 }
 
 func DefaultSeams(home string) Seams {
@@ -44,6 +49,9 @@ func DefaultSeams(home string) Seams {
 		Stat:      os.Stat,
 		ReadFile:  os.ReadFile,
 		WriteFile: writeAtomic,
+		Getenv:    os.Getenv,
+		ReadDir:   os.ReadDir,
+		Remove:    os.Remove,
 		HookStatus: func(settings string) (bool, bool) {
 			start, recall, err := hookspkg.Status(settings)
 			return err == nil && start == "installed" && recall == "installed", true
