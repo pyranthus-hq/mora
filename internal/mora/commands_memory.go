@@ -168,7 +168,7 @@ func cmdRead(ctx context.Context, args []string, stdout, stderr io.Writer) error
 				return emitReceipt(stdout, "mora.read", 1, memory.WithProvenance(sm))
 			}
 			printHealthBannerLine(stdout, cfg, time.Now())
-			return emit(stdout, sm, false)
+			return emitReadPlain(stdout, sm)
 		}
 		return err
 	}
@@ -178,7 +178,20 @@ func cmdRead(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return emitReceipt(stdout, "mora.read", 1, memory.WithProvenance(m))
 	}
 	printHealthBannerLine(stdout, cfg, time.Now())
-	return emit(stdout, m, false)
+	return emitReadPlain(stdout, m)
+}
+
+// emitReadPlain prints the same one-line header `list` prints, then the full
+// body. The header alone sent agents back for a second `--json` read of every
+// memory (pilot F12).
+func emitReadPlain(w io.Writer, m Memory) error {
+	if err := emit(w, m, false); err != nil {
+		return err
+	}
+	if body := strings.TrimRight(m.Text, "\n"); body != "" {
+		fmt.Fprintf(w, "\n%s\n", body)
+	}
+	return nil
 }
 
 // memoriesPayload carries a memory list under a named key. `list --json` and
