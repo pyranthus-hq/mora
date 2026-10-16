@@ -27,7 +27,11 @@ type Attempt struct {
 	StartedAt   string `json:"started_at"`
 	CompletedAt string `json:"completed_at,omitempty"`
 	Seq         int    `json:"seq,omitempty"`
-	LastError   string `json:"last_error,omitempty"`
+	// VerifiedAt marks a no-op success: the run found the publisher's source
+	// unchanged and re-verified the already-committed head at Seq instead of
+	// building a new generation. Empty when the run committed its own generation.
+	VerifiedAt string `json:"verified_at,omitempty"`
+	LastError  string `json:"last_error,omitempty"`
 }
 
 // ErrAttemptOwnershipLost means a successor published its own attempt record
@@ -139,7 +143,25 @@ func (s AttemptStore) Load(name string) (Attempt, bool, error) {
 	default:
 		return Attempt{}, false, fmt.Errorf("share %q: attempt record has invalid state %q", name, a.State)
 	}
+	if err := validVerifiedAt(a); err != nil {
+		return Attempt{}, false, fmt.Errorf("share %q: %w", name, err)
+	}
 	return a, true, nil
+}
+
+// validVerifiedAt accepts verified_at only on a succeeded record and only as an
+// RFC 3339 instant: health trusts it as the share's freshness clock.
+func validVerifiedAt(a Attempt) error {
+	if a.VerifiedAt == "" {
+		return nil
+	}
+	if a.State != "succeeded" {
+		return fmt.Errorf("attempt record carries verified_at on a %q attempt", a.State)
+	}
+	if _, err := time.Parse(time.RFC3339, a.VerifiedAt); err != nil {
+		return fmt.Errorf("attempt record verified_at %q is not RFC 3339", a.VerifiedAt)
+	}
+	return nil
 }
 
 // AttemptStore.Start publishes the durable {run_id,state:active,started_at} record
@@ -245,6 +267,9 @@ func (s AttemptStore) Finish(name, runID string, terminal Attempt) error {
 	dir := s.root(name)
 	if terminal.State != "succeeded" && terminal.State != "failed" {
 		return fmt.Errorf("share %q: invalid terminal attempt state %q", name, terminal.State)
+	}
+	if err := validVerifiedAt(terminal); err != nil {
+		return fmt.Errorf("share %q: %w", name, err)
 	}
 
 	observed, err := os.ReadFile(path)
