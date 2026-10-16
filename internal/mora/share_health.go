@@ -46,14 +46,8 @@ func shareHealthOne(cfg Config, name string, now time.Time) shareHealth {
 	}
 	h.BuiltAt = commit.BuiltAt
 
-	// Head artifact integrity (hash BOTH digests — per-artifact serving, cross-
-	// artifact visibility).
-	genIndex := shareGenIndexPath(cfg, name, commit.Gen)
-	if d, derr := fileDigestOf(genIndex); derr != nil || d != commit.IndexDigest {
-		return shareHealth{Name: name, State: healthFailed, LastError: "published index failed its integrity digest", BuiltAt: commit.BuiltAt}
-	}
-	if d, derr := corpusDigestOf(shareGenCorpusDir(cfg, name, commit.Gen)); derr != nil || d != commit.CorpusDigest {
-		return shareHealth{Name: name, State: healthFailed, LastError: "published corpus failed its integrity digest", BuiltAt: commit.BuiltAt}
+	if msg := shareHeadIntegrityError(cfg, name, commit); msg != "" {
+		return shareHealth{Name: name, State: healthFailed, LastError: msg, BuiltAt: commit.BuiltAt}
 	}
 
 	// The durable attempt record: a terminal-failed or active-but-abandoned latest
@@ -70,6 +64,9 @@ func shareHealthOne(cfg Config, name string, now time.Time) shareHealth {
 		return shareHealth{Name: name, State: healthFailed, LastError: "attempt record missing after migration — run `mora share pull " + name + "`", BuiltAt: commit.BuiltAt}
 	}
 	freshOK := false
+	// confirmedAt is when the served head was last confirmed current: its build
+	// time, or a later verified no-op pull of that same head.
+	confirmedAt := commit.BuiltAt
 	switch attempt.State {
 	case "failed":
 		return shareHealth{Name: name, State: healthFailed, LastError: attempt.LastError, BuiltAt: commit.BuiltAt}
@@ -80,11 +77,19 @@ func shareHealthOne(cfg Config, name string, now time.Time) shareHealth {
 		// Active but abandoned/interrupted (its lease is gone/expired).
 		return shareHealth{Name: name, State: healthFailed, LastError: "import interrupted — run `mora share pull " + name + "`", BuiltAt: commit.BuiltAt}
 	case "succeeded":
-		freshOK = attempt.Seq == commit.Seq && attempt.RunID == commit.RunID
+		switch {
+		case attempt.Seq != commit.Seq:
+		case attempt.RunID == commit.RunID:
+			freshOK = true
+		case attempt.VerifiedAt != "":
+			// A verified no-op pull re-checked this exact head without building.
+			freshOK = true
+			confirmedAt = laterRFC3339(commit.BuiltAt, attempt.VerifiedAt)
+		}
 	}
 
-	// Staleness of the committed head's built_at.
-	if t, perr := time.Parse(time.RFC3339, commit.BuiltAt); perr == nil {
+	// Staleness of the last confirmation (built_at, or a later verified pull).
+	if t, perr := time.Parse(time.RFC3339, confirmedAt); perr == nil {
 		if now.Sub(t) > shareStaleThreshold {
 			return shareHealth{Name: name, State: healthStale, BuiltAt: commit.BuiltAt}
 		}
@@ -95,6 +100,33 @@ func shareHealthOne(cfg Config, name string, now time.Time) shareHealth {
 		return shareHealth{Name: name, State: healthStale, LastError: "no matching completed import record", BuiltAt: commit.BuiltAt}
 	}
 	return h
+}
+
+// shareHeadIntegrityError hashes BOTH head artifacts against the committed
+// digests (per-artifact serving, cross-artifact visibility) and returns the
+// health error for the first mismatch, or "" when both verify. A no-op pull
+// runs the same check before it re-verifies a head instead of rebuilding it.
+func shareHeadIntegrityError(cfg Config, name string, commit shareCommit) string {
+	if d, err := fileDigestOf(shareGenIndexPath(cfg, name, commit.Gen)); err != nil || d != commit.IndexDigest {
+		return "published index failed its integrity digest"
+	}
+	if d, err := corpusDigestOf(shareGenCorpusDir(cfg, name, commit.Gen)); err != nil || d != commit.CorpusDigest {
+		return "published corpus failed its integrity digest"
+	}
+	return ""
+}
+
+// laterRFC3339 returns whichever RFC 3339 instant is later; an unparseable b
+// never displaces a.
+func laterRFC3339(a, b string) string {
+	tb, err := time.Parse(time.RFC3339, b)
+	if err != nil {
+		return a
+	}
+	if ta, err := time.Parse(time.RFC3339, a); err == nil && !tb.After(ta) {
+		return a
+	}
+	return b
 }
 
 // hasLegacyFlat reports whether a subscription still carries the pre-upgrade flat

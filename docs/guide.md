@@ -1214,6 +1214,12 @@ mora share remove neil --yes
 Received data has its own index beside the vault. Search results name the
 publisher. Received data does not join your person graph or local backup.
 
+When the publisher has not pushed since your last pull, `mora share pull`
+checks the copy you already have and prints `up to date`. It does not decrypt
+or rebuild anything, and the share stays fresh in `mora doctor`. When something
+changed, the pull rebuilds and prints how many memories are new or changed and
+how many were removed.
+
 ### S3 or R2 bucket sharing
 
 Bucket sharing uses the same encryption and scope rules. It adds signed
