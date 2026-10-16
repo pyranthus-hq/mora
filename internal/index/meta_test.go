@@ -66,3 +66,53 @@ func TestStampAttemptFailureColdStartNoop(t *testing.T) {
 	cfg := config.Config{DataDir: t.TempDir()}
 	StampAttemptFailure(cfg, context.Canceled, time.Time{}, func(s string) string { return s })
 }
+
+func TestClearAttemptFailureKeepsLaterFailure(t *testing.T) {
+	cfg := config.Config{DataDir: t.TempDir()}
+	db, err := sql.Open("sqlite", ReadWriteDSN(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err = db.Exec(`CREATE TABLE index_meta(key TEXT PRIMARY KEY,value TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	stamp := func(at string) {
+		t.Helper()
+		if _, err := db.Exec(`INSERT INTO index_meta(key,value) VALUES('index_last_attempt_at',?),('index_last_error','database is locked'),('vault_dir','/v')
+			ON CONFLICT(key) DO UPDATE SET value=excluded.value`, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := func() int {
+		t.Helper()
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM index_meta WHERE key IN ('index_last_error','index_last_attempt_at')`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	covered := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+
+	// A failure stamped after the covering rebuild listed belongs to a concurrent
+	// attempt this success cannot vouch for: keep it.
+	stamp("2026-10-15T12:00:05Z")
+	if err := ClearAttemptFailure(context.Background(), db, covered); err != nil {
+		t.Fatal(err)
+	}
+	if count() != 2 {
+		t.Fatalf("a later failure was cleared; rows left = %d, want 2", count())
+	}
+	// A failure stamped at or before the listing is superseded by the success.
+	stamp("2026-10-15T11:59:00Z")
+	if err := ClearAttemptFailure(context.Background(), db, covered); err != nil {
+		t.Fatal(err)
+	}
+	if count() != 0 {
+		t.Fatalf("superseded failure kept; rows left = %d, want 0", count())
+	}
+	var vault string
+	if err := db.QueryRow(`SELECT value FROM index_meta WHERE key='vault_dir'`).Scan(&vault); err != nil || vault != "/v" {
+		t.Fatalf("clear touched provenance rows: vault_dir=%q err=%v", vault, err)
+	}
+}

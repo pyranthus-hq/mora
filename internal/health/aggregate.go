@@ -21,6 +21,14 @@ const (
 	ProducerNever  = "never"
 )
 
+// IndexRefreshing means search is current while derived work is in flight: an
+// authored write's FTS row committed and its graph, vector and commitment
+// projections wait for a covering rebuild, a live rebuild holds its own marker,
+// or a subscription pull is replacing a valid committed generation. It is not an
+// alarm and needs no action. A marker that outlives its grace period, or one a
+// failed rebuild left behind, reads dirty instead.
+const IndexRefreshing = "refreshing"
+
 // Embedder records committed and configured vector provenance.
 type Embedder struct {
 	Model      string `json:"model"`
@@ -94,6 +102,8 @@ func AggregateState(h Health) string {
 			degraded = true
 		}
 	}
+	// IndexRefreshing contributes nothing: search is current and the in-flight
+	// work is tracked by markers that turn dirty if it stops.
 	switch h.Index.State {
 	case IndexFailed, IndexNever, IndexDirty:
 		unhealthy = true

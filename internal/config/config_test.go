@@ -24,3 +24,23 @@ func TestRuntimeOverridesAreProcessLocal(t *testing.T) {
 		t.Fatal("evaluation overrides lost")
 	}
 }
+
+func TestOperationSourceBindingSharesPublishCountAcrossCopies(t *testing.T) {
+	var unbound Config
+	unbound.NoteOperationPublish() // must not panic outside a bound ingest
+	if unbound.OperationSourceKey() != "" || unbound.OperationPublishes() != 0 {
+		t.Fatalf("unbound config = key %q publishes %d", unbound.OperationSourceKey(), unbound.OperationPublishes())
+	}
+	var cfg Config
+	cfg.BindOperationSource("applecalendar")
+	handedDown := cfg // the run passes config by value into connector code
+	handedDown.NoteOperationPublish()
+	handedDown.NoteOperationPublish()
+	if cfg.OperationSourceKey() != "applecalendar" || cfg.OperationPublishes() != 2 {
+		t.Fatalf("binding = key %q publishes %d, want applecalendar/2", cfg.OperationSourceKey(), cfg.OperationPublishes())
+	}
+	cfg.BindOperationSource("gmail")
+	if cfg.OperationPublishes() != 0 || handedDown.OperationPublishes() != 2 {
+		t.Fatalf("rebinding must start a fresh count: new %d, old copy %d", cfg.OperationPublishes(), handedDown.OperationPublishes())
+	}
+}

@@ -12,12 +12,17 @@ import (
 	"time"
 )
 
+// shareRefreshing is a subscription whose committed generation verified intact
+// while a live, owned pull replaces it. It serves normally and is not an alarm:
+// a pull that dies leaves an abandoned attempt, which reads failed.
+const shareRefreshing = "refreshing"
+
 // shareStaleThreshold is the share head's staleness bound (the fifth threshold
 // family, Landmine 13). A committed generation older than this ages to `stale`.
 const shareStaleThreshold = 48 * time.Hour
 
 // shareHealth is one subscription's freshness snapshot in the sourceHealth
-// four-state vocabulary (never/failed/stale/fresh).
+// four-state vocabulary (never/failed/stale/fresh), plus shareRefreshing.
 type shareHealth struct {
 	Name      string
 	State     string
@@ -57,8 +62,9 @@ func shareHealthOne(cfg Config, name string, now time.Time) shareHealth {
 	}
 
 	// The durable attempt record: a terminal-failed or active-but-abandoned latest
-	// attempt is failed; a currently-owned active attempt is stale ("refresh in
-	// progress"); `fresh` requires a matching durable succeeded record.
+	// attempt is failed; a currently-owned active attempt is refreshing (the
+	// verified head keeps serving); `fresh` requires a matching durable succeeded
+	// record.
 	attempt, haveAttempt, attemptErr := loadShareAttempt(cfg, name)
 	if attemptErr != nil {
 		return shareHealth{Name: name, State: healthFailed, LastError: attemptErr.Error(), BuiltAt: commit.BuiltAt}
@@ -75,7 +81,7 @@ func shareHealthOne(cfg Config, name string, now time.Time) shareHealth {
 		return shareHealth{Name: name, State: healthFailed, LastError: attempt.LastError, BuiltAt: commit.BuiltAt}
 	case "active":
 		if liveImportOwner(cfg, name, now) == attempt.RunID {
-			return shareHealth{Name: name, State: healthStale, LastError: "refresh in progress", BuiltAt: commit.BuiltAt}
+			return shareHealth{Name: name, State: shareRefreshing, BuiltAt: commit.BuiltAt}
 		}
 		// Active but abandoned/interrupted (its lease is gone/expired).
 		return shareHealth{Name: name, State: healthFailed, LastError: "import interrupted — run `mora share pull " + name + "`", BuiltAt: commit.BuiltAt}
@@ -135,7 +141,7 @@ type shareUnhealth struct {
 func sharesUnhealthy(cfg Config, now time.Time) []shareUnhealth {
 	out := []shareUnhealth{}
 	for _, h := range shareHealthAll(cfg, now) {
-		if h.State == healthFresh {
+		if h.State == healthFresh || h.State == shareRefreshing {
 			continue
 		}
 		out = append(out, shareUnhealth{Name: h.Name, State: h.State, LastError: h.LastError})
@@ -153,6 +159,8 @@ func shareIndexHealthAll(cfg Config, now time.Time) []indexHealth {
 		switch h.State {
 		case healthFresh:
 			ih.State = idxFresh
+		case shareRefreshing:
+			ih.State = idxRefreshing
 		case healthStale:
 			ih.State = idxDegraded
 		case healthNever:

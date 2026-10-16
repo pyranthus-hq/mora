@@ -270,16 +270,22 @@ func mcpWriteMemoryWith(ctx context.Context, cfg Config, args map[string]any, op
 			"health":      compactHealthOf(cfg, now),
 		}, nil
 	}
-	// The request path ends after the durable FTS upsert. The marker remains until
-	// an explicit or scheduled full rebuild catches graph/vector/commitment up;
-	// health reports that pending state instead of claiming a fresh full index.
+	// The request path ends after the durable FTS upsert: the write is searchable
+	// now. Its marker stays until the coalesced background reconcile (or the
+	// scheduled rebuild) catches graph/vector/commitment up, but in its
+	// FTS-committed form, so health reads refreshing instead of dirty and nothing
+	// tells the caller to run a rebuild that would collide with that reconcile.
 	if authoredWriteProjectionPending(cfg, op) {
+		if merr := markFTSCommitted(cfg, op); merr != nil {
+			// The marker keeps its dirty form, which is the safe direction.
+			fmt.Fprintf(os.Stderr, "warn: could not record the committed FTS row for %s: %v\n", m.ID, merr)
+		}
 		scheduleAuthoredReconciliation(cfg)
-		return map[string]any{
-			"memory": m, "index_stale": true, "projections_pending": true,
-			"reconcile_hint": authoredWriteReconcileHint,
-			"health":         compactHealthOf(cfg, now),
-		}, nil
+		// searchable=true plus health.index "refreshing" is the whole account.
+		// Every byte here rides the tightest MCP ceiling (write_memory 1500 tok
+		// with a max-cap banner), so the response carries no second flag that
+		// restates what health.index already says.
+		return map[string]any{"memory": m, "searchable": true, "health": compactHealthOf(cfg, now)}, nil
 	}
 	return map[string]any{"memory": m, "health": compactHealthOf(cfg, now)}, nil
 }
