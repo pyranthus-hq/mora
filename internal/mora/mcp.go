@@ -287,7 +287,9 @@ func mcpWriteMemoryWith(ctx context.Context, cfg Config, args map[string]any, op
 		// restates what health.index already says.
 		return map[string]any{"memory": m, "searchable": true, "health": compactHealthOf(cfg, now)}, nil
 	}
-	return map[string]any{"memory": m, "health": compactHealthOf(cfg, now)}, nil
+	// A covering rebuild (the cold-start delegate, or a concurrent rebuild that
+	// parsed this file) already retired the marker: searchable and fully indexed.
+	return map[string]any{"memory": m, "searchable": true, "health": compactHealthOf(cfg, now)}, nil
 }
 
 // mcpMemoryFromArgs validates and shapes a write_memory request without
