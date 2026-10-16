@@ -1187,7 +1187,12 @@ func ownedTitle(m Memory) string {
 // indexed-snapshot design as the local arm, never a live file read (a
 // subscribed corpus's source files are not even necessarily present on this
 // machine).
-func searchShareIndex(ctx context.Context, db *sql.DB, owner, query, scope string, limit int, filters ...searchFilters) ([]Memory, error) {
+//
+// corpusDir is the served generation's frozen corpus. Each result's Path is
+// rebuilt from it, never read from the index: the index stores a
+// generation-relative path (older generations stored an absolute one), so
+// the path always names the generation actually served.
+func searchShareIndex(ctx context.Context, db *sql.DB, owner, corpusDir, query, scope string, limit int, filters ...searchFilters) ([]Memory, error) {
 	f := oneFilter(filters)
 	// Corrections have local corpus authority, never another owner's identity.
 	f.ExcludedMemoryIDs = nil
@@ -1227,6 +1232,7 @@ func searchShareIndex(ctx context.Context, db *sql.DB, owner, query, scope strin
 		}
 		m.Tags = genericutil.SplitCSV(tags)
 		m.Owner = owner
+		m.Path = filepath.Join(corpusDir, m.ID+".md")
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -1285,7 +1291,7 @@ func searchSharedCorpora(ctx context.Context, cfg Config, query, scope string, l
 				continue
 			}
 		}
-		res, qerr := searchShareIndex(ctx, db, sub.Name, query, scope, limit, filters...)
+		res, qerr := searchShareIndex(ctx, db, sub.Name, shareGenCorpusDir(cfg, sub.Name, commit.Gen), query, scope, limit, filters...)
 		_ = db.Close()
 		if qerr != nil {
 			continue

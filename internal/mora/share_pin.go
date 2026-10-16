@@ -98,6 +98,7 @@ type gitPin struct {
 	sha     string
 	repo    string
 	run     execFunc
+	batch   gitBatchReader
 	cleanup func()
 }
 
@@ -187,7 +188,7 @@ func acquireGitPin(ctx context.Context, cfg Config, sub shareSubscription, runID
 		cleanup()
 		return nil, fmt.Errorf("subscription %q: ancestry check failed: %w", sub.Name, err)
 	}
-	return &gitPin{ref: pinRef, sha: sha, repo: repo, run: run, cleanup: cleanup}, nil
+	return &gitPin{ref: pinRef, sha: sha, repo: repo, run: run, batch: gitCatFileBatchFn, cleanup: cleanup}, nil
 }
 
 // mustExec returns the combined output of a git command, or "" on error (used for
@@ -210,28 +211,34 @@ func (p *gitPin) manifest(ctx context.Context) (shareManifest, error) {
 	return parseShareManifestBytes([]byte(out))
 }
 
-// gitPinBlobs iterates memories/*.md.age blobs from the pinned ref only.
+// gitPinBlobs iterates memories/*.md.age blobs from the pinned ref only. One
+// `git cat-file --batch` process reads them all; every object it is asked for
+// is named through the run-private pin ref, never the working tree or a branch.
 func (p *gitPin) blobs(ctx context.Context) shareBlobIter {
 	return func(yield func(stem string, ct []byte) error) error {
 		list, err := p.run(ctx, p.repo, "git", "ls-tree", "-r", "--name-only", p.ref, "--", "memories/")
 		if err != nil {
 			return err
 		}
+		var objects, stems []string
 		for _, line := range strings.Split(strings.TrimSpace(list), "\n") {
 			line = strings.TrimSpace(line)
 			if !strings.HasSuffix(line, ".md.age") {
 				continue
 			}
-			stem := strings.TrimSuffix(filepath.Base(line), ".md.age")
-			ct, cerr := p.run(ctx, p.repo, "git", "cat-file", "blob", p.ref+":"+line)
-			if cerr != nil {
-				return cerr
-			}
-			if err := yield(stem, []byte(ct)); err != nil {
-				return err
-			}
+			objects = append(objects, p.ref+":"+line)
+			stems = append(stems, strings.TrimSuffix(filepath.Base(line), ".md.age"))
 		}
-		return nil
+		// The ciphertext ceiling decryptShareBlobs enforces. Checking it here, from
+		// git's size header, also keeps an oversized blob out of memory.
+		const maxCT = shareMaxMemoryBytes + (1 << 20)
+		err = p.batch(ctx, p.repo, objects, maxCT, func(i int, ct []byte) error {
+			return yield(stems[i], ct)
+		})
+		if o, ok := asGitBatchOversize(err); ok {
+			return fmt.Errorf("entry %s exceeds the %d-byte per-memory cap — refusing to import", stems[o.index], shareMaxMemoryBytes)
+		}
+		return err
 	}
 }
 
@@ -272,13 +279,19 @@ func buildAndCommitGeneration(ctx context.Context, cfg Config, sub shareSubscrip
 
 	// Whole-product admission (H3b): reject before building if this generation
 	// would push the footprint over the configured limit (default 15 GiB). The
-	// storage lease held by shareBuildAndPublish serializes this snapshot.
-	if aerr := admitShareGeneration(cfg, sub.Name, entries); aerr != nil {
-		return 0, shareImportStats{}, aerr
+	// storage lease held by shareBuildAndPublish serializes this snapshot, and
+	// the build admits its own writes against the same one walk.
+	storage, err := newShareStorageAdmission(cfg, sub.Name)
+	if err != nil {
+		return 0, shareImportStats{}, err
+	}
+	ledger, err := reserveShareGeneration(storage, sub.Name, entries)
+	if err != nil {
+		return 0, shareImportStats{}, err
 	}
 
 	gen := "gen-" + runID
-	corpusDigest, indexDigest, err := buildShareGenerationFromEntries(ctx, cfg, sub.Name, gen, entries)
+	corpusDigest, indexDigest, err := buildShareGenerationBounded(ctx, cfg, sub.Name, gen, entries, storage, ledger)
 	if err != nil {
 		return 0, shareImportStats{}, err
 	}
@@ -343,8 +356,8 @@ func shareImportDelta(cfg Config, name string, entries []shareBlobEntry) (change
 // shareNoopHead reports whether a pull can skip decrypt and build: the published
 // head was built from exactly sourceRev (a git commit sha or a bucket version)
 // and its frozen artifacts still verify. Detection keys on the source revision
-// plus the committed corpus digest, never on the index digest, because two
-// builds of one corpus need not produce the same index bytes. The head index is
+// plus the committed corpus digest, never on the index digest, because index
+// bytes also depend on the SQLite build that wrote them. The head index is
 // still checked against its own committed digest and the current schema, so a
 // corrupt or outdated head is rebuilt by a real import, never re-verified.
 func shareNoopHead(ctx context.Context, cfg Config, name, sourceRev string) (shareCommit, bool) {
