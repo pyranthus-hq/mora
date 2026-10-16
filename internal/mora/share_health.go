@@ -81,6 +81,11 @@ func shareHealthOne(cfg Config, name string, now time.Time) shareHealth {
 		return shareHealth{Name: name, State: healthFailed, LastError: attempt.LastError, BuiltAt: commit.BuiltAt}
 	case "active":
 		if liveImportOwner(cfg, name, now) == attempt.RunID {
+			// A pull in progress does not excuse a head that is already stale:
+			// until it commits, that old generation is what gets served.
+			if headStale(commit.BuiltAt, now) {
+				return shareHealth{Name: name, State: healthStale, LastError: "refresh in progress", BuiltAt: commit.BuiltAt}
+			}
 			return shareHealth{Name: name, State: shareRefreshing, BuiltAt: commit.BuiltAt}
 		}
 		// Active but abandoned/interrupted (its lease is gone/expired).
@@ -90,10 +95,8 @@ func shareHealthOne(cfg Config, name string, now time.Time) shareHealth {
 	}
 
 	// Staleness of the committed head's built_at.
-	if t, perr := time.Parse(time.RFC3339, commit.BuiltAt); perr == nil {
-		if now.Sub(t) > shareStaleThreshold {
-			return shareHealth{Name: name, State: healthStale, BuiltAt: commit.BuiltAt}
-		}
+	if headStale(commit.BuiltAt, now) {
+		return shareHealth{Name: name, State: healthStale, BuiltAt: commit.BuiltAt}
 	}
 	if !freshOK {
 		// A committed head with no matching succeeded attempt (e.g. a crash before
@@ -101,6 +104,14 @@ func shareHealthOne(cfg Config, name string, now time.Time) shareHealth {
 		return shareHealth{Name: name, State: healthStale, LastError: "no matching completed import record", BuiltAt: commit.BuiltAt}
 	}
 	return h
+}
+
+// headStale reports whether a committed head's built_at is past the share
+// staleness bound. An unparseable built_at is not judged here; the attempt
+// record still gates freshness.
+func headStale(builtAt string, now time.Time) bool {
+	t, err := time.Parse(time.RFC3339, builtAt)
+	return err == nil && now.Sub(t) > shareStaleThreshold
 }
 
 // hasLegacyFlat reports whether a subscription still carries the pre-upgrade flat

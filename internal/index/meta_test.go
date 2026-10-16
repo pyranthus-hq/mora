@@ -92,18 +92,29 @@ func TestClearAttemptFailureKeepsLaterFailure(t *testing.T) {
 		}
 		return n
 	}
-	covered := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	covered := time.Date(2026, 10, 15, 12, 0, 0, 100_000_000, time.UTC)
 
 	// A failure stamped after the covering rebuild listed belongs to a concurrent
-	// attempt this success cannot vouch for: keep it.
-	stamp("2026-10-15T12:00:05Z")
+	// attempt this success cannot vouch for: keep it, even within the same second
+	// (a whole-second stamp would read as equal and be cleared).
+	for _, later := range []string{"2026-10-15T12:00:05Z", "2026-10-15T12:00:00.2Z"} {
+		stamp(later)
+		if err := ClearAttemptFailure(context.Background(), db, covered); err != nil {
+			t.Fatal(err)
+		}
+		if count() != 2 {
+			t.Fatalf("a later failure (%s) was cleared; rows left = %d, want 2", later, count())
+		}
+	}
+	// A failure stamped at or before the listing is superseded by the success,
+	// including one earlier in the same second and a legacy whole-second stamp.
+	stamp("2026-10-15T12:00:00.05Z")
 	if err := ClearAttemptFailure(context.Background(), db, covered); err != nil {
 		t.Fatal(err)
 	}
-	if count() != 2 {
-		t.Fatalf("a later failure was cleared; rows left = %d, want 2", count())
+	if count() != 0 {
+		t.Fatalf("an earlier same-second failure was kept; rows left = %d, want 0", count())
 	}
-	// A failure stamped at or before the listing is superseded by the success.
 	stamp("2026-10-15T11:59:00Z")
 	if err := ClearAttemptFailure(context.Background(), db, covered); err != nil {
 		t.Fatal(err)
@@ -114,5 +125,27 @@ func TestClearAttemptFailureKeepsLaterFailure(t *testing.T) {
 	var vault string
 	if err := db.QueryRow(`SELECT value FROM index_meta WHERE key='vault_dir'`).Scan(&vault); err != nil || vault != "/v" {
 		t.Fatalf("clear touched provenance rows: vault_dir=%q err=%v", vault, err)
+	}
+}
+
+func TestStampAttemptFailureKeepsSubSecondPrecision(t *testing.T) {
+	cfg := config.Config{DataDir: t.TempDir()}
+	db, err := sql.Open("sqlite", ReadWriteDSN(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err = db.Exec(`CREATE TABLE index_meta(key TEXT PRIMARY KEY,value TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	failedAt := time.Date(2026, 10, 15, 12, 0, 0, 200_000_000, time.UTC)
+	StampAttemptFailure(cfg, context.Canceled, failedAt, func(s string) string { return s })
+	// A rebuild that listed earlier in the same second must not clear it.
+	if err := ClearAttemptFailure(context.Background(), db, failedAt.Add(-100*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM index_meta WHERE key IN ('index_last_error','index_last_attempt_at')`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("same-second later failure cleared: rows=%d err=%v", n, err)
 	}
 }

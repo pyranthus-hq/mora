@@ -412,6 +412,36 @@ func TestSharePullInProgressReadsRefreshingNotDegraded(t *testing.T) {
 	if after := shareHealthOne(cfg, name, time.Now()); after.State != healthFailed {
 		t.Fatalf("share after a failed pull = %+v, want failed", after)
 	}
+
+	// A head already past the staleness bound stays stale while a pull runs:
+	// that old generation is what gets served until the pull commits.
+	var staleMid shareHealth
+	_ = shareBuildAndPublish(context.Background(), cfg, name, buildModeImport, func(string) (int, error) {
+		// Age the head by reading health 49h ahead, and keep the pull's lease
+		// live at that instant so only the head's age differs.
+		later := time.Now().Add(shareStaleThreshold + time.Hour)
+		lockPath := shareImportLockPath(cfg, name)
+		b, err := os.ReadFile(lockPath)
+		if err != nil {
+			return 0, err
+		}
+		var body loopLockBody
+		if err := json.Unmarshal(b, &body); err != nil {
+			return 0, err
+		}
+		body.AcquiredAt = later.UTC().Format(time.RFC3339)
+		if b, err = json.Marshal(body); err != nil {
+			return 0, err
+		}
+		if err := os.WriteFile(lockPath, b, 0o600); err != nil {
+			return 0, err
+		}
+		staleMid = shareHealthOne(cfg, name, later)
+		return 0, pullErr
+	})
+	if staleMid.State != healthStale {
+		t.Fatalf("stale head during a live pull = %+v, want stale", staleMid)
+	}
 }
 
 func TestCompanionIndexStateRefreshingIsHealthy(t *testing.T) {
