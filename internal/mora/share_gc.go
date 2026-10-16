@@ -233,19 +233,28 @@ func newShareStorageAdmission(cfg Config, name string) (*shareStorageAdmission, 
 func (a *shareStorageAdmission) checkAdditional(next int64) error {
 	return a.inner.CheckAdditional(next)
 }
-func (a *shareStorageAdmission) checkCurrent() error       { return a.inner.CheckCurrent() }
-func (a *shareStorageAdmission) remaining() (int64, error) { return a.inner.Remaining() }
+func (a *shareStorageAdmission) checkCurrent() error { return a.inner.CheckCurrent() }
 
-// admitShareGeneration refuses a build whose whole-product footprint would cross
-// the configured limit. Mora owns entry conversion; sharing owns admission.
-func admitShareGeneration(cfg Config, name string, entries []shareBlobEntry) error {
+// ledger walks the product once; the build then counts its own writes.
+func (a *shareStorageAdmission) ledger(reserve int64) (*sharingpkg.StorageLedger, error) {
+	return a.inner.Ledger(reserve)
+}
+
+// reserveShareGeneration refuses a build whose whole-product footprint would
+// cross the configured limit, and returns the ledger the build admits its writes
+// against. Mora owns entry conversion; sharing owns admission.
+func reserveShareGeneration(a *shareStorageAdmission, name string, entries []shareBlobEntry) (*sharingpkg.StorageLedger, error) {
 	var genBytes int64
 	for _, e := range entries {
 		n := int64(len(e.body))
 		if genBytes > math.MaxInt64-n {
-			return fmt.Errorf("share %q: generation size overflows int64", name)
+			return nil, fmt.Errorf("share %q: generation size overflows int64", name)
 		}
 		genBytes += n
 	}
-	return sharingpkg.AdmitGenerationBytes(productStorageRoots(cfg), cfg.ConfigDir, name, storageCeilingBytes, genBytes, len(entries))
+	reserve, err := sharingpkg.GenerationReserve(name, genBytes, len(entries))
+	if err != nil {
+		return nil, err
+	}
+	return a.ledger(reserve)
 }
