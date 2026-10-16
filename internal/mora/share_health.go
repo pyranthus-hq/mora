@@ -12,12 +12,17 @@ import (
 	"time"
 )
 
+// shareRefreshing is a subscription whose committed generation verified intact
+// while a live, owned pull replaces it. It serves normally and is not an alarm:
+// a pull that dies leaves an abandoned attempt, which reads failed.
+const shareRefreshing = "refreshing"
+
 // shareStaleThreshold is the share head's staleness bound (the fifth threshold
 // family, Landmine 13). A committed generation older than this ages to `stale`.
 const shareStaleThreshold = 48 * time.Hour
 
 // shareHealth is one subscription's freshness snapshot in the sourceHealth
-// four-state vocabulary (never/failed/stale/fresh).
+// four-state vocabulary (never/failed/stale/fresh), plus shareRefreshing.
 type shareHealth struct {
 	Name      string
 	State     string
@@ -57,8 +62,9 @@ func shareHealthOne(cfg Config, name string, now time.Time) shareHealth {
 	}
 
 	// The durable attempt record: a terminal-failed or active-but-abandoned latest
-	// attempt is failed; a currently-owned active attempt is stale ("refresh in
-	// progress"); `fresh` requires a matching durable succeeded record.
+	// attempt is failed; a currently-owned active attempt is refreshing (the
+	// verified head keeps serving); `fresh` requires a matching durable succeeded
+	// record.
 	attempt, haveAttempt, attemptErr := loadShareAttempt(cfg, name)
 	if attemptErr != nil {
 		return shareHealth{Name: name, State: healthFailed, LastError: attemptErr.Error(), BuiltAt: commit.BuiltAt}
@@ -75,7 +81,12 @@ func shareHealthOne(cfg Config, name string, now time.Time) shareHealth {
 		return shareHealth{Name: name, State: healthFailed, LastError: attempt.LastError, BuiltAt: commit.BuiltAt}
 	case "active":
 		if liveImportOwner(cfg, name, now) == attempt.RunID {
-			return shareHealth{Name: name, State: healthStale, LastError: "refresh in progress", BuiltAt: commit.BuiltAt}
+			// A pull in progress does not excuse a head that is already stale:
+			// until it commits, that old generation is what gets served.
+			if headStale(commit.BuiltAt, now) {
+				return shareHealth{Name: name, State: healthStale, LastError: "refresh in progress", BuiltAt: commit.BuiltAt}
+			}
+			return shareHealth{Name: name, State: shareRefreshing, BuiltAt: commit.BuiltAt}
 		}
 		// Active but abandoned/interrupted (its lease is gone/expired).
 		return shareHealth{Name: name, State: healthFailed, LastError: "import interrupted — run `mora share pull " + name + "`", BuiltAt: commit.BuiltAt}
@@ -84,10 +95,8 @@ func shareHealthOne(cfg Config, name string, now time.Time) shareHealth {
 	}
 
 	// Staleness of the committed head's built_at.
-	if t, perr := time.Parse(time.RFC3339, commit.BuiltAt); perr == nil {
-		if now.Sub(t) > shareStaleThreshold {
-			return shareHealth{Name: name, State: healthStale, BuiltAt: commit.BuiltAt}
-		}
+	if headStale(commit.BuiltAt, now) {
+		return shareHealth{Name: name, State: healthStale, BuiltAt: commit.BuiltAt}
 	}
 	if !freshOK {
 		// A committed head with no matching succeeded attempt (e.g. a crash before
@@ -95,6 +104,14 @@ func shareHealthOne(cfg Config, name string, now time.Time) shareHealth {
 		return shareHealth{Name: name, State: healthStale, LastError: "no matching completed import record", BuiltAt: commit.BuiltAt}
 	}
 	return h
+}
+
+// headStale reports whether a committed head's built_at is past the share
+// staleness bound. An unparseable built_at is not judged here; the attempt
+// record still gates freshness.
+func headStale(builtAt string, now time.Time) bool {
+	t, err := time.Parse(time.RFC3339, builtAt)
+	return err == nil && now.Sub(t) > shareStaleThreshold
 }
 
 // hasLegacyFlat reports whether a subscription still carries the pre-upgrade flat
@@ -135,7 +152,7 @@ type shareUnhealth struct {
 func sharesUnhealthy(cfg Config, now time.Time) []shareUnhealth {
 	out := []shareUnhealth{}
 	for _, h := range shareHealthAll(cfg, now) {
-		if h.State == healthFresh {
+		if h.State == healthFresh || h.State == shareRefreshing {
 			continue
 		}
 		out = append(out, shareUnhealth{Name: h.Name, State: h.State, LastError: h.LastError})
@@ -153,6 +170,8 @@ func shareIndexHealthAll(cfg Config, now time.Time) []indexHealth {
 		switch h.State {
 		case healthFresh:
 			ih.State = idxFresh
+		case shareRefreshing:
+			ih.State = idxRefreshing
 		case healthStale:
 			ih.State = idxDegraded
 		case healthNever:

@@ -82,9 +82,8 @@ func parseWriteResult(v any) (id string, warning string, err error) {
 		Memory struct {
 			ID string `json:"id"`
 		} `json:"memory"`
-		IndexStale         bool   `json:"index_stale"`
-		ProjectionsPending bool   `json:"projections_pending"`
-		Warning            string `json:"warning"`
+		IndexStale bool   `json:"index_stale"`
+		Warning    string `json:"warning"`
 	}
 	if err := json.Unmarshal(b, &shape); err != nil {
 		return "", "", err
@@ -94,10 +93,11 @@ func parseWriteResult(v any) (id string, warning string, err error) {
 		id = shape.Memory.ID
 	}
 	// A successful FTS upsert deliberately leaves graph/vector/commitment work for
-	// the scheduled or explicit full rebuild. That expected state is not an index
-	// update failure, so the concurrency contract must keep looking for actual
-	// failed-upsert warnings without rejecting every normal authored write.
-	if (shape.IndexStale && !shape.ProjectionsPending) || shape.Warning != "" {
+	// the background or scheduled full rebuild, and answers searchable=true with
+	// no index_stale flag. Only a failed upsert sets index_stale, so the
+	// concurrency contract keeps catching real failures without rejecting every
+	// normal authored write.
+	if shape.IndexStale || shape.Warning != "" {
 		warning = shape.Warning
 		if warning == "" {
 			warning = "index_stale"

@@ -1285,13 +1285,14 @@ func companionHealthState(state string) companion.HealthState {
 	return companion.HealthUnhealthy
 }
 
-// companionIndexState collapses the kernel's five-state index arm onto the
+// companionIndexState collapses the kernel's six-state index arm onto the
 // contract's three-state vocabulary. The table is N02's, published in
 // docs/companion-contract.md, and it is deliberately NOT the kernel's own
 // aggregate collapse:
 //
-//	fresh    -> healthy      the index matches the vault
-//	dirty    -> degraded     behind the vault: usable and incomplete
+//	fresh      -> healthy    the index matches the vault
+//	refreshing -> healthy    search is current; projections catching up
+//	dirty      -> degraded   behind the vault: usable and incomplete
 //	degraded -> degraded     straight through
 //	failed   -> unhealthy    could not be opened, or does not match this build
 //	never    -> unhealthy    there is no index, so nothing can be retrieved
@@ -1304,7 +1305,7 @@ func companionHealthState(state string) companion.HealthState {
 // between "you are seeing slightly old results" and "there is nothing to see".
 func companionIndexState(state string) companion.HealthState {
 	switch state {
-	case healthpkg.IndexFresh:
+	case healthpkg.IndexFresh, healthpkg.IndexRefreshing:
 		return companion.HealthHealthy
 	case healthpkg.IndexDirty, healthpkg.IndexDegraded:
 		return companion.HealthDegraded

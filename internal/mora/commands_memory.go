@@ -88,7 +88,8 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	// Create-exclusive publish: a colliding newID can never clobber an existing
 	// memory (os.Link fails EEXIST → re-mint), so a same-instant concurrent writer
 	// never silently loses its write. createMemory sets m.ID and m.Path.
-	m, _, err = createMemory(ctx, cfg, m)
+	var op pendingOp
+	m, op, err = createMemory(ctx, cfg, m)
 	if err != nil {
 		return err
 	}
@@ -115,8 +116,15 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	}
 	// Keep the marker until the elected full reconciliation has committed: indexUpsert
 	// makes FTS immediately visible, but only rebuildIndex can make graph, vectors,
-	// and commitments byte-identical to the vault. The warning is a diagnostic and
-	// rides stderr so it can never share stdout with the --json receipt (CON-02).
+	// and commitments byte-identical to the vault. The FTS-committed form tells
+	// health the write is already searchable (refreshing, not dirty). The warning
+	// is a diagnostic and rides stderr so it can never share stdout with the --json
+	// receipt (CON-02).
+	if authoredWriteProjectionPending(cfg, op) {
+		if err := markFTSCommitted(cfg, op); err != nil {
+			fmt.Fprintf(stderr, "warning: memory saved and searchable, but its index marker could not be updated: %v\n", err)
+		}
+	}
 	if err := reconcileAuthoredWrites(ctx, cfg); err != nil {
 		fmt.Fprintf(stderr, "warning: memory saved and text search updated, but full index reconciliation is pending: %v\n", err)
 	}

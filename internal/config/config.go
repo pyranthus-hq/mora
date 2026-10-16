@@ -4,6 +4,7 @@ package config
 import (
 	"context"
 	"os"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,6 +22,8 @@ type Config struct {
 	MMR            bool
 
 	operationRunID     string
+	operationSourceKey string
+	operationPublishes *atomic.Int64
 	fusionOverride     any
 	mmrOverride        any
 	vaultDirConfigured *string
@@ -85,6 +88,35 @@ func (c Config) OperationRunID() string { return c.operationRunID }
 
 // SetOperationRunID binds an ingest to its activity receipt.
 func (c *Config) SetOperationRunID(id string) { c.operationRunID = id }
+
+// OperationSourceKey returns the ingest journal key bound to this run, or "".
+// Every vault file an ingest publishes must journal under the key the run
+// leased: a provider alias (applecalendar mints provider "applecal") would
+// otherwise lease a second key that the run never releases.
+func (c Config) OperationSourceKey() string { return c.operationSourceKey }
+
+// BindOperationSource binds an ingest's journal key and starts a fresh publish
+// count shared by every copy of this config the run hands down.
+func (c *Config) BindOperationSource(key string) {
+	c.operationSourceKey = key
+	c.operationPublishes = new(atomic.Int64)
+}
+
+// NoteOperationPublish records that the bound ingest is about to publish a
+// vault file. It is a no-op outside a bound ingest.
+func (c Config) NoteOperationPublish() {
+	if c.operationPublishes != nil {
+		c.operationPublishes.Add(1)
+	}
+}
+
+// OperationPublishes reports how many vault publishes the bound ingest began.
+func (c Config) OperationPublishes() int64 {
+	if c.operationPublishes == nil {
+		return 0
+	}
+	return c.operationPublishes.Load()
+}
 
 // FusionOverride returns the process-local retrieval tuning override.
 func (c Config) FusionOverride() any { return c.fusionOverride }

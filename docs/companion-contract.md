@@ -350,6 +350,7 @@ listener must collapse it exactly this way rather than inventing a mapping:
 | Kernel index state | `HealthState` | Why |
 |---|---|---|
 | `fresh` | `healthy` | The index matches the vault. |
+| `refreshing` | `healthy` | Search is current. Derived projections (graph, vectors, commitments) are catching up after a write or during a rebuild, and the state turns `dirty` if that stops. |
 | `dirty` | `degraded` | The index is behind the vault. Results are usable and incomplete, which is precisely `degraded`. |
 | `degraded` | `degraded` | Straight through. |
 | `failed` | `unhealthy` | The index could not be opened or does not match this build. |
