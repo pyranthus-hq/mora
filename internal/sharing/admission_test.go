@@ -225,3 +225,109 @@ func TestAdmitGenerationBytesRejectsOverflow(t *testing.T) {
 		}
 	}
 }
+
+// countProductWalks counts whole-product walks for the rest of the test.
+func countProductWalks(t *testing.T) *int {
+	t.Helper()
+	n := 0
+	orig := productBytesFn
+	productBytesFn = func(roots storage.Roots) (int64, error) {
+		n++
+		return orig(roots)
+	}
+	t.Cleanup(func() { productBytesFn = orig })
+	return &n
+}
+
+func TestStorageLedgerWalksOnceThenTracksAdmittedBytes(t *testing.T) {
+	cfg := packetHConfig(t)
+	roots := testStorageRoots(cfg)
+	base, err := storage.ProductBytes(roots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	walks := countProductWalks(t)
+	a := NewStorageAdmissionWithLimit(roots, "acme", base+1000)
+	l, err := a.Ledger(900)
+	if err != nil {
+		t.Fatalf("reservation inside the limit refused: %v", err)
+	}
+	for i := 0; i < 9; i++ {
+		if err := l.Admit(100); err != nil {
+			t.Fatalf("admit %d: %v", i, err)
+		}
+	}
+	if got, err := l.Remaining(); err != nil || got != 100 {
+		t.Fatalf("Remaining=%d,%v; want 100 from the ledger's own count", got, err)
+	}
+	if err := l.Admit(101); err == nil || !strings.Contains(err.Error(), "storage-limit") {
+		t.Fatalf("admit past the limit=%v; want a storage-limit refusal", err)
+	}
+	if got, err := l.Remaining(); err != nil || got != 100 {
+		t.Fatalf("a refused admit was counted: Remaining=%d,%v", got, err)
+	}
+	if *walks != 1 {
+		t.Fatalf("ledger walked the product %d times; want exactly 1", *walks)
+	}
+}
+
+func TestStorageLedgerReservationAndCurrentStayFailClosed(t *testing.T) {
+	cfg := packetHConfig(t)
+	roots := testStorageRoots(cfg)
+	// A non-empty product, so a maximal reservation overflows.
+	if err := os.WriteFile(filepath.Join(cfg.DataDir, "used"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base, err := storage.ProductBytes(roots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := NewStorageAdmissionWithLimit(roots, "acme", base+1000)
+	if _, err := a.Ledger(1001); err == nil || !strings.Contains(err.Error(), "storage-limit") {
+		t.Fatalf("over-limit reservation=%v; want refusal", err)
+	}
+	if _, err := a.Ledger(-1); err == nil || !strings.Contains(err.Error(), "negative") {
+		t.Fatalf("negative reservation=%v", err)
+	}
+	if _, err := NewStorageAdmissionWithLimit(roots, "acme", math.MaxInt64).Ledger(math.MaxInt64); err == nil || !strings.Contains(err.Error(), "overflows") {
+		t.Fatalf("overflowing reservation=%v", err)
+	}
+	l, err := a.Ledger(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Admit(-1); err == nil || !strings.Contains(err.Error(), "negative") {
+		t.Fatalf("negative admit=%v", err)
+	}
+	// Another writer grows the product after the walk. The ledger cannot see
+	// it; the closing CheckCurrent must.
+	if err := os.WriteFile(filepath.Join(cfg.VaultDir, "late"), bytes.Repeat([]byte{'x'}, 600), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Admit(500); err != nil {
+		t.Fatalf("ledger admit=%v", err)
+	}
+	if err := a.CheckAdditional(500); err == nil {
+		t.Fatal("a fresh walk missed bytes another writer added after the ledger walk")
+	}
+	failing := NewStorageAdmissionWithLimit(roots, "acme", math.MaxInt64)
+	orig := productBytesFn
+	productBytesFn = func(storage.Roots) (int64, error) { return 0, os.ErrPermission }
+	t.Cleanup(func() { productBytesFn = orig })
+	if _, err := failing.Ledger(0); err == nil || !strings.Contains(err.Error(), "fail-closed") {
+		t.Fatalf("ledger walk failure=%v; want fail-closed refusal", err)
+	}
+}
+
+func TestGenerationReserveMatchesAdmission(t *testing.T) {
+	got, err := GenerationReserve("acme", 1000, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := int64(1000*8 + 64<<10 + 3*(4<<10)); got != want {
+		t.Fatalf("GenerationReserve=%d; want %d", got, want)
+	}
+	if _, err := GenerationReserve("acme", -1, 0); err == nil || !strings.Contains(err.Error(), "overflows") {
+		t.Fatalf("negative corpus=%v", err)
+	}
+}

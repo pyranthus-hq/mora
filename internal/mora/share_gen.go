@@ -242,10 +242,6 @@ var testHookPreCommitClaim func()
 // seam.
 var shareCommitSyncDirFn = atomicio.SyncDir
 
-// shareAdmitFn is an optional per-write byte admitter: it rejects a corpus write
-// that would push the whole-product footprint over the configured limit.
-type shareAdmitFn func(nextBytes int64) error
-
 // buildShareGenerationFromEntries writes a new immutable generation (durable
 // corpus → index → atomicio.SyncDir(gen) → atomicio.SyncDir(gens)) from an already-decrypted,
 // validated entry set and returns the frozen digests. It never touches a
@@ -255,10 +251,19 @@ func buildShareGenerationFromEntries(ctx context.Context, cfg Config, name, gen 
 	if err != nil {
 		return "", "", err
 	}
-	return buildShareGenerationBounded(ctx, cfg, name, gen, entries, storage.checkAdditional, storage)
+	ledger, err := storage.ledger(0)
+	if err != nil {
+		return "", "", err
+	}
+	return buildShareGenerationBounded(ctx, cfg, name, gen, entries, storage, ledger)
 }
 
-func buildShareGenerationBounded(ctx context.Context, cfg Config, name, gen string, entries []shareBlobEntry, admit shareAdmitFn, storage *shareStorageAdmission) (corpusDigest, indexDigest string, err error) {
+// buildShareGenerationBounded builds under one storage decision. The product is
+// walked once, by the ledger's creator; each corpus write and the index's byte
+// cap are then checked against the ledger's running count, not a fresh walk.
+// The closing checkCurrent walks again, so bytes anyone else wrote during the
+// build still refuse the generation before a commit can make it visible.
+func buildShareGenerationBounded(ctx context.Context, cfg Config, name, gen string, entries []shareBlobEntry, storage *shareStorageAdmission, ledger *sharingpkg.StorageLedger) (corpusDigest, indexDigest string, err error) {
 	corpusDir := shareGenCorpusDir(cfg, name, gen)
 	if err := os.MkdirAll(corpusDir, 0o700); err != nil {
 		return "", "", err
@@ -268,8 +273,8 @@ func buildShareGenerationBounded(ctx context.Context, cfg Config, name, gen stri
 	mems := make([]Memory, len(entries))
 	for i := range entries {
 		dst := filepath.Join(corpusDir, entries[i].mem.ID+".md")
-		if admit != nil {
-			if aerr := admit(int64(len(entries[i].body))); aerr != nil {
+		if ledger != nil {
+			if aerr := ledger.Admit(int64(len(entries[i].body))); aerr != nil {
 				return "", "", aerr
 			}
 		}
@@ -277,15 +282,18 @@ func buildShareGenerationBounded(ctx context.Context, cfg Config, name, gen stri
 			return "", "", werr
 		}
 		mems[i] = entries[i].mem
-		mems[i].Path = dst // the generation's frozen corpus is the served source
+		// The index stores the corpus path relative to the generation, so two
+		// builds of one corpus produce one index digest. A serve rebuilds the
+		// absolute path from the generation it resolved (searchShareIndex).
+		mems[i].Path = shareIndexRelPath(mems[i].ID)
 		if i == 0 && testHookPostFirstGenCorpusWrite != nil {
 			testHookPostFirstGenCorpusWrite()
 		}
 	}
 	indexPath := shareGenIndexPath(cfg, name, gen)
 	indexCtx := ctx
-	if storage != nil {
-		remaining, rerr := storage.remaining()
+	if ledger != nil {
+		remaining, rerr := ledger.Remaining()
 		if rerr != nil {
 			return "", "", rerr
 		}
@@ -319,6 +327,11 @@ func buildShareGenerationBounded(ctx context.Context, cfg Config, name, gen stri
 	}
 	return corpusDigest, indexDigest, nil
 }
+
+// shareIndexRelPath is the path a share index row stores for a memory: its
+// frozen corpus file, relative to the generation dir, with forward slashes on
+// every platform.
+func shareIndexRelPath(id string) string { return "corpus/" + id + ".md" }
 
 // errRollback is returned when a bucket fetch presents a version below the
 // durable monotonic replay floor — a replayed older-but-signed envelope.
