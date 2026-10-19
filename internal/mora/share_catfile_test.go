@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // catFileRepo commits files (name → bytes) into a fresh repo and returns it.
@@ -223,5 +226,39 @@ func TestShareBuildRefusesGrowthTheLedgerCannotSee(t *testing.T) {
 	}
 	if _, ok, _ := resolvePublishedCommit(cfg, "acme"); ok {
 		t.Fatal("a refused build left a commit")
+	}
+}
+
+// TestGitCatFileBatchStopsALaunchedGitOnRefusal: on Windows, git on PATH is a
+// launcher, so canceling the batch kills the launcher and leaves the real git
+// blocked writing an unread blob. A refusal must still return promptly. A
+// shell wrapper that does not exec git reproduces the launcher on Unix.
+func TestGitCatFileBatchStopsALaunchedGitOnRefusal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the shell wrapper needs a POSIX sh; Windows CI runs the real launcher")
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH")
+	}
+	repo := catFileRepo(t, map[string][]byte{"big": bytes.Repeat([]byte{'x'}, 4<<20)})
+	wrap := t.TempDir()
+	script := "#!/bin/sh\n'" + realGit + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(wrap, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", wrap+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	done := make(chan error, 1)
+	go func() {
+		done <- realGitCatFileBatch(context.Background(), repo, []string{"HEAD:big"}, 1<<10, func(int, []byte) error { return nil })
+	}()
+	select {
+	case err := <-done:
+		if _, ok := asGitBatchOversize(err); !ok {
+			t.Fatalf("err = %v; want an oversize refusal", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("a refused batch did not return; the launched git kept the pipes open")
 	}
 }

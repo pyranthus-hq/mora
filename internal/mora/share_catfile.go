@@ -14,7 +14,13 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
+
+// gitBatchWaitDelay bounds how long Wait waits for git's pipes to close after
+// the process exits or is canceled. On Windows, git.exe on PATH is often a
+// launcher whose child survives the kill and keeps stderr open.
+const gitBatchWaitDelay = 5 * time.Second
 
 // gitBatchReader asks one git process for objects, in order, and calls each
 // with the i-th object's bytes. Every object must be a blob of at most maxSize
@@ -49,6 +55,7 @@ func realGitCatFileBatch(ctx context.Context, dir string, objects []string, maxS
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "cat-file", "--batch")
 	cmd.Dir = dir
+	cmd.WaitDelay = gitBatchWaitDelay
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdin, err := cmd.StdinPipe()
@@ -62,6 +69,10 @@ func realGitCatFileBatch(ctx context.Context, dir string, objects []string, maxS
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("git cat-file --batch: %w", err)
 	}
+	// A canceled read must not wait on a git child that outlived the kill:
+	// closing stdout fails the pending read.
+	stopClose := context.AfterFunc(ctx, func() { _ = stdout.Close() })
+	defer stopClose()
 	// git answers each name as it reads it. Write from a goroutine so a full
 	// stdout pipe cannot block the writer while the reader waits for it.
 	written := make(chan error, 1)
@@ -122,10 +133,14 @@ func realGitCatFileBatch(ctx context.Context, dir string, objects []string, maxS
 		return nil
 	}()
 	if readErr != nil {
-		// Stop git early: the remaining answers are no longer wanted.
+		// Stop git early: the remaining answers are no longer wanted. Cancel
+		// kills only the process we started; a git it launched may still be
+		// blocked writing an unread blob. Closing our end of stdout fails that
+		// write, so the child exits and releases stderr before Wait reads it.
 		cancel()
-		<-written
+		_ = stdout.Close()
 		_ = cmd.Wait()
+		<-written
 		if callerErr {
 			return readErr
 		}
