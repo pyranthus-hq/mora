@@ -857,25 +857,25 @@ func shareSubscribe(ctx context.Context, cfg Config, args []string, stdout io.Wr
 			return lerr
 		}
 		return validateSubscriptionNameAvailable(lockedShares, name)
-	}, func(runID string) (int, error) {
+	}, func(runID string) (shareRunOutcome, error) {
 
 		isRepo, repoErr := vaultRepoState(filepath.Join(repo, ".git"))
 		if repoErr != nil {
-			return 0, repoErr
+			return shareRunOutcome{}, repoErr
 		}
 		// The initial clone is a transport/repo write just like a direct-ref
 		// fetch. It must happen only after storage.lock, import.lock, and the
 		// durable active attempt record are all published by the chokepoint.
 		if !isRepo {
 			if _, err := run(ctx, "", "git", "--version"); err != nil {
-				return 0, fmt.Errorf("git is required for sharing but was not found: %w", err)
+				return shareRunOutcome{}, fmt.Errorf("git is required for sharing but was not found: %w", err)
 			}
 			if err := os.MkdirAll(filepath.Dir(repo), 0o700); err != nil {
-				return 0, err
+				return shareRunOutcome{}, err
 			}
 			if _, err := run(ctx, "", "git", "clone", *remote, repo); err != nil {
 				cleanupErr := os.RemoveAll(repo)
-				return 0, errors.Join(fmt.Errorf("git clone: %w", err), cleanupErr)
+				return shareRunOutcome{}, errors.Join(fmt.Errorf("git clone: %w", err), cleanupErr)
 			}
 			createdByThisRun = true
 		} else {
@@ -884,20 +884,20 @@ func shareSubscribe(ctx context.Context, cfg Config, args []string, stdout io.Wr
 			// would poison search/think under a trusted attribution label.
 			origin, err := run(ctx, repo, "git", "remote", "get-url", "origin")
 			if err != nil {
-				return 0, fmt.Errorf("existing clone at %s has no usable origin (%v) — delete it and re-subscribe", repo, err)
+				return shareRunOutcome{}, fmt.Errorf("existing clone at %s has no usable origin (%v) — delete it and re-subscribe", repo, err)
 			}
 			if strings.TrimSpace(origin) != *remote {
-				return 0, fmt.Errorf("existing clone at %s has origin %s, not the requested remote %s — delete it (or pick another subscription name) and re-subscribe", repo, redactCredentials(strings.TrimSpace(origin)), redactCredentials(*remote))
+				return shareRunOutcome{}, fmt.Errorf("existing clone at %s has origin %s, not the requested remote %s — delete it (or pick another subscription name) and re-subscribe", repo, redactCredentials(strings.TrimSpace(origin)), redactCredentials(*remote))
 			}
 			// No `git pull --ff-only` freshen: the run-private pin fetch (H1) brings
 			// the merge source into an immutable per-run ref and reads only that pin.
 		}
-		seq, st, ierr := gitShareImport(ctx, cfg, sub, runID, run)
+		out, st, ierr := gitShareImport(ctx, cfg, sub, runID, run, false)
 		stats = st
 		if ierr != nil && createdByThisRun {
 			ierr = errors.Join(ierr, os.RemoveAll(repo))
 		}
-		return seq, ierr
+		return out, ierr
 	}, func() error {
 		// Registration is the successful subscribe commit. Reload under the same
 		// lease so a waiting first-subscriber cannot overwrite or duplicate it.
@@ -973,16 +973,28 @@ func sharePull(ctx context.Context, cfg Config, args []string, stdout io.Writer,
 			return fmt.Errorf("subscription %q has no local clone — remove and re-subscribe", sub.Name)
 		}
 		var stats shareImportStats
-		if err := shareBuildAndPublish(ctx, cfg, sub.Name, buildModeImport, func(runID string) (int, error) {
-			seq, st, ierr := gitShareImport(ctx, cfg, sub, runID, run)
-			stats = st
-			return seq, ierr
+		var out shareRunOutcome
+		if err := shareImportAndPublish(ctx, cfg, sub.Name, func(runID string) (shareRunOutcome, error) {
+			o, st, ierr := gitShareImport(ctx, cfg, sub, runID, run, true)
+			out, stats = o, st
+			return o, ierr
 		}); err != nil {
 			return err
 		}
-		fmt.Fprintf(stdout, "share %q: %d new/updated, %d removed, %d total.\n", sub.Name, stats.Imported, stats.Removed, stats.Total)
+		printSharePullResult(stdout, sub.Name, out, stats)
 	}
 	return nil
+}
+
+// printSharePullResult reports one subscription's pull. A verified no-op says
+// so: nothing was fetched into a new generation, and the counts would only
+// restate that.
+func printSharePullResult(w io.Writer, name string, out shareRunOutcome, stats shareImportStats) {
+	if out.Verified {
+		fmt.Fprintf(w, "share %q: up to date, %d total.\n", name, stats.Total)
+		return
+	}
+	fmt.Fprintf(w, "share %q: %d new/updated, %d removed, %d total.\n", name, stats.Imported, stats.Removed, stats.Total)
 }
 
 // healShareIndex mints a REPAIR generation from the published generation's own

@@ -44,3 +44,12 @@ func bucketPublish(ctx context.Context, store objectStore, cfg bucketConfig, pub
 func bucketFetch(ctx context.Context, store objectStore, cfg bucketConfig, sub shareSubscription, ids []age.Identity, dest string) (ed25519.PublicKey, int, error) {
 	return sharingpkg.FetchBucket(ctx, sharingObjectStore{store}, cfg, sub, ids, dest)
 }
+
+type bucketSnapshot = sharingpkg.BucketSnapshot
+
+func bucketOpen(ctx context.Context, store objectStore, cfg bucketConfig, sub shareSubscription, ids []age.Identity) (bucketSnapshot, error) {
+	return sharingpkg.OpenBucket(ctx, sharingObjectStore{store}, cfg, sub, ids)
+}
+func bucketMaterialize(ctx context.Context, store objectStore, cfg bucketConfig, sub shareSubscription, snap bucketSnapshot, dest string) error {
+	return snap.Materialize(ctx, sharingObjectStore{store}, cfg, sub, dest)
+}
