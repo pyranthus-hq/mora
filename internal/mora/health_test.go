@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"github.com/pyranthus-hq/mora/internal/google"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
@@ -1412,4 +1413,342 @@ func TestIssue223HealthBannerAndCompactState(t *testing.T) {
 			t.Fatalf("PerSource map = %+v, want filesystem:docs=fresh and filesystem:notes=failed", ch.PerSource)
 		}
 	})
+}
+
+// TestGoogleAuthRecencyDistinguishesLegacyFromBroken (#501): a working token
+// created before auth-history recording must report missing historical auth
+// plus observable same-account activity — never unnecessary reauthorization.
+// Token-only, stale-success, unauthorized, and cross-account cases stay distinct.
+func TestGoogleAuthRecencyDistinguishesLegacyFromBroken(t *testing.T) {
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+
+	seedToken := func(t *testing.T, cfg Config, names ...string) string {
+		t.Helper()
+		tokenDir := filepath.Join(cfg.ConfigDir, "tokens")
+		if err := os.MkdirAll(tokenDir, 0o700); err != nil {
+			t.Fatalf("MkdirAll tokens: %v", err)
+		}
+		for _, name := range names {
+			if err := os.WriteFile(filepath.Join(tokenDir, name), []byte(`{"refresh_token":"x"}`), 0o600); err != nil {
+				t.Fatalf("WriteFile %s: %v", name, err)
+			}
+		}
+		return tokenDir
+	}
+	seedGoogleSources := func(t *testing.T, cfg Config, rows []Source) {
+		t.Helper()
+		if err := saveSources(cfg, rows); err != nil {
+			t.Fatalf("saveSources: %v", err)
+		}
+	}
+	seedAccountStatus := func(t *testing.T, cfg Config, s Source, st *memory.SyncStatus) {
+		t.Helper()
+		path := syncStatusPathFor(cfg, s)
+		if path == "" {
+			t.Fatalf("no sync path for %+v", s)
+		}
+		st.Source = s.Name
+		if err := memory.SaveStatus(path, st); err != nil {
+			t.Fatalf("SaveStatus: %v", err)
+		}
+	}
+
+	t.Run("legacy_token_fresh_sync_no_reauth", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		tokenDir := seedToken(t, cfg, "google.json")
+		gmail := Source{Name: "gmail", Type: "gmail", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: now.Format(time.RFC3339)}
+		seedGoogleSources(t, cfg, []Source{gmail})
+		successAt := now.Add(-2 * time.Hour)
+		seedAccountStatus(t, cfg, gmail, &memory.SyncStatus{
+			LastSuccessAt: successAt.UTC().Format(time.RFC3339),
+			LastAttemptAt: successAt.UTC().Format(time.RFC3339),
+			LastSynced:    successAt.UTC().Format(time.RFC3339),
+			ItemCount:     3,
+		})
+
+		ok, msg := googleAuthRecencyStatus(cfg, tokenDir, "google", now)
+		if !ok {
+			t.Fatalf("legacy+fresh must be ok, got warn: %s", msg)
+		}
+		if !strings.Contains(msg, "no recorded auth history (legacy credential)") {
+			t.Fatalf("want missing-history + legacy wording, got %q", msg)
+		}
+		if !strings.Contains(msg, "recent successful sync observed") {
+			t.Fatalf("want observable activity, got %q", msg)
+		}
+		if strings.Contains(msg, "connect google") {
+			t.Fatalf("must not advise reauthorization for a working legacy credential: %q", msg)
+		}
+		// No interactive-auth timestamp fabricated into the message.
+		if strings.Contains(msg, "last authed") {
+			t.Fatalf("must not invent an interactive-auth date: %q", msg)
+		}
+
+		var out bytes.Buffer
+		printGoogleAuthRecency(cfg, &out, now)
+		got := out.String()
+		if !strings.Contains(got, "ok") || !strings.Contains(got, "legacy credential") {
+			t.Fatalf("doctor line should be ok/legacy; got:\n%s", got)
+		}
+	})
+
+	t.Run("token_only_no_success", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		tokenDir := seedToken(t, cfg, "google.json")
+		ok, msg := googleAuthRecencyStatus(cfg, tokenDir, "google", now)
+		if ok {
+			t.Fatalf("token-only must not read as authorized: %s", msg)
+		}
+		if msg != "no recorded auth history; no successful sync observed for this account" {
+			t.Fatalf("token-only message = %q", msg)
+		}
+		if strings.Contains(msg, "connect google") {
+			t.Fatalf("token-only must stay distinct from auth-failure reauth advice: %q", msg)
+		}
+	})
+
+	t.Run("stale_success", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		tokenDir := seedToken(t, cfg, "google.json")
+		gmail := Source{Name: "gmail", Type: "gmail", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: now.Format(time.RFC3339)}
+		seedGoogleSources(t, cfg, []Source{gmail})
+		staleAt := now.Add(-52 * time.Hour)
+		seedAccountStatus(t, cfg, gmail, &memory.SyncStatus{
+			LastSuccessAt: staleAt.UTC().Format(time.RFC3339),
+			LastAttemptAt: staleAt.UTC().Format(time.RFC3339),
+			LastSynced:    staleAt.UTC().Format(time.RFC3339),
+		})
+		ok, msg := googleAuthRecencyStatus(cfg, tokenDir, "google", now)
+		if ok {
+			t.Fatalf("stale success must warn, got ok: %s", msg)
+		}
+		if !strings.Contains(msg, "last successful sync was") || !strings.Contains(msg, "stale") {
+			t.Fatalf("want stale-success wording, got %q", msg)
+		}
+		if strings.Contains(msg, "connect google") {
+			t.Fatalf("stale sync must not be treated as broken auth: %q", msg)
+		}
+		if !strings.Contains(msg, "mora sync google") {
+			t.Fatalf("stale path should suggest sync to verify, got %q", msg)
+		}
+	})
+
+	t.Run("authorization_failed", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		tokenDir := seedToken(t, cfg, "google.json")
+		gmail := Source{Name: "gmail", Type: "gmail", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: now.Format(time.RFC3339)}
+		seedGoogleSources(t, cfg, []Source{gmail})
+		seedAccountStatus(t, cfg, gmail, &memory.SyncStatus{
+			LastAttemptAt: now.Add(-time.Hour).UTC().Format(time.RFC3339),
+			LastError:     "not connected to google",
+			ErrorCode:     errCodeConnectorUnauthorized,
+			ErrorCount:    1,
+		})
+		ok, msg := googleAuthRecencyStatus(cfg, tokenDir, "google", now)
+		if ok {
+			t.Fatalf("unauthorized must warn, got ok: %s", msg)
+		}
+		if !strings.Contains(msg, "authorization failed") || !strings.Contains(msg, "mora connect google") {
+			t.Fatalf("want real auth-failure reauth advice, got %q", msg)
+		}
+	})
+
+	t.Run("one_account_never_validates_another", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		tokenDir := seedToken(t, cfg, "google.json", "google-work.json")
+		personal := Source{Name: "gmail", Type: "gmail", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: now.Format(time.RFC3339)}
+		work := Source{Name: "gmail-work", Type: "gmail", Account: "work", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: now.Format(time.RFC3339)}
+		seedGoogleSources(t, cfg, []Source{personal, work})
+		// Only work has a fresh success — personal must not inherit it.
+		seedAccountStatus(t, cfg, work, &memory.SyncStatus{
+			LastSuccessAt: now.Add(-time.Hour).UTC().Format(time.RFC3339),
+			LastAttemptAt: now.Add(-time.Hour).UTC().Format(time.RFC3339),
+			LastSynced:    now.Add(-time.Hour).UTC().Format(time.RFC3339),
+		})
+
+		okPersonal, msgPersonal := googleAuthRecencyStatus(cfg, tokenDir, "google", now)
+		if okPersonal || !strings.Contains(msgPersonal, "no successful sync observed") {
+			t.Fatalf("personal must not be validated by work success: ok=%v msg=%q", okPersonal, msgPersonal)
+		}
+		okWork, msgWork := googleAuthRecencyStatus(cfg, tokenDir, "google-work", now)
+		if !okWork || !strings.Contains(msgWork, "legacy credential") {
+			t.Fatalf("work legacy+fresh should be ok: ok=%v msg=%q", okWork, msgWork)
+		}
+	})
+
+	t.Run("recorded_auth_unchanged", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		tokenDir := seedToken(t, cfg, "google.json")
+		authAt := now.Add(-3 * time.Hour)
+		if err := google.RecordAuth(tokenDir, "google", authAt); err != nil {
+			t.Fatalf("RecordAuth: %v", err)
+		}
+		ok, msg := googleAuthRecencyStatus(cfg, tokenDir, "google", now)
+		if !ok {
+			t.Fatalf("recorded auth must be ok: %s", msg)
+		}
+		want := "last authed " + authAt.Format(time.RFC3339)
+		if !strings.HasPrefix(msg, want) {
+			t.Fatalf("recorded auth message = %q, want prefix %q", msg, want)
+		}
+	})
+
+	t.Run("unreadable_auth_history_unknown", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		tokenDir := seedToken(t, cfg, "google.json")
+		// Make auth-history.jsonl a directory so LastAuth's open fails (not missing).
+		histPath := filepath.Join(tokenDir, "auth-history.jsonl")
+		if err := os.Mkdir(histPath, 0o700); err != nil {
+			t.Fatalf("Mkdir history blocker: %v", err)
+		}
+		ok, msg := googleAuthRecencyStatus(cfg, tokenDir, "google", now)
+		if ok {
+			t.Fatalf("unreadable history without evidence must not claim healthy: %s", msg)
+		}
+		if msg != "auth history unreadable; credential state unknown" {
+			t.Fatalf("unreadable/unknown message = %q", msg)
+		}
+		if strings.Contains(msg, "connect google") {
+			t.Fatalf("unreadable history alone must not force reauth: %q", msg)
+		}
+	})
+
+	t.Run("unreadable_history_with_fresh_activity", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		tokenDir := seedToken(t, cfg, "google.json")
+		if err := os.Mkdir(filepath.Join(tokenDir, "auth-history.jsonl"), 0o700); err != nil {
+			t.Fatalf("Mkdir history blocker: %v", err)
+		}
+		gmail := Source{Name: "gmail", Type: "gmail", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: now.Format(time.RFC3339)}
+		seedGoogleSources(t, cfg, []Source{gmail})
+		seedAccountStatus(t, cfg, gmail, &memory.SyncStatus{
+			LastSuccessAt: now.Add(-30 * time.Minute).UTC().Format(time.RFC3339),
+			LastAttemptAt: now.Add(-30 * time.Minute).UTC().Format(time.RFC3339),
+			LastSynced:    now.Add(-30 * time.Minute).UTC().Format(time.RFC3339),
+		})
+		ok, msg := googleAuthRecencyStatus(cfg, tokenDir, "google", now)
+		if ok {
+			t.Fatalf("unreadable history stays warn even with activity (honest unknown ledger): %s", msg)
+		}
+		if !strings.Contains(msg, "auth history unreadable") || !strings.Contains(msg, "credential appears active") {
+			t.Fatalf("want unreadable + active wording, got %q", msg)
+		}
+		if strings.Contains(msg, "connect google") {
+			t.Fatalf("active credential must not get reauth advice: %q", msg)
+		}
+	})
+
+	t.Run("injected_clock_ages", func(t *testing.T) {
+		withTempHome(t)
+		run(t, "init")
+		cfg := mustConfig(t)
+		tokenDir := seedToken(t, cfg, "google.json")
+		gmail := Source{Name: "gmail", Type: "gmail", Scope: "personal", Enabled: genericutil.Ptr(true), CreatedAt: now.Format(time.RFC3339)}
+		seedGoogleSources(t, cfg, []Source{gmail})
+		successAt := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC) // 2h before now
+		seedAccountStatus(t, cfg, gmail, &memory.SyncStatus{
+			LastSuccessAt: successAt.Format(time.RFC3339),
+			LastAttemptAt: successAt.Format(time.RFC3339),
+			LastSynced:    successAt.Format(time.RFC3339),
+		})
+		_, msg := googleAuthRecencyStatus(cfg, tokenDir, "google", now)
+		if !strings.Contains(msg, "2 hours ago") || strings.Contains(msg, "ago ago") {
+			t.Fatalf("injected clock must drive age rendering, got %q", msg)
+		}
+		// Far-future clock would make the same success stale (>24h).
+		later := successAt.Add(30 * time.Hour)
+		okLater, msgLater := googleAuthRecencyStatus(cfg, tokenDir, "google", later)
+		if okLater || !strings.Contains(msgLater, "stale") {
+			t.Fatalf("same fixture under later clock must be stale: ok=%v msg=%q", okLater, msgLater)
+		}
+	})
+}
+
+// TestGoogleSourceAccountFromTokenAccount locks the token-basename → Source.Account
+// mapping used by #501 so one account never validates another by accident.
+func TestGoogleSourceAccountFromTokenAccount(t *testing.T) {
+	cases := []struct {
+		in        string
+		wantLabel string
+		wantOK    bool
+	}{
+		{"google", "", true},
+		{"google-work", "work", true},
+		{"google-pyranthus", "pyranthus", true},
+		{"google-", "", false},
+		{"gmail", "", false},
+		{"", "", false},
+	}
+	for _, tc := range cases {
+		got, ok := googleSourceAccountFromTokenAccount(tc.in)
+		if ok != tc.wantOK || got != tc.wantLabel {
+			t.Fatalf("googleSourceAccountFromTokenAccount(%q) = (%q, %v), want (%q, %v)",
+				tc.in, got, ok, tc.wantLabel, tc.wantOK)
+		}
+	}
+}
+
+// Exercise the rendered Doctor seam, not just the history parser.
+func TestGoogleAuthRecencyCorruptHistory(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	dir := filepath.Join(cfg.ConfigDir, "tokens")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "google.json"), []byte(`{"refresh_token":"fixture"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, history := range []string{"broken\n", "{}\n", "null\n", "{\"account\":\"google\"}\n"} {
+		if err := os.WriteFile(filepath.Join(dir, "auth-history.jsonl"), []byte(history), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		printGoogleAuthRecency(cfg, &out, time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC))
+		got := out.String()
+		if !strings.Contains(got, "auth history unreadable") || strings.Contains(got, "connect google") || strings.Contains(got, "last authed") {
+			t.Fatalf("corrupt history must be explicit and must not fabricate auth or advise reauth: %q", got)
+		}
+	}
+}
+
+func TestGoogleAuthRecencyFailureOverridesHistory(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	dir := filepath.Join(cfg.ConfigDir, "tokens")
+	if err := google.RecordAuth(dir, "google", now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	source := Source{Name: "gmail", Type: "gmail"}
+	if err := saveSources(cfg, []Source{source}); err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.SaveStatus(syncStatusPathFor(cfg, source), &memory.SyncStatus{
+		LastSuccessAt: now.Add(-30 * time.Minute).Format(time.RFC3339), LastAttemptAt: now.Format(time.RFC3339), LastError: "unauthorized", ErrorCode: errCodeConnectorUnauthorized, ErrorCount: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ok, msg := googleAuthRecencyStatus(cfg, dir, "google", now)
+	if ok || !strings.Contains(msg, "authorization failed") {
+		t.Fatalf("auth history must not hide later auth failure: %v %q", ok, msg)
+	}
 }

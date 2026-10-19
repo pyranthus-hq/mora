@@ -3,6 +3,7 @@ package google
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -49,6 +50,18 @@ func RecordAuth(dir, account string, at time.Time) error {
 // file is NOT an error: it returns (zero, false, nil). The bool is false when no
 // matching event exists.
 func LastAuth(dir, account string) (time.Time, bool, error) {
+	return lastAuth(dir, account, false)
+}
+
+// LastAuthStrict has LastAuth's missing-file and account semantics, but reports
+// malformed or incomplete ledger rows instead of silently treating them as
+// absent history. Diagnostics must not infer a legacy credential from corruption.
+// Errors contain no ledger content.
+func LastAuthStrict(dir, account string) (time.Time, bool, error) {
+	return lastAuth(dir, account, true)
+}
+
+func lastAuth(dir, account string, strict bool) (time.Time, bool, error) {
 	f, err := os.Open(filepath.Join(dir, authHistoryFile))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -66,15 +79,23 @@ func LastAuth(dir, account string) (time.Time, bool, error) {
 	// Auth lines are tiny, but raise the buffer so a stray long line can't abort
 	// the scan and silently hide newer events.
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	lineNumber := 0
 	for sc.Scan() {
+		lineNumber++
 		line := sc.Bytes()
 		if len(line) == 0 {
 			continue
 		}
 		var ev AuthEvent
 		if err := json.Unmarshal(line, &ev); err != nil {
-			// Skip a corrupt/partial line rather than failing the whole scan.
+			if strict {
+				return time.Time{}, false, fmt.Errorf("invalid auth history row %d", lineNumber)
+			}
+			// Legacy callers tolerate a corrupt/partial line.
 			continue
+		}
+		if strict && (ev.Account == "" || ev.At.IsZero()) {
+			return time.Time{}, false, fmt.Errorf("incomplete auth history row %d", lineNumber)
 		}
 		if account != "" && ev.Account != account {
 			continue

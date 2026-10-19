@@ -759,8 +759,11 @@ func TestCoreA_PrintGoogleAuthRecency(t *testing.T) {
 	if !strings.Contains(got, "google auth (google): last authed") {
 		t.Fatalf("recency should report the recorded auth; got:\n%s", got)
 	}
-	if !strings.Contains(got, "google auth (google-work): no recorded auth yet") {
-		t.Fatalf("recency should report the un-authed account; got:\n%s", got)
+	if !strings.Contains(got, "google auth (google-work): no recorded auth history; no successful sync observed for this account") {
+		t.Fatalf("recency should report missing history without inventing auth for the other account; got:\n%s", got)
+	}
+	if strings.Contains(got, "run `mora connect google`") {
+		t.Fatalf("token-only without sync evidence must not push unnecessary reauth; got:\n%s", got)
 	}
 }
 
