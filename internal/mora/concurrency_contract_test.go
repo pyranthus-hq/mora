@@ -110,10 +110,12 @@ func parseWriteResult(v any) (id string, warning string, err error) {
 // -> atomicCreate -> indexUpsert) and returns the minted id. It is goroutine-safe:
 // it owns its output buffer and never touches *testing.T.
 func cliWrite(ctx context.Context, scope, title, text string) (string, error) {
-	var out bytes.Buffer
+	// stdout carries only the --json receipt; diagnostics such as a pending
+	// reconciliation warning ride stderr (CON-02) and must not break the decode.
+	var out, errOut bytes.Buffer
 	args := []string{"write", "--json", "--scope", scope, "--type", "insight", "--title", title, "--text", text}
-	if err := Run(ctx, args, &out, &out, strings.NewReader("")); err != nil {
-		return "", err
+	if err := Run(ctx, args, &out, &errOut, strings.NewReader("")); err != nil {
+		return "", fmt.Errorf("%w (stderr=%q)", err, errOut.String())
 	}
 	var m struct {
 		ID string `json:"id"`
