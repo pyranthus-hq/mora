@@ -1,10 +1,11 @@
 package mora
 
-// authoredWriteReconcileHint is the explicit recovery/catch-up surface for an
-// authored write whose immediate FTS upsert has committed but whose whole-vault
-// projections have not yet been rebuilt. The installed index-hourly job provides
-// the ordinary eventual path; this command is the deliberate immediate one.
-const authoredWriteReconcileHint = "mora index rebuild"
+// An authored write whose FTS upsert committed answers with searchable=true,
+// and its health reads index "refreshing": it is searchable now, and the
+// coalesced background reconcile is rebuilding its graph, vector and commitment
+// projections. The response names no command on
+// purpose. Agents obeyed the old "mora index rebuild" hint and collided with
+// that reconcile on the writer lock (SQLITE_BUSY).
 
 // authoredWriteProjectionPending reports whether this write's durable marker
 // survived its immediate FTS transaction. A full rebuild (including the

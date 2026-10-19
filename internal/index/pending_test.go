@@ -86,3 +86,70 @@ func TestClearCoveredAndSuppressDeletes(t *testing.T) {
 		t.Fatalf("clear=(%q,%v)", removed, err)
 	}
 }
+
+func TestMarkFTSCommittedRenamesWithoutRetiring(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	ready := func(context.Context, config.Config) (bool, string, error) { return true, "v1", nil }
+	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	mark := func(id, kind string) PendingOp {
+		t.Helper()
+		op, err := MarkDirty(context.Background(), cfg, PendingOp{OpID: id, Kind: kind, Path: "/v/" + id + ".md"}, MarkSeams{Ready: ready, NewID: func() string { return id }, Clock: func() time.Time { return now }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return op
+	}
+	write := mark("w1", KindWrite)
+	if err := MarkFTSCommitted(cfg, write.OpID, os.Rename); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(PendingPath(cfg, "w1")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dirty-form marker still present: %v", err)
+	}
+	ops, err := ListPending(cfg)
+	if err != nil || len(ops) != 1 || !ops[0].FTSCommitted || ops[0].OpID != "w1" || ops[0].Kind != KindWrite {
+		t.Fatalf("ListPending after FTS commit = %+v, %v; want one FTS-committed write marker", ops, err)
+	}
+	// The renamed marker is still a pending write: a covering rebuild retires it
+	// by the same parsed-path rule, and an uncovering one keeps it.
+	if ShouldClear(ops[0], now, nil, map[string]bool{}) {
+		t.Fatal("FTS-committed marker cleared without a covering parse")
+	}
+	if !ShouldClear(ops[0], now, nil, map[string]bool{ops[0].Path: true}) {
+		t.Fatal("FTS-committed marker not cleared by a covering parse")
+	}
+
+	// A marker a concurrent rebuild already retired is success, and the rename
+	// must not resurrect it in either form.
+	if err := MarkFTSCommitted(cfg, "gone", os.Rename); err != nil {
+		t.Fatalf("missing marker: %v", err)
+	}
+	if _, err := os.Stat(FTSCommittedPath(cfg, "gone")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rename resurrected a retired marker: %v", err)
+	}
+
+	// Only a write has an FTS-committed form: a delete under that name stays dirty.
+	del := mark("d1", KindDelete)
+	if err := os.Rename(PendingPath(cfg, del.OpID), FTSCommittedPath(cfg, del.OpID)); err != nil {
+		t.Fatal(err)
+	}
+	ops, err = ListPending(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range ops {
+		if op.OpID == "d1" && op.FTSCommitted {
+			t.Fatalf("delete marker read as FTS-committed: %+v", op)
+		}
+	}
+
+	// A rename failure other than absence surfaces and leaves the dirty form.
+	other := mark("w2", KindWrite)
+	boom := errors.New("rename refused")
+	if err := MarkFTSCommitted(cfg, other.OpID, func(string, string) error { return boom }); !errors.Is(err, boom) {
+		t.Fatalf("rename failure = %v, want %v", err, boom)
+	}
+	if _, err := os.Stat(PendingPath(cfg, "w2")); err != nil {
+		t.Fatalf("dirty-form marker lost after a failed rename: %v", err)
+	}
+}

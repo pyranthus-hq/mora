@@ -1225,6 +1225,10 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		return errors.Join(cause, finishErr)
 	}
 	sourceKey := ingestOperationSourceKey(s)
+	// Every publish below journals under this run's key (writeMappedMemoryDetailed
+	// reads it back), so the lease taken here is the only one the run owns and the
+	// deferred release below actually retires it.
+	cfg.BindOperationSource(sourceKey)
 	if err := ingestpkg.EnsureJournalHeader(cfg, sourceKey, ingestPublishSeams()); err != nil {
 		return result, finishFailed("journal_start_failed", err)
 	}
@@ -1248,8 +1252,7 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 	_ = appendTraceEvent(cfg, traceEvent{CorrelationID: h.RunID, Stage: traceStageIngestion, Source: ingestOperationSourceKey(s), Status: traceStatus})
 	enrichSyncObservation(cfg, s, attemptStart, result.Stages.TotalMS, dispatchErr)
 	if dispatchErr == nil && result.Materialized == 0 {
-		ingestpkg.ReleaseLeaseOwnedHere(cfg, sourceKey, ingestLeaseSeams())
-		_, retireErr := ingestpkg.CompactJournal(cfg, sourceKey, map[string]bool{}, ingestRecoverySeams())
+		retireErr := retireUnpublishedIngestJournal(cfg, sourceKey, h.RunID)
 		progressErr := progress.Stop()
 		finishErr := finishOperation(cfg, h, operationCompleted, "no_changes", operationCounts{
 			Items: 0, Examined: result.Examined, Materialized: 0, Missing: result.Missing,
@@ -1269,6 +1272,12 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		dispatchErr = classifyConnectorError(dispatchErr)
 		progressErr := progress.Stop()
 		err = errors.Join(dispatchErr, progressErr)
+		// A run that failed before publishing anything leaves only its own header.
+		// Retire it the same way the zero-change success path does, or the index
+		// reads dirty until some unrelated rebuild happens to cover it.
+		if result.Materialized == 0 {
+			err = errors.Join(err, retireUnpublishedIngestJournal(cfg, sourceKey, h.RunID))
+		}
 		err = finishFailed("ingest_failed", err)
 		stampSyncAttemptFailure(cfg, s, err, attemptStart, out)
 		return result, err
@@ -1277,6 +1286,26 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 	// heartbeat stays live while sibling sources finish. The committed rebuild
 	// that retires this run's journal stops it and owns the terminal transition.
 	return result, nil
+}
+
+// retireUnpublishedIngestJournal releases this run's lease and retires its
+// journal when the run published nothing. Two guards keep that from becoming a
+// false-clean. The run must not have begun a publish (counted before each vault
+// write, so a path line lost to its best-effort append still counts). And the
+// header must be this run's own: an older header belongs to a run that may have
+// crashed after a publish whose path line never landed. CompactJournal keeps
+// any listed path whose file still exists, so a journal that recorded real
+// publishes is never retired here.
+func retireUnpublishedIngestJournal(cfg Config, sourceKey, runID string) error {
+	ingestpkg.ReleaseLeaseOwnedHere(cfg, sourceKey, ingestLeaseSeams())
+	if cfg.OperationPublishes() > 0 {
+		return nil
+	}
+	if ingestpkg.JournalRunID(ingestpkg.JournalPath(cfg, sourceKey), validOperationToken) != runID {
+		return nil
+	}
+	_, err := ingestpkg.CompactJournal(cfg, sourceKey, map[string]bool{}, ingestRecoverySeams())
+	return err
 }
 
 func enrichSyncObservation(cfg Config, s Source, attemptStart time.Time, durationMS int64, runErr error) {
@@ -1447,10 +1476,11 @@ func writeMappedMemoryDetailed(cfg Config, mm memory.MappedMemory) (bool, error)
 	// still reads the index dirty and the next rebuild recovers the memory. Only an
 	// ACTUAL publish is journaled — the content-hash-unchanged / suppressed early
 	// returns above wrote no new file and reach neither line.
-	sourceKey := ingestpkg.SourceKey(mm.Provider, mm.Account)
+	sourceKey := ingestJournalKey(cfg, ingestpkg.SourceKey(mm.Provider, mm.Account))
 	if jerr := ingestpkg.EnsureJournalHeader(cfg, sourceKey, ingestPublishSeams()); jerr != nil {
 		return false, jerr
 	}
+	cfg.NoteOperationPublish()
 	if err := atomicio.Write(out, body, 0o644); err != nil {
 		return false, err
 	}
@@ -1466,6 +1496,19 @@ func writeMappedMemoryDetailed(cfg Config, mm memory.MappedMemory) (bool, error)
 	// unsuffixed twin for the SAME provider object (#495). Best-effort.
 	migrateLegacyInstanceFile(cfg, mm)
 	return true, nil
+}
+
+// ingestJournalKey is the journal key a publish must use: the key the running
+// ingest leased (ingestSourceDetailed binds it), or the provider-derived key for
+// a publish outside a bound ingest. The two differ for Apple Calendar, whose
+// source type is "applecalendar" while its memories carry provider "applecal";
+// journaling under the provider key leased a second key the run never released,
+// so the index read dirty until another process rebuilt.
+func ingestJournalKey(cfg Config, providerKey string) string {
+	if key := cfg.OperationSourceKey(); key != "" {
+		return key
+	}
+	return providerKey
 }
 
 // testHookPostConnectorPublish fires inside writeMappedMemory AFTER the vault publish
@@ -2475,7 +2518,7 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 		// journal it here too (miss it and every filesystem memory is silently
 		// unrecoverable after a killed ingest). Durable header BEFORE the write is
 		// visible; path line after a real publish.
-		sourceKey := ingestpkg.SourceKey("filesystem", s.Name)
+		sourceKey := ingestJournalKey(cfg, ingestpkg.SourceKey("filesystem", s.Name))
 		if jerr := ingestpkg.EnsureJournalHeader(cfg, sourceKey, ingestPublishSeams()); jerr != nil {
 			result.Failed++
 			result.Missing++
@@ -2483,6 +2526,7 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 		}
 		// Suppression re-check + write, atomic under the governance lease so a
 		// `mora forget` that commits mid-walk is honored, never resurrected (#113).
+		cfg.NoteOperationPublish()
 		wrote, werr := writeUnlessForgotten(cfg, "", id, dest, body, 0o644)
 		if werr != nil {
 			result.Failed++

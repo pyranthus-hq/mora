@@ -1489,6 +1489,11 @@ mora doctor
 
 The index is a cache. Rebuilding it does not rewrite the source Markdown.
 
+An index that reads `refreshing` needs no action. Search is already current; Mora
+is rebuilding the entity graph, vectors and commitments in the background after a
+write, or a rebuild is running. Starting another rebuild then only competes with
+it for the index lock. If the catch-up stops, the state turns `dirty`.
+
 ### Google setup uses the placeholder client
 
 Set an installed-app client JSON before connect:
