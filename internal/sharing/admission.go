@@ -77,8 +77,11 @@ func NewStorageAdmissionWithLimit(roots storage.Roots, name string, limit int64)
 	return &StorageAdmission{roots: roots, name: name, limit: limit}
 }
 
+// productBytesFn is the whole-product walk. Tests count calls through it.
+var productBytesFn = storage.ProductBytes
+
 func (a *StorageAdmission) used() (int64, error) {
-	used, err := storage.ProductBytes(a.roots)
+	used, err := productBytesFn(a.roots)
 	if err != nil {
 		return 0, fmt.Errorf("share %q: storage accounting failed (fail-closed): %w", a.name, err)
 	}
@@ -126,22 +129,86 @@ func (a *StorageAdmission) checkNeeded(needed int64) error {
 	return fmt.Errorf("share %q needs at least %d whole-product bytes; configured limit is %d (doctor ceiling 15 GiB). Run 'mora share storage-limit %d' to opt in, free space/run 'mora share gc', or unsubscribe.", a.name, required, a.limit, required)
 }
 
-// AdmitGenerationBytes reserves conservative corpus, index, page, and per-row expansion.
-func AdmitGenerationBytes(roots storage.Roots, configDir, name string, defaultBytes, corpusBytes int64, entries int) error {
+// StorageLedger accounts the whole product once, then tracks the bytes its
+// caller admits. A build that writes N files therefore walks the product once,
+// not N times. Bytes that another writer adds after the walk are invisible to
+// the ledger, so a caller must still re-account with CheckCurrent before it
+// makes the result visible.
+type StorageLedger struct {
+	a    *StorageAdmission
+	used int64
+}
+
+// Ledger walks the product once and refuses if the footprint plus reserve
+// already crosses the limit. reserve is checked, never counted: the ledger
+// counts only the bytes later admitted.
+func (a *StorageAdmission) Ledger(reserve int64) (*StorageLedger, error) {
+	if reserve < 0 {
+		return nil, fmt.Errorf("share %q: invalid negative storage reservation %d", a.name, reserve)
+	}
+	used, err := a.used()
+	if err != nil {
+		return nil, err
+	}
+	if used > math.MaxInt64-reserve {
+		return nil, fmt.Errorf("share %q: storage reservation overflows int64", a.name)
+	}
+	if err := a.checkNeeded(used + reserve); err != nil {
+		return nil, err
+	}
+	return &StorageLedger{a: a, used: used}, nil
+}
+
+// Admit refuses next bytes that would cross the limit. Otherwise it counts them
+// as written, before the caller writes them; a failed write leaves the count
+// high, which errs toward refusal.
+func (l *StorageLedger) Admit(next int64) error {
+	if next < 0 {
+		return fmt.Errorf("share %q: invalid negative storage reservation %d", l.a.name, next)
+	}
+	if l.used > math.MaxInt64-next {
+		return fmt.Errorf("share %q: storage reservation overflows int64", l.a.name)
+	}
+	if err := l.a.checkNeeded(l.used + next); err != nil {
+		return err
+	}
+	l.used += next
+	return nil
+}
+
+// Remaining returns the admissible bytes left by the ledger's count.
+func (l *StorageLedger) Remaining() (int64, error) {
+	if err := l.a.checkNeeded(l.used); err != nil {
+		return 0, err
+	}
+	return l.a.limit - l.used, nil
+}
+
+// GenerationReserve is the conservative corpus, index, page, and per-row
+// expansion a generation build reserves before it writes anything.
+func GenerationReserve(name string, corpusBytes int64, entries int) (int64, error) {
 	const (
 		expansion = int64(8)
 		base      = int64(64 << 10)
 		row       = int64(4 << 10)
 	)
 	if corpusBytes < 0 || entries < 0 || corpusBytes > (math.MaxInt64-base)/expansion {
-		return fmt.Errorf("share %q: generation reservation overflows int64", name)
+		return 0, fmt.Errorf("share %q: generation reservation overflows int64", name)
 	}
 	count := int64(entries)
 	reserve := corpusBytes*expansion + base
 	if count > (math.MaxInt64-reserve)/row {
-		return fmt.Errorf("share %q: generation reservation overflows int64", name)
+		return 0, fmt.Errorf("share %q: generation reservation overflows int64", name)
 	}
-	reserve += count * row
+	return reserve + count*row, nil
+}
+
+// AdmitGenerationBytes reserves conservative corpus, index, page, and per-row expansion.
+func AdmitGenerationBytes(roots storage.Roots, configDir, name string, defaultBytes, corpusBytes int64, entries int) error {
+	reserve, err := GenerationReserve(name, corpusBytes, entries)
+	if err != nil {
+		return err
+	}
 	a, err := NewStorageAdmission(roots, configDir, name, defaultBytes)
 	if err != nil {
 		return err
