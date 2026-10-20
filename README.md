@@ -163,8 +163,9 @@ command line also handles setup and maintenance.
 Mora also publishes an experimental [Agent Plugins 1.0 package](plugins/mora/README.md)
 that bundles the stdio MCP declaration with portable Agent Skills. It does not
 install Mora, grant source permissions, or sandbox the client. Enabling it may
-auto-start the local MCP server, so review the client's data policy and choose
-`mora config mcp-write-policy propose` or `readonly` before first use.
+auto-start the local MCP server, so review the client's data policy before first
+use. New installs start in `propose`; older installs without the setting are
+`open` until you run `mora config mcp-write-policy propose` or `readonly`.
 
 ## Check health and add a schedule
 
@@ -327,9 +328,15 @@ mora config mcp-write-policy propose
 mora config mcp-write-policy readonly
 ```
 
-- `open` lets the connected agent write and delete. This is the default.
+- `open` lets the connected agent write and delete.
 - `propose` stores write proposals for local approval. It refuses deletes.
+  New installs start here: `mora init` and `mora setup` write
+  `mcp_write_policy = "propose"` to a fresh `config.toml`.
 - `readonly` refuses writes and deletes.
+
+Installs created before this default changed keep working as they did: a
+`config.toml` without `mcp_write_policy` still resolves to `open`. Run
+`mora config mcp-write-policy propose` to opt in.
 
 Review proposals with `mora mcp proposals list`, `approve`, and `reject`.
 

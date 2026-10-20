@@ -50,6 +50,13 @@ func TestMain(m *testing.M) {
 			realHomeConfig.Store(&cfg)
 		}
 	}
+	// New installs write mcp_write_policy = "propose" (applyNewInstallDefaults).
+	// Most tests here run `mora init` in a fresh sandbox and then exercise the
+	// open-mode write path, so they keep the legacy unset policy, which resolves
+	// to open. new_install_write_policy_test.go restores the production value
+	// and pins both the new-install and the existing-install behavior.
+	productionNewInstallMCPWritePolicy = newInstallMCPWritePolicy
+	newInstallMCPWritePolicy = ""
 	if os.Getenv("MORA_TEST_REAL_FSYNC") != "1" {
 		atomicio.MarkerSyncFn = func(*os.File) error { return nil }
 		atomicio.SyncDirFn = func(string) error { return nil }

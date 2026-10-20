@@ -258,6 +258,7 @@ func cmdInit(ctx context.Context, args []string, stdout, stderr io.Writer, stdin
 		// stash so writeConfig persists the flag value even under MORA_VAULT.
 		cfg.ClearVaultOverride()
 	}
+	cfg = applyNewInstallDefaults(cfg)
 	if err := ensureMoraLayout(cfg, true); err != nil {
 		return err
 	}
@@ -291,6 +292,43 @@ func cmdInit(ctx context.Context, args []string, stdout, stderr io.Writer, stdin
 	// D-08: launch the interactive connector setup menu on a real TTY; on a
 	// non-TTY (scripts, CI, tests) runSetupMenu prints a hint and returns.
 	return runSetupMenu(ctx, cfg, stdin, stdout, stderr)
+}
+
+// newInstallMCPWritePolicy is the MCP write policy a brand-new install starts
+// with. Agent writes wait for local approval and deletes are refused until the
+// owner deliberately opens the policy with `mora config mcp-write-policy open`.
+//
+// It is a variable only so this package's TestMain can keep the pre-change
+// behavior for the hundreds of legacy tests that run `mora init` in a fresh
+// sandbox and then exercise open-mode writes (the same seam pattern TestMain
+// uses for atomicio's fsync barriers). new_install_write_policy_test.go puts
+// the production value back and pins it.
+var newInstallMCPWritePolicy = mcpWritePolicyPropose
+
+// applyNewInstallDefaults pins the durable defaults that differ for NEW installs.
+//
+// The MCP write policy is stored as `mcp_write_policy` in config.toml, and an
+// absent key resolves to `open` (mcp.NormalizeWritePolicy). Existing installs
+// rely on that: most of them never wrote the key. So the safer default is not a
+// flip of the code default, which would silently move every existing install to
+// propose. Instead first-run setup writes `propose` EXPLICITLY, and only when
+// nothing says an install already exists: no config.toml, no vault marker, and
+// no index database. An existing config without the key keeps resolving to
+// `open`, exactly as before, and an explicit value is never touched.
+func applyNewInstallDefaults(cfg Config) Config {
+	if cfg.MCPWritePolicy != "" || configFileExists(cfg) {
+		return cfg
+	}
+	if _, present, err := readVaultMarker(cfg); err != nil || present {
+		return cfg
+	}
+	if _, err := os.Stat(dbPath(cfg)); !errors.Is(err, os.ErrNotExist) {
+		return cfg
+	}
+	if newInstallMCPWritePolicy != "" {
+		cfg.MCPWritePolicy = newInstallMCPWritePolicy
+	}
+	return cfg
 }
 
 // ensureMoraLayout creates and verifies the non-destructive local foundation
