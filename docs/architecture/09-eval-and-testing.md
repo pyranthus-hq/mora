@@ -97,7 +97,7 @@ The generated render→`parseMemory` property proves only what the production me
 
 `RequiredRedTeamRows` is a version-pinned manifest, and `TestScorerRedTeam` **iterates the manifest, not a list of subtests** — a row with no registered baseline is a named failure, so deleting a subtest cannot delete the failure it was there to raise. The rows include the degenerate baselines (empty, every-question, copy-the-input, synthetic gibberish), the mutants that corrupt the **real** engine output (identity flip, unsupported citation, citation-span move, daily citation blanking), the mutants that corrupt the **gold** (owner flip, authored→quoted, removed source), three **invariance** rows that fail if the score *moves* (duplicate noise, input order), the **gate-disable sweep** that binds all seventeen production exclusion gates to a scored consequence, and the **oracle** — without which every negative row is satisfiable by a scorer that unconditionally fails, and an eval broken in the safe direction is still broken.
 
-`sabotage-ledger.json` is a self-contained synthetic world carrying every defect class. The exam **never reads** `eval/sabotage/gibberish-2026-07/`: that tree carries real names on a public repo.
+`sabotage-ledger.json` is a self-contained synthetic world carrying every defect class. The exam **never reads** `eval/sabotage/gibberish-2026-07/`: that tree is a frozen real incident (its names were replaced with placeholders), so it stays out of the scored exam.
 
 ### Current-surface scoreboard
 

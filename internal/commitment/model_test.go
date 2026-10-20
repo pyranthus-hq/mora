@@ -98,10 +98,10 @@ func TestAcceptanceAndReportedActorPolicies(t *testing.T) {
 		t.Fatalf("counterparty actor=%+v,%v", actor, attributed)
 	}
 	alex := NamedActor{Atom: Atom{Kind: "address", Value: "alex@example.com"}, Name: "Alex Chen"}
-	if actor, attributed := ReportedActor("Alex will send it to Adit", other, self, []NamedActor{alex}, []string{"Adit Karode"}); !attributed || actor == nil || actor.Value != "alex@example.com" {
+	if actor, attributed := ReportedActor("Alex will send it to Adit", other, self, []NamedActor{alex}, []string{"Adit Varden"}); !attributed || actor == nil || actor.Value != "alex@example.com" {
 		t.Fatalf("beneficiary actor=%+v,%v", actor, attributed)
 	}
-	if actor, attributed := ReportedActor("Alex will send it", other, self, []NamedActor{alex}, []string{"Adit Karode"}); !attributed || actor != nil {
+	if actor, attributed := ReportedActor("Alex will send it", other, self, []NamedActor{alex}, []string{"Adit Varden"}); !attributed || actor != nil {
 		t.Fatalf("third-party actor=%+v,%v", actor, attributed)
 	}
 	if actor, attributed := ReportedActor("No attribution", other, self, []NamedActor{sam}, nil); attributed || actor != nil {

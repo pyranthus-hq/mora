@@ -470,7 +470,7 @@ func TestValidateMoraDesignatedRequirementAcceptsCodesignOutput(t *testing.T) {
 	// This is the newline-terminated shape emitted by `codesign -d -r-` for the
 	// real signed Mora.app. Keep it literal: a fixture without the final newline
 	// missed the v0.12.1/v0.12.2 self-update failure.
-	actual := `Executable=/Users/adit/Applications/Mora.app/Contents/MacOS/mora
+	actual := `Executable=/Users/alex/Applications/Mora.app/Contents/MacOS/mora
 designated => identifier "com.pyranthus.mora" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = VS8M5VJBZ5
 `
 	if err := validateMoraDesignatedRequirement(actual); err != nil {
