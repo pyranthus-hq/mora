@@ -40,6 +40,10 @@
     "status": "empty"
   },
   {
+    "path": "companion events",
+    "status": "parses"
+  },
+  {
     "path": "companion expose",
     "status": "parses"
   },

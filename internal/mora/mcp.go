@@ -10,6 +10,7 @@ import (
 	"time"
 
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 func strArg(args map[string]any, key, def string) string     { return mcppkg.StringArg(args, key, def) }
@@ -364,6 +365,7 @@ func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 // adds the sibling "receipt" key — never a second "excerpt" field, so every
 // caller keeps reading the body from memory.text.
 func mcpReadMemoryResult(cfg Config, m Memory, args map[string]any) map[string]any {
+	m = memory.WithProvenance(m)
 	if !boundedReadRequested(args) {
 		return addDispositionTargetReceipt(map[string]any{"memory": m, "health": compactHealthOf(cfg, time.Now())}, m)
 	}
@@ -417,6 +419,10 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	if err == nil && len(res) > 0 {
 		res, err = decorateDispositions(cfg, res, now)
 	}
+	// Say where each row came from. The kind is derived here, at the boundary
+	// where the rows leave for an agent, so no writer can set it and nothing is
+	// written back to the vault.
+	res = withProvenance(res)
 	recordMCPUsage(ctx, cfg, usageEvent{Tool: "search_memory", Query: query, Scope: scope, Results: len(res), Millis: time.Since(start).Milliseconds()})
 	if err != nil {
 		recordMCPPhases(ctx, retrieval, 0)
@@ -554,7 +560,11 @@ func mcpListMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 	assemblyStarted := time.Now()
 	// decorateBrowseRecency runs BEFORE snippetMemories, which drops Meta — the
 	// source of event_start/source_created_at (#218).
-	budgeted, dropped := budgetSearchResults(snippetMemories(decorateBrowseRecency(res), ""), searchMemoryResultsBudgetBytes)
+	// Say where each row came from BEFORE the byte budget, on the same
+	// boundary search_memory uses, so the field is paid for rather than added
+	// to an already-full payload. A browse row is the same claim a search row
+	// is, and an agent reading a list has the same reason to know who wrote it.
+	budgeted, dropped := budgetSearchResults(withProvenance(snippetMemories(decorateBrowseRecency(res), "")), searchMemoryResultsBudgetBytes)
 	out := map[string]any{"memories": budgeted, "health": compactHealthOf(cfg, now)}
 	if filter.Source != "" {
 		out["source"] = filter.Source
@@ -602,6 +612,10 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 		return nil, err
 	}
 	assemblyStarted := time.Now()
+	// The hybrid path already points a row at a newer related record from its
+	// deeper pool. The current-state and no-query paths do not, so run the same
+	// conservative pass over what this call retrieved. It only adds pointers.
+	items = annotateLaterRelated(items)
 	text := buildContext(cfg, items, charBudget, query != "")
 	resultCount := len(items)
 	if intent == contextIntentOpenLoops {

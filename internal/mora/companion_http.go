@@ -37,6 +37,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1002,6 +1003,12 @@ func companionTodayCandidates(d Digest) []companion.TodayItem {
 		if item.ID == "" || seen[item.ID] {
 			return
 		}
+		if companionTodayNoise(item, kind) {
+			// Consume the id so a later changed-pass cannot resurrect a dropped call ping
+			// or a self-sent question as Inbox.
+			seen[item.ID] = true
+			return
+		}
 		seen[item.ID] = true
 		converted, ok := companionTodayItem(item, kind)
 		if !ok {
@@ -1010,12 +1017,28 @@ func companionTodayCandidates(d Digest) []companion.TodayItem {
 		out = append(out, converted)
 	}
 	for _, item := range d.Urgent {
-		add(item, companion.ItemNeedsAttention)
+		if _, _, ok := companionTodayCommitment(item); ok {
+			add(item, companion.ItemCommitment)
+		} else {
+			add(item, companion.ItemNeedsAttention)
+		}
 	}
 	for _, section := range d.Sections {
 		for _, item := range section.Items {
 			if len(item.Obligations) > 0 {
 				add(item, companion.ItemCommitment)
+			}
+		}
+	}
+	// The actionable-service lane lands as needs_attention, ahead of the generic
+	// changed pass. It is NOT a commitment (no obligation was minted, and a portal
+	// task has no reply that could close one) and it is NOT urgent (that shelf stays
+	// human-only), but a dated directive the owner must act on outranks "something
+	// changed" — and the changed pass would drop it outright once it is 48h old.
+	for _, section := range d.Sections {
+		for _, item := range section.Items {
+			if item.Lane == laneActionableService {
+				add(item, companion.ItemNeedsAttention)
 			}
 		}
 	}
@@ -1025,6 +1048,60 @@ func companionTodayCandidates(d Digest) []companion.TodayItem {
 		}
 	}
 	return out
+}
+
+// companionTodayNoise is the Today keep-out list for rows that are true in the
+// vault and false as a phone card: FaceTime/"on a call" presence, a question the
+// owner already sent, and stale changed-mail that survived the digest cap.
+func companionTodayNoise(item DigestItem, kind companion.TodayItemKind) bool {
+	title := strings.ToLower(strings.TrimSpace(item.Title))
+	blob := title + " " + strings.ToLower(item.Snippet)
+	if strings.Contains(blob, "on a call") || strings.Contains(blob, "facetime") || strings.Contains(blob, "is calling") {
+		return true
+	}
+	if kind == companion.ItemCommitment || kind == companion.ItemNeedsAttention {
+		if strings.HasSuffix(title, "?") && len(title) < 80 {
+			if item.Direction == commitOwedBySelf || title == "what is the status?" {
+				return true
+			}
+			if item.Direction == commitOwedByCounterparty {
+				return false
+			}
+			promised := false
+			for _, ob := range item.Obligations {
+				s := strings.ToLower(ob.Summary)
+				if strings.Contains(s, "will") || strings.Contains(s, "send") || strings.Contains(s, "promise") {
+					promised = true
+					break
+				}
+			}
+			if !promised {
+				return true
+			}
+		}
+	}
+	if kind == companion.ItemChanged {
+		if item.Lane == laneActionableService {
+			return false // an unresolved dated directive is not stale changed-mail.
+		}
+		if t, ok := parseCompanionOccurredAt(item.CreatedAt); ok && time.Since(t) > 48*time.Hour {
+			return true
+		}
+	}
+	return false
+}
+
+func parseCompanionOccurredAt(raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339, time.RFC3339Nano} {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func companionTodayItem(item DigestItem, kind companion.TodayItemKind) (companion.TodayItem, bool) {
@@ -1038,7 +1115,7 @@ func companionTodayItem(item DigestItem, kind companion.TodayItemKind) (companio
 	if title == "" {
 		title = "(untitled)"
 	}
-	return companion.TodayItem{
+	out := companion.TodayItem{
 		ID:    companionOpaqueID("itm_", item.ID),
 		Kind:  kind,
 		Title: companionText(title, companion.MaxTitleBytes),
@@ -1048,8 +1125,55 @@ func companionTodayItem(item DigestItem, kind companion.TodayItemKind) (companio
 			Source:     source,
 			OccurredAt: companionOptionalStamp(item.CreatedAt),
 			Snippet:    companionText(item.Snippet, companion.MaxSnippetBytes),
+			DeepLink:   companionTodayDeepLink(item),
 		}},
-	}, true
+	}
+	if cid, dir, ok := companionTodayCommitment(item); ok {
+		out.CommitmentID = cid
+		out.Direction = dir
+	}
+	return out, true
+}
+
+// companionTodayCommitment returns the exact Teach target only when the
+// artifact carries one identified obligation. Zero or many obligations stay
+// omitted so a client cannot guess which commitment a row refers to.
+func companionTodayCommitment(item DigestItem) (id, direction string, ok bool) {
+	if len(item.Obligations) != 1 {
+		return "", "", false
+	}
+	ob := item.Obligations[0]
+	id = strings.TrimSpace(ob.CommitmentID)
+	if id == "" {
+		return "", "", false
+	}
+	direction = strings.TrimSpace(string(ob.Direction))
+	if direction == "" {
+		direction = strings.TrimSpace(string(item.Direction))
+	}
+	return id, direction, true
+}
+
+// companionTodayDeepLink copies a known permalink from the digest identity.
+// Gmail uses the same #all/<id> form as evidenceDeepLink. Missing or
+// non-permalinkable sources return empty rather than a search URL.
+func companionTodayDeepLink(item DigestItem) string {
+	source := companionSourceKey(item.Source)
+	if source != "gmail" && !strings.HasPrefix(source, "gmail:") {
+		return ""
+	}
+	id := strings.TrimSpace(item.ID)
+	if slash := strings.LastIndexByte(id, '/'); slash >= 0 {
+		id = id[slash+1:]
+	}
+	if at := strings.IndexByte(id, '@'); at >= 0 {
+		id = id[:at]
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
+	}
+	return companionText("https://mail.google.com/mail/#all/"+url.PathEscape(id), companion.MaxDeepLinkBytes)
 }
 
 // companionItemBody prefers the commitment summary when the item carries one:

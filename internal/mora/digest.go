@@ -246,7 +246,7 @@ func buildDigest(cfg Config, now time.Time, opts briefOpts) (Digest, error) {
 	}
 	if gated {
 		commitmentsByMemory = dailyCommitmentInventory(commitmentsByMemory, now)
-		byInstance = filterDigestInstancesByCommitments(byInstance, commitmentsByMemory)
+		byInstance = filterDigestInstancesByCommitments(byInstance, commitmentsByMemory, now)
 	}
 	var d Digest
 	if opts.sinceHours > 0 {
@@ -322,7 +322,12 @@ func dailyCommitmentInventory(inventory map[string][]Commitment, at time.Time) m
 // gate before urgency, recurrence collapse, ranking, and caps. Filtering after
 // assembly would let non-obligation artifacts consume a scarce slot and suppress a
 // real commitment.
-func filterDigestInstancesByCommitments(byInstance map[string][]Memory, inventory map[string][]Commitment) map[string][]Memory {
+//
+// The actionable-service lane is the ONE non-commitment admission: a dated,
+// recipient-actionable notice from a service sender (isActionableServiceMail)
+// survives without minting a synthetic obligation, because the commitment gate
+// would otherwise delete it before anything downstream could judge it.
+func filterDigestInstancesByCommitments(byInstance map[string][]Memory, inventory map[string][]Commitment, now time.Time) map[string][]Memory {
 	out := make(map[string][]Memory, len(byInstance))
 	for key, memories := range byInstance {
 		for _, m := range memories {
@@ -332,6 +337,9 @@ func filterDigestInstancesByCommitments(byInstance map[string][]Memory, inventor
 					eligible = true
 					break
 				}
+			}
+			if !eligible {
+				eligible = isActionableServiceMail(m, now)
 			}
 			if eligible {
 				out[key] = append(out[key], m)
@@ -634,7 +642,10 @@ func memoryIsServiceOnly(m Memory) bool {
 // (budgetSourceFloor), which needs no fragile subscription classifier.
 func isLowSignalItem(m Memory, change string, now time.Time) bool {
 	if memoryIsServiceOnly(m) {
-		return true
+		// The actionable-service lane is the exception: a dated directive the owner
+		// must act on is the opposite of collapse-eligible noise, even though every
+		// sender on it is a service identity.
+		return !isActionableServiceMail(m, now)
 	}
 	if m.Type == "event" && change == "updated" && itemOccurredAt(m).Before(now) {
 		return true // stale past event bumped by a re-sync.
@@ -692,6 +703,7 @@ func buildWindowDigest(cfg Config, now time.Time, sinceHours, perSourceCap int, 
 			}
 			it := digestItemFor(cfg, m, key, "")
 			it.LowSignal = isLowSignalItem(m, "", now)
+			stampActionableServiceLane(&it, m, now)
 			tis = append(tis, tsItem{item: it, ts: ts, sal: memSal[m.ID], series: recurringSeriesID(m)})
 		}
 		if len(tis) == 0 {
@@ -890,7 +902,7 @@ func advanceBrief(cfg Config, now time.Time, opts briefOpts, budgetChars int, br
 	}
 	if gated {
 		commitmentsByMemory = dailyCommitmentInventory(commitmentsByMemory, now)
-		byInstance = filterDigestInstancesByCommitments(byInstance, commitmentsByMemory)
+		byInstance = filterDigestInstancesByCommitments(byInstance, commitmentsByMemory, now)
 	}
 	d, plans, err := buildDeltaDigest(cfg, now, opts, perSourceCap, byInstance, memSal)
 	if err != nil {
@@ -910,6 +922,13 @@ func advanceBrief(cfg Config, now time.Time, opts briefOpts, budgetChars int, br
 		path = p
 	}
 
+	// An actionable-service notice is a STANDING task, not news: its content never
+	// changes while the portal task stays undone, so advancing its watermark would
+	// show it once and then bury it for the rest of its deadline window. Holding it
+	// out of the commit keeps it un-baselined, so every run re-reads it as new until
+	// its deadline leaves the window and the lane stops admitting it. (Issue: the
+	// lane's whole point is a dated task that survives being seen.)
+	held := actionableServiceHoldIDs(byInstance, now)
 	for _, plan := range plans {
 		committed, intended := map[string]bool{}, map[string]bool{}
 		sectionRendered := false
@@ -920,6 +939,9 @@ func advanceBrief(cfg Config, now time.Time, opts briefOpts, budgetChars int, br
 			if survived[lineID] {
 				sectionRendered = true
 				for _, m := range members {
+					if held[m] {
+						continue
+					}
 					committed[m] = true
 				}
 			}
@@ -932,6 +954,9 @@ func advanceBrief(cfg Config, now time.Time, opts briefOpts, budgetChars int, br
 			// still acknowledges its folded low-signal tail (receipts stay collapsed,
 			// they do not re-surface every day).
 			for _, id := range plan.countOnlyIDs {
+				if held[id] {
+					continue
+				}
 				committed[id] = true
 			}
 		}
@@ -1015,6 +1040,7 @@ func deltaSectionItems(cfg Config, delta briefDelta, mems []Memory, now time.Tim
 		}
 		it := digestItemFor(cfg, c.m, key, c.change)
 		it.LowSignal = isLowSignalItem(c.m, c.change, now)
+		stampActionableServiceLane(&it, c.m, now)
 		tis = append(tis, tsItem{item: it, ts: ts, sal: memSal[c.m.ID], series: recurringSeriesID(c.m)})
 	}
 

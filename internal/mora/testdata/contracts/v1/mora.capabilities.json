@@ -899,6 +899,14 @@
     {
       "json_contract": "result",
       "kind": "subcommand",
+      "path": "companion events",
+      "payload": "mora.companion.events",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
       "path": "companion health",
       "payload": "mora.companion.health",
       "platform": "all",
@@ -1588,6 +1596,10 @@
     },
     {
       "name": "mora.companion.context",
+      "version": 1
+    },
+    {
+      "name": "mora.companion.events",
       "version": 1
     },
     {

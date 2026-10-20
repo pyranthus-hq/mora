@@ -451,6 +451,23 @@ func TestTodayItemMustCarryEvidence(t *testing.T) {
 	}
 }
 
+func TestTodayItemAcceptsExactCommitmentTarget(t *testing.T) {
+	tp := TodayFixture()
+	tp.Items[0].CommitmentID = "commit:v1:57d6e4c291dcc309eac941689ad8ba19e6e6ea0a50b6cbb2e21243df2544b18e"
+	tp.Items[0].Direction = "owed_by_self"
+	if err := tp.Validate(); err != nil {
+		t.Fatalf("exact Teach target must validate: %v", err)
+	}
+}
+
+func TestTodayItemRejectsUnknownDirection(t *testing.T) {
+	tp := TodayFixture()
+	tp.Items[0].Direction = "owed_by_nobody"
+	if err := tp.Validate(); err == nil {
+		t.Fatal("unknown direction must not validate")
+	}
+}
+
 func TestContextBundleIsNotAnAnswer(t *testing.T) {
 	// The bundle's shape is the guarantee: it has evidence, gaps and a
 	// synthesis prompt, and no field in which a model answer could hide.

@@ -1431,3 +1431,120 @@ func TestCompanionUsageNamesServe(t *testing.T) {
 		t.Fatalf("an unknown companion subcommand does not name serve: %v", err)
 	}
 }
+
+func TestCompanionTodayDropsCallPresenceAndSelfQuestions(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	stale := time.Now().Add(-5 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	d := Digest{
+		Sections: []DigestSection{{
+			Items: []DigestItem{
+				{
+					ID:        "gmail_thread/status",
+					Title:     "What is the status?",
+					Source:    "gmail",
+					CreatedAt: now,
+					Direction: commitOwedBySelf,
+					Obligations: []DigestObligation{{
+						Summary:   "What is the status?",
+						Direction: commitOwedBySelf,
+					}},
+				},
+				{
+					ID:        "imessage_chat/call",
+					Title:     "Adit / Abhijit - on a call",
+					Source:    "imessage",
+					CreatedAt: stale,
+					Snippet:   "on a call",
+				},
+				{
+					ID:        "gmail_thread/real",
+					Title:     "Send approval note",
+					Source:    "gmail",
+					CreatedAt: now,
+					Direction: commitOwedBySelf,
+					Obligations: []DigestObligation{{
+						CommitmentID: "commit:v1:57d6e4c291dcc309eac941689ad8ba19e6e6ea0a50b6cbb2e21243df2544b18e",
+						Summary:      "Send approval note",
+						Direction:    commitOwedBySelf,
+					}},
+				},
+			},
+		}},
+	}
+	got := companionTodayCandidates(d)
+	if len(got) != 1 {
+		t.Fatalf("got %d items %#v", len(got), got)
+	}
+	if !strings.Contains(got[0].Title, "Send approval") {
+		t.Fatalf("kept %q", got[0].Title)
+	}
+	if got[0].CommitmentID != "commit:v1:57d6e4c291dcc309eac941689ad8ba19e6e6ea0a50b6cbb2e21243df2544b18e" {
+		t.Fatalf("commitment_id = %q", got[0].CommitmentID)
+	}
+	if got[0].Direction != string(commitOwedBySelf) {
+		t.Fatalf("direction = %q", got[0].Direction)
+	}
+	if got[0].Evidence[0].DeepLink != "https://mail.google.com/mail/#all/real" {
+		t.Fatalf("deep_link = %q", got[0].Evidence[0].DeepLink)
+	}
+	proj := companion.NewTodayProjection()
+	proj.GeneratedAt = now
+	proj.Health = companion.HealthSummary{State: companion.HealthHealthy, Policy: companion.PolicyOpen}
+	proj.Items = got
+	if err := proj.Validate(); err != nil {
+		t.Fatalf("today projection with commitment_id: %v", err)
+	}
+}
+
+func TestCompanionTodayClassifiesUrgentObligationAsCommitment(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	d := Digest{
+		Urgent: []DigestItem{{
+			ID:        "gmail_thread/invoice",
+			Title:     "Re: Invoice for July 2026",
+			Source:    "gmail",
+			CreatedAt: now,
+			Direction: commitOwedByCounterparty,
+			Obligations: []DigestObligation{{
+				CommitmentID: "commit:v1:57d6e4c291dcc309eac941689ad8ba19e6e6ea0a50b6cbb2e21243df2544b18e",
+				Summary:      "I will send you a meeting invite in a separate email.",
+				Direction:    commitOwedByCounterparty,
+			}},
+		}},
+	}
+	got := companionTodayCandidates(d)
+	if len(got) != 1 {
+		t.Fatalf("got %d items", len(got))
+	}
+	if got[0].Kind != companion.ItemCommitment {
+		t.Fatalf("kind = %q, want commitment", got[0].Kind)
+	}
+	if got[0].CommitmentID == "" {
+		t.Fatal("urgent obligation must carry commitment_id")
+	}
+}
+
+func TestCompanionTodayOmitsAmbiguousCommitmentTargets(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	d := Digest{
+		Sections: []DigestSection{{
+			Items: []DigestItem{{
+				ID:        "gmail_thread/multi",
+				Title:     "Two promises",
+				Source:    "gmail",
+				CreatedAt: now,
+				Obligations: []DigestObligation{
+					{CommitmentID: "commit:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Summary: "one", Direction: commitOwedBySelf},
+					{CommitmentID: "commit:v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Summary: "two", Direction: commitOwedBySelf},
+				},
+			}},
+		}},
+	}
+	got := companionTodayCandidates(d)
+	if len(got) != 1 {
+		t.Fatalf("got %d items", len(got))
+	}
+	if got[0].CommitmentID != "" {
+		t.Fatalf("ambiguous obligations must omit commitment_id, got %q", got[0].CommitmentID)
+	}
+}

@@ -554,6 +554,17 @@
       }
     },
     {
+      "name": "companion events",
+      "paths": ["companion events"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCompanionEventsEmpty", "TestCompanionEventsParsingAndFiltering"], "reason": "The command is driven against an isolated vault and returns the versioned events projection, including range filtering and attendee-derived dossier metadata."},
+        "json": {"status": "test", "tests": ["TestCompanionEventsEmpty", "TestCompanionEventsParsingAndFiltering"], "reason": "The event document is decoded through the shared companion envelope helper and its schema/version are asserted."},
+        "state": {"status": "test", "tests": ["TestCompanionEventsParsingAndFiltering"], "reason": "Synthetic calendar memories prove the operation clock, two-hour lookback, day range, attendee parsing, and external-attendee derivation."},
+        "error": {"status": "test", "tests": ["TestCompanionEventsFlagsValidation"], "reason": "Invalid day bounds, unexpected positionals, and missing machine-output mode are rejected before calendar reads."},
+        "refusal": {"status": "test", "tests": ["TestCompanionEventsFlagsValidation"], "reason": "The command requires --json and refuses --days values outside 1 through 90."}
+      }
+    },
+    {
       "name": "first-run",
       "paths": [
         "doctor check",

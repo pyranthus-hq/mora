@@ -95,6 +95,11 @@ const (
 	MaxSynthesisPromptBytes = 8 << 10
 	MaxGapBytes             = 200
 	MaxDeepLinkBytes        = 512
+	// MaxCommitmentIDBytes is larger than MaxIDBytes: Teach targets are
+	// `commit:v1:` plus a 64-hex digest (~75 bytes). Today item ids stay
+	// opaque and 64-capped; this bound is only for the optional exact
+	// commitment_id used to close or dismiss a validated obligation.
+	MaxCommitmentIDBytes = 96
 
 	MaxTodayItems       = 3
 	MaxEvidencePerItem  = 5
@@ -837,12 +842,18 @@ func validateEvidence(field string, rows []Evidence, max int) error {
 
 // TodayItem is one of at most MaxTodayItems things the phone shows. Every item
 // carries its own evidence: a claim without evidence is not shippable.
+//
+// CommitmentID and Direction are omitted unless the kernel has exactly one
+// current obligation on the artifact. A needs_attention row without a
+// CommitmentID is not a Teach target: Review the evidence; do not close it.
 type TodayItem struct {
-	ID       string        `json:"id"`
-	Kind     TodayItemKind `json:"kind"`
-	Title    string        `json:"title"`
-	Body     string        `json:"body,omitempty"`
-	Evidence []Evidence    `json:"evidence"`
+	ID           string        `json:"id"`
+	Kind         TodayItemKind `json:"kind"`
+	Title        string        `json:"title"`
+	Body         string        `json:"body,omitempty"`
+	CommitmentID string        `json:"commitment_id,omitempty"`
+	Direction    string        `json:"direction,omitempty"`
+	Evidence     []Evidence    `json:"evidence"`
 }
 
 // TodayProjection is GET /v1/companion/today.
@@ -913,6 +924,17 @@ func (t *TodayProjection) Validate() error {
 		}
 		if err := validateText(field+".body", item.Body, MaxBodyBytes, false); err != nil {
 			return err
+		}
+		if item.CommitmentID != "" {
+			if err := validateText(field+".commitment_id", item.CommitmentID, MaxCommitmentIDBytes, true); err != nil {
+				return err
+			}
+			if !opaqueRunes(item.CommitmentID) {
+				return errf(CodeInvalidValue, field+".commitment_id", "identifier carries characters outside [A-Za-z0-9_.:-]")
+			}
+		}
+		if item.Direction != "" && item.Direction != "owed_by_self" && item.Direction != "owed_by_counterparty" {
+			return errf(CodeInvalidValue, field+".direction", "direction must be owed_by_self or owed_by_counterparty")
 		}
 		if err := validateEvidence(field+".evidence", item.Evidence, MaxEvidencePerItem); err != nil {
 			return err

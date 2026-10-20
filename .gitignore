@@ -36,3 +36,4 @@ internal/mora/live_qrels.tsv
 # rapid writes minimized counterexamples here on failure; they are reproduced from the
 # printed replay seed and promoted into the committed ledger, never committed raw.
 testdata/rapid/
+internal/mora/authority_cases.jsonl

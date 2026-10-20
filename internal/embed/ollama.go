@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -23,6 +24,35 @@ import (
 // zero-egress thesis holds (no data leaves the machine). If an opted-in daemon is
 // unreachable, resolution FAILS CLOSED (errEmbedderUnavailable) — it never silently
 // substitutes the static embedder (HEALTH-12, D2); callers propagate the error.
+
+// defaultEmbedMaxRunes bounds what is sent to the daemon. Embedding models have a
+// fixed context (nomic-embed-text: 2048 tokens) and answer HTTP 500 past it, which
+// aborts a whole rebuild on the first oversized document. Measured 2026-09-18
+// against nomic-embed-text: vault prose succeeded at 8000 runes and failed at
+// 10000; token-dense filler failed at 6000. The default sits below the lowest
+// observed failure so content type cannot push a document over.
+//
+// This TRUNCATES: text past the bound is not embedded, so the vector represents a
+// document's opening rather than its whole, and a token-dense document is cut
+// further still by the shrink-and-retry loop in Embed. Chunk-and-pool would embed
+// all of it and is the better fix; this is the bound that makes indexing complete.
+const defaultEmbedMaxRunes = 4000
+
+// embedMinRunes is the floor for the shrink-and-retry loop. Below this a 500 is
+// not a length problem, so the error is reported rather than retried away.
+const embedMinRunes = 128
+
+// embedMaxRunes is the first length attempted, honoring MORA_OLLAMA_MAX_RUNES so
+// the starting point can be tuned for a different model without a rebuild. A
+// value that does not parse, or is not positive, falls back to the default.
+func embedMaxRunes() int {
+	if v := os.Getenv("MORA_OLLAMA_MAX_RUNES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultEmbedMaxRunes
+}
 
 // ollamaEmbedder calls a local Ollama daemon's /api/embeddings endpoint.
 type OllamaEmbedder struct {
@@ -88,27 +118,61 @@ func (e OllamaEmbedder) Digest() string { return e.digest }
 // rebuild still exited 0 (the recorded incident, HEALTH-12). A real error lets the
 // rebuild tx roll back to the last good index (index.go's deferred tx.Rollback).
 func (e OllamaEmbedder) Embed(text string) ([]float32, error) {
+	r := []rune(text)
+	if n := embedMaxRunes(); len(r) > n {
+		r = r[:n]
+	}
+	// The daemon's limit is in TOKENS, and tokens-per-rune varies by an order of
+	// magnitude across prose, source code, base64 and CJK. No fixed rune bound is
+	// safe for every document, so an over-long input is discovered rather than
+	// predicted: halve and retry until it fits or the floor is reached. Bounded
+	// attempts, and a failure at the floor is still a failure (HEALTH-12).
+	for {
+		vec, status, err := e.embedOnce(string(r))
+		if err != nil {
+			return nil, err
+		}
+		if status == http.StatusOK {
+			return vec, nil
+		}
+		if status != http.StatusInternalServerError || len(r) <= embedMinRunes {
+			return nil, fmt.Errorf("%w: /api/embeddings returned HTTP %d for a %d-rune input", errEmbedderUnavailable, status, len(r))
+		}
+		r = r[:len(r)/2]
+	}
+}
+
+// embedOnce performs a single request. It returns the vector on 200, and
+// otherwise the status code, so the caller can decide whether shrinking helps.
+func (e OllamaEmbedder) embedOnce(text string) ([]float32, int, error) {
 	reqBody, _ := json.Marshal(map[string]string{"model": e.model, "prompt": text})
 	resp, err := e.client.Post(e.baseURL+"/api/embeddings", "application/json", bytes.NewReader(reqBody))
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", errEmbedderUnavailable, err)
+		return nil, 0, fmt.Errorf("%w: %v", errEmbedderUnavailable, err)
 	}
 	defer resp.Body.Close()
+	// A non-200 decodes into an absent "embedding" field, which previously
+	// surfaced as "returned an empty vector" and sent the operator to check a
+	// daemon that was healthy. Report the status the daemon actually sent.
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16)) // drain so the connection is reused
+		return nil, resp.StatusCode, nil
+	}
 	var out struct {
 		Embedding []float64 `json:"embedding"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("%w: decoding /api/embeddings: %v", errEmbedderUnavailable, err)
+		return nil, 0, fmt.Errorf("%w: decoding /api/embeddings: %v", errEmbedderUnavailable, err)
 	}
 	if len(out.Embedding) == 0 {
-		return nil, fmt.Errorf("%w: /api/embeddings returned an empty vector", errEmbedderUnavailable)
+		return nil, 0, fmt.Errorf("%w: /api/embeddings returned an empty vector", errEmbedderUnavailable)
 	}
 	vec := make([]float32, len(out.Embedding))
 	for i, v := range out.Embedding {
 		vec[i] = float32(v)
 	}
 	normalize(vec) // RRF/cosine assume unit vectors; Ollama returns unnormalized
-	return vec, nil
+	return vec, http.StatusOK, nil
 }
 
 // isLoopbackURL reports whether the URL's host is localhost or a loopback IP, so

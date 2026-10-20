@@ -1,0 +1,1 @@
+{"id": "broken", "kind": "stale-vs-correction", "query": "widget pilot", "surfaces": ["search_memory"], "prefer": [], "demote": [], "must_not_assert": [], "provenance": {"mem_widget_pilot": "probably-authored"}, "label_source": "synthetic", "evidence": [], "notes": "an unknown provenance label must be refused"}

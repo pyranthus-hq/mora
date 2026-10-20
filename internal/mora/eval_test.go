@@ -216,6 +216,7 @@ func reportEval(t *testing.T, ctx context.Context, cfg Config, db *sql.DB, queri
 	var recallQids []string
 	ftsR5, ftsMRR := map[string]float64{}, map[string]float64{}
 	hybR5, hybR10, hybMRR := map[string]float64{}, map[string]float64{}, map[string]float64{}
+	hybR10Emitted := map[string]float64{}
 	negCount := 0
 
 	t.Logf("=== T2 per-query attribution (k_fts=%d, k_hyb=%d, tracePool=%d) ===", kFTS, kHybrid, tracePoolDepth)
@@ -241,6 +242,8 @@ func reportEval(t *testing.T, ctx context.Context, cfg Config, db *sql.DB, queri
 		hybR5[qid] = recallAtK(hybRanked, rel[qid], kFTS)
 		hybR10[qid] = recallAtK(hybRanked, rel[qid], kHybrid)
 		hybMRR[qid] = reciprocalRank(hybRanked, rel[qid])
+		emitted := emittedIDs(out, kHybrid)
+		hybR10Emitted[qid] = recallAtK(emitted, rel[qid], len(emitted))
 
 		m := meta[qid]
 		for _, g := range golds {
@@ -275,6 +278,17 @@ func reportEval(t *testing.T, ctx context.Context, cfg Config, db *sql.DB, queri
 		meanBy(recallQids, func(q string) float64 { return hybR5[q] }), kHybrid,
 		meanBy(recallQids, func(q string) float64 { return hybR10[q] }), kHybrid,
 		meanBy(recallQids, func(q string) float64 { return hybMRR[q] }))
+	// Issue #237 accounting: the line above counts TOP-LEVEL rows only, but
+	// context_memory also returns every cluster head's folded members in its
+	// top-level "corroborating" array (mcp.go's mcpContextMemory). A gold that
+	// clustering folded is returned to the caller and scored as a miss above.
+	// Reported beside, never instead: a corroborating ref carries {id, title,
+	// source, created_at} and NO text, so the record is named, not quoted —
+	// the true answerable recall lies between these two lines. There is
+	// deliberately no corroborating MRR: the emitted array is a flat union
+	// across rows and carries no rank to score.
+	t.Logf("context_memory (hybrid, incl. corroborating refs — named, not quoted)   Recall@%d=%.3f", kHybrid,
+		meanBy(recallQids, func(q string) float64 { return hybR10Emitted[q] }))
 	return evalReport{histFTS: histFTS, histHybrid: histHybrid, scored: len(recallQids), negCount: negCount}
 }
 
@@ -312,6 +326,39 @@ func bucketHistogram(t *testing.T, ctx context.Context, cfg Config, queries map[
 }
 
 // ---- small helpers ----
+// emittedIDs returns every memory id context_memory actually HANDS BACK for a
+// result set truncated to rowLimit rows: the rows themselves, plus the folded
+// cluster members each row carries in its Corroborating refs (Issue #237,
+// surfaced by mcpContextMemory under a top-level "corroborating" array).
+// Deduped, rows first. Positions past rowLimit are rows the surface never
+// emitted, so their corroborating refs are not emitted either.
+//
+// The returned slice is NOT a ranking — the payload's corroborating array is a
+// flat union with no per-row position — so it is fit for recall and nothing
+// that depends on order.
+func emittedIDs(rows []Memory, rowLimit int) []string {
+	if rowLimit > len(rows) {
+		rowLimit = len(rows)
+	}
+	seen := make(map[string]bool, rowLimit*2)
+	out := make([]string, 0, rowLimit*2)
+	add := func(id string) {
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	for _, m := range rows[:rowLimit] {
+		add(m.ID)
+	}
+	for _, m := range rows[:rowLimit] {
+		for _, c := range m.Corroborating {
+			add(c.ID)
+		}
+	}
+	return out
+}
 
 func openRO(t *testing.T, cfg Config) *sql.DB {
 	t.Helper()

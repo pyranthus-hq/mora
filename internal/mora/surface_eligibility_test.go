@@ -20,7 +20,7 @@ func TestFilterDigestInstancesByCommitmentsGatesBeforeAssembly(t *testing.T) {
 		"duplicate": {{State: commitOpen, DuplicateOf: "canonical"}},
 	}
 
-	got := filterDigestInstancesByCommitments(instances, inventory)
+	got := filterDigestInstancesByCommitments(instances, inventory, time.Date(2026, 7, 23, 18, 0, 0, 0, time.UTC))
 	if len(got["gmail"]) != 1 || got["gmail"][0].ID != "open" {
 		t.Fatalf("filtered instances = %+v, want only the open canonical commitment artifact", got)
 	}

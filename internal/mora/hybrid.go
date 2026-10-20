@@ -317,6 +317,15 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 		ids = mmrRerank(ids, fused, vecByID, *mp)
 	}
 
+	// Optional cross-encoder rerank of the fused window, after MMR and before the
+	// top-k truncate. Default-OFF (configRerank(cfg)==nil => skipped => byte-identical
+	// to the order MMR left behind). applyRerank is a pure permutation of the head
+	// window that fails open to its input, so a reranker that errors, times out, or
+	// answers partially is indistinguishable here from one that is switched off.
+	if rr := configRerank(cfg); rr != nil {
+		ids = applyRerank(ctx, db, rr, query, ids)
+	}
+
 	// Issue #237 — corroborating-record clustering runs HERE: post-fusion,
 	// pre-truncate. Hydrating the full fused ranking (not just the top `limit`)
 	// is what makes the freed-slot backfill possible — a cluster's non-head

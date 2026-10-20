@@ -1088,6 +1088,13 @@
       "payload": "mora.companion.context"
     },
     {
+      "path": "companion events",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.companion.events"
+    },
+    {
       "path": "doctor check",
       "kind": "subcommand",
       "platform": "all",
