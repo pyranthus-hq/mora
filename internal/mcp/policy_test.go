@@ -6,8 +6,12 @@ import (
 )
 
 func TestNormalizeWritePolicy(t *testing.T) {
-	if got := NormalizeWritePolicy(""); got != WritePolicyOpen {
-		t.Fatalf("empty=%q", got)
+	// An unset policy must fail safe: it resolves to propose, never open.
+	if DefaultWritePolicy != WritePolicyPropose {
+		t.Fatalf("DefaultWritePolicy=%q, want propose", DefaultWritePolicy)
+	}
+	if got := NormalizeWritePolicy(""); got != WritePolicyPropose {
+		t.Fatalf("empty=%q, want propose", got)
 	}
 	for _, p := range []string{WritePolicyOpen, WritePolicyPropose, WritePolicyReadonly, "future"} {
 		if got := NormalizeWritePolicy(p); got != p {

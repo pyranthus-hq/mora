@@ -573,13 +573,15 @@ mora config mcp-write-policy readonly
 - `open` allows `write_memory` and `delete_memory`.
 - `propose` stores write proposals in the local config directory. It does not
   add them to the vault before approval. It refuses deletes. This is the
-  default for new installs: first-run `mora init` or `mora setup` writes
-  `mcp_write_policy = "propose"` to the new `config.toml`.
+  default whenever `config.toml` has no `mcp_write_policy` line, however Mora
+  was started (`mora init`, `mora setup`, or `mora mcp serve` on a machine that
+  was never initialized).
 - `readonly` refuses writes and deletes.
 
-An install created before this default changed has no `mcp_write_policy` line
-and still resolves to `open`. Nothing migrates it; set a policy explicitly to
-change it.
+An explicit policy is never changed. An install created before this default
+changed that never set a policy has no `mcp_write_policy` line, so after
+upgrading it runs in `propose` too. Run `mora config mcp-write-policy open` to
+go back to direct writes.
 
 Review staged writes locally:
 

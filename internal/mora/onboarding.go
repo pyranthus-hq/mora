@@ -256,7 +256,6 @@ func cmdSetup(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		if !allowLayout {
 			return errors.New("setup local layout is pending; rerun with --local-layout")
 		}
-		cfg = applyNewInstallDefaults(cfg)
 		if err := ensureMoraLayout(cfg, false); err != nil {
 			return fmt.Errorf("setup local layout: %w", err)
 		}
