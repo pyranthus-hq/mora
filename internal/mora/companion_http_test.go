@@ -218,7 +218,7 @@ func TestLoopbackHTTPResponsesAreByteForByteUnchanged(t *testing.T) {
 		wantType                        string
 	}{
 		{
-			name: "landing page", method: http.MethodGet, path: "/",
+			name: "landing page", method: http.MethodGet, path: "/", token: "tok",
 			wantCode: http.StatusOK, wantBody: landing, wantType: "text/html; charset=utf-8",
 		},
 		{
@@ -674,8 +674,10 @@ func TestCompanionMeetingPrepWithARealEventBuildsNoIndex(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeMemory(cfg, eventMemFull("evt", "Acme sync", now.Add(2*time.Hour).Format(time.RFC3339),
-		map[string]string{"riya@a.com": "Riya", "me@a.com": "Me"}, "me@a.com", "riya@a.com")); err != nil {
+	event := eventMemFull("evt", "Acme sync", now.Add(2*time.Hour).Format(time.RFC3339),
+		map[string]string{"riya@a.com": "Riya", "me@a.com": "Me"}, "me@a.com", "riya@a.com")
+	event.Scope = "global"
+	if err := writeMemory(cfg, event); err != nil {
 		t.Fatal(err)
 	}
 	// Build the index once so the event is real and resolvable, then take it
