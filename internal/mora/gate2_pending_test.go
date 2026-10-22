@@ -502,7 +502,7 @@ func TestPendingPathsMatchListingOnAllPlatforms(t *testing.T) {
 		t.Fatal(err)
 	}
 	set := cleanPathSet(files)
-	if !set[cleanVaultPath(memoryPath(cfg, m))] {
-		t.Fatalf("memoryPath %q not found in the cleaned listing set", memoryPath(cfg, m))
+	if !set[cleanVaultPath(mustMemoryPath(t, cfg, m))] {
+		t.Fatalf("memoryPath %q not found in the cleaned listing set", mustMemoryPath(t, cfg, m))
 	}
 }

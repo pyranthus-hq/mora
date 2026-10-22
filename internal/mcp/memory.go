@@ -6,6 +6,7 @@ import (
 
 	"github.com/pyranthus-hq/mora/internal/disposition"
 	"github.com/pyranthus-hq/mora/internal/memory"
+	"github.com/pyranthus-hq/mora/internal/memoryfile"
 )
 
 type DecisionBuilder func(createdAt, asOf, durability, flipConditions, reviewBy string) *memory.DecisionValidity
@@ -38,6 +39,9 @@ func MemoryFromArgs(args map[string]any, now time.Time, decision DecisionBuilder
 		typ = "correction"
 	}
 	m := memory.Memory{Scope: StringArg(args, "scope", "global"), Type: typ, Title: StringArg(args, "title", ""), Text: StringArg(args, "text", ""), Source: StringArg(args, "source", "mcp"), CreatedAt: now.Format(time.RFC3339)}
+	if err := memoryfile.ValidateWriteScope(m.Scope); err != nil {
+		return memory.Memory{}, err
+	}
 	if target != "" {
 		m.Meta = map[string]any{"target": target}
 		if value != "" {

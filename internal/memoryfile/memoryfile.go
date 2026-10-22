@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/pyranthus-hq/mora/internal/config"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
@@ -224,11 +225,39 @@ func MemoriesRoot(cfg config.Config) string { return filepath.Join(cfg.VaultDir,
 // SourcesRoot returns the connector-source tree root.
 func SourcesRoot(cfg config.Config) string { return filepath.Join(cfg.VaultDir, "sources") }
 
-// Path returns the canonical path for a document.
-func Path(cfg config.Config, m Document) string {
+// ValidateWriteScope rejects scopes that cannot safely name a memory directory.
+func ValidateWriteScope(scope string) error {
+	if filepath.IsAbs(scope) || strings.Contains(scope, `\`) {
+		return fmt.Errorf("invalid write scope %q", scope)
+	}
+	for _, r := range scope {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return fmt.Errorf("invalid write scope %q", scope)
+		}
+	}
+	for _, part := range strings.Split(strings.ReplaceAll(scope, ":", "/"), "/") {
+		if part == "" || part == "." || part == ".." {
+			return fmt.Errorf("invalid write scope %q", scope)
+		}
+	}
+	return nil
+}
+
+// Path returns the canonical path for a document, contained in the memories tree.
+// This is a lexical check; it does not resolve symlinks within the vault.
+func Path(cfg config.Config, m Document) (string, error) {
+	if err := ValidateWriteScope(m.Scope); err != nil {
+		return "", err
+	}
 	scopePath := strings.ReplaceAll(m.Scope, ":", string(os.PathSeparator))
 	scopePath = strings.ReplaceAll(scopePath, "/", string(os.PathSeparator))
-	return filepath.Join(MemoriesRoot(cfg), scopePath, OSSafeBase(m.ID)+".md")
+	root := MemoriesRoot(cfg)
+	path := filepath.Join(root, scopePath, OSSafeBase(m.ID)+".md")
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("memory destination %q escapes memories root %q", path, root)
+	}
+	return path, nil
 }
 
 // OSSafeBase converts a memory ID (or an already-SafeFilename'd stable key) into

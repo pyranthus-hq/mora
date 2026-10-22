@@ -847,7 +847,10 @@ func createMemory(ctx context.Context, cfg Config, m Memory, opts ...createOptio
 		if err != nil {
 			return Memory{}, pendingOp{}, err
 		}
-		path := memoryPath(cfg, m)
+		path, err := memoryPath(cfg, m)
+		if err != nil {
+			return Memory{}, pendingOp{}, err
+		}
 		op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindWrite, Path: path})
 		if merr != nil {
 			// errIndexUnmarkable: abort BEFORE a single vault byte changes, so a

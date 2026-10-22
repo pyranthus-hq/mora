@@ -119,7 +119,7 @@ func TestMCPDeleteMemorySurfacesRebuildFailure(t *testing.T) {
 	if !strings.Contains(err.Error(), "mora index rebuild") {
 		t.Fatalf("error must tell the agent/user the recovery step (`mora index rebuild`), got: %v", err)
 	}
-	if _, ferr := os.Stat(memoryPath(cfg, doomed)); !os.IsNotExist(ferr) {
+	if _, ferr := os.Stat(mustMemoryPath(t, cfg, doomed)); !os.IsNotExist(ferr) {
 		t.Fatalf("the file deletion itself succeeded and must stick (stat err: %v)", ferr)
 	}
 }
