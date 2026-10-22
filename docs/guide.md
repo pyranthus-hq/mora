@@ -593,7 +593,8 @@ mora serve http
 ```
 
 The server binds only to `127.0.0.1:7777`. It creates a bearer token in
-`<config_dir>/http.json` with file mode `0600`. Data routes need the token. Mora
+`<config_dir>/http.json` with file mode `0600`. Every route, including the landing page at `/`, needs
+the token except `/healthz`. Mora
 checks the Host header, sends no CORS allow header, and leaves `delete_memory`
 out of the generic `/call` allowlist.
 

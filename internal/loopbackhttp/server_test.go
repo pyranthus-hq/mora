@@ -57,7 +57,7 @@ func TestHostAuthAndNoCORS(t *testing.T) {
 			t.Errorf("bad host %s: %d", host, w.Code)
 		}
 	}
-	for _, path := range []string{"/", "/healthz"} {
+	for _, path := range []string{"/healthz"} {
 		if w := request(t, s, "GET", path, "", "", "127.0.0.1:7777"); w.Code != 200 {
 			t.Errorf("public %s=%d", path, w.Code)
 		}
@@ -129,7 +129,7 @@ func TestHealthAndLanding(t *testing.T) {
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"error": "cfg"`) {
 		t.Fatalf("health=%d %s", w.Code, w.Body)
 	}
-	w = request(t, s, "GET", "/", "", "", "127.0.0.1:7777")
+	w = request(t, s, "GET", "/", "", "Bearer tok", "127.0.0.1:7777")
 	if !strings.Contains(w.Body.String(), `window.__MORA_TOKEN="tok"`) || w.Header().Get("Content-Type") != "text/html; charset=utf-8" {
 		t.Fatalf("landing=%s", w.Body)
 	}
@@ -251,5 +251,27 @@ func TestJSONResponseFormat(t *testing.T) {
 	w := request(t, testServer(nil), "POST", "/think", "{}", "Bearer tok", "127.0.0.1:7777")
 	if w.Header().Get("Content-Type") != "application/json; charset=utf-8" || !strings.HasSuffix(w.Body.String(), "\n") || !json.Valid(w.Body.Bytes()) {
 		t.Fatalf("headers/body=%v %q", w.Header(), w.Body.String())
+	}
+}
+
+func TestLandingRequiresAuthentication(t *testing.T) {
+	s := testServer(nil)
+	s.token = "synthetic-landing-secret"
+	for _, auth := range []string{"", "Bearer wrong"} {
+		w := request(t, s, "GET", "/", "", auth, "127.0.0.1:7777")
+		if w.Code != 401 {
+			t.Errorf("auth %q: status=%d", auth, w.Code)
+		}
+		if strings.Contains(w.Body.String(), s.token) || strings.Contains(w.Body.String(), "__MORA_TOKEN") {
+			t.Fatalf("credential in unauthorized response: %s", w.Body)
+		}
+	}
+	w := request(t, s, "GET", "/", "", "Bearer "+s.token, "127.0.0.1:7777")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `window.__MORA_TOKEN="`+s.token+`"`) {
+		t.Fatalf("authorized landing=%d %s", w.Code, w.Body)
+	}
+	w = request(t, s, "GET", "/healthz", "", "", "127.0.0.1:7777")
+	if w.Code != 200 {
+		t.Fatalf("public health=%d", w.Code)
 	}
 }
