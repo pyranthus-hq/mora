@@ -323,6 +323,10 @@ func retentionCandidatePath(cfg Config, candidate retentionCandidate) (string, e
 	return path, nil
 }
 
+func retentionCompactID(reportID, candidateID string) string {
+	return "retained_" + sha256Hex([]byte(reportID + ":" + candidateID))[:16]
+}
+
 func validateRetentionReport(cfg Config, report retentionReport) ([]string, error) {
 	var targets []string
 	for _, candidate := range report.Candidates {
@@ -339,6 +343,15 @@ func validateRetentionReport(cfg Config, report retentionReport) ([]string, erro
 		}
 		if sha256Hex(raw) != candidate.ContentSHA {
 			return nil, fmt.Errorf("candidate %q changed since report; generate a new preview", candidate.ID)
+		}
+		if candidate.Decision.Action == "compact" {
+			m, err := parseMemoryBytes(path, raw)
+			if err != nil {
+				return nil, fmt.Errorf("compact candidate %q: %w", candidate.ID, err)
+			}
+			if _, err := memoryPath(cfg, Memory{ID: retentionCompactID(report.ReportID, candidate.ID), Scope: m.Scope}); err != nil {
+				return nil, fmt.Errorf("compact candidate %q destination: %w", candidate.ID, err)
+			}
 		}
 		if candidate.Decision.Action != "keep" {
 			targets = append(targets, candidate.ID)
@@ -426,7 +439,7 @@ func executeRetentionReport(ctx context.Context, cfg Config, reportID string, no
 			}
 			receipt.ChangedIDs = append(receipt.ChangedIDs, candidate.ID)
 		case "compact":
-			compactID := "retained_" + sha256Hex([]byte(report.ReportID + ":" + candidate.ID))[:16]
+			compactID := retentionCompactID(report.ReportID, candidate.ID)
 			compact := Memory{ID: compactID, Scope: m.Scope, Type: "durable", Title: "Retained: " + m.Title, Text: strings.TrimSpace(decision.Summary), Source: "retention:" + report.ReportID, CreatedAt: stamp, ContentHash: ContentHash(decision.Summary), Meta: map[string]any{"retention_source_ids": []string{candidate.ID}, "retention_manifest_id": manifestID}}
 			if err := writeMemory(cfg, compact); err != nil {
 				return retentionExecutionReceipt{}, err

@@ -70,6 +70,9 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	if err != nil {
 		return err
 	}
+	if *scope == "" {
+		*scope = "global"
+	}
 	m := Memory{Scope: *scope, Type: *mtype, Title: *title, Tags: genericutil.SplitCSV(*tags), Source: *source, CreatedAt: time.Now().Format(time.RFC3339), Text: *text}
 	if *target != "" {
 		m.Meta = map[string]any{"target": *target}

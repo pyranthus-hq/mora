@@ -39,6 +39,9 @@ func MemoryFromArgs(args map[string]any, now time.Time, decision DecisionBuilder
 		typ = "correction"
 	}
 	m := memory.Memory{Scope: StringArg(args, "scope", "global"), Type: typ, Title: StringArg(args, "title", ""), Text: StringArg(args, "text", ""), Source: StringArg(args, "source", "mcp"), CreatedAt: now.Format(time.RFC3339)}
+	if m.Scope == "" {
+		m.Scope = "global"
+	}
 	if err := memoryfile.ValidateWriteScope(m.Scope); err != nil {
 		return memory.Memory{}, err
 	}
