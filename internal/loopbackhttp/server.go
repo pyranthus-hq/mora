@@ -326,7 +326,6 @@ func (s *Server) Serve(ctx context.Context, stdout io.Writer) error {
 		_ = hs.Shutdown(c)
 	}()
 	fmt.Fprintf(stdout, "mora serve http listening on http://%s/  (loopback only)\n", addr)
-	fmt.Fprintf(stdout, "  token: %s\n", s.token)
 	fmt.Fprintln(stdout, "  retrieve the bearer token with: mora serve http --print-token")
 	if err := hs.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err

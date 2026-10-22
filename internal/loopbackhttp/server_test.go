@@ -215,7 +215,7 @@ func TestServePortGuardAndCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	var out bytes.Buffer
-	s := New(Options{Token: "tok", Port: p, Version: "v", Dispatch: func(context.Context, string, map[string]any) (any, error) { return nil, nil }, AllowCall: func(string) bool { return true }, Health: func() Health { return Health{OK: true, State: "healthy"} }})
+	s := New(Options{Token: "synthetic-banner-secret", Port: p, Version: "v", Dispatch: func(context.Context, string, map[string]any) (any, error) { return nil, nil }, AllowCall: func(string) bool { return true }, Health: func() Health { return Health{OK: true, State: "healthy"} }})
 	go func() { done <- s.Serve(ctx, &out) }()
 	deadline := time.Now().Add(time.Second)
 	for {
@@ -237,6 +237,9 @@ func TestServePortGuardAndCancellation(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("shutdown timeout")
+	}
+	if strings.Contains(out.String(), "synthetic-banner-secret") || strings.Contains(out.String(), "token:") || !strings.Contains(out.String(), "mora serve http --print-token") {
+		t.Fatalf("unsafe or incomplete startup banner: %s", &out)
 	}
 }
 func TestOversizeCallBodyRejected(t *testing.T) {
