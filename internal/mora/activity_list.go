@@ -65,14 +65,21 @@ func activityWindowBounds(now time.Time, hours int) (from, to string) {
 		now.UTC().Format(time.RFC3339Nano)
 }
 
-func selectActivityEvents(items []Memory, now time.Time, hours, limit int) []Memory {
-	selected := activity.SelectRange(items, now.Add(-time.Duration(hours)*time.Hour), now)
+func selectActivityEvents(items []Memory, now time.Time, hours, limit int, options ...activity.Options) []Memory {
+	var opts activity.Options
+	if len(options) > 0 {
+		opts = options[0]
+	}
+	selected := activity.SelectRangeWithOptions(items, now.Add(-time.Duration(hours)*time.Hour), now, opts)
 	if limit > 0 && len(selected) > limit {
 		selected = selected[:limit]
 	}
 	out := make([]Memory, 0, len(selected))
 	for _, row := range selected {
 		m := row.Memory
+		if opts.IncludeAuthoredWrites {
+			m.EventSource = string(row.Projection.EventSource)
+		}
 		m.EventAt = row.Projection.EventAt.UTC().Format(time.RFC3339Nano)
 		m.Participation = row.Projection.Participation
 		m.Automated = &memory.NullableBool{Value: row.Projection.Automated}
@@ -83,7 +90,7 @@ func selectActivityEvents(items []Memory, now time.Time, hours, limit int) []Mem
 
 // listActivityMemories keeps source eligibility ahead of the event sort/limit.
 // The default path deliberately remains the legacy write-time browse contract.
-func listActivityMemories(cfg Config, scope string, limit int, filter searchFilters, hours int, now time.Time) ([]Memory, error) {
+func listActivityMemories(cfg Config, scope string, limit int, filter searchFilters, hours int, now time.Time, options ...activity.Options) ([]Memory, error) {
 	readLimit := limit
 	if hours > 0 {
 		if limit < 1 || limit > 1000 {
@@ -95,5 +102,5 @@ func listActivityMemories(cfg Config, scope string, limit int, filter searchFilt
 	if err != nil || hours == 0 {
 		return rows, err
 	}
-	return recentSourceEvents(rows, now, hours, limit), nil
+	return recentSourceEvents(rows, now, hours, limit, options...), nil
 }
