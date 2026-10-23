@@ -20,8 +20,8 @@ the user's.
 | `internal/eywa/eywa.go` | Kind registration (`eywa_fact`, type `fact`, provider `eywa`), endpoint validation (HTTPS, or HTTP only for loopback), and the typed errors: `AuthError` (declares `ConnectorUnauthorized`), `RateLimitError` and `UnavailableError` (declare `ConnectorUnavailable`), `ForbiddenError`, `ToolError`, `RPCError`. |
 | `internal/eywa/client.go` | OAuth2 `client_credentials` token (HTTP Basic client auth, optional scope, cached until a minute before expiry), and a minimal MCP client over streamable HTTP: `initialize` → `notifications/initialized` → `tools/list`, JSON or `text/event-stream` answers, `Mcp-Session-Id` and `MCP-Protocol-Version` headers, one re-initialize on an expired session, one token refresh on a 401, one bounded wait for a short `Retry-After`. Tool names are resolved by their bare name, so a gateway prefix such as `<target>___changes_since` works. |
 | `internal/eywa/pull.go` | The `memory.Fetcher` over `changes_since`, the change → version resolution, the read-only record rendering, and `MapFact`. |
-| `internal/eywa/push.go` | `BuildUpdate` (text, lineage, idempotency key), `Remember`, `GetWriteStatus`, and `FinalStatus`. |
-| `internal/mora/eywa.go` | Composition: secret from the environment, `connect eywa`, `sync eywa`, the vault lookup of known versions, and the `mora eywa push/preview/status` commands with their preview, confirmation, and state-dir push ledger. |
+| `internal/eywa/push.go` | `BuildUpdate` (text, lineage, idempotency key) and its refusal reasons (`RefusalCode`), `Remember`, `GetWriteStatus`, and `FinalStatus`. |
+| `internal/mora/eywa.go` | Composition: secret from the environment, `connect eywa`, `sync eywa` with the failure-aware cursor, the vault lookup of known versions, and the `mora eywa push/preview/status` commands with their preview, confirmation, destination-scoped push ledger and ledger lock. |
 
 `internal/eywa` imports only `internal/memory` and `golang.org/x/text` (already
 a direct dependency) for NFC normalization. It never imports `internal/mora`.
@@ -59,6 +59,14 @@ flowchart LR
   walked. Later syncs resume from that cursor. A cursor the service rejects
   (`-32602`) maps to `memory.ErrIncrementalCursorExpired`, and the loop falls
   back to a fresh walk.
+- **Cursor on failure.** The position advances past a page only when every
+  record on it was written. `eywaPageTracker` wraps the fetcher and remembers
+  the position each page was requested from. When a fact lookup or a vault
+  write fails, both the stored `IncrementalCursor` and any mid-walk checkpoint
+  are pinned to the start of the first page that had a failure, so the next
+  sync fetches that page again and retries the failed change. Records that
+  were written on that page are rewritten unchanged (content-hash skip). The
+  run still exits non-zero and records the failure in `last_error`.
 - **Resolution.** The feed carries ids, never values. A `fact.admitted` change
   is resolved with `get_memory(fact_id)` for the current version and its full
   lineage (source URI, content hash, signer, excerpt), then
@@ -111,14 +119,38 @@ flowchart LR
   lineage check verifies exactly what was sent. No signer is claimed (the token
   identity is the writer) and no effective date is set. The idempotency key
   combines the content hash and memory id, so a retried send is not duplicated.
+- **Local refusals.** A memory `BuildUpdate` refuses (empty, over 8000
+  UTF-16 units, or no agent id) is listed in the preview and never sent. It is
+  still a failure of the run: the receipt lists it with `status: refused` and
+  a reason code (`empty_text`, `too_long`, `missing_agent_id`), counts it in
+  `refused` and `failed`, and the command exits non-zero. The receipt carries
+  ids and reason codes only, never text.
 - **Consent.** `mora eywa preview --scope <scope>` prints the full text of
   every update and sends nothing. `mora eywa push` prints the list (id, title,
   source URI, content hash, length) before the confirmation; a non-interactive
   run without `--yes` is refused (`confirmEywaPushFn`, the same seam pattern as
   `confirmSharePushFn`).
-- **Outcome.** Each `write_id` is recorded in
-  `<StateDir>/eywa/push-eywa.json` (ids, hashes, statuses; never text) before
-  polling starts. `get_memory(write_id)` is polled until every write has a final
+- **Destination-scoped ledger.** `<StateDir>/eywa/push-eywa.json` (version 2)
+  keeps one ledger per destination, keyed by a hash of the normalized endpoint
+  (lower-case scheme and host, no default port, no trailing slash), the client
+  id, the agent id and the topic. Only the configured destination's records
+  decide what is unchanged and which write ids are polled, so reconfiguring
+  any of the four sends again and never polls old write ids against the new
+  service. A ledger from before destinations were tracked does not say where
+  its records went: they are kept under `legacy_records`, never suppress a
+  send, and are never polled. `mora eywa status` counts them, with other
+  destinations' records, as not re-checked.
+- **Ledger lock.** Push and status take the same interprocess lock
+  (`<StateDir>/eywa/push.lock`, an OS lock on a `leasefile` guard file) around
+  every ledger transaction: load, sends, polls and saves. Push previews and
+  confirms without the lock, then takes it, re-reads the ledger, and sends only
+  confirmed updates that are still pending with the confirmed content, so an
+  overlapping push neither loses write ids nor sends twice. A crashed process
+  releases the lock with its file handle, so a guard file left behind is never
+  a stale lock. A live holder makes the caller wait up to 30 seconds, then fail
+  with a message naming the other command.
+- **Outcome.** Each `write_id` is recorded in the destination's ledger (ids,
+  hashes, statuses; never text) before polling starts. `get_memory(write_id)` is polled until every write has a final
   status (`admitted`, `admitted-unchanged`, `in_review`, `held`, `rejected`,
   `no-fact`) or `--wait` elapses. `in_review` and `held` are reported as the
   service's governance decisions. `mora eywa status` re-checks writes still
@@ -136,7 +168,9 @@ flowchart LR
 | MCP 403, or JSON-RPC Forbidden on session calls or `changes_since` | `AuthError` (agent revoked, unknown, or no scope) | `remember` Forbidden → `AuthError` naming the topic |
 | HTTP 429 or JSON-RPC `-32002` | waits once when `Retry-After` ≤ 30 s, else `RateLimitError` (with the delay) → `connector.unavailable` | same; sent updates stay recorded |
 | 5xx or `-32004` | retried once after a short wait, then `UnavailableError` → `connector.unavailable` | same; unsent updates stay pending |
-| Forbidden or tool error on one lookup | per-record failure: counted as a dropped item, named in `last_error`, run reported incomplete | a tool error (for example `GuardrailBlocked`) fails that update only and the command exits non-zero |
+| Forbidden or tool error on one lookup | per-record failure: counted as a dropped item, named in `last_error`, run reported incomplete, cursor held at the failed page | a tool error (for example `GuardrailBlocked`) fails that update only and the command exits non-zero |
+| Update refused locally (`BuildUpdate`) | — | listed with a reason code, counted in `refused` and `failed`, never sent, command exits non-zero |
+| Another push or status holds the ledger | — | waits up to 30 s, then fails with a clear message; nothing is sent |
 
 No failure is swallowed (honest-snapshot rule): partial pulls and partial
 pushes both exit non-zero and say what happened.
@@ -159,4 +193,6 @@ replaced versions keeping earlier lineage, per-record failures, typed
 401/403/429 handling with `Retry-After`, cursor fallback, lineage hashing (NFC,
 trim), and the `in_review` result. `internal/mora/eywa_source_test.go` drives
 `connect`, `sync`, `enable`, `preview`, `push`, and `status` through `Run`
-against a second fake. Everything runs offline with no credentials.
+against a second fake, including a record that fails once and succeeds on the
+retry, reconfiguring the destination after a push, a legacy ledger,
+overlapping pushes, the lock timeout, and all-refused and mixed batches. Everything runs offline with no credentials.

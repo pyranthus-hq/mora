@@ -2,13 +2,17 @@ package mora
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,6 +24,7 @@ import (
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"github.com/pyranthus-hq/mora/internal/eywa"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
+	"github.com/pyranthus-hq/mora/internal/leasefile"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
@@ -304,16 +309,87 @@ type eywaPushRecord struct {
 	CheckedAt   string `json:"checked_at,omitempty"`
 }
 
+// eywaPushDestination is the ledger of one destination: one service endpoint,
+// OAuth client, agent and topic. A record only suppresses a re-send, and a
+// write id is only polled, against the destination it was written to.
+type eywaPushDestination struct {
+	Endpoint string                    `json:"endpoint"`
+	ClientID string                    `json:"client_id"`
+	AgentID  string                    `json:"agent_id"`
+	Topic    string                    `json:"topic"`
+	Records  map[string]eywaPushRecord `json:"records"`
+}
+
+const eywaPushStateVersion = 2
+
 type eywaPushState struct {
-	Records map[string]eywaPushRecord `json:"records"`
+	Version      int                             `json:"version"`
+	Destinations map[string]*eywaPushDestination `json:"destinations"`
+	// Legacy holds records from a ledger written before destinations were
+	// tracked. Their destination is unknown, so they never suppress a send and
+	// are never polled.
+	Legacy map[string]eywaPushRecord `json:"legacy_records,omitempty"`
+}
+
+// normalizeEywaEndpoint is the comparable form of an endpoint URL: lower-case
+// scheme and host, no default port, no trailing slash, no fragment.
+func normalizeEywaEndpoint(raw string) string {
+	raw = strings.TrimSpace(raw)
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return raw
+	}
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	defaultPort := (scheme == "https" && port == "443") || (scheme == "http" && port == "80")
+	if port != "" && !defaultPort {
+		host = net.JoinHostPort(host, port)
+	} else if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	path := strings.TrimRight(u.EscapedPath(), "/")
+	out := scheme + "://" + host + path
+	if u.RawQuery != "" {
+		out += "?" + u.RawQuery
+	}
+	return out
+}
+
+// eywaDestinationKey binds ledger records to (endpoint, client id, agent id,
+// topic). Reconfiguring any of them selects a different, empty ledger.
+func eywaDestinationKey(e *memory.EywaSettings) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		normalizeEywaEndpoint(e.Endpoint), strings.TrimSpace(e.ClientID), strings.TrimSpace(e.AgentID), strings.TrimSpace(e.Topic),
+	}, "\x00")))
+	return hex.EncodeToString(sum[:16])
+}
+
+// destination returns the ledger for the source's configured destination,
+// creating it when absent.
+func (st *eywaPushState) destination(s Source) *eywaPushDestination {
+	key := eywaDestinationKey(s.Eywa)
+	d := st.Destinations[key]
+	if d == nil {
+		d = &eywaPushDestination{Endpoint: normalizeEywaEndpoint(s.Eywa.Endpoint), ClientID: s.Eywa.ClientID,
+			AgentID: s.Eywa.AgentID, Topic: s.Eywa.Topic, Records: map[string]eywaPushRecord{}}
+		st.Destinations[key] = d
+	}
+	if d.Records == nil {
+		d.Records = map[string]eywaPushRecord{}
+	}
+	return d
 }
 
 func eywaPushStatePath(cfg Config) string {
 	return filepath.Join(cfg.StateDir, "eywa", "push-"+eywaSourceName+".json")
 }
 
+// loadEywaPushState reads the ledger. A ledger written before destinations
+// were tracked has its records moved to Legacy: Mora cannot tell which
+// destination they went to, so they are kept for the record but never trusted.
 func loadEywaPushState(cfg Config) (eywaPushState, error) {
-	st := eywaPushState{Records: map[string]eywaPushRecord{}}
+	st := eywaPushState{Version: eywaPushStateVersion, Destinations: map[string]*eywaPushDestination{}}
 	b, err := os.ReadFile(eywaPushStatePath(cfg))
 	if errors.Is(err, fs.ErrNotExist) {
 		return st, nil
@@ -321,16 +397,35 @@ func loadEywaPushState(cfg Config) (eywaPushState, error) {
 	if err != nil {
 		return st, err
 	}
-	if err := json.Unmarshal(b, &st); err != nil {
+	var raw struct {
+		eywaPushState
+		Records map[string]eywaPushRecord `json:"records"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
 		return st, fmt.Errorf("eywa push state %s is unreadable: %w", eywaPushStatePath(cfg), err)
 	}
-	if st.Records == nil {
-		st.Records = map[string]eywaPushRecord{}
+	if raw.Version > eywaPushStateVersion {
+		return st, fmt.Errorf("eywa push state %s was written by a newer Mora (version %d); upgrade Mora", eywaPushStatePath(cfg), raw.Version)
+	}
+	for k, d := range raw.Destinations {
+		if d != nil {
+			st.Destinations[k] = d
+		}
+	}
+	st.Legacy = raw.Legacy
+	if len(raw.Records) > 0 {
+		if st.Legacy == nil {
+			st.Legacy = map[string]eywaPushRecord{}
+		}
+		for id, rec := range raw.Records {
+			st.Legacy[id] = rec
+		}
 	}
 	return st, nil
 }
 
 func saveEywaPushState(cfg Config, st eywaPushState) error {
+	st.Version = eywaPushStateVersion
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return err
@@ -342,12 +437,67 @@ func saveEywaPushState(cfg Config, st eywaPushState) error {
 	return atomicio.Write(path, append(b, '\n'), 0o600)
 }
 
+// Test seams for the ledger lock.
+var (
+	eywaPushLockTimeout = 30 * time.Second
+	eywaPushLockPoll    = 50 * time.Millisecond
+)
+
+func eywaPushLockPath(cfg Config) string {
+	return filepath.Join(cfg.StateDir, "eywa", "push.lock")
+}
+
+// acquireEywaPushLock serializes every ledger transaction (load, sends,
+// polls, saves) across processes. Push and status take the same lock.
+// Ownership is the kernel lock on an open handle, so a crashed process
+// releases it and a guard file left behind is never a stale lock. A live
+// holder makes the caller wait up to eywaPushLockTimeout, then fail.
+func acquireEywaPushLock(ctx context.Context, cfg Config) (release func(), err error) {
+	lockPath := eywaPushLockPath(cfg)
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		return nil, err
+	}
+	guardPath := leasefile.GuardPath(lockPath)
+	if err := os.MkdirAll(filepath.Dir(guardPath), 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(guardPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(eywaPushLockTimeout)
+	for {
+		lerr := leasefile.TryLock(f)
+		if lerr == nil {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			_ = f.Close()
+			return nil, fmt.Errorf("another `mora eywa push` or `mora eywa status` is using the push ledger; gave up after %s — retry when it finishes (%v)", eywaPushLockTimeout, lerr)
+		}
+		if err := sleepCtx(ctx, eywaPushLockPoll); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+	}
+	released := false
+	return func() {
+		if released {
+			return
+		}
+		released = true
+		_ = leasefile.Unlock(f)
+		_ = f.Close()
+	}, nil
+}
+
 // eywaPushItem is one memory in a push plan.
 type eywaPushItem struct {
-	Update  eywa.Update
-	Memory  Memory
-	State   string // "new", "changed", "unchanged", "refused"
-	Refusal string
+	Update     eywa.Update
+	Memory     Memory
+	State      string // "new", "changed", "unchanged", "refused"
+	Refusal    string
+	RefusalKey string // reason code for a refusal; ids and codes only reach receipts
 }
 
 type eywaPushPlan struct {
@@ -366,18 +516,29 @@ func (p eywaPushPlan) pending() []eywaPushItem {
 	return out
 }
 
+func (p eywaPushPlan) refused() []eywaPushItem {
+	var out []eywaPushItem
+	for _, it := range p.Items {
+		if it.State == "refused" {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
 // buildEywaPushPlan selects one scope of authored memories exactly as
 // `mora share` does: memories/ only, never connector records (so pulled facts
 // can never echo back), never tombstones or hidden Teach revisions, never
-// pending MCP proposals (they are outside the vault until approved).
-func buildEywaPushPlan(cfg Config, s Source, scope string) (eywaPushPlan, error) {
+// pending MCP proposals (they are outside the vault until approved). Only the
+// configured destination's ledger decides what is unchanged.
+func buildEywaPushPlan(cfg Config, s Source, scope string, st eywaPushState) (eywaPushPlan, error) {
 	mems, err := collectShareMemories(cfg, scope)
 	if err != nil {
 		return eywaPushPlan{}, err
 	}
-	st, err := loadEywaPushState(cfg)
-	if err != nil {
-		return eywaPushPlan{}, err
+	var records map[string]eywaPushRecord
+	if d := st.Destinations[eywaDestinationKey(s.Eywa)]; d != nil {
+		records = d.Records
 	}
 	plan := eywaPushPlan{Scope: scope, Topic: s.Eywa.Topic}
 	for _, m := range mems {
@@ -388,13 +549,13 @@ func buildEywaPushPlan(cfg Config, s Source, scope string) (eywaPushPlan, error)
 		item := eywaPushItem{Memory: full}
 		u, berr := eywa.BuildUpdate(s.Eywa.AgentID, full.ID, full.Title, full.Text)
 		if berr != nil {
-			item.State, item.Refusal = "refused", berr.Error()
+			item.State, item.Refusal, item.RefusalKey = "refused", berr.Error(), eywa.RefusalCode(berr)
 			item.Update = eywa.Update{MemoryID: full.ID, Title: full.Title}
 			plan.Items = append(plan.Items, item)
 			continue
 		}
 		item.Update = u
-		prior, had := st.Records[full.ID]
+		prior, had := records[full.ID]
 		switch {
 		case !had || prior.WriteID == "":
 			item.State = "new"
@@ -435,7 +596,10 @@ func printEywaPushPreview(w io.Writer, s Source, plan eywaPushPlan, full bool) {
 		}
 	}
 	if unchanged > 0 {
-		fmt.Fprintf(w, "  (%d already pushed and unchanged; not re-sent)\n", unchanged)
+		fmt.Fprintf(w, "  (%d already pushed to this destination and unchanged; not re-sent)\n", unchanged)
+	}
+	if n := len(plan.refused()); n > 0 {
+		fmt.Fprintf(w, "  (%d selected update(s) refused locally; the push reports them as failures until they are fixed)\n", n)
 	}
 	fmt.Fprintln(w, "The service governs every update: it may admit it, send it to curator review (in_review), or hold it. Mora does not decide the outcome.")
 	if !full {
@@ -472,12 +636,19 @@ type eywaPushRow struct {
 	Error    string `json:"error,omitempty"`
 }
 
+// eywaPushReceipt reports one push or status read. Failed counts every
+// selected update that did not reach the service's decision: refused by the
+// service, or refused locally before sending (Refused, with a reason code).
 type eywaPushReceipt struct {
 	Scope   string        `json:"scope,omitempty"`
 	Sent    int           `json:"sent"`
 	Failed  int           `json:"failed"`
+	Refused int           `json:"refused"`
 	Pending int           `json:"pending"`
 	Updates []eywaPushRow `json:"updates"`
+	// Unverified counts ledger records for another destination (or written
+	// before destinations were tracked); they are reported, never polled.
+	Unverified int `json:"unverified,omitempty"`
 }
 
 const eywaUsage = `usage:
@@ -550,7 +721,12 @@ func eywaPreview(cfg Config, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	plan, err := buildEywaPushPlan(cfg, s, *scope)
+	// Read-only: the ledger is replaced atomically, so no lock is needed to read it.
+	st, err := loadEywaPushState(cfg)
+	if err != nil {
+		return err
+	}
+	plan, err := buildEywaPushPlan(cfg, s, *scope, st)
 	if err != nil {
 		return err
 	}
@@ -559,6 +735,22 @@ func eywaPreview(cfg Config, args []string, stdout io.Writer) error {
 	}
 	printEywaPushPreview(stdout, s, plan, true)
 	return nil
+}
+
+func refusedRows(items []eywaPushItem) []eywaPushRow {
+	rows := make([]eywaPushRow, 0, len(items))
+	for _, it := range items {
+		rows = append(rows, eywaPushRow{MemoryID: it.Update.MemoryID, Status: "refused", Reason: it.RefusalKey})
+	}
+	return rows
+}
+
+func refusedError(items []eywaPushItem, selected int) error {
+	ids := make([]string, 0, len(items))
+	for _, it := range items {
+		ids = append(ids, it.Update.MemoryID+" ("+it.RefusalKey+")")
+	}
+	return fmt.Errorf("%d of %d selected update(s) were refused locally and not sent: %s", len(items), selected, strings.Join(ids, ", "))
 }
 
 func eywaPush(ctx context.Context, cfg Config, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
@@ -582,17 +774,34 @@ func eywaPush(ctx context.Context, cfg Config, args []string, stdout, stderr io.
 	if !s.Eywa.PushEnabled {
 		return errors.New("eywa push is off — it is opt-in. Review with `mora eywa preview --scope " + *scope + "`, then run `mora eywa push enable`")
 	}
-	plan, err := buildEywaPushPlan(cfg, s, *scope)
+	previewState, err := loadEywaPushState(cfg)
+	if err != nil {
+		return err
+	}
+	plan, err := buildEywaPushPlan(cfg, s, *scope, previewState)
 	if err != nil {
 		return err
 	}
 	pending := plan.pending()
+	refused := plan.refused()
+	selected := len(pending) + len(refused)
 	printEywaPushPreview(human, s, plan, false)
-	receipt := eywaPushReceipt{Scope: *scope, Updates: []eywaPushRow{}}
+	receipt := eywaPushReceipt{Scope: *scope, Updates: refusedRows(refused)}
+	receipt.Refused = len(refused)
+	receipt.Failed = len(refused)
 	if len(pending) == 0 {
-		fmt.Fprintln(human, "nothing to push.")
+		if len(refused) > 0 {
+			fmt.Fprintln(human, "nothing sent: every selected update was refused locally.")
+		} else {
+			fmt.Fprintln(human, "nothing to push.")
+		}
 		if *jsonOut {
-			return emitReceipt(stdout, "mora.eywa.push", 1, receipt)
+			if err := emitReceipt(stdout, "mora.eywa.push", 1, receipt); err != nil {
+				return err
+			}
+		}
+		if len(refused) > 0 {
+			return refusedError(refused, selected)
 		}
 		return nil
 	}
@@ -605,12 +814,32 @@ func eywaPush(ctx context.Context, cfg Config, args []string, stdout, stderr io.
 	if err != nil {
 		return err
 	}
+	release, err := acquireEywaPushLock(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer release()
+	// Re-read the ledger under the lock: another push may have sent some of the
+	// confirmed updates since the preview. Only updates that are still pending
+	// with exactly the confirmed content are sent.
 	st, err := loadEywaPushState(cfg)
 	if err != nil {
 		return err
 	}
-	var fatal error
+	dest := st.destination(s)
+	var toSend []eywaPushItem
 	for _, it := range pending {
+		if prior, had := dest.Records[it.Update.MemoryID]; had && prior.WriteID != "" && prior.ContentHash == it.Update.ContentHash {
+			continue
+		}
+		toSend = append(toSend, it)
+	}
+	if skipped := len(pending) - len(toSend); skipped > 0 {
+		fmt.Fprintf(human, "  (%d update(s) were sent by another push since the preview; not re-sent)\n", skipped)
+	}
+	var fatal error
+	serviceFailed := 0
+	for _, it := range toSend {
 		ack, rerr := client.Remember(ctx, s.Eywa.Topic, it.Update)
 		now := time.Now().UTC().Format(time.RFC3339)
 		if rerr != nil {
@@ -620,14 +849,15 @@ func eywaPush(ctx context.Context, cfg Config, args []string, stdout, stderr io.
 				fatal = rerr
 				break
 			}
-			rec := st.Records[it.Update.MemoryID]
+			rec := dest.Records[it.Update.MemoryID]
 			rec.Error, rec.CheckedAt = rerr.Error(), now
-			st.Records[it.Update.MemoryID] = rec
+			dest.Records[it.Update.MemoryID] = rec
+			serviceFailed++
 			receipt.Failed++
 			receipt.Updates = append(receipt.Updates, eywaPushRow{MemoryID: it.Update.MemoryID, Status: "failed", Error: rerr.Error()})
 			continue
 		}
-		st.Records[it.Update.MemoryID] = eywaPushRecord{ContentHash: it.Update.ContentHash, SourceURI: it.Update.SourceURI,
+		dest.Records[it.Update.MemoryID] = eywaPushRecord{ContentHash: it.Update.ContentHash, SourceURI: it.Update.SourceURI,
 			WriteID: ack.WriteID, Status: ack.Status, Reason: ack.Reason, PushedAt: now, CheckedAt: now}
 		// Record each write id before polling, so a crash never forgets a send.
 		if err := saveEywaPushState(cfg, st); err != nil {
@@ -643,12 +873,12 @@ func eywaPush(ctx context.Context, cfg Config, args []string, stdout, stderr io.
 		return fmt.Errorf("eywa push stopped after %d update(s): %w", receipt.Sent, fatal)
 	}
 	sent := map[string]bool{}
-	for _, it := range pending {
-		if rec := st.Records[it.Update.MemoryID]; rec.WriteID != "" && rec.Error == "" {
+	for _, it := range toSend {
+		if rec := dest.Records[it.Update.MemoryID]; rec.WriteID != "" && rec.Error == "" {
 			sent[it.Update.MemoryID] = true
 		}
 	}
-	rows, pollErr := pollEywaStatuses(ctx, cfg, client, &st, sent, *wait)
+	rows, pollErr := pollEywaStatuses(ctx, cfg, client, &st, dest, sent, *wait)
 	receipt.Updates = append(receipt.Updates, rows...)
 	for _, r := range rows {
 		if !eywa.FinalStatus(r.Status) {
@@ -665,24 +895,29 @@ func eywaPush(ctx context.Context, cfg Config, args []string, stdout, stderr io.
 			return err
 		}
 	}
+	var errs []error
 	if pollErr != nil {
-		return fmt.Errorf("eywa push sent %d update(s) but could not read every outcome: %w", receipt.Sent, pollErr)
+		errs = append(errs, fmt.Errorf("eywa push sent %d update(s) but could not read every outcome: %w", receipt.Sent, pollErr))
 	}
-	if receipt.Failed > 0 {
-		return fmt.Errorf("%d of %d update(s) were refused by the service", receipt.Failed, len(pending))
+	if serviceFailed > 0 {
+		errs = append(errs, fmt.Errorf("%d of %d update(s) were refused by the service", serviceFailed, len(toSend)))
 	}
-	return nil
+	if len(refused) > 0 {
+		errs = append(errs, refusedError(refused, selected))
+	}
+	return errors.Join(errs...)
 }
 
-// pollEywaStatuses polls get_memory(write_id) until every selected write has a
-// final status or the wait elapses, and records what it read.
-func pollEywaStatuses(ctx context.Context, cfg Config, client *eywa.Client, st *eywaPushState, ids map[string]bool, wait time.Duration) ([]eywaPushRow, error) {
+// pollEywaStatuses polls get_memory(write_id) until every selected write of
+// one destination has a final status or the wait elapses, and records what it
+// read. The caller holds the ledger lock and a client for that destination.
+func pollEywaStatuses(ctx context.Context, cfg Config, client *eywa.Client, st *eywaPushState, dest *eywaPushDestination, ids map[string]bool, wait time.Duration) ([]eywaPushRow, error) {
 	deadline := time.Now().Add(wait)
 	var pollErr error
 	for {
 		open := 0
 		for id := range ids {
-			rec := st.Records[id]
+			rec := dest.Records[id]
 			if eywa.FinalStatus(rec.Status) {
 				continue
 			}
@@ -692,7 +927,7 @@ func pollEywaStatuses(ctx context.Context, cfg Config, client *eywa.Client, st *
 				break
 			}
 			rec.Status, rec.Reason, rec.CheckedAt = ws.Status, ws.Reason, time.Now().UTC().Format(time.RFC3339)
-			st.Records[id] = rec
+			dest.Records[id] = rec
 			if !eywa.FinalStatus(ws.Status) {
 				open++
 			}
@@ -710,7 +945,7 @@ func pollEywaStatuses(ctx context.Context, cfg Config, client *eywa.Client, st *
 	}
 	rows := make([]eywaPushRow, 0, len(ids))
 	for id := range ids {
-		rec := st.Records[id]
+		rec := dest.Records[id]
 		rows = append(rows, eywaPushRow{MemoryID: id, WriteID: rec.WriteID, Status: rec.Status, Reason: rec.Reason})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].MemoryID < rows[j].MemoryID })
@@ -732,7 +967,9 @@ func describeEywaStatus(status string) string {
 	case "received":
 		return "received; not decided yet"
 	case "failed":
-		return "refused"
+		return "refused by the service"
+	case "refused":
+		return "refused locally; not sent"
 	default:
 		return status
 	}
@@ -765,39 +1002,59 @@ func eywaStatus(ctx context.Context, cfg Config, args []string, stdout, stderr i
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		return errors.New("usage: mora eywa status [--json]")
 	}
+	s, err := loadEywaSource(cfg)
+	if err != nil {
+		return err
+	}
+	release, err := acquireEywaPushLock(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer release()
 	st, err := loadEywaPushState(cfg)
 	if err != nil {
 		return err
 	}
-	ids := map[string]bool{}
-	for id, rec := range st.Records {
-		if rec.WriteID != "" {
-			ids[id] = true
+	receipt := eywaPushReceipt{Updates: []eywaPushRow{}}
+	// Only the configured destination's write ids are polled, and only against
+	// that destination. Records for another destination are counted, not polled.
+	key := eywaDestinationKey(s.Eywa)
+	for k, d := range st.Destinations {
+		if k != key {
+			for _, rec := range d.Records {
+				if rec.WriteID != "" {
+					receipt.Unverified++
+				}
+			}
 		}
 	}
-	receipt := eywaPushReceipt{Updates: []eywaPushRow{}}
+	for _, rec := range st.Legacy {
+		if rec.WriteID != "" {
+			receipt.Unverified++
+		}
+	}
 	var pollErr error
-	if len(ids) > 0 {
+	if dest := st.Destinations[key]; dest != nil {
+		ids := map[string]bool{}
 		needs := false
-		for id := range ids {
-			if !eywa.FinalStatus(st.Records[id].Status) {
-				needs = true
+		for id, rec := range dest.Records {
+			if rec.WriteID != "" {
+				ids[id] = true
+				if !eywa.FinalStatus(rec.Status) {
+					needs = true
+				}
 			}
 		}
 		if needs {
-			s, err := loadEywaSource(cfg)
-			if err != nil {
-				return err
-			}
 			client, err := eywaClientFor(s)
 			if err != nil {
 				return err
 			}
 			// One pass, no waiting.
-			_, pollErr = pollEywaStatuses(ctx, cfg, client, &st, ids, 0)
+			_, pollErr = pollEywaStatuses(ctx, cfg, client, &st, dest, ids, 0)
 		}
 		for id := range ids {
-			rec := st.Records[id]
+			rec := dest.Records[id]
 			receipt.Updates = append(receipt.Updates, eywaPushRow{MemoryID: id, WriteID: rec.WriteID, Status: rec.Status, Reason: rec.Reason})
 			receipt.Sent++
 			if !eywa.FinalStatus(rec.Status) {
@@ -810,10 +1067,15 @@ func eywaStatus(ctx context.Context, cfg Config, args []string, stdout, stderr i
 		if err := emitReceipt(stdout, "mora.eywa.status", 1, receipt); err != nil {
 			return err
 		}
-	} else if len(receipt.Updates) == 0 {
-		fmt.Fprintln(stdout, "No updates have been pushed.")
 	} else {
-		printEywaRows(stdout, receipt.Updates)
+		if len(receipt.Updates) == 0 {
+			fmt.Fprintln(stdout, "No updates have been pushed to the configured destination.")
+		} else {
+			printEywaRows(stdout, receipt.Updates)
+		}
+		if receipt.Unverified > 0 {
+			fmt.Fprintf(stdout, "%d update(s) were pushed to a different endpoint, client, agent or topic (or before destinations were tracked); they are not re-checked against this one.\n", receipt.Unverified)
+		}
 	}
 	_ = stderr
 	return pollErr

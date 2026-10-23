@@ -429,7 +429,9 @@ times, status, and a citation line `Citation: <source URI> @ <version id>`
 followed by the cited excerpt. When the service replaces a version, the old
 record is kept and marked `status: replaced` with `replaced_by`; it is never
 deleted. Pulled records are evidence: search, think and context cite them like
-any other connector, and filter them with `source: "eywa"`.
+any other connector, and filter them with `source: "eywa"`. If a fact cannot be
+read or written, the sync fails and keeps the feed position at the first failed
+change, so the next sync retries it instead of skipping it.
 
 **Push (off by default).** Push sends one scope of your authored memories to
 the service as agent updates. It never sends connector records, including
@@ -451,6 +453,17 @@ memories are listed and not sent), the configured `topic`, and lineage:
 `excerpt`, and its SHA-256 `content_hash` (NFC, trimmed). Mora records each
 returned `write_id` in the state directory (ids, hashes and statuses only, never
 text) and polls for the final status for `--wait` (default 10s).
+
+A memory Mora refuses to send (empty, or over 8000 characters) is listed in the
+preview and in the receipt with a reason code (`empty_text`, `too_long`), and
+the push exits non-zero even when every other update was sent.
+
+The push record is kept per destination: the endpoint, client id, agent id and
+topic. Changing any of them with `mora connect eywa` makes the next push send
+again to the new destination, and `mora eywa status` only re-checks updates
+sent to the configured one. Two pushes, or a push and `mora eywa status`, never
+run against the record at the same time: the second waits for the first, up to
+30 seconds, then stops with a message saying another command is running.
 
 The service governs every update. It may be `admitted`, sent to curator review
 (`in_review`, not served until a curator approves it), or `held` (for example

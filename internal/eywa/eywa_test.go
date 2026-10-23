@@ -292,10 +292,13 @@ func TestBuildUpdateLineage(t *testing.T) {
 	if ContentHash("  Café owner\n") != ContentHash("Café owner") {
 		t.Fatal("content hash is not canonical (NFC, trimmed)")
 	}
-	if _, err := BuildUpdate("agt_TEST", "mem_big", "", strings.Repeat("x", MaxUpdateChars+1)); err == nil {
+	if _, err := BuildUpdate("agt_TEST", "mem_big", "", strings.Repeat("x", MaxUpdateChars+1)); err == nil || RefusalCode(err) != "too_long" {
 		t.Fatal("an over-long memory must be refused, not trimmed")
 	}
-	if _, err := BuildUpdate("", "mem_1", "", "text"); err == nil {
+	if _, err := BuildUpdate("agt_TEST", "mem_empty", "", "  "); RefusalCode(err) != "empty_text" {
+		t.Fatalf("empty update refusal code = %q", RefusalCode(err))
+	}
+	if _, err := BuildUpdate("", "mem_1", "", "text"); err == nil || RefusalCode(err) != "missing_agent_id" {
 		t.Fatal("push without an agent id must be refused")
 	}
 }

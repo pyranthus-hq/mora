@@ -47,12 +47,35 @@ func SourceURIFor(agentID, memoryID string) string {
 	return "eywa-run://" + url.PathEscape(agentID) + "/mora/" + url.PathEscape(memoryID)
 }
 
+// Local refusal reasons. BuildUpdate wraps one of these, so a caller can report
+// a stable reason code without repeating any memory text.
+var (
+	ErrNoAgentID     = errors.New("eywa: push needs the agent id (mora connect eywa --agent-id <id>)")
+	ErrEmptyUpdate   = errors.New("no text to send")
+	ErrUpdateTooLong = errors.New("over the service's size limit")
+)
+
+// RefusalCode names why BuildUpdate refused an update: missing_agent_id,
+// empty_text, too_long, or invalid_update for anything else.
+func RefusalCode(err error) string {
+	switch {
+	case errors.Is(err, ErrNoAgentID):
+		return "missing_agent_id"
+	case errors.Is(err, ErrEmptyUpdate):
+		return "empty_text"
+	case errors.Is(err, ErrUpdateTooLong):
+		return "too_long"
+	default:
+		return "invalid_update"
+	}
+}
+
 // BuildUpdate turns one authored memory into the update a push would send.
 // The excerpt is the full text, so the content hash covers exactly what the
 // service will verify. An empty or over-long memory is refused, never trimmed.
 func BuildUpdate(agentID, memoryID, title, body string) (Update, error) {
 	if strings.TrimSpace(agentID) == "" {
-		return Update{}, errors.New("eywa: push needs the agent id (mora connect eywa --agent-id <id>)")
+		return Update{}, ErrNoAgentID
 	}
 	text := strings.TrimSpace(body)
 	t := strings.TrimSpace(title)
@@ -61,10 +84,10 @@ func BuildUpdate(agentID, memoryID, title, body string) (Update, error) {
 	}
 	text = CanonicalContent(text)
 	if text == "" {
-		return Update{}, fmt.Errorf("memory %s has no text to send", memoryID)
+		return Update{}, fmt.Errorf("memory %s has %w", memoryID, ErrEmptyUpdate)
 	}
 	if n := utf16Len(text); n > MaxUpdateChars {
-		return Update{}, fmt.Errorf("memory %s is %d characters; the service accepts at most %d — split or trim it", memoryID, n, MaxUpdateChars)
+		return Update{}, fmt.Errorf("memory %s is %d characters, %w of %d — split or trim it", memoryID, n, ErrUpdateTooLong, MaxUpdateChars)
 	}
 	hash := ContentHash(text)
 	key := "mora:" + hash[:24] + ":" + memoryID
