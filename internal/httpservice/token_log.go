@@ -4,10 +4,9 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
-
-	"github.com/pyranthus-hq/mora/internal/atomicio"
 )
 
 // ScrubLegacyTokenLog removes only the old stdout banner's "  token: <hex>"
@@ -15,14 +14,15 @@ import (
 // output. Call only after rotating a legacy token, before serving or printing it.
 func ScrubLegacyTokenLog(stateDir string) error {
 	path := filepath.Join(stateDir, "serve-http.out.log")
-	b, err := os.ReadFile(path)
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	info, err := os.Stat(path)
+	defer f.Close()
+	b, err := io.ReadAll(f)
 	if err != nil {
 		return err
 	}
@@ -39,5 +39,13 @@ func ScrubLegacyTokenLog(stateDir string) error {
 	if bytes.Equal(b, kept.Bytes()) {
 		return nil
 	}
-	return atomicio.Write(path, kept.Bytes(), info.Mode().Perm())
+	// Service managers open stdout before startup. Preserve that inode (and
+	// any symlink) so their append descriptors continue writing to this log.
+	if _, err := f.WriteAt(kept.Bytes(), 0); err != nil {
+		return err
+	}
+	if err := f.Truncate(int64(kept.Len())); err != nil {
+		return err
+	}
+	return f.Sync()
 }

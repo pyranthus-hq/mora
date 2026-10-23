@@ -112,6 +112,7 @@ func serveLoopbackHTTP(ctx context.Context, args []string, stdout, stderr io.Wri
 			fmt.Fprintf(stderr, "warning: could not scrub legacy HTTP token banner: %v\n", err)
 		}
 		fmt.Fprintln(stderr, "HTTP token rotated; clients must re-pair or fetch it with mora serve http --print-token")
+		fmt.Fprintln(stderr, "Restart any already-running mora serve http process or installed HTTP service for rotation to take effect; until then it still accepts the old token and rejects the new one. On macOS, run mora serve http install; on Linux, run systemctl --user restart mora-serve-http.service; on Windows, stop the running process and start mora serve http again.")
 	}
 	if *printToken {
 		fmt.Fprintln(stdout, token)

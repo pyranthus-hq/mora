@@ -89,3 +89,59 @@ func TestTokenUpgradeOnce(t *testing.T) {
 		})
 	}
 }
+
+func TestTokenVersionMigration(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields string
+		rotate       bool
+	}{
+		{"version-one", `"token_version":1,"token":`, true},
+		{"version-string", `"token_version":"2","token":`, true},
+		{"version-float", `"token_version":2.0,"token":`, false},
+		{"version-missing", `"token":`, true},
+		{"capitalized-token", `"Token":`, true},
+		{"version-bool", `"token_version":true,"token":`, true},
+		{"version-object", `"token_version":{},"token":`, true},
+		{"capitalized-fields", `"TOKEN_VERSION":1,"Token":`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := t.TempDir()
+			path := filepath.Join(d, "http.json")
+			old := strings.Repeat("a", 64)
+			seed := `{` + tc.fields + `"` + old + `","other":{"keep":true}}`
+			if err := os.WriteFile(path, []byte(seed), 0600); err != nil {
+				t.Fatal(err)
+			}
+			token, rotated, err := LoadOrCreateTokenWithRotation(d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rotated != tc.rotate || (token != old) != tc.rotate {
+				t.Fatalf("rotated=%v, token changed=%v, want %v", rotated, token != old, tc.rotate)
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(b, &fields); err != nil {
+				t.Fatal(err)
+			}
+			var other map[string]bool
+			if err := json.Unmarshal(fields["other"], &other); err != nil || !other["keep"] {
+				t.Fatal("lost unknown field", err)
+			}
+			if tc.rotate {
+				if len(fields) != 3 || string(fields["token_version"]) != "2" || string(fields["token"]) != `"`+token+`"` {
+					t.Fatalf("migration did not canonicalize fields: %s", b)
+				}
+			} else if string(b) != seed {
+				t.Fatal("versioned config was rewritten")
+			}
+			again, rotated, err := LoadOrCreateTokenWithRotation(d)
+			if err != nil || rotated || again != token {
+				t.Fatal("second load changed token or rotated again", err)
+			}
+		})
+	}
+}

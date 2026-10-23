@@ -120,6 +120,13 @@ func TestServeHTTPTokenUpgrade(t *testing.T) {
 			if strings.Contains(warnings.String(), "HTTP token rotated") != (mode != "fresh") {
 				t.Fatalf("rotation notice: %s", &warnings)
 			}
+			if mode != "fresh" {
+				for _, want := range []string{"Restart any already-running mora serve http", "still accepts the old token and rejects the new one", "mora serve http install", "systemctl --user restart mora-serve-http.service"} {
+					if !strings.Contains(warnings.String(), want) {
+						t.Fatalf("rotation notice missing %q: %s", want, &warnings)
+					}
+				}
+			}
 			if strings.Contains(warnings.String(), "warning:") != (mode == "scrub-failure") {
 				t.Fatalf("scrub warning: %s", &warnings)
 			}

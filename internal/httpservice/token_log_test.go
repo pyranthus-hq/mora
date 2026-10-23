@@ -45,3 +45,63 @@ func TestScrubLegacyTokenLog(t *testing.T) {
 		t.Fatalf("missing log created: %v", err)
 	}
 }
+
+func TestScrubLegacyTokenLogPreservesOpenAppendFile(t *testing.T) {
+	for _, symlink := range []bool{false, true} {
+		name := "regular"
+		if symlink {
+			name = "symlink"
+		}
+		t.Run(name, func(t *testing.T) {
+			d := t.TempDir()
+			path := filepath.Join(d, "serve-http.out.log")
+			target := path
+			if symlink {
+				target = filepath.Join(d, "target.log")
+			}
+			if err := os.WriteFile(target, []byte("  token: "+strings.Repeat("a", 64)+"\nkeep\n"), 0640); err != nil {
+				t.Fatal(err)
+			}
+			if symlink {
+				if err := os.Symlink(target, path); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			}
+			f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+			before, err := f.Stat()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ScrubLegacyTokenLog(d); err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !os.SameFile(before, after) || before.Mode() != after.Mode() {
+				t.Fatal("scrub changed inode or mode")
+			}
+			if symlink {
+				info, err := os.Lstat(path)
+				if err != nil || info.Mode()&os.ModeSymlink == 0 {
+					t.Fatal("scrub replaced symlink", err)
+				}
+			}
+			if _, err := f.WriteString("after scrub\n"); err != nil {
+				t.Fatal(err)
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(b) != "keep\nafter scrub\n" {
+				t.Fatalf("log after append = %q", b)
+			}
+		})
+	}
+}

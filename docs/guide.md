@@ -608,10 +608,21 @@ On the first start after upgrading from a build that exposed the unauthenticated
 landing page, Mora replaces the old token once. `token_version: 2` in
 `<config_dir>/http.json` records the migration; new installs write it immediately.
 The same migration runs with `--print-token`. Old token banner lines in
-`<state_dir>/serve-http.out.log` are scrubbed, preserving other log lines. A scrub
-failure produces a warning and startup continues. Companion/browser clients using
+`<state_dir>/serve-http.out.log` are scrubbed in place, preserving other log lines.
+The scrub runs only on the rotating start; if it fails, Mora prints a warning and
+startup continues, leaving banner lines containing only the revoked token.
+Companion/browser clients using
 the shared HTTP token must re-pair or fetch the new token with
 `mora serve http --print-token`. Startup output never includes the token.
+
+Any already-running `mora serve http` process or installed HTTP service must be
+restarted for rotation to take effect, including rotation by `--print-token`;
+until then it still accepts the old token and rejects the new one.
+On macOS, run `mora serve http install` again to stop and start the daemon.
+On Linux, run `systemctl --user restart mora-serve-http.service` (`install` only
+writes the unit). On Windows or for a manually started server, stop the running
+process and start `mora serve http` again. There is no `mora serve http restart`
+subcommand.
 
 Choose another loopback port with `--port` or `MORA_PORT`. To keep the server
 running as a user service:
