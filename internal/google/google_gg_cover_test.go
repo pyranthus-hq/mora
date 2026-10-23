@@ -561,8 +561,16 @@ func TestGg_StartLoopbackAuthSuccess(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("StartLoopbackAuth did not complete after callback")
 	}
-	// The printed guidance must lead with the browser-opening expectation.
-	if !strings.Contains(buf.String(), "Opening your browser") {
+	// WSL deliberately asks for manual paste; other hosts attempt auto-open.
+	// Both paths must still complete the real loopback exchange above.
+	if IsWSL() {
+		if strings.Contains(buf.String(), "Opening your browser") {
+			t.Fatalf("WSL must not promise browser auto-open, got:\n%s", buf.String())
+		}
+		if !strings.Contains(buf.String(), "WSL detected — paste this link into your Windows browser to sign in:") {
+			t.Fatalf("expected WSL manual-paste guidance, got:\n%s", buf.String())
+		}
+	} else if !strings.Contains(buf.String(), "Opening your browser") {
 		t.Fatalf("expected browser-opening guidance, got:\n%s", buf.String())
 	}
 }
