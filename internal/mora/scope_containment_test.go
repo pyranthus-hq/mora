@@ -50,7 +50,7 @@ func assertNoOutsideFiles(t *testing.T, root string, allowed ...string) {
 
 func TestWriteScopeEntryPoints(t *testing.T) {
 	for _, scope := range []string{"../../outside", "..:..:outside", "project:..:..:..:outside", `..\..\outside`} {
-		for _, entry := range []string{"cli", "mcp-open", "mcp-propose", "http-open", "http-propose", "overwrite-sink"} {
+		for _, entry := range []string{"cli", "mcp-open", "mcp-propose", "http-open", "http-propose", "http-call-open", "http-call-propose", "overwrite-sink"} {
 			t.Run(entry+"/"+scope, func(t *testing.T) {
 				// All filesystem destinations, even on vulnerable code, fit within this root.
 				withTempHome(t)
@@ -74,13 +74,19 @@ func TestWriteScopeEntryPoints(t *testing.T) {
 					err = Run(testCtx(t), []string{"write", "--scope", scope, "--title", "Synthetic", "--text", "Synthetic"}, &out, &out, strings.NewReader(""))
 				case "mcp-open", "mcp-propose":
 					_, err = callMCPTool(testCtx(t), "write_memory", args)
-				case "http-open", "http-propose":
-					body, marshalErr := json.Marshal(args)
+				case "http-open", "http-propose", "http-call-open", "http-call-propose":
+					path := "/write"
+					var payload any = args
+					if strings.HasPrefix(entry, "http-call-") {
+						path = "/call"
+						payload = map[string]any{"name": "write_memory", "arguments": args}
+					}
+					body, marshalErr := json.Marshal(payload)
 					if marshalErr != nil {
 						t.Fatal(marshalErr)
 					}
 					s := &httpServer{token: "synthetic", port: 7777}
-					req := httptest.NewRequest(http.MethodPost, "/write", bytes.NewReader(body))
+					req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
 					req.Host = "127.0.0.1:7777"
 					req.Header.Set("Authorization", "Bearer synthetic")
 					rec := httptest.NewRecorder()
