@@ -135,7 +135,7 @@ func TestHealthAndLanding(t *testing.T) {
 	}
 }
 func TestTokenReuseGenerationAndMalformedReplacement(t *testing.T) {
-	for _, seed := range []string{"", `{"token":"stable"}`, `{"token":""}`, `bad`} {
+	for _, seed := range []string{"", `{"token":"stable","token_version":2}`, `{"token":""}`, `bad`} {
 		t.Run(fmt.Sprintf("seed-%d", len(seed)), func(t *testing.T) {
 			d := t.TempDir()
 			p := filepath.Join(d, "http.json")
@@ -155,7 +155,7 @@ func TestTokenReuseGenerationAndMalformedReplacement(t *testing.T) {
 			if a != b || len(a) == 0 {
 				t.Fatalf("tokens %q %q", a, b)
 			}
-			if seed == `{"token":"stable"}` && a != "stable" {
+			if seed == `{"token":"stable","token_version":2}` && a != "stable" {
 				t.Fatalf("replaced stable")
 			}
 			if info, err := os.Stat(p); err != nil {

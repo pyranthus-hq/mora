@@ -604,6 +604,15 @@ Print the token without starting the server:
 mora serve http --print-token
 ```
 
+On the first start after upgrading from a build that exposed the unauthenticated
+landing page, Mora replaces the old token once. `token_version: 2` in
+`<config_dir>/http.json` records the migration; new installs write it immediately.
+The same migration runs with `--print-token`. Old token banner lines in
+`<state_dir>/serve-http.out.log` are scrubbed, preserving other log lines. A scrub
+failure produces a warning and startup continues. Companion/browser clients using
+the shared HTTP token must re-pair or fetch the new token with
+`mora serve http --print-token`. Startup output never includes the token.
+
 Choose another loopback port with `--port` or `MORA_PORT`. To keep the server
 running as a user service:
 

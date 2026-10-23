@@ -12,6 +12,7 @@ import (
 	"time"
 
 	configstore "github.com/pyranthus-hq/mora/internal/config"
+	"github.com/pyranthus-hq/mora/internal/httpservice"
 	loopbackhttp "github.com/pyranthus-hq/mora/internal/loopbackhttp"
 )
 
@@ -88,9 +89,9 @@ func cmdServe(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		// than start a blocking server that a machine caller is waiting to parse.
 		return newCodedError(errCodeUsageUnknownFlag, nil, "mora serve http does not support --json (it runs a server); use `mora serve http status --json`")
 	}
-	return serveLoopbackHTTP(ctx, rest, stdout)
+	return serveLoopbackHTTP(ctx, rest, stdout, stderr)
 }
-func serveLoopbackHTTP(ctx context.Context, args []string, stdout io.Writer) error {
+func serveLoopbackHTTP(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("serve http", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	port := fs.Int("port", envPortOr(defaultHTTPPort), "loopback port to listen on (or set MORA_PORT)")
@@ -102,9 +103,15 @@ func serveLoopbackHTTP(ctx context.Context, args []string, stdout io.Writer) err
 	if err != nil {
 		return err
 	}
-	token, err := loopbackhttp.LoadOrCreateToken(cfg.ConfigDir)
+	token, rotated, err := loopbackhttp.LoadOrCreateTokenWithRotation(cfg.ConfigDir)
 	if err != nil {
 		return err
+	}
+	if rotated {
+		if err := httpservice.ScrubLegacyTokenLog(cfg.StateDir); err != nil {
+			fmt.Fprintf(stderr, "warning: could not scrub legacy HTTP token banner: %v\n", err)
+		}
+		fmt.Fprintln(stderr, "HTTP token rotated; clients must re-pair or fetch it with mora serve http --print-token")
 	}
 	if *printToken {
 		fmt.Fprintln(stdout, token)

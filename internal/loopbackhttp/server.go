@@ -3,17 +3,13 @@ package loopbackhttp
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,32 +49,7 @@ type route struct {
 	Method, Pattern string
 	Handler         http.HandlerFunc
 }
-type httpConfig struct {
-	Token string `json:"token"`
-}
 
-func LoadOrCreateToken(configDir string) (string, error) {
-	path := filepath.Join(configDir, "http.json")
-	if b, err := os.ReadFile(path); err == nil {
-		var hc httpConfig
-		if json.Unmarshal(b, &hc) == nil && hc.Token != "" {
-			return hc.Token, nil
-		}
-	}
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return "", err
-	}
-	token := hex.EncodeToString(raw)
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		return "", err
-	}
-	b, _ := json.MarshalIndent(httpConfig{Token: token}, "", "  ")
-	if err := os.WriteFile(path, b, 0o600); err != nil {
-		return "", err
-	}
-	return token, nil
-}
 func (s *Server) hostGuard(next http.Handler) http.Handler {
 	allowed := map[string]bool{
 		net.JoinHostPort("127.0.0.1", strconv.Itoa(s.port)): true,
