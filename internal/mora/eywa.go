@@ -85,9 +85,64 @@ func eywaKnownVersions(cfg Config) map[string]eywa.Known {
 	return known
 }
 
+// eywaPageTracker wraps the pull fetcher so the wiring knows which feed
+// position produced the page whose records are being written. A per-record
+// failure pins the cursor to the start of the first page that had one.
+type eywaPageTracker struct {
+	inner     *eywa.Fetcher
+	pageStart string // feed position the current page was requested from ("" = since-walk)
+	failed    bool
+	failStart string // position of the first page with a failed record
+}
+
+func (t *eywaPageTracker) FetchPage(kind memory.ItemKind, w memory.FetchWindow, cursor string) (memory.Page, error) {
+	return t.FetchPageContext(context.Background(), kind, w, cursor)
+}
+
+func (t *eywaPageTracker) FetchPageContext(ctx context.Context, kind memory.ItemKind, w memory.FetchWindow, cursor string) (memory.Page, error) {
+	start := cursor
+	if start == "" {
+		start = w.SyncCursor
+	}
+	page, err := t.inner.FetchPageContext(ctx, kind, w, cursor)
+	if err == nil {
+		t.pageStart = start
+	}
+	return page, err
+}
+
+func (t *eywaPageTracker) recordFailure() {
+	if !t.failed {
+		t.failed, t.failStart = true, t.pageStart
+	}
+}
+
+// hold rewrites the persisted positions so nothing at or after the first failed
+// change is skipped by the next sync. A mid-walk checkpoint and the between-run
+// cursor are both pinned to the start of the page that held the first failure;
+// the records written successfully on that page are rewritten unchanged
+// (content-hash skip) when it is fetched again.
+func (t *eywaPageTracker) hold(st *memory.SyncStatus) {
+	if st == nil || !t.failed {
+		return
+	}
+	st.PendingSyncCursor = ""
+	if st.Checkpoint != "" {
+		st.Checkpoint = t.failStart
+		if t.failStart == "" {
+			st.CursorMode = ""
+		}
+		return
+	}
+	st.IncrementalCursor = t.failStart
+	st.CursorMode = ""
+}
+
 // ingestEywaDetailed pulls the change feed into read-only fact records. The
 // feed cursor is a provider-native incremental position kept in the state dir
-// SyncStatus, committed only after a clean walk of every page.
+// SyncStatus. It advances past a page only when every record on it was written:
+// a run with a failed fact lookup or vault write keeps the position at the
+// start of the first page that failed, so the next sync retries that change.
 func ingestEywaDetailed(ctx context.Context, cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
 	client, err := eywaClientFor(s)
 	if err != nil {
@@ -98,6 +153,8 @@ func ingestEywaDetailed(ctx context.Context, cfg Config, s Source, out io.Writer
 	statusPath := syncStatusPathFor(cfg, s)
 	st, _ := memory.LoadStatus(statusPath)
 	st.Source = s.Name
+	startCursor := st.IncrementalCursor
+	tracker := &eywaPageTracker{inner: fetcher, pageStart: startCursor}
 	days := s.SinceDays
 	if days <= 0 {
 		days = 35
@@ -107,10 +164,12 @@ func ingestEywaDetailed(ctx context.Context, cfg Config, s Source, out io.Writer
 		if msg, ok := mm.Meta["eywa_record_error"].(string); ok && msg != "" {
 			// A per-record refusal is counted as a dropped item and surfaced in the
 			// sync status; it never reaches the vault.
+			tracker.recordFailure()
 			return false, errors.New(msg)
 		}
 		wrote, err := writeMappedMemoryDetailed(cfg, mm)
 		if err != nil {
+			tracker.recordFailure()
 			return false, err
 		}
 		if wrote {
@@ -119,12 +178,25 @@ func ingestEywaDetailed(ctx context.Context, cfg Config, s Source, out io.Writer
 		return wrote, nil
 	}
 	res, ingErr := memory.Ingest(memory.IngestParams{
-		Context: ctx, Fetcher: fetcher, Kind: eywa.KindFact, Scope: s.Scope, BodyBudget: 16 * 1024,
+		Context: ctx, Fetcher: tracker, Kind: eywa.KindFact, Scope: s.Scope, BodyBudget: 16 * 1024,
 		Window: memory.FetchWindow{Since: time.Now().Add(-time.Duration(days) * 24 * time.Hour)},
 		Status: st, Map: eywa.MapFact, WriteResult: write,
-		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
+		Checkpoint: func(status *memory.SyncStatus) error {
+			held := *status
+			tracker.hold(&held)
+			return memory.SaveStatus(statusPath, &held)
+		},
 	})
 	prog.done()
+	if res.Failed > 0 && !tracker.failed {
+		// A record dropped before the write step (size limit): keep the run's
+		// starting position rather than guess where it was.
+		tracker.failed, tracker.failStart = true, startCursor
+	}
+	tracker.hold(res.Status)
+	if out != nil && tracker.failed {
+		fmt.Fprintln(out, "note: the change-feed position was kept at the first failed change; the next `mora sync eywa` retries it.")
+	}
 	if out != nil && fetcher.Stats.Skipped > 0 {
 		fmt.Fprintf(out, "note: %d change(s) named versions this vault never pulled (older than the first sync window); they were skipped.\n", fetcher.Stats.Skipped)
 	}

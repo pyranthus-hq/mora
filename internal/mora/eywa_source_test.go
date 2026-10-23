@@ -30,10 +30,14 @@ type eywaFake struct {
 	writes     map[string]string // write_id -> status
 	changes    []map[string]any
 	versions   map[string]map[string]any // version_id -> version
+	pages      map[string]map[string]any // cursor -> changes_since page (overrides the default)
+	failFact   map[string]int            // fact_id -> get_memory lookups that fail before one succeeds
+	remHook    func()                    // runs (unlocked) before each remember call is answered
 }
 
 func newEywaFake(t *testing.T) *eywaFake {
-	f := &eywaFake{writes: map[string]string{}, versions: map[string]map[string]any{}}
+	f := &eywaFake{writes: map[string]string{}, versions: map[string]map[string]any{},
+		pages: map[string]map[string]any{}, failFact: map[string]int{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -62,6 +66,13 @@ func newEywaFake(t *testing.T) *eywaFake {
 
 func (f *eywaFake) mcp(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
+	hook := f.remHook
+	f.mu.Unlock()
+	body, _ := io.ReadAll(r.Body)
+	if hook != nil && strings.Contains(string(body), "___remember") {
+		hook()
+	}
+	f.mu.Lock()
 	defer f.mu.Unlock()
 	if r.Header.Get("Authorization") != "Bearer tok" {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -75,7 +86,7 @@ func (f *eywaFake) mcp(w http.ResponseWriter, r *http.Request) {
 			Arguments map[string]any `json:"arguments"`
 		} `json:"params"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	_ = json.Unmarshal(body, &req)
 	reply := func(result any) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
@@ -99,6 +110,9 @@ func (f *eywaFake) mcp(w http.ResponseWriter, r *http.Request) {
 func (f *eywaFake) tool(name string, a map[string]any) any {
 	switch name {
 	case "changes_since":
+		if c, ok := a["cursor"].(string); ok && f.pages[c] != nil {
+			return f.pages[c]
+		}
 		if _, ok := a["cursor"]; ok {
 			return map[string]any{"items": []any{}, "next": "cur-2", "has_more": false}
 		}
@@ -110,6 +124,10 @@ func (f *eywaFake) tool(name string, a map[string]any) any {
 				f.writes[id] = "in_review" // decided on the next read
 			}
 			return map[string]any{"write": map[string]any{"write_id": id, "status": st, "reason": nil}}
+		}
+		if id, ok := a["fact_id"].(string); ok && f.failFact[id] > 0 {
+			f.failFact[id]--
+			return map[string]any{"eywa_tool_error": map[string]any{"code": "internal", "message": "lookup failed"}}
 		}
 		for _, v := range f.versions {
 			if v["status"] == "current" && (v["fact_id"] == a["fact_id"] || (v["entity"] == a["entity"] && v["attribute"] == a["attribute"])) {
@@ -464,5 +482,89 @@ func TestEywaPushStopsOnAuthFailureAndKeepsState(t *testing.T) {
 	out := run(t, "eywa", "push", "--scope", "global", "--yes")
 	if !strings.Contains(out, "sent to curator review") || len(f.remembered) != 1 {
 		t.Fatalf("the retry after an auth failure must send the pending update:\n%s", out)
+	}
+}
+
+func eywaVersion(id, fact, value, status string) map[string]any {
+	return map[string]any{"version_id": id, "fact_id": fact, "entity": "Acme Corp", "attribute": "payment terms",
+		"value": value, "topic": "payments", "visibility": "tenant", "status": status, "valid_from": "2026-08-01T00:00:00Z",
+		"recorded_at": "2026-08-01T00:00:00Z", "retired_at": nil,
+		"lineage": map[string]any{"source_uri": "chat://export-1/msg-9", "content_hash": strings.Repeat("b", 64), "signer": "usr_1", "excerpt": "Acme terms"}}
+}
+
+// A fact lookup that fails once must not let the feed position move past the
+// failed change: the next sync retries it and the fact ends present and current.
+func TestEywaSyncKeepsCursorWhenARecordFailsAndRetriesIt(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	f := newEywaFake(t)
+	f.versions["ver_1"] = eywaVersion("ver_1", "fct_1", "net 45", "current")
+	f.changes = []map[string]any{{"type": "fact.admitted", "ids": map[string]any{"fact_id": "fct_1", "version_id": "ver_1"}}}
+	run(t, f.connectArgs()...)
+	cfg := mustConfig(t)
+	statusPath := syncStatusPathFor(cfg, Source{Name: "eywa", Type: "eywa"})
+	if st, _ := memory.LoadStatus(statusPath); st.IncrementalCursor != "cur-1" {
+		t.Fatalf("cursor after the first clean sync = %q, want cur-1", st.IncrementalCursor)
+	}
+
+	// The fact changes value; the next page's lookup fails once.
+	f.mu.Lock()
+	f.versions["ver_1"]["status"] = "retired"
+	f.versions["ver_2"] = eywaVersion("ver_2", "fct_1", "net 60", "current")
+	f.pages["cur-1"] = map[string]any{"items": []map[string]any{{"type": "fact.admitted", "ids": map[string]any{"fact_id": "fct_1", "version_id": "ver_2"}}},
+		"next": "cur-2", "has_more": false}
+	f.failFact["fct_1"] = 1
+	f.mu.Unlock()
+
+	out, err := runErr(t, "sync", "eywa")
+	if err == nil {
+		t.Fatalf("a sync with a failed record reported success:\n%s", out)
+	}
+	st, _ := memory.LoadStatus(statusPath)
+	if st.IncrementalCursor != "cur-1" || st.Checkpoint != "" || st.LastError == "" {
+		t.Fatalf("status after the failed record = %+v; want cursor held at cur-1 and the error surfaced", st)
+	}
+	ver2 := filepath.Join(sourcesRoot(cfg), "eywa", memory.SafeFilename("eywa_fact/ver_2")+".md")
+	if _, err := os.Stat(ver2); err == nil {
+		t.Fatal("the failed version was written")
+	}
+
+	run(t, "sync", "eywa")
+	st, _ = memory.LoadStatus(statusPath)
+	if st.IncrementalCursor != "cur-2" || st.LastError != "" {
+		t.Fatalf("status after the retry = %+v; want cursor cur-2 and no error", st)
+	}
+	m, err := parseMemory(ver2)
+	if err != nil || m.Meta["status"] != "current" || m.Meta["value"] != "net 60" {
+		t.Fatalf("retried fact = %+v, %v; want present and current", m, err)
+	}
+	old, err := parseMemory(filepath.Join(sourcesRoot(cfg), "eywa", memory.SafeFilename("eywa_fact/ver_1")+".md"))
+	if err != nil || old.Meta["status"] != "replaced" {
+		t.Fatalf("earlier version = %+v, %v; want replaced", old, err)
+	}
+}
+
+// A failure on one page pins a mid-walk checkpoint to that page's start, so a
+// later page cannot publish a position past the failed change.
+func TestEywaPageTrackerHoldsCheckpointAtFirstFailedPage(t *testing.T) {
+	tr := &eywaPageTracker{pageStart: "cur-1"}
+	tr.recordFailure()
+	tr.pageStart = "cur-5"
+	tr.recordFailure()
+	mid := &memory.SyncStatus{Checkpoint: "cur-6", CursorMode: memory.CursorModeHistory, IncrementalCursor: "cur-1", PendingSyncCursor: "cur-9"}
+	tr.hold(mid)
+	if mid.Checkpoint != "cur-1" || mid.PendingSyncCursor != "" || mid.CursorMode != memory.CursorModeHistory {
+		t.Fatalf("mid-walk status = %+v; want checkpoint held at cur-1", mid)
+	}
+	done := &memory.SyncStatus{IncrementalCursor: "cur-9"}
+	tr.hold(done)
+	if done.IncrementalCursor != "cur-1" {
+		t.Fatalf("completed status = %+v; want cursor held at cur-1", done)
+	}
+	clean := &eywaPageTracker{pageStart: "cur-1"}
+	ok := &memory.SyncStatus{IncrementalCursor: "cur-9"}
+	clean.hold(ok)
+	if ok.IncrementalCursor != "cur-9" {
+		t.Fatal("a clean run must advance the cursor")
 	}
 }
