@@ -171,6 +171,7 @@ func TestCLIRegistryMatchesProductionDispatch(t *testing.T) {
 		{"connect", "cmdConnect", []string{"args[0]"}},
 		{"sync", "cmdSync", []string{"args[0]"}},
 		{"share", "cmdShare", []string{"args[0]"}},
+		{"eywa", "cmdEywa", []string{"args[0]"}},
 		{"usage", "cmdUsage", []string{"args[0]"}},
 		{"disconnect", "cmdDisconnect", []string{"args[0]"}},
 		{"mcp", "cmdMCP", []string{"args[0]"}},
@@ -617,6 +618,7 @@ func TestCLIRegistryPriorityGapsUseRealRun(t *testing.T) {
 		for _, args := range [][]string{
 			{"connect", "google", "--__issue205_probe__"},
 			{"connect", "github", "--repo", "invalid"},
+			{"connect", "eywa", "--endpoint", "http://eywa.example.com/mcp"},
 			{"connect", "imessage", "--__issue205_probe__"},
 			{"connect", "filesystem"},
 		} {

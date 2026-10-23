@@ -156,6 +156,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdSync(ctx, args[1:], stdout, stderr)
 	case "share":
 		return cmdShare(ctx, args[1:], stdout, stderr, stdin)
+	case "eywa":
+		return cmdEywa(ctx, args[1:], stdout, stderr, stdin)
 	case "reingest":
 		return cmdReingest(ctx, args[1:], stdout, stderr)
 	case "think":
@@ -282,12 +284,17 @@ USAGE:
   mora connect google --since-days 365   # widen the gmail backfill window
   mora connect github             # sync issues from the Mora + productivity repositories as read-only evidence
   mora connect github --repo owner/repo  # replace the default repository allowlist (repeatable)
+  mora connect eywa --endpoint <mcp-url> --token-url <url> --client-id <id>   # company memory: pull governed facts (secret from MORA_EYWA_CLIENT_SECRET)
   mora connect imessage            # macOS: enable iMessage, check Full Disk Access, then backfill
   mora connect imessage --since-days 365   # widen the iMessage backlog window (negative = all-time)
   mora connect filesystem ~/Documents      # add + enable + index a folder in one step (one-shot of: sources add + ingest run)
   mora sync status
   mora sync google
   mora sync github                # refresh enabled GitHub issue sources (read-only)
+  mora sync eywa                  # pull new and replaced company-memory facts (read-only records)
+  mora eywa push enable            # opt in to pushing authored memories (off by default)
+  mora eywa push --scope project:acme   # preview, confirm, then send as governed agent updates
+  mora eywa status                 # re-check whether pushed updates were admitted, in review, or held
   mora sync filesystem            # re-index enabled filesystem sources
   mora sync imessage               # macOS: read local Messages (read-only) into memories
   mora sync applecalendar          # macOS: re-read local Apple Calendar (read-only) into memories

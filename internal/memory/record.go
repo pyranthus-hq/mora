@@ -164,6 +164,22 @@ type Source struct {
 	DenyContacts      []string `json:"deny_contacts,omitempty"`
 	DenyConversations []string `json:"deny_conversations,omitempty"`
 	Repositories      []string `json:"repositories,omitempty"` // github: explicit owner/repo allowlist
+	// Eywa holds the company-memory connector's endpoints and identity. It never
+	// holds the client secret, which is read from the environment at run time.
+	Eywa *EywaSettings `json:"eywa,omitempty"`
+}
+
+// EywaSettings is the persisted, non-secret configuration of the eywa connector.
+// PushEnabled is the explicit opt-in that `mora eywa push` requires; it is off
+// unless the owner turns it on.
+type EywaSettings struct {
+	Endpoint    string `json:"endpoint"`
+	TokenURL    string `json:"token_url"`
+	ClientID    string `json:"client_id"`
+	OAuthScope  string `json:"oauth_scope,omitempty"`
+	AgentID     string `json:"agent_id,omitempty"`
+	Topic       string `json:"topic,omitempty"`
+	PushEnabled bool   `json:"push_enabled,omitempty"`
 }
 
 // IsEnabled reports explicit connector enablement; nil preserves legacy disabled semantics.

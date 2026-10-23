@@ -44,7 +44,7 @@ type Status struct {
 
 func Threshold(sourceType string) time.Duration {
 	switch sourceType {
-	case "gmail", "calendar", "applecalendar", "github":
+	case "gmail", "calendar", "applecalendar", "github", "eywa":
 		return GoogleThreshold
 	default:
 		return LocalThreshold
