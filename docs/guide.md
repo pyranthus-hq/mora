@@ -949,7 +949,8 @@ targets. It restores only suppressions created by that retention report.
 ## Schedules and durable loops
 
 Mora uses launchd on macOS and Task Scheduler on Windows. On Linux it prints a
-cron line that you can install.
+cron line that you can install. The one exception is `share-sync`, which
+installs a systemd user timer on Linux (see [Keep shares fresh](#keep-shares-fresh)).
 
 ```bash
 mora schedule install ingest-hourly
@@ -959,6 +960,7 @@ mora schedule install doctor-pulse
 mora schedule install backup-daily
 mora schedule install git-daily
 mora schedule install lint-weekly
+mora schedule install share-sync
 mora schedule list
 mora schedule list --json
 ```
@@ -1270,6 +1272,49 @@ Confirm the publisher fingerprint through another trusted channel. A signed
 manifest proves who published it only after you confirm the first key. The
 publisher gets the value from `mora share fingerprint`; do not copy it from the
 bucket or the receiver's first response.
+
+### Keep shares fresh
+
+`mora share sync` pulls every subscription and then pushes every publish. It
+writes one line per share:
+
+```text
+2026-10-10T00:33:22Z pull devbox-proof: ok: share "devbox-proof": 1 new/updated, 0 removed, 2 total.
+2026-10-10T00:33:23Z push from-devbox-proof: ok: share "from-devbox-proof" published: 1 memories encrypted, 0 removed.
+```
+
+A share that fails gets an `error:` line and the others still run. The command
+then exits non-zero, so the scheduler records the failure. If another sync is
+still running, the new run logs `skipped` and exits. Sync talks only to the
+remotes you already configured for your shares.
+
+Run it every 15 minutes with:
+
+```bash
+mora schedule install share-sync
+mora schedule uninstall share-sync
+```
+
+The log is `<state_dir>/share-sync.out.log`, with errors in
+`share-sync.err.log`.
+
+- **macOS:** a launchd job, `com.mora.share-sync`, that runs at login and then
+  every 15 minutes.
+- **Linux:** a systemd user service and timer, `mora-share-sync.service` and
+  `mora-share-sync.timer`, in `~/.config/systemd/user/`. Install enables and
+  starts the timer. The first run is about a minute later. Check it with
+  `systemctl --user list-timers mora-share-sync.timer`. Install fails, and
+  prints the commands to finish, if it cannot reach a systemd user manager.
+  On a server, a user timer stops when your last session ends. Install warns
+  you when that applies. Run `loginctl enable-linger $USER` to keep it running.
+- **Windows:** a scheduled task, `Mora\share-sync`, every 15 minutes.
+
+The job sets `GIT_TERMINAL_PROMPT=0`, so a missing git credential fails that
+share at once instead of waiting on a prompt. Git remotes need credentials that
+work without a terminal, such as an SSH key or `gh auth setup-git`. Bucket
+shares read their keys from the environment, and Mora does not copy secrets into
+scheduler files. For a bucket share, add the keys to the job's environment
+yourself.
 
 ### Sharing storage and cleanup
 

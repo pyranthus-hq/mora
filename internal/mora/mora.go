@@ -1071,6 +1071,9 @@ var scheduleCommands = map[string]string{
 	// AFTER the 08:00 brief so a source that went dark overnight is caught
 	// within the day rather than waiting for the next time someone reads a brief.
 	"doctor-pulse": "doctor --pulse",
+	// share-sync (pilot F6): pull every subscription and push every publish so
+	// shares stay fresh without hand-written launchd/systemd glue.
+	"share-sync": "share sync",
 }
 
 type scheduleCommandRunner func(name string, args ...string) ([]byte, error)

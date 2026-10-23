@@ -444,6 +444,10 @@
     "status": "static_only"
   },
   {
+    "path": "share sync",
+    "status": "static_only"
+  },
+  {
     "path": "sources",
     "status": "empty"
   },

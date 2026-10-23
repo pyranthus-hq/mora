@@ -780,6 +780,13 @@
       "payload": "mora.share.pull"
     },
     {
+      "path": "share sync",
+      "kind": "subcommand",
+      "platform": "git-or-bucket-seam",
+      "json_contract": "receipt",
+      "payload": "mora.share.sync"
+    },
+    {
       "path": "share list",
       "kind": "subcommand",
       "platform": "all",

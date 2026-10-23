@@ -1539,7 +1539,7 @@ type shareVerbReceipt struct {
 	OK   bool   `json:"ok"`
 }
 
-const shareUsage = "usage: mora share <keygen | fingerprint | init <name> --scope <scope> --recipient <age1...> [--remote <url> | --github] | preview [<name>] | push [<name>] [--yes] | subscribe <name> --remote <url> | pull [<name>] | gc [<name>] | storage-limit <bytes> | list [--json] | remove <name> --yes>"
+const shareUsage = "usage: mora share <keygen | fingerprint | init <name> --scope <scope> --recipient <age1...> [--remote <url> | --github] | preview [<name>] | push [<name>] [--yes] | subscribe <name> --remote <url> | pull [<name>] | sync | gc [<name>] | storage-limit <bytes> | list [--json] | remove <name> --yes>"
 
 func cmdShare(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	if len(args) == 0 {
@@ -1609,6 +1609,8 @@ func cmdShare(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		return shareSubscribe(ctx, cfg, args[1:], stdout, realExec)
 	case "pull":
 		return sharePull(ctx, cfg, args[1:], stdout, realExec)
+	case "sync":
+		return shareSync(ctx, cfg, args[1:], stdout, realExec)
 	case "list":
 		return shareList(cfg, args[1:], stdout)
 	case "remove":
