@@ -40,10 +40,39 @@ func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin 
 	if len(args) == 1 && args[0] == "serve" {
 		return serveMCP(ctx, stdout, stdin)
 	}
+	if len(args) == 3 && args[0] == "serve" && args[1] == "--profile" {
+		return serveMCPProfile(ctx, args[2], stdout, stdin)
+	}
+	if len(args) >= 1 && args[0] == "serve-http" {
+		return cmdMCPServeHTTP(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) >= 2 && args[0] == "proposals" {
 		return cmdMCPProposals(ctx, args[1:], stdout, stderr)
 	}
-	return errors.New("usage: mora mcp serve | mora mcp proposals <list|approve ID|reject ID>")
+	return errors.New("usage: mora mcp serve [--profile NAME] | mora mcp serve-http [--port N] [--allow-host HOST] | mora mcp proposals <list|approve ID|reject ID>")
+}
+
+// serveMCPProfile is `mora mcp serve --profile NAME`: stdio MCP bound to one
+// agent profile for the whole session (#539). The profile is resolved once at
+// start; a revoked or unknown profile refuses to serve rather than falling
+// back to the unprofiled server.
+func serveMCPProfile(ctx context.Context, name string, stdout io.Writer, stdin io.Reader) error {
+	cfg, err := loadConfigFor(ctx)
+	if err != nil {
+		return err
+	}
+	store, err := loadAgentsStore(cfg)
+	if err != nil {
+		return err
+	}
+	profile, err := store.active(name)
+	if err != nil {
+		return err
+	}
+	ctx = withAgentProfile(ctx, profile)
+	return mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, func(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
+		return handleAgentMCP(ctx, profile, req)
+	})
 }
 func serveMCP(ctx context.Context, stdout io.Writer, stdin io.Reader) error {
 	return mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, handleMCP)

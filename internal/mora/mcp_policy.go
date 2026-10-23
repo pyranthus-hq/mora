@@ -44,6 +44,13 @@ func readMCPWriteProposal(cfg Config, id string) (mcpWriteProposal, string, erro
 func listMCPWriteProposals(cfg Config) ([]mcpWriteProposal, error) { return mcppkg.ListProposals(cfg) }
 
 func stageMCPWriteProposal(cfg Config, args map[string]any) (any, error) {
+	return stageMCPWriteProposalBy(cfg, args, "")
+}
+
+// stageMCPWriteProposalBy stages a propose-mode write and records which agent
+// profile proposed it ("" for an unprofiled client), so the owner reviewing
+// the queue sees who is asking.
+func stageMCPWriteProposalBy(cfg Config, args map[string]any, proposedBy string) (any, error) {
 	now := mcpWriteClock()
 	m, err := mcpMemoryFromArgs(args, now)
 	if err != nil {
@@ -52,7 +59,7 @@ func stageMCPWriteProposal(cfg Config, args map[string]any) (any, error) {
 	if err := validateDispositionPublish(cfg, m); err != nil {
 		return nil, err
 	}
-	proposal := mcpWriteProposal{ID: "p_" + newID(), ProposedAt: now.Format(time.RFC3339), Arguments: args}
+	proposal := mcpWriteProposal{ID: "p_" + newID(), ProposedAt: now.Format(time.RFC3339), ProposedBy: proposedBy, Arguments: args}
 	if _, err := mcppkg.SaveProposal(cfg, proposal); err != nil {
 		return nil, err
 	}
@@ -67,6 +74,7 @@ func stageMCPWriteProposal(cfg Config, args map[string]any) (any, error) {
 type mcpProposalRow struct {
 	ID         string `json:"id"`
 	ProposedAt string `json:"proposed_at"`
+	ProposedBy string `json:"proposed_by,omitempty"`
 	Scope      string `json:"scope"`
 	Type       string `json:"type"`
 	Title      string `json:"title"`
@@ -106,7 +114,7 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 				return fmt.Errorf("proposal %s is invalid: %w", proposal.ID, err)
 			}
 			rows = append(rows, mcpProposalRow{
-				ID: proposal.ID, ProposedAt: proposal.ProposedAt,
+				ID: proposal.ID, ProposedAt: proposal.ProposedAt, ProposedBy: proposal.ProposedBy,
 				Scope: memory.Scope, Type: memory.Type, Title: memory.Title,
 			})
 		}
@@ -118,7 +126,11 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 			return nil
 		}
 		for _, row := range rows {
-			fmt.Fprintf(stdout, "%s  %s  [%s/%s] %s\n", row.ID, row.ProposedAt, row.Scope, row.Type, row.Title)
+			by := ""
+			if row.ProposedBy != "" {
+				by = "  by " + row.ProposedBy
+			}
+			fmt.Fprintf(stdout, "%s  %s%s  [%s/%s] %s\n", row.ID, row.ProposedAt, by, row.Scope, row.Type, row.Title)
 		}
 		return nil
 	}
