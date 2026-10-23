@@ -103,7 +103,8 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 		for _, proposal := range proposals {
 			memory, err := mcpMemoryFromArgs(proposal.Arguments, time.Now())
 			if err != nil {
-				return fmt.Errorf("proposal %s is invalid: %w", proposal.ID, err)
+				fmt.Fprintf(stderr, "warning: skipping invalid proposal %s: %v\n", proposal.ID, err)
+				continue
 			}
 			rows = append(rows, mcpProposalRow{
 				ID: proposal.ID, ProposedAt: proposal.ProposedAt,

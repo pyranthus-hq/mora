@@ -44,8 +44,8 @@ func TestCreateMemoryPersistsWithUniqueID(t *testing.T) {
 	if !strings.HasPrefix(got.ID, "mem_") {
 		t.Fatalf("ID not minted: %q", got.ID)
 	}
-	if got.Path != memoryPath(cfg, got) {
-		t.Fatalf("Path = %q, want %q", got.Path, memoryPath(cfg, got))
+	if got.Path != mustMemoryPath(t, cfg, got) {
+		t.Fatalf("Path = %q, want %q", got.Path, mustMemoryPath(t, cfg, got))
 	}
 	body, err := os.ReadFile(got.Path)
 	if err != nil {
@@ -94,7 +94,7 @@ func TestCreateMemoryRetriesPastIDCollision(t *testing.T) {
 		t.Fatalf("want 2 mint calls (1 collision + 1 success), got %d", calls)
 	}
 
-	existingBody, err := os.ReadFile(memoryPath(cfg, existing))
+	existingBody, err := os.ReadFile(mustMemoryPath(t, cfg, existing))
 	if err != nil {
 		t.Fatalf("read existing: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestCreateMemoryExhaustsBoundedRetries(t *testing.T) {
 		t.Fatalf("want %d mint attempts, got %d", maxCreateAttempts, calls)
 	}
 
-	body, err := os.ReadFile(memoryPath(cfg, existing))
+	body, err := os.ReadFile(mustMemoryPath(t, cfg, existing))
 	if err != nil {
 		t.Fatalf("read existing: %v", err)
 	}

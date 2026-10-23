@@ -184,7 +184,10 @@ func indexUpsertOnce(ctx context.Context, cfg Config, m Memory) error {
 		return err
 	}
 	if m.DeletedAt == "" {
-		path := memoryPath(cfg, m)
+		path, err := memoryPath(cfg, m)
+		if err != nil {
+			return err
+		}
 		tags := strings.Join(m.Tags, ",")
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,

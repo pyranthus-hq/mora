@@ -93,7 +93,7 @@ func TestIndexUpsertAddsAndReplacesSingleRow(t *testing.T) {
 	}
 	// The stored path column must match what a full rebuild would store (memoryPath),
 	// so an incrementally-added row is indistinguishable from a rebuilt one.
-	if got, want := res[0].Path, memoryPath(cfg, m); got != want {
+	if got, want := res[0].Path, mustMemoryPath(t, cfg, m); got != want {
 		t.Fatalf("stored path = %q, want %q (must match rebuild's memoryPath)", got, want)
 	}
 

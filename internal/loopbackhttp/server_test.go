@@ -57,7 +57,7 @@ func TestHostAuthAndNoCORS(t *testing.T) {
 			t.Errorf("bad host %s: %d", host, w.Code)
 		}
 	}
-	for _, path := range []string{"/", "/healthz"} {
+	for _, path := range []string{"/healthz"} {
 		if w := request(t, s, "GET", path, "", "", "127.0.0.1:7777"); w.Code != 200 {
 			t.Errorf("public %s=%d", path, w.Code)
 		}
@@ -129,13 +129,13 @@ func TestHealthAndLanding(t *testing.T) {
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"error": "cfg"`) {
 		t.Fatalf("health=%d %s", w.Code, w.Body)
 	}
-	w = request(t, s, "GET", "/", "", "", "127.0.0.1:7777")
+	w = request(t, s, "GET", "/", "", "Bearer tok", "127.0.0.1:7777")
 	if !strings.Contains(w.Body.String(), `window.__MORA_TOKEN="tok"`) || w.Header().Get("Content-Type") != "text/html; charset=utf-8" {
 		t.Fatalf("landing=%s", w.Body)
 	}
 }
 func TestTokenReuseGenerationAndMalformedReplacement(t *testing.T) {
-	for _, seed := range []string{"", `{"token":"stable"}`, `{"token":""}`, `bad`} {
+	for _, seed := range []string{"", `{"token":"stable","token_version":2}`, `{"token":""}`, `bad`} {
 		t.Run(fmt.Sprintf("seed-%d", len(seed)), func(t *testing.T) {
 			d := t.TempDir()
 			p := filepath.Join(d, "http.json")
@@ -155,7 +155,7 @@ func TestTokenReuseGenerationAndMalformedReplacement(t *testing.T) {
 			if a != b || len(a) == 0 {
 				t.Fatalf("tokens %q %q", a, b)
 			}
-			if seed == `{"token":"stable"}` && a != "stable" {
+			if seed == `{"token":"stable","token_version":2}` && a != "stable" {
 				t.Fatalf("replaced stable")
 			}
 			if info, err := os.Stat(p); err != nil {
@@ -215,7 +215,7 @@ func TestServePortGuardAndCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	var out bytes.Buffer
-	s := New(Options{Token: "tok", Port: p, Version: "v", Dispatch: func(context.Context, string, map[string]any) (any, error) { return nil, nil }, AllowCall: func(string) bool { return true }, Health: func() Health { return Health{OK: true, State: "healthy"} }})
+	s := New(Options{Token: "synthetic-banner-secret", Port: p, Version: "v", Dispatch: func(context.Context, string, map[string]any) (any, error) { return nil, nil }, AllowCall: func(string) bool { return true }, Health: func() Health { return Health{OK: true, State: "healthy"} }})
 	go func() { done <- s.Serve(ctx, &out) }()
 	deadline := time.Now().Add(time.Second)
 	for {
@@ -238,6 +238,9 @@ func TestServePortGuardAndCancellation(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("shutdown timeout")
 	}
+	if strings.Contains(out.String(), "synthetic-banner-secret") || strings.Contains(out.String(), "token:") || !strings.Contains(out.String(), "mora serve http --print-token") {
+		t.Fatalf("unsafe or incomplete startup banner: %s", &out)
+	}
 }
 func TestOversizeCallBodyRejected(t *testing.T) {
 	s := testServer(nil)
@@ -251,5 +254,27 @@ func TestJSONResponseFormat(t *testing.T) {
 	w := request(t, testServer(nil), "POST", "/think", "{}", "Bearer tok", "127.0.0.1:7777")
 	if w.Header().Get("Content-Type") != "application/json; charset=utf-8" || !strings.HasSuffix(w.Body.String(), "\n") || !json.Valid(w.Body.Bytes()) {
 		t.Fatalf("headers/body=%v %q", w.Header(), w.Body.String())
+	}
+}
+
+func TestLandingRequiresAuthentication(t *testing.T) {
+	s := testServer(nil)
+	s.token = "synthetic-landing-secret"
+	for _, auth := range []string{"", "Bearer wrong"} {
+		w := request(t, s, "GET", "/", "", auth, "127.0.0.1:7777")
+		if w.Code != 401 {
+			t.Errorf("auth %q: status=%d", auth, w.Code)
+		}
+		if strings.Contains(w.Body.String(), s.token) || strings.Contains(w.Body.String(), "__MORA_TOKEN") {
+			t.Fatalf("credential in unauthorized response: %s", w.Body)
+		}
+	}
+	w := request(t, s, "GET", "/", "", "Bearer "+s.token, "127.0.0.1:7777")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `window.__MORA_TOKEN="`+s.token+`"`) {
+		t.Fatalf("authorized landing=%d %s", w.Code, w.Body)
+	}
+	w = request(t, s, "GET", "/healthz", "", "", "127.0.0.1:7777")
+	if w.Code != 200 {
+		t.Fatalf("public health=%d", w.Code)
 	}
 }
