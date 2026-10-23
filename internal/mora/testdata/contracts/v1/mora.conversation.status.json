@@ -1,0 +1,18 @@
+{
+  "archive_dir": "\u003chome\u003e/.local/share/mora/conversations",
+  "capture": {
+    "added": 0,
+    "checked": "\u003ctimestamp\u003e",
+    "errors": [],
+    "messages": 0,
+    "pending_tails": 0,
+    "sessions": 0,
+    "skipped": 0
+  },
+  "enabled": false,
+  "messages": 0,
+  "schema": "mora.conversation.status",
+  "schema_version": 1,
+  "sessions": 0,
+  "sources": null
+}
