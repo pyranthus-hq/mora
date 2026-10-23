@@ -142,12 +142,12 @@ func TestCalendarMetaCapturesSelfAttendee(t *testing.T) {
 		Summary: "Dan sync",
 		Start:   &calendar.EventDateTime{DateTime: "2026-07-13T17:00:00Z"},
 		Attendees: []*calendar.EventAttendee{
-			{Email: "Adit@AdisamConsulting.com", DisplayName: "Adit Karode", Self: true},
-			{Email: "dan@example.com", DisplayName: "Daniel Rachev"},
+			{Email: "Adit@ConsultingCo.example", DisplayName: "Adit Varden", Self: true},
+			{Email: "dan@example.com", DisplayName: "Daniel Hollis"},
 		},
 	})
-	if got, _ := it.Meta["self_email"].(string); got != "adit@adisamconsulting.com" {
-		t.Fatalf("meta[self_email] = %q, want lowercased self attendee %q", got, "adit@adisamconsulting.com")
+	if got, _ := it.Meta["self_email"].(string); got != "adit@consultingco.example" {
+		t.Fatalf("meta[self_email] = %q, want lowercased self attendee %q", got, "adit@consultingco.example")
 	}
 }
 

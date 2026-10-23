@@ -50,6 +50,13 @@ func TestMain(m *testing.M) {
 			realHomeConfig.Store(&cfg)
 		}
 	}
+	// An unset mcp_write_policy resolves to propose in production
+	// (mcppkg.DefaultWritePolicy). Most tests here run `mora init` in a fresh
+	// sandbox and then exercise the open-mode write path, so they resolve an
+	// unset policy to open instead. write_policy_default_test.go restores the
+	// shipped value and tests the real default end to end.
+	shippedUnsetMCPWritePolicy = unsetMCPWritePolicy
+	unsetMCPWritePolicy = mcpWritePolicyOpen
 	if os.Getenv("MORA_TEST_REAL_FSYNC") != "1" {
 		atomicio.MarkerSyncFn = func(*os.File) error { return nil }
 		atomicio.SyncDirFn = func(string) error { return nil }

@@ -349,8 +349,8 @@ func CopyTheInputPredictions(l Ledger, surface string) []Prediction {
 
 // SyntheticGibberishPredictions is the frozen-incident baseline's synthetic twin. It
 // is rendered from the RED-TEAM ledger — a self-contained world that re-creates every
-// defect class with invented personas — because the committed frozen fixture carries
-// real names on a public repo and the exam never reads it.
+// defect class with invented personas — because the committed frozen fixture is a real
+// incident (its names are now placeholders) and the exam never reads it.
 func SyntheticGibberishPredictions(sabotage Ledger, surface string) []Prediction {
 	grain, err := grainOf(surface)
 	if err != nil {
