@@ -102,7 +102,7 @@ receipt carries its own retry instruction; a clean zero-item source is `empty`, 
 | `connectors list\|enable\|disable\|setup` | Catalog + per-type consent state. | `cmdConnectors` `setup.go` |
 | `connect google\|imessage [--since-days N]` | OAuth/FDA consent **then** backfill. | `cmdConnect` `ingest.go` |
 | `sync status\|google\|filesystem\|imessage` | Per-source freshness (no fetch) / re-backfill. A source is required. Unknown names fail closed. | `cmdSync` `ingest.go` |
-| `share keygen\|init\|preview\|push\|subscribe\|pull\|list\|remove` | Scoped, age-encrypted, read-only sharing of authored memories over a dedicated private git remote. Subscriptions union into search/think, owner-attributed. | `cmdShare` `share.go:1437`, see [sharing](./13-sharing.md) |
+| `share keygen\|init\|preview\|push\|subscribe\|pull\|list\|remove` | Scoped, age-encrypted, read-only sharing of authored memories over a dedicated private git remote. Subscriptions union into search/think/context, owner-attributed; brief points at them. | `cmdShare` `share.go:1437`, see [sharing](./13-sharing.md) |
 | `reingest [--full]` | Re-fetch + rewrite memories with latest metadata, rebuild graph. | `cmdReingest` `ingest.go` |
 | `usage report\|off\|on` | Local-only content-free analytics. | `cmdUsage` `usage.go` |
 | `disconnect google` | Drop the Google token. | `cmdDisconnect` `setup.go` |

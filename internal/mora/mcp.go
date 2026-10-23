@@ -665,6 +665,15 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 			out["excluded_by_filter"] = excl
 		}
 	}
+	// Only the generic query path reads subscribed shares. Every other path
+	// (no query, current state, open loops) points at them instead, so a
+	// machine that only subscribes never reads as empty. Absent with no
+	// subscriptions.
+	if query == "" || intent != contextIntentGeneric {
+		if shared := sharedCorporaPointerFor(cfg); shared != nil {
+			out["shared_corpora"] = shared
+		}
+	}
 	// Issue #237, round-3 amendment: an OPTIONAL top-level "corroborating" array,
 	// a sibling of "context" — the SAME compact four-key ref shape search_memory
 	// and think use, collecting every cluster head's folded members across
@@ -805,14 +814,31 @@ func mcpBrief(ctx context.Context, cfg Config, args map[string]any) (any, error)
 	}
 	budgetChars := mcpDigestBudgetChars(cfg, intArg(args, "max_tokens", 0))
 	recordMCPUsage(ctx, cfg, usageEvent{Tool: "brief", Results: len(d.Sections), Millis: time.Since(start).Milliseconds()})
+	// The brief is a delta over the user's own connectors and does not
+	// summarize subscribed shares. When shares exist it says so and names the
+	// tools that read them. The pointer's bytes come out of the item budget so
+	// the payload still fits max_tokens. With no subscriptions shared is nil
+	// and the payload below is byte-identical to the pre-share one.
+	shared := sharedCorporaPointerFor(cfg)
 	// Reuse the Phase-15 budget machinery VERBATIM (additive — the digest case and
 	// its helpers are untouched): envelope-gated synthesis_prompt, max_tokens
 	// budget, T0-safe by construction (16-03 adds the gate row). Model-free: the
 	// synthesis_prompt is a STRING the agent runs with its own model — no sampling.
-	if boolArg(args, "envelope", false) {
-		return budgetEnvelopePayload(cfg, d, budgetChars), nil
+	if shared == nil {
+		if boolArg(args, "envelope", false) {
+			return budgetEnvelopePayload(cfg, d, budgetChars), nil
+		}
+		return digestMCPPayload(cfg, d, budgetChars), nil
 	}
-	return digestMCPPayload(cfg, d, budgetChars), nil
+	budgetChars = maxInt(0, budgetChars-jsonLen(map[string]any{"shared_corpora": shared}))
+	if boolArg(args, "envelope", false) {
+		env := budgetEnvelopePayload(cfg, d, budgetChars)
+		env.SharedCorpora = shared
+		return env, nil
+	}
+	payload := digestMCPPayloadAtBudget(cfg, d, budgetChars)
+	payload["shared_corpora"] = shared
+	return payload, nil
 }
 
 func mcpMeetingPrep(ctx context.Context, cfg Config, args map[string]any) (any, error) {

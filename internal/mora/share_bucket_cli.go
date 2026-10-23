@@ -219,7 +219,7 @@ func shareSubscribeBucketWithStore(ctx context.Context, cfg Config, name string,
 		owner = "(unnamed publisher)"
 	}
 	fmt.Fprintf(stdout, "subscribed to bucket share %q — %d memories from %s (scope %s), read-only beside your vault.\n", name, stats.Total, owner, stats.Scope)
-	fmt.Fprintf(stdout, "shared results appear in search/think attributed as [%s]; your own vault and graph are never modified.\n", name)
+	fmt.Fprintf(stdout, "shared results appear in search, think and context attributed as [%s]; brief points at them. Your own vault and graph are never modified.\n", name)
 	return nil
 }
 

@@ -29,7 +29,7 @@ func contextQueryData(ctx context.Context, cfg Config, query, scope string, limi
 		commitments, err := openCommitmentsForContext(ctx, cfg, query, scope, filters, now)
 		return nil, commitments, intent, err
 	default:
-		items, err := hybridSearch(ctx, cfg, query, scope, limit, filters)
+		items, err := contextSearchWithShares(ctx, cfg, query, scope, limit, filters)
 		return items, nil, intent, err
 	}
 }

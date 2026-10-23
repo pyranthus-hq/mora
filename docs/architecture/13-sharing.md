@@ -7,8 +7,8 @@ with age. It sends the result to a **dedicated private git remote** or a
 [14 — Share transports](14-share-transports.md).
 
 A subscriber decrypts the share into a **read-only, separately-indexed
-corpus**. `search`/`think` joins this corpus to local results and names the
-owner. This document describes the built system. The final section records
+corpus**. `search`, `think` and `context` join this corpus to local results and
+name the owner. `brief` does not summarize it but says it exists. This document describes the built system. The final section records
 later work.
 
 ## Files
@@ -39,7 +39,7 @@ flowchart LR
     R[(private remote)] -->|clone / pull --ff-only| C[repo DataDir/share/subs/name/repo]
     C -->|decrypt + validate| P[corpus/*.md plaintext]
     P -->|rebuildShareIndex :995| I[(index.db per share)]
-    I -->|unionSharedResults :1386| Q[search / think, owner-attributed]
+    I -->|unionSharedResults :1386| Q[search / think / context, owner-attributed]
 ```
 
 State lives in three places: the grant registry `<ConfigDir>/shares.json` (`loadShares`/`saveShares`, 0600), the subscriber's age identity `<ConfigDir>/share/identity.txt` (`shareKeygen` `share.go:146`, 0600, never overwritten), and the publisher's local change-detection record `<StateDir>/share/publish/<name>.json` (`sharePushStatePath` `share.go:459`) — plaintext content hashes that deliberately never enter the repo (they would let a ciphertext holder confirm guessed plaintext).
@@ -54,7 +54,13 @@ State lives in three places: the grant registry `<ConfigDir>/shares.json` (`load
 
 ## Query-time union
 
-`unionSharedResults` (`share.go:1386`) is called from exactly two seams: `defaultSearch` (`hybrid.go`) — covering `mora search` CLI and MCP `search_memory` — and `buildThink` (`think.go`). With zero subscriptions it returns the local slice **unchanged**, so the no-share path is byte-identical (the T0 MCP budget gate depends on this). With subscriptions it rank-fuses (RRF, `rrfWeighted`) the local list against each share's BM25 list: local arm weight 1.5 (the hybrid fusion's strongest-arm anchor), all shares together share 1.0 (`share.go` fusion constants) so multiple subscriptions cannot collectively out-vote the user's own vault. Results carry `Memory.Owner` (= subscription name, `omitempty`); `ThinkEvidence.Owner` and a `(shared:<owner>, …)` prompt line label think evidence.
+`unionSharedResults` (`share.go:1386`) is called from exactly three seams: `defaultSearch` (`hybrid.go`) — covering `mora search` CLI and MCP `search_memory` — `buildThink` (`think.go`), and `contextSearchWithShares` (`share_context.go`) — covering the generic query path of `mora context --query` and MCP `context_memory`. With zero subscriptions it returns the local slice **unchanged**, so the no-share path is byte-identical (the T0 MCP budget gate depends on this). With subscriptions it rank-fuses (RRF, `rrfWeighted`) the local list against each share's BM25 list: local arm weight 1.5 (the hybrid fusion's strongest-arm anchor), all shares together share 1.0 (`share.go` fusion constants) so multiple subscriptions cannot collectively out-vote the user's own vault. Results carry `Memory.Owner` (= subscription name, `omitempty`); `ThinkEvidence.Owner` and a `(shared:<owner>, …)` prompt line label think evidence.
+
+### Surfaces with no query
+
+`brief` (CLI and MCP) and `context` with no query or a structured intent (current state, open loops) have nothing to rank a shared corpus against, so they do not read it. When subscriptions exist they add a `shared_corpora` pointer (`sharedCorporaPointerFor`, `share_context.go`): the subscription count, memory count per share, and a note naming `search_memory`, `think` and `context_memory`. The human CLI prints one `Shared:` line instead. The MCP brief pays for the pointer out of its item budget, so the payload still fits `max_tokens`. The CLI brief adds it at render time and never writes it into the persisted brief artifact. With zero subscriptions the pointer is nil and absent, so these surfaces stay byte-identical. The rendered `context` text marks every shared row with a `Shared: from subscribed share "<owner>"` line, and its receipts carry `owner`.
+
+Brief points rather than summarizes on purpose. A brief is a watermarked delta over the user's own connectors; a useful "what changed in my shares" section would need its own per-share watermark, which belongs with scheduled share sync, not here.
 
 Each share index is a schema-compatible subset (`memories` + `memories_fts`, `user_version` stamped) — FTS-only, no vectors/graph/entities — built once per **generation** (see the next section) and opened only via `openShareIndexRO`: direct DSN with `mode=ro` + `query_only(1)` pragma, never `openIndexRO`, whose auto-heal would rebuild the file from the wrong (personal) vault. Every serve resolves the highest committed generation and verifies the artifact it reads against a per-generation integrity digest. Shared ids returned by search resolve to full text on the read-only surfaces (`mora read`, MCP `read_memory`) via `findSharedMemory`, which reads the resolved generation's frozen corpus and verifies it against the committed `corpus_digest`. Delete paths never take that fallback.
 

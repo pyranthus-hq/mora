@@ -339,6 +339,9 @@ func flagsFirst(args []string) []string {
 type briefResult struct {
 	Generated bool   `json:"generated"`
 	Body      string `json:"body"`
+	// SharedCorpora points at subscribed shares the brief does not summarize;
+	// absent with no subscriptions.
+	SharedCorpora *sharedCorporaPointer `json:"shared_corpora,omitempty"`
 }
 
 // briefDigest factors the resolveBrief GENERATE semantics so the CLI envelope
@@ -455,16 +458,20 @@ func cmdBrief(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		return err
 	}
 	logUsage(cfg, usageEvent{Tool: "brief"})
+	// The pointer is added at render time, never written into the persisted
+	// brief artifact, so a cached brief stays exactly what was generated.
+	shared := sharedCorporaPointerFor(cfg)
 	if *jsonOut {
 		// Byte-clean structured result; --envelope has no effect on --json (the
 		// envelope is a human-stdout addition, like pulse --digest --envelope).
-		return emitReceipt(stdout, "mora.brief", 1, briefResult{Generated: generated, Body: body})
+		return emitReceipt(stdout, "mora.brief", 1, briefResult{Generated: generated, Body: body, SharedCorpora: shared})
 	}
 	if generated {
 		// Freshly generated: apply the TTY skin (off-TTY this is a no-op, byte-clean).
 		body = styleDigestTTY(body, newStyler(stdout, false))
 	}
 	fmt.Fprintln(stdout, body)
+	printSharedCorporaPointer(stdout, shared, "this brief")
 	if *envelope {
 		// Build the brief digest the SAME way the body was generated so the
 		// synthesis_prompt cites the SAME items. A filtered brief uses the
