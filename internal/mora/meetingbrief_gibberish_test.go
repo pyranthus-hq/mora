@@ -23,7 +23,7 @@ func TestForwardedSubjectIsNotEvidence(t *testing.T) {
 		Provider: "gmail", Type: "email",
 		Title: "Fwd: Google Ads Account Audit & Recommendations - Ready for Your Review!",
 		Text:  "---------- Forwarded message ---------\nFrom: ads@vendor.com\n",
-		Meta:  map[string]any{"from": []string{"gouri@example.com"}},
+		Meta:  map[string]any{"from": []string{"kessa@example.com"}},
 	}
 	if got := meetingBriefActionableEvidenceText(fwd, cfg, at, meetingBriefSharedContext); got != "" {
 		t.Errorf("a forwarded subject must not become evidence; got %q", got)
@@ -33,7 +33,7 @@ func TestForwardedSubjectIsNotEvidence(t *testing.T) {
 		Provider: "gmail", Type: "email",
 		Title: "Acme pilot roadmap and launch milestone",
 		Text:  "",
-		Meta:  map[string]any{"from": []string{"gouri@example.com"}},
+		Meta:  map[string]any{"from": []string{"kessa@example.com"}},
 	}
 	if got := meetingBriefActionableEvidenceText(real, cfg, at, meetingBriefSharedContext); got == "" {
 		t.Error("a genuine subject must still be usable as the fallback excerpt")
@@ -48,7 +48,7 @@ func TestUserSpokenIMessageIsNotAttendeeEvidence(t *testing.T) {
 	at := time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)
 	mine := Memory{
 		Provider: "imessage", Type: "imessage",
-		Title: "Gouri",
+		Title: "Kessa",
 		Text:  "Me: Good morning leaving now",
 	}
 	got := meetingBriefActionableEvidenceText(mine, cfg, at, meetingBriefStaleness)

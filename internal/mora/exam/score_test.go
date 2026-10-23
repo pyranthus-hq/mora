@@ -1134,8 +1134,8 @@ func TestRedTeamManifestIsComplete(t *testing.T) {
 }
 
 // TestSyntheticGibberishCarriesEveryDefectSignature is the frozen-incident table's
-// synthetic twin. The exam never reads the committed frozen-incident tree — it carries
-// real names on a public repo — so the defect SIGNATURES are re-asserted here against
+// synthetic twin. The exam never reads the committed frozen-incident tree — it is a
+// real incident, with its names replaced by placeholders — so the defect SIGNATURES are re-asserted here against
 // the synthetic world instead.
 func TestSyntheticGibberishCarriesEveryDefectSignature(t *testing.T) {
 	in := redTeamInput(t)

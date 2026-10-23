@@ -673,9 +673,9 @@ func meetingBriefEvidenceSegments(text string) []string { return meetingpkg.Evid
 // quotedBlockMarkers open a region of a mail body that the SENDER DID NOT WRITE: a
 // forwarded message, a quoted reply chain, a signature, or a legal disclaimer.
 // Everything from the first such marker onward belongs to someone else (or to
-// nobody), and attributing it to the sender is how "Fwd: Ai / AEO" — Gouri
+// nobody), and attributing it to the sender is how "Fwd: Ai / AEO" — Kessa
 // forwarding a marketing mail — put a stranger's CTA ("Open to see how the loop
-// works?") into the brief as Gouri's unfinished business with the user.
+// works?") into the brief as Kessa's unfinished business with the user.
 
 // quotedReplyLine matches the "On <date>, <someone> wrote:" attribution line that
 // opens a quoted reply chain, in the forms Gmail/Outlook actually emit.
@@ -693,7 +693,7 @@ func meetingBriefEvidenceSegments(text string) []string { return meetingpkg.Evid
 func senderAuthoredBody(text string) string { return meetingpkg.SenderAuthoredBody(text) }
 
 // speakerPrefix matches the transcript label an iMessage line carries ("Me: ",
-// "Gouri Karode: "). It is scaffolding the renderer added, not words anybody spoke.
+// "Kessa Varden: "). It is scaffolding the renderer added, not words anybody spoke.
 
 // stripSpeakerPrefix removes a leading transcript speaker label from a line.
 func stripSpeakerPrefix(text string) string { return meetingpkg.StripSpeakerPrefix(text) }
@@ -766,11 +766,11 @@ func oneLine(text string) string { return meetingpkg.OneLine(text) }
 // meetingBriefIsTwoPartyExchange reports whether a Gmail message is business among
 // THIS MEETING'S people, rather than a thread the user merely sits on.
 //
-// The sender gate alone is not enough. Gouri (an attendee) really did send "Is there
-// a pdf export version from Ahrefs?", and Adit really was a recipient — so the sender
+// The sender gate alone is not enough. Kessa (an attendee) really did send "Is there
+// a pdf export version from Ahrefs?", and the user really was a recipient — so the sender
 // gate passed it — but the mail also went to Beth, a client, and opened "Hi Beth".
-// Gouri was asking BETH. Adit was a bystander on his parents' client thread, and the
-// brief told him it was his obligation.
+// Kessa was asking BETH. The user was a bystander on someone else's client thread, and
+// the brief told them it was their obligation.
 //
 // The line is not "only two people". A thread among several people who are ALL in the
 // meeting is still that meeting's business, and the sender decides attribution (a

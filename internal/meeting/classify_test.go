@@ -57,12 +57,12 @@ func TestMeetingNotificationMailIsNotEvidence(t *testing.T) {
 	notifications := []memory.Memory{
 		{
 			Provider: "gmail", Type: "email",
-			Title: "Declined: Sync up meeting @ Weekly from 10pm to 11pm on weekdays (EDT) (Adit Karode)",
-			Text:  "Gouri Karode has declined this invitation.\nSync up meeting\nJoin with Google Meet\nhttps://meet.google.com/ctk-rdtz-jnx?hs=224\n",
+			Title: "Declined: Sync up meeting @ Weekly from 10pm to 11pm on weekdays (EDT) (Adit Varden)",
+			Text:  "Kessa Varden has declined this invitation.\nSync up meeting\nJoin with Google Meet\nhttps://meet.google.com/ctk-rdtz-jnx?hs=224\n",
 		},
 		{
 			Provider: "gmail", Type: "email",
-			Title: "Invitation: GMG meet @ Tue Jul 14, 2026 (Adit Karode)",
+			Title: "Invitation: GMG meet @ Tue Jul 14, 2026 (Adit Varden)",
 			Text:  "You have been invited to the following event.\nView all guest info\n",
 		},
 		{
@@ -92,12 +92,12 @@ func TestMeetingNotificationMailIsNotEvidence(t *testing.T) {
 }
 
 func TestThirdPartyActionItemIsNotTheUsersOpenLoop(t *testing.T) {
-	self := map[string]bool{"adit": true, "karode": true}
+	self := map[string]bool{"adit": true, "varden": true}
 
 	for _, text := range []string{
 		"*Action Item for Kim:* Please share the Ahrefs findings report.",
 		"Action item for Beth: please send the proposal.",
-		"action items for gouri: draft the deck",
+		"action items for kessa: draft the deck",
 	} {
 		if !AssignedToThirdParty(text, self) {
 			t.Errorf("must be recognised as assigned to someone else: %q", text)
@@ -116,13 +116,13 @@ func TestThirdPartyActionItemIsNotTheUsersOpenLoop(t *testing.T) {
 }
 
 func TestSelfNameTokensFromAddresses(t *testing.T) {
-	got := SelfNameTokens(map[string]bool{"adit.karode@gmail.com": true, "adit@adisamconsulting.com": true})
-	for _, want := range []string{"adit", "karode"} {
+	got := SelfNameTokens(map[string]bool{"adit.varden@gmail.com": true, "adit@consultingco.example": true})
+	for _, want := range []string{"adit", "varden"} {
 		if !got[want] {
 			t.Errorf("SelfNameTokens missing %q; got %v", want, got)
 		}
 	}
-	if got["gmail"] || got["adisamconsulting"] {
+	if got["gmail"] || got["consultingco"] {
 		t.Errorf("domain must not become a name token: %v", got)
 	}
 }
@@ -130,39 +130,39 @@ func TestSelfNameTokensFromAddresses(t *testing.T) {
 func TestInboundGroupThreadIsNotTwoPartyBusiness(t *testing.T) {
 	self := map[string]bool{"adit@example.com": true}
 
-	// Gouri -> {Adit, Beth}: who is being asked? Unknowable. Refuse.
+	// Kessa -> {Adit, Beth}: who is being asked? Unknowable. Refuse.
 	group := memory.Memory{
 		Provider: "gmail", Type: "email",
 		Meta: map[string]any{
-			"from": []string{"gouri@example.com"},
+			"from": []string{"kessa@example.com"},
 			"to":   []string{"adit@example.com", "beth@vendor.com"},
 		},
 	}
-	if IsTwoPartyExchange(group, self, "gouri@example.com") {
+	if IsTwoPartyExchange(group, self, "kessa@example.com") {
 		t.Error("a thread with another external recipient must not count as business between the user and the attendee")
 	}
 
-	// Gouri -> Adit: unambiguous.
+	// Kessa -> Adit: unambiguous.
 	direct := memory.Memory{
 		Provider: "gmail", Type: "email",
 		Meta: map[string]any{
-			"from": []string{"gouri@example.com"},
+			"from": []string{"kessa@example.com"},
 			"to":   []string{"adit@example.com"},
 		},
 	}
-	if !IsTwoPartyExchange(direct, self, "gouri@example.com") {
+	if !IsTwoPartyExchange(direct, self, "kessa@example.com") {
 		t.Error("a direct message from the attendee to the user IS two-party business")
 	}
 
-	// Adit -> Gouri: the user's own promise to this attendee is still theirs to keep.
+	// Adit -> Kessa: the user's own promise to this attendee is still theirs to keep.
 	outbound := memory.Memory{
 		Provider: "gmail", Type: "email",
 		Meta: map[string]any{
 			"from": []string{"adit@example.com"},
-			"to":   []string{"gouri@example.com"},
+			"to":   []string{"kessa@example.com"},
 		},
 	}
-	if !IsTwoPartyExchange(outbound, self, "gouri@example.com") {
+	if !IsTwoPartyExchange(outbound, self, "kessa@example.com") {
 		t.Error("the user writing directly to the attendee IS two-party business")
 	}
 
@@ -171,11 +171,11 @@ func TestInboundGroupThreadIsNotTwoPartyBusiness(t *testing.T) {
 	inRoom := memory.Memory{
 		Provider: "gmail", Type: "email",
 		Meta: map[string]any{
-			"from": []string{"gouri@example.com"},
-			"to":   []string{"adit@example.com", "abhi@example.com"},
+			"from": []string{"kessa@example.com"},
+			"to":   []string{"adit@example.com", "bram@example.com"},
 		},
 	}
-	if !IsTwoPartyExchange(inRoom, self, "gouri@example.com", "abhi@example.com") {
+	if !IsTwoPartyExchange(inRoom, self, "kessa@example.com", "bram@example.com") {
 		t.Error("a thread among the meeting's own attendees must survive")
 	}
 
@@ -183,12 +183,12 @@ func TestInboundGroupThreadIsNotTwoPartyBusiness(t *testing.T) {
 	ccd := memory.Memory{
 		Provider: "gmail", Type: "email",
 		Meta: map[string]any{
-			"from": []string{"gouri@example.com"},
+			"from": []string{"kessa@example.com"},
 			"to":   []string{"adit@example.com"},
 			"cc":   []string{"sanjay@client.com"},
 		},
 	}
-	if IsTwoPartyExchange(ccd, self, "gouri@example.com") {
+	if IsTwoPartyExchange(ccd, self, "kessa@example.com") {
 		t.Error("another human on cc makes the addressee ambiguous")
 	}
 }
