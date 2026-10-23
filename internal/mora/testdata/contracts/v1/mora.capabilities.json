@@ -67,6 +67,14 @@
     {
       "json_contract": "exempt",
       "kind": "subcommand",
+      "path": "eywa preview",
+      "payload": "",
+      "platform": "all",
+      "reason": "human-auditable full-text preview of exactly what a push would send; sends nothing"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
       "path": "hook install",
       "payload": "",
       "platform": "native-seam",
@@ -180,6 +188,14 @@
       "json_contract": "exempt",
       "kind": "verb",
       "path": "disconnect",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "eywa",
       "payload": "",
       "platform": "all",
       "reason": "dispatch-only group; a bare invocation is a usage error"
@@ -387,6 +403,14 @@
     {
       "json_contract": "receipt",
       "kind": "subcommand",
+      "path": "connect eywa",
+      "payload": "mora.connect.eywa",
+      "platform": "network-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
       "path": "connect filesystem",
       "payload": "mora.connect.filesystem",
       "platform": "all",
@@ -429,6 +453,22 @@
       "kind": "subcommand",
       "path": "disconnect google",
       "payload": "mora.disconnect.google",
+      "platform": "network-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "eywa push",
+      "payload": "mora.eywa.push",
+      "platform": "network-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "eywa status",
+      "payload": "mora.eywa.status",
       "platform": "network-seam",
       "reason": ""
     },
@@ -646,6 +686,14 @@
       "path": "sync applecalendar",
       "payload": "mora.sync.applecalendar",
       "platform": "darwin-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "sync eywa",
+      "payload": "mora.sync.eywa",
+      "platform": "network-seam",
       "reason": ""
     },
     {
@@ -1322,6 +1370,19 @@
         "repair": "unsupported"
       },
       "ingesting": true,
+      "label": "Company memory",
+      "name": "Eywa (company memory)",
+      "needs_auth": false,
+      "type": "eywa",
+      "upcoming": false
+    },
+    {
+      "features": {
+        "deep_link": "unsupported",
+        "incremental_sync": "unsupported",
+        "repair": "unsupported"
+      },
+      "ingesting": true,
       "label": "Texts",
       "name": "iMessage",
       "needs_auth": false,
@@ -1627,6 +1688,10 @@
       "version": 1
     },
     {
+      "name": "mora.connect.eywa",
+      "version": 1
+    },
+    {
       "name": "mora.connect.filesystem",
       "version": 1
     },
@@ -1676,6 +1741,14 @@
     },
     {
       "name": "mora.entities",
+      "version": 1
+    },
+    {
+      "name": "mora.eywa.push",
+      "version": 1
+    },
+    {
+      "name": "mora.eywa.status",
       "version": 1
     },
     {
@@ -1888,6 +1961,10 @@
     },
     {
       "name": "mora.sync.applecalendar",
+      "version": 1
+    },
+    {
+      "name": "mora.sync.eywa",
       "version": 1
     },
     {

@@ -444,7 +444,7 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	// github and imessage never defined --json; strip it here, route their setup
 	// prose to stderr, and answer with a receipt. connect filesystem already owns
 	// its own --json branch and its receipt, so it is left alone.
-	if len(args) >= 1 && (args[0] == "github" || args[0] == "imessage") {
+	if len(args) >= 1 && (args[0] == "github" || args[0] == "eywa" || args[0] == "imessage") {
 		source := args[0]
 		jsonOut, progress := false, false
 		rest := make([]string, 0, len(args))
@@ -471,6 +471,15 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 			}
 			if jsonOut {
 				return emitReceipt(stdout, "mora.connect.github", 1, connectReceipt{Source: source, Connected: true, Ready: true})
+			}
+			return nil
+		}
+		if source == "eywa" {
+			if err := connectEywa(ctx, rest, out); err != nil {
+				return err
+			}
+			if jsonOut {
+				return emitReceipt(stdout, "mora.connect.eywa", 1, connectReceipt{Source: source, Connected: true, Ready: true})
 			}
 			return nil
 		}
@@ -504,7 +513,7 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		return connectFilesystem(ctx, args[1:], stdout, stderr)
 	}
 	if len(args) < 1 || args[0] != "google" {
-		return errors.New("usage: mora connect google [--since-days N] [--account <label>] | mora connect github [--repo owner/repo] | mora connect imessage [--since-days N] | mora connect filesystem <path> [--name <name>]")
+		return errors.New("usage: mora connect google [--since-days N] [--account <label>] | mora connect github [--repo owner/repo] | mora connect eywa --endpoint <url> --token-url <url> --client-id <id> | mora connect imessage [--since-days N] | mora connect filesystem <path> [--name <name>]")
 	}
 	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -621,7 +630,7 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 }
 func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) >= 1 && genericutil.IsHelpFlag(args[0]) {
-		fmt.Fprintln(stdout, "usage: mora sync <status|google|github|filesystem|imessage|whatsapp|applecalendar|git>")
+		fmt.Fprintln(stdout, "usage: mora sync <status|google|github|eywa|filesystem|imessage|whatsapp|applecalendar|git>")
 		fmt.Fprintln(stdout, "  status    show per-source freshness (no fetch)")
 		fmt.Fprintln(stdout, "  google    re-run the Gmail + Calendar backfill")
 		fmt.Fprintln(stdout, "  github    re-run the read-only GitHub issue sync")
@@ -635,7 +644,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	}
 	if len(args) == 0 {
 		return newCodedError(errCodeUsageMissingArgument, nil,
-			"usage: mora sync <status|google|github|filesystem|imessage|whatsapp|applecalendar|git>")
+			"usage: mora sync <status|google|github|eywa|filesystem|imessage|whatsapp|applecalendar|git>")
 	}
 	// Strip the relay receipt token BEFORE any flag parsing. --mora-app-receipt
 	// is a private argument of the signed-app relay protocol, not part of a
@@ -652,7 +661,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	}
 	if len(args) == 0 {
 		return newCodedError(errCodeUsageMissingArgument, nil,
-			"usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>")
+			"usage: mora sync <status|google|github|eywa|filesystem|imessage|whatsapp|applecalendar|git>")
 	}
 	var statusJSON bool
 	if args[0] == "status" {
@@ -674,7 +683,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// backfill.
 	sourceJSON := false
 	switch args[0] {
-	case "filesystem", "imessage", "applecalendar", "github", "google":
+	case "filesystem", "imessage", "applecalendar", "github", "eywa", "google":
 		fs := flag.NewFlagSet("sync "+args[0], flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 		jsonOut := fs.Bool("json", false, "emit the sync receipt as JSON")
@@ -855,6 +864,13 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		}
 		return err
 	}
+	if args[0] == "eywa" {
+		total, err := backfillEnabledEywa(ctx, cfg, sourceProgress)
+		if rerr := emitSyncSourceResult(cfg, stdout, "eywa", sourceJSON, total, "synced %d fact record(s)\n"); rerr != nil {
+			return rerr
+		}
+		return err
+	}
 	if args[0] == "google" {
 		total, err := backfillEnabledGoogle(ctx, cfg, sourceProgress)
 		if rerr := emitSyncSourceResult(cfg, stdout, "google", sourceJSON, total, "synced %d item(s)\n"); rerr != nil {
@@ -862,7 +878,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		}
 		return err
 	}
-	return fmt.Errorf("unknown sync source %q (usage: mora sync <status|google|github|filesystem|imessage|whatsapp|applecalendar|git>)", args[0])
+	return fmt.Errorf("unknown sync source %q (usage: mora sync <status|google|github|eywa|filesystem|imessage|whatsapp|applecalendar|git>)", args[0])
 }
 
 // syncSourceReceipt is the per-source re-sync outcome. Phase 2 (ISO-02) adds
@@ -1370,6 +1386,17 @@ func connectorCodeForCause(err error) string {
 	if errors.As(err, &syntaxErr) || errors.As(err, &typeErr) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return errCodeConnectorMalformed
 	}
+	// A connector package may declare its failure's class through a method, so
+	// the type (never the prose) decides: the eywa connector marks a refused
+	// token or agent as unauthorized and a rate limit or outage as unavailable.
+	var unauthorized interface{ ConnectorUnauthorized() bool }
+	if errors.As(err, &unauthorized) && unauthorized.ConnectorUnauthorized() {
+		return errCodeConnectorUnauthorized
+	}
+	var unavailable interface{ ConnectorUnavailable() bool }
+	if errors.As(err, &unavailable) && unavailable.ConnectorUnavailable() {
+		return errCodeConnectorUnavailable
+	}
 	// The connector's process, binary, endpoint, or backing file is not there.
 	var execErr *exec.Error
 	var exitErr *exec.ExitError
@@ -1399,6 +1426,8 @@ func ingestSourceDispatchDetailed(ctx context.Context, cfg Config, s Source, out
 		return ingestAppleCalDetailed(ctx, cfg, s, out)
 	case "github":
 		return ingestGitHubDetailed(ctx, cfg, s, out)
+	case "eywa":
+		return ingestEywaDetailed(ctx, cfg, s, out)
 	case "gdrive":
 		return sourceIngestResult{}, nil // deferred to week 2
 	default:

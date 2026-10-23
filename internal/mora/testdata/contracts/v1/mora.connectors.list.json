@@ -8,6 +8,12 @@
     },
     {
       "enabled": false,
+      "name": "Eywa (company memory)",
+      "needs_auth": false,
+      "type": "eywa"
+    },
+    {
+      "enabled": false,
       "name": "Filesystem",
       "needs_auth": false,
       "type": "filesystem"

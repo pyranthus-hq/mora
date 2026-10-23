@@ -1395,6 +1395,8 @@ func syncStatusPathFor(cfg Config, s Source) string {
 		return filepath.Join(cfg.StateDir, "sync", "filesystem-"+s.Name+".json")
 	case "github":
 		return filepath.Join(cfg.StateDir, "sync", "github-"+s.Name+".json")
+	case "eywa":
+		return filepath.Join(cfg.StateDir, "sync", "eywa-"+s.Name+".json")
 	default:
 		return ""
 	}
