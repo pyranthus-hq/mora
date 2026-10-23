@@ -257,6 +257,16 @@ func Path(cfg config.Config, m Document) (string, error) {
 	if m.ID == "" || m.ID == "." || m.ID == ".." || filepath.IsAbs(m.ID) || strings.ContainsAny(m.ID, "\\\x00") {
 		return "", fmt.Errorf("invalid memory id %q", m.ID)
 	}
+	// Reject slash-based traversal before OSSafeBase: on Windows it rewrites
+	// "/" to "_", which would hide the traversal from the Rel check below.
+	if strings.HasPrefix(m.ID, "/") {
+		return "", fmt.Errorf("invalid memory id %q", m.ID)
+	}
+	for _, part := range strings.Split(m.ID, "/") {
+		if part == ".." {
+			return "", fmt.Errorf("invalid memory id %q", m.ID)
+		}
+	}
 	scopePath := strings.ReplaceAll(m.Scope, ":", string(os.PathSeparator))
 	scopePath = strings.ReplaceAll(scopePath, "/", string(os.PathSeparator))
 	root := filepath.Join(MemoriesRoot(cfg), scopePath)
