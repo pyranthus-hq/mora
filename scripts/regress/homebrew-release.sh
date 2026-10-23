@@ -20,7 +20,7 @@ cat > "$work/bin/gh" <<'SH'
 set -euo pipefail
 case "$*" in
   'api repos/pyranthus-hq/mora/releases/tags/v0.15.0') cat "$MOCK_METADATA" ;;
-  'api --paginate --slurp repos/pyranthus-hq/mora/releases/394528664/assets?per_page=100') cat "$MOCK_ASSET_METADATA" ;;
+  'api --paginate repos/pyranthus-hq/mora/releases/394528664/assets?per_page=100') cat "$MOCK_ASSET_METADATA" ;;
   *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 2 ;;
 esac
 SH
@@ -60,7 +60,7 @@ metadata() {
     jq -n --arg name "$asset" --arg url "https://github.com/pyranthus-hq/mora/releases/download/$tag/$asset" --argjson size "$size" \
       '{name:$name,state:"uploaded",size:$size,browser_download_url:$url}' >> "$work/asset-lines.jsonl"
   done
-  jq -s '[.]' "$work/asset-lines.jsonl" > "$MOCK_ASSET_METADATA"
+  jq -s '.' "$work/asset-lines.jsonl" > "$MOCK_ASSET_METADATA"
 }
 run() { bash "$root/scripts/prepare-homebrew-release.sh" --tag "$tag" --out "$work/out/mora.rb"; }
 fail_case() {
@@ -93,7 +93,7 @@ cp "$work/changed.json" "$MOCK_METADATA"
 fail_case prerelease
 
 metadata
-jq --arg name "$arm64" '.[0] |= map(select(.name != $name))' "$MOCK_ASSET_METADATA" > "$work/changed.json"
+jq --arg name "$arm64" 'map(select(.name != $name))' "$MOCK_ASSET_METADATA" > "$work/changed.json"
 cp "$work/changed.json" "$MOCK_ASSET_METADATA"
 fail_case missing-arm64-asset
 
