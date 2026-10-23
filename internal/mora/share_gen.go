@@ -338,8 +338,8 @@ func shareIndexRelPath(id string) string { return "corpus/" + id + ".md" }
 var errRollback = errors.New("bucket share: replayed version is below the committed anti-rollback floor — refusing")
 
 // claimExclusiveDurable publishes an already-fsynced temp at dest with a
-// create-exclusive guarantee (os.Link primary; O_CREATE|O_EXCL placeholder +
-// replace-rename fallback on hardlink-unsupported volumes). Returns os.ErrExist
+// create-exclusive guarantee (os.Link primary; O_CREATE|O_EXCL copy + fsync
+// fallback on hardlink-unsupported volumes). Returns os.ErrExist
 // when someone already claimed dest. Exactly one claimant wins.
 func claimExclusiveDurable(temp, dest string) error {
 	return atomicio.ClaimExclusiveDurable(temp, dest, atomicio.ClaimOptions{
