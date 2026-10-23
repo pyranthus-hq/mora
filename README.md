@@ -143,6 +143,18 @@ Setup commands do different jobs:
 ## Connect an AI agent
 
 ```bash
+mora agents wire --dry-run   # show exactly what would change
+mora agents wire             # apply it; running it again changes nothing
+```
+
+`agents wire` finds Claude Code, every Codex home (`~/.codex`, `$CODEX_HOME`,
+and Orca-managed homes), and Pi. It registers `mora mcp serve` where the agent
+has MCP, lets headless `codex exec` call Mora's read-only tools, and writes a
+marked instruction block that tells the agent how to search and save. It
+prints a diff before it writes and never writes credentials. `mora agents
+unwire` takes back what wire added. To register one client by hand instead:
+
+```bash
 claude mcp add mora -s user -- mora mcp serve
 codex mcp add mora -- mora mcp serve
 ```

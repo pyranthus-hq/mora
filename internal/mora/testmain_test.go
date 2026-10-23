@@ -36,6 +36,12 @@ import (
 // ~651 tests call `run(t, "init")`. Paying for device-level crash durability
 // against a directory that `t.TempDir()` deletes moments later buys nothing.
 func TestMain(m *testing.M) {
+	// `mora agents wire` reads these to find Codex homes. The contract harness
+	// runs every registered command, so an inherited Orca session must never
+	// point a test at the developer's real Codex home.
+	for _, k := range []string{"CODEX_HOME", "ORCA_USER_DATA_PATH"} {
+		_ = os.Unsetenv(k)
+	}
 	// Capture the REAL resolved layout before any test can touch the process
 	// environment; loadConfig/loadConfigFor use it as the hermeticity tripwire
 	// (a test resolving this exact layout fails loud instead of silently

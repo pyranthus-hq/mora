@@ -170,6 +170,11 @@ func removeCodexEntry(body []byte) ([]byte, bool) {
 	if !changed {
 		return body, false
 	}
+	// Drop the blank separator that preceded a trailing mora table, so a file
+	// wire appended to reads byte for byte as it did before.
+	for trailing && len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
+		out = out[:len(out)-1]
+	}
 	result := strings.Join(out, ending)
 	if trailing {
 		result += ending

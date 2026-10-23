@@ -155,6 +155,14 @@
     {
       "json_contract": "exempt",
       "kind": "verb",
+      "path": "agents",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
       "path": "companion",
       "payload": "",
       "platform": "all",
@@ -343,6 +351,22 @@
       "payload": "",
       "platform": "all",
       "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "agents unwire",
+      "payload": "mora.agents.unwire",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "agents wire",
+      "payload": "mora.agents.wire",
+      "platform": "all",
+      "reason": ""
     },
     {
       "json_contract": "receipt",
@@ -1570,6 +1594,14 @@
   "schema": "mora.capabilities",
   "schema_version": 1,
   "schemas": [
+    {
+      "name": "mora.agents.unwire",
+      "version": 1
+    },
+    {
+      "name": "mora.agents.wire",
+      "version": 1
+    },
     {
       "name": "mora.backup",
       "version": 1
