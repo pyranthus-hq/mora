@@ -1893,30 +1893,39 @@ func TestCompanionCaptureReceiptSiblingIsExclusive(t *testing.T) {
 
 	const racers = 2
 	var (
-		ready   sync.WaitGroup
-		release = make(chan struct{})
-		once    sync.Once
-		mu      sync.Mutex
-		wg      sync.WaitGroup
-		answers [][]byte
+		arrivals int
+		ready    = make(chan struct{}, racers)
+		release  = make(chan struct{})
+		once     sync.Once
+		mu       sync.Mutex
+		wg       sync.WaitGroup
+		answers  [][]byte
 	)
-	ready.Add(racers)
-	original := capturePublicationRaceGate
-	capturePublicationRaceGate = func() {
-		ready.Done()
+	original := capturePublicationLink
+	capturePublicationLink = func(oldname, newname string) error {
+		mu.Lock()
+		arrivals++
+		mu.Unlock()
+		select {
+		case ready <- struct{}{}:
+		default:
+		}
 		<-release
+		return original(oldname, newname)
 	}
-	t.Cleanup(func() { capturePublicationRaceGate = original })
-	go func() {
-		ready.Wait()
+	// Release and join every worker before restoring the global seam, including
+	// when an assertion fails because the receipt path never reaches the gate.
+	t.Cleanup(func() {
 		once.Do(func() { close(release) })
-	}()
+		wg.Wait()
+		capturePublicationLink = original
+	})
 
 	for i := 0; i < racers; i++ {
+		body := receiptBytesFor(t, id, i)
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			body := receiptBytesFor(t, id, i)
 			got, err := recordCaptureReceipt(cfg, id, body)
 			mu.Lock()
 			defer mu.Unlock()
@@ -1927,7 +1936,24 @@ func TestCompanionCaptureReceiptSiblingIsExclusive(t *testing.T) {
 			answers = append(answers, got)
 		}(i)
 	}
+	// Both callers must reach the exclusive primitive before either can claim
+	// the sibling. A missing gate fails here instead of leaking a watcher.
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for i := 0; i < racers; i++ {
+		select {
+		case <-ready:
+		case <-timer.C:
+			t.Fatalf("only %d of %d racers reached the receipt link gate", i, racers)
+		}
+	}
+	once.Do(func() { close(release) })
 	wg.Wait()
+	if arrivals != racers {
+		t.Fatalf("gate arrivals = %d, want %d", arrivals, racers)
+	}
+
+	capturePublicationLink = original
 
 	if len(answers) != racers {
 		t.Fatalf("%d racers answered, want %d", len(answers), racers)
