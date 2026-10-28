@@ -26,3 +26,9 @@ internal/mora/testdata/contracts/**/*.json text eol=lf
 # json.MarshalIndent output, which emits LF everywhere. Windows checkout
 # conversion would rewrite these to CRLF and fail every golden.
 internal/companion/testdata/v1/*.json text eol=lf
+
+# The memory-replay contract receipt is pinned byte-for-byte against
+# json.MarshalIndent output, which emits LF everywhere, and it is the first such
+# golden to live under docs/ rather than a testdata tree. Windows checkout
+# conversion would rewrite it to CRLF and fail TestContractReceiptGolden.
+docs/experiments/memory-replay/contract/*.json text eol=lf

@@ -1,0 +1,29 @@
+{
+  "schema": "mora.pilotreplay.receipt",
+  "schema_version": 1,
+  "receipt_id": "receipt-synth-contract-v1",
+  "generated_at": "2026-01-16T00:00:00Z",
+  "example_hashes": {
+    "authorized_run_gate_shape": "40a4bc86aa007736f1521b72b3f500b02bf95e96ba3d6f041ccea43d6a07c1b0",
+    "default_access_table": "c2d9611b10adce327dced8ba44db723ddf810a9dc93c87642e52946b868a80c2",
+    "default_planning_matrix": "8ea6d6ed450c13d2bc9d6e80e2516fd9e8e7c71f4c949774dcd6fe9e79a10f4e",
+    "denied_run_gate": "46eee47b984d652e48e55e40afcb0ca67a77b6ef8ee3e34175bb618dcff103e0",
+    "positive_attempt_succeeded": "a90a527b4c7bfc2d995d6523df878f352eca81720f961b1b34d0d4792508d047",
+    "positive_conditions": "c935ac3df91df46618e37346562e55fa86e70f70c7b535ac75e01a70761cc8c1",
+    "positive_failure_case": "7b5795d3f2d152d4c1cc546775efc3aaf1864952742019a27a40062bfee86c72",
+    "positive_no_relevant_memory": "e647ce4eb0ee71aa238588b0452ff09ea553d40da6ae65fade3785c1c668c502",
+    "positive_outcome_pass": "e142e4b13fae035982d2b9bdc244865c6e2be82cce3376eda59554de9f394554",
+    "positive_report": "2a48cf0116d27e9086b693c7cee48040b0d7c8c4c9572de6a745c48e2c69a43b",
+    "positive_valid_memory_control": "5cf32974657ce95fbdb6ca99ccbf8807b9a65238c23e3f2dd2f87a6edefe5444"
+  },
+  "tests_passed": true,
+  "unresolved_limits": [
+    "Real case qualification is owned by #542 and is out of scope for this contract package.",
+    "Runner/oracle implementations are owned by later issues (#543+).",
+    "Actual matrix and monetary ceiling must freeze before any provider invocation.",
+    "Reference-memory ceiling remains future optional work.",
+    "Provider version was missing in synthetic harness fixtures by design."
+  ],
+  "claims_efficacy": false,
+  "notes": "Offline contract receipt. Does not claim downstream efficacy."
+}
