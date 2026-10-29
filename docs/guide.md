@@ -997,6 +997,17 @@ mora teach undo <ledger-id>
 Identity matches are proposals until you confirm them. Connector source files
 stay unchanged. Memory revision commands apply only to memories that you wrote.
 
+Concurrent correction, supersession, and retraction commands for the same current
+memory have one winner. Losing commands return a conflict before creating a
+replacement. Re-read the current revision before deciding again. Undo checks for
+active descendants under the same governance lease, so undo the newest revision
+first. Rebuild runs after releasing that lease; if rebuilding fails, the committed
+decision and replacement remain with dirty markers for recovery. A failed ledger
+append removes its own replacement; cleanup failures explicitly name the leftover.
+This does not make the memory file and ledger a single crash-atomic transaction,
+and does not repair historical forks created by older versions.
+
+
 `mora teach identity confirm --json` and `mora teach identity reject --json`
 emit the `mora.teach.identity.confirm` and `mora.teach.identity.reject` v1
 receipts with the decided pair, the ledger entry id, the corroborating evidence,
