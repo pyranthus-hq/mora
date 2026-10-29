@@ -1250,6 +1250,13 @@ mora hook uninstall
 mora serve http uninstall
 ```
 
+### macOS and Linux script (`uninstall.sh`)
+
+The script first runs `mora hook uninstall`, `mora serve http uninstall`, and
+`mora schedule uninstall` for each installed job. It then deletes your login
+tokens, sharing keys, and `http.json`, and removes the binary. It keeps the
+vault, config, data, and state; add `--purge` to delete those too.
+
 ### Windows
 
 ```powershell
