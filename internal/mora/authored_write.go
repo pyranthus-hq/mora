@@ -1,5 +1,7 @@
 package mora
 
+import "context"
+
 // An authored write whose FTS upsert committed answers with searchable=true,
 // and its health reads index "refreshing": it is searchable now, and the
 // coalesced background reconcile is rebuilding its graph, vector and commitment
@@ -29,4 +31,31 @@ func authoredWriteProjectionPending(cfg Config, op pendingOp) bool {
 		}
 	}
 	return false
+}
+
+// reflectDeleteInIndex removes one just-deleted memory from the search index
+// with a single targeted transaction (no whole-vault rebuild). The caller's
+// pending-delete marker is left in place: it keeps suppressing the id on every
+// read path and pins graph/vector/commitment lag until a covering rebuild
+// retires it. Emptying the vault is the one case that rebuilds inline (instant,
+// Allow mode): the deferred Enforce rebuild would otherwise refuse an empty
+// vault and strand the marker.
+func reflectDeleteInIndex(ctx context.Context, cfg Config, id string) error {
+	remaining, err := indexDelete(ctx, cfg, id)
+	if err != nil {
+		return err
+	}
+	if remaining == 0 {
+		_, err = rebuildIndexWithPolicy(ctx, cfg, policyAllow)
+	}
+	return err
+}
+
+// scheduleDeleteReconciliation schedules the deferred projection catch-up for a
+// delete whose marker is still pending (an emptying delete's inline rebuild
+// already retired it).
+func scheduleDeleteReconciliation(cfg Config, op pendingOp) {
+	if authoredWriteProjectionPending(cfg, op) {
+		scheduleAuthoredReconciliation(cfg)
+	}
 }

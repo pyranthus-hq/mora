@@ -403,12 +403,20 @@ func cmdDelete(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		_ = unmarkIndexDirty(cfg, op.OpID) // the file never went away
 		return err
 	}
-	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
+	if err := reflectDeleteInIndex(ctx, cfg, m.ID); err != nil {
 		// The op REMAINS -> the index reads dirty AND B4 suppresses the deleted id.
 		// A partial delete stays a LOUD error with no receipt, mirroring the MCP
 		// delete_memory asymmetry: serving deleted content warrants the error,
 		// and the retry is harmless. Do not soften this into a receipt.
 		return fmt.Errorf("memory %s deleted, but the search index could not be updated: %w — run `mora index rebuild`", m.ID, err)
+	}
+	// Graph, vector and commitment projections catch up in the coalesced
+	// reconcile (the same one `mora write` runs). The id is already out of the
+	// index and suppressed, so a failure here is a warning, not a failed delete.
+	if authoredWriteProjectionPending(cfg, op) {
+		if err := reconcileAuthoredWrites(ctx, cfg); err != nil {
+			fmt.Fprintf(stderr, "warning: memory deleted and removed from search, but full index reconciliation is pending: %v\n", err)
+		}
 	}
 	if *jsonOut {
 		return emitReceipt(stdout, "mora.delete", 1, deleteReceipt{ID: m.ID, Deleted: true})
