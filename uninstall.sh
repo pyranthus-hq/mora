@@ -1,8 +1,9 @@
 #!/usr/bin/env sh
 # Mora uninstaller — the mirror of install.sh.
 #
-# Removes the `mora` binary, de-registers the MCP server from your agents, and
-# (only if you ask) deletes your vault. By default your vault is PRESERVED —
+# Removes the `mora` binary, its Claude Code hooks, background HTTP service and
+# scheduled jobs, your stored credentials, and the MCP registration. With
+# --purge it also deletes your vault and Mora's config, data and state. By default your vault is PRESERVED —
 # it's your data, and uninstalling the tool should never silently delete it.
 #
 #   sh uninstall.sh              # remove binary + MCP registration; KEEP the vault
@@ -29,9 +30,8 @@ done
 
 say() { printf '%s\n' "$*"; }
 
-# --- find and remove the mora binary -------------------------------------------
+# --- find the mora binary -------------------------------------------------------
 # Prefer whatever is on PATH; otherwise search the same dirs install.sh writes to.
-REMOVED=""
 if [ -n "${PREFIX:-}" ]; then
 	CANDIDATES="$PREFIX/mora"
 else
@@ -45,17 +45,64 @@ else
 $d/mora"
 	done
 fi
+CANDIDATES="$(printf '%s\n' "$CANDIDATES" | awk 'NF && !seen[$0]++')"
 
-# de-dup and remove each existing binary
-printf '%s\n' "$CANDIDATES" | awk 'NF && !seen[$0]++' | while IFS= read -r bin; do
+# --- undo what mora installed outside its own dirs (needs the binary) -----------
+# Run BEFORE the binary is deleted. Each step is best-effort: a failure is
+# reported and the uninstall keeps going.
+FIRST_BIN=""
+while IFS= read -r bin; do
+	if [ -n "$bin" ] && [ -x "$bin" ]; then FIRST_BIN="$bin"; break; fi
+done <<EOF_CANDIDATES
+$CANDIDATES
+EOF_CANDIDATES
+
+try() { # try <label> <cmd...>: run quietly, report the outcome, never abort
+	label="$1"; shift
+	if "$@" >/dev/null 2>&1; then say "Removed $label"; else say "Could not remove $label (continuing)"; fi
+}
+
+if [ -n "$FIRST_BIN" ]; then
+	try "Claude Code hooks" "$FIRST_BIN" hook uninstall
+	try "background HTTP service" "$FIRST_BIN" serve http uninstall
+	# Same job names as `mora schedule install`; only touch jobs that exist.
+	for job in pulse-daily doctor-pulse index-hourly backup-daily lint-weekly ingest-hourly git-daily update-daily; do
+		if [ -e "$HOME/Library/LaunchAgents/com.mora.$job.plist" ]; then
+			try "scheduled job $job" "$FIRST_BIN" schedule uninstall "$job"
+		fi
+	done
+else
+	say "Note: no mora binary found, so hooks, the HTTP service and scheduled jobs were NOT removed."
+	say "      Install mora again (or set PREFIX) and re-run to clean them up."
+fi
+
+# --- secrets: always removed, with or without --purge ---------------------------
+# The vault is your data; these are credentials, so they never stay behind.
+CONFIG_DIR="${MORA_CONFIG_DIR:-$HOME/.config/mora}"
+DATA_DIR="${MORA_CONFIG_DIR:+$MORA_CONFIG_DIR/data}"
+DATA_DIR="${DATA_DIR:-$HOME/.local/share/mora}"
+STATE_DIR="${MORA_CONFIG_DIR:+$MORA_CONFIG_DIR/state}"
+STATE_DIR="${STATE_DIR:-$HOME/.local/state/mora}"
+
+remove_path() { # remove_path <path> <label>
+	case "$1" in ""|"/"|"$HOME") say "Refusing to remove unsafe path: '$1'"; return 0 ;; esac
+	if [ -e "$1" ]; then
+		rm -rf "$1" && say "Removed $2: $1"
+	fi
+}
+remove_path "$CONFIG_DIR/tokens" "login tokens"
+remove_path "$CONFIG_DIR/share/identity.txt" "sharing private key"
+remove_path "$CONFIG_DIR/share/signing.key" "sharing signing key"
+remove_path "$CONFIG_DIR/http.json" "HTTP bearer token"
+
+# --- remove the binary ----------------------------------------------------------
+printf '%s\n' "$CANDIDATES" | while IFS= read -r bin; do
 	if [ -e "$bin" ]; then
 		rm -f "$bin" && say "Removed binary: $bin"
 	fi
 done
 if command -v mora >/dev/null 2>&1; then
 	say "Note: a 'mora' is still on PATH at $(command -v mora) — remove it manually or set PREFIX and re-run."
-else
-	REMOVED="yes"
 fi
 
 # --- de-register the MCP server from agents (best-effort) ----------------------
@@ -66,24 +113,21 @@ if command -v codex >/dev/null 2>&1; then
 	codex mcp remove mora >/dev/null 2>&1 && say "Removed Mora from Codex MCP config." || true
 fi
 
-# --- vault: preserve by default, delete only on explicit purge -----------------
+# --- vault, config, data, state: preserve by default, delete only on --purge ----
+if [ "$PURGE" = "1" ] && [ -d "$VAULT" ] && [ "$ASSUME_YES" != "1" ]; then
+	printf 'Delete your vault at %s? This is your data and cannot be undone. [y/N] ' "$VAULT"
+	read -r ans || ans=""
+	case "$ans" in y|Y|yes|YES) : ;; *) PURGE=0 ;; esac
+fi
 if [ "$PURGE" = "1" ]; then
-	if [ -d "$VAULT" ]; then
-		if [ "$ASSUME_YES" != "1" ]; then
-			printf 'Delete your vault at %s? This is your data and cannot be undone. [y/N] ' "$VAULT"
-			read -r ans || ans=""
-			case "$ans" in y|Y|yes|YES) : ;; *) say "Kept vault: $VAULT"; PURGE=0 ;; esac
-		fi
-		if [ "$PURGE" = "1" ]; then
-			rm -rf "$VAULT" && say "Deleted vault: $VAULT"
-		fi
-	else
-		say "No vault found at $VAULT (nothing to delete)."
-	fi
+	# The vault may sit inside CONFIG_DIR (MORA_CONFIG_DIR), so delete it first.
+	remove_path "$VAULT" "vault"
+	remove_path "$CONFIG_DIR" "config"
+	remove_path "$DATA_DIR" "data (search index)"
+	remove_path "$STATE_DIR" "state"
 else
-	if [ -d "$VAULT" ]; then
-		say "Kept your vault: $VAULT  (re-run with --purge to delete it)"
-	fi
+	[ -d "$VAULT" ] && say "Kept your vault: $VAULT  (re-run with --purge to delete it)"
+	say "Kept config, data and state: $CONFIG_DIR, $DATA_DIR, $STATE_DIR  (--purge deletes them)"
 fi
 
 # --- final notes ---------------------------------------------------------------
