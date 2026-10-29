@@ -53,7 +53,7 @@ It does not cover the `mora` command itself. An agent that can run Terminal comm
 If `mora init` shows a menu, choose no connector for now.
 
 Mora has no window and no Dock icon. It is a command in Terminal.
-Other ways to install: [install guide](docs/guide.md#install) (direct installer, Linux, Windows, build from source).
+Other ways to install: [install guide](docs/guide.md#install) covers the signed Mora.app installer (`install-app.sh`), Linux, Windows and building from source.
 
 ## Try it in 60 seconds
 
