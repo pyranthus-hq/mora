@@ -1055,6 +1055,17 @@ mora retention verify --json
 mora retention recover <manifest-id> --yes --json
 ```
 
+`retention verify` compares `vault_count` with the current, non-tombstoned Teach
+projection in the index. Retained superseded, retracted, and undone replacement
+files are counted separately in `historical_count`. All listed files are still
+parsed; unreadable or invalid documents make verification unhealthy and appear
+as vault-relative `invalid_memory_paths`. History excluded from ordinary search
+is not an index omission. This checks retained files, not proof that historical
+files deleted outside Mora still exist. Unhealthy checks retain the existing CLI
+contract: exit 1 with diagnostics on stderr, including with `--json`; only healthy
+checks emit a versioned JSON receipt on stdout.
+
+
 Execution refuses incomplete decisions, changed files, or a target set that no
 longer matches the reviewed report. Before mutation it writes an AES-GCM
 encrypted recovery manifest under Mora's state directory, then rebuilds and

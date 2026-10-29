@@ -95,6 +95,8 @@ type retentionExecutionReceipt struct {
 type retentionIntegrityReceipt struct {
 	SchemaVersion      int      `json:"schema_version"`
 	VaultCount         int      `json:"vault_count"`
+	HistoricalCount    int      `json:"historical_count"`
+	InvalidMemoryPaths []string `json:"invalid_memory_paths,omitempty"`
 	IndexCount         int      `json:"index_count"`
 	MissingIndexIDs    []string `json:"missing_index_ids"`
 	OrphanIndexIDs     []string `json:"orphan_index_ids"`
@@ -499,12 +501,31 @@ func verifyRetentionIntegrity(ctx context.Context, cfg Config) (retentionIntegri
 	if err != nil {
 		return receipt, err
 	}
+	governance, err := loadGovernance(cfg)
+	if err != nil {
+		return receipt, err
+	}
 	vaultIDs := map[string]bool{}
 	for _, path := range files {
 		m, err := parseMemory(path)
-		if err != nil || m.DeletedAt != "" {
+		if err != nil {
+			relative, relErr := filepath.Rel(cfg.VaultDir, path)
+			if relErr != nil {
+				return receipt, relErr
+			}
+			receipt.InvalidMemoryPaths = append(receipt.InvalidMemoryPaths, filepath.ToSlash(relative))
 			continue
 		}
+		// Retained Teach history is evidence, not part of the current index. Still
+		// parse every retained file above so hiding history does not hide corruption.
+		if !governance.memoryVisible(m.ID) {
+			receipt.HistoricalCount++
+			continue
+		}
+		if m.DeletedAt != "" {
+			continue
+		}
+
 		vaultIDs[m.ID] = true
 	}
 	receipt.VaultCount = len(vaultIDs)
@@ -573,9 +594,10 @@ func verifyRetentionIntegrity(ctx context.Context, cfg Config) (retentionIntegri
 	if err := edges.Close(); err != nil {
 		return receipt, err
 	}
+	sort.Strings(receipt.InvalidMemoryPaths)
 	sort.Strings(receipt.MissingIndexIDs)
 	sort.Strings(receipt.OrphanIndexIDs)
-	receipt.Healthy = len(receipt.MissingIndexIDs) == 0 && len(receipt.OrphanIndexIDs) == 0 && len(receipt.DanglingGraphEdges) == 0
+	receipt.Healthy = len(receipt.InvalidMemoryPaths) == 0 && len(receipt.MissingIndexIDs) == 0 && len(receipt.OrphanIndexIDs) == 0 && len(receipt.DanglingGraphEdges) == 0
 	return receipt, nil
 }
 
