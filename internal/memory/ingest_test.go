@@ -797,3 +797,133 @@ func TestIngestExpiredCursorFallbackStampsSnapshotMode(t *testing.T) {
 		t.Fatalf("fallback did not move to the snapshot endpoint: %+v", f.windows)
 	}
 }
+
+// Audit V1: a dropped write must not move the between-run cursor past the item.
+// Before the fix the run promoted hist-200, so t2 never came back unless it
+// changed again.
+func TestIngestDroppedWriteKeepsIncrementalCursor(t *testing.T) {
+	f := &windowRecordingFetcher{pages: map[string]Page{
+		"": {Items: []Item{
+			{Kind: kindGmailThread, ProviderID: "t1"},
+			{Kind: kindGmailThread, ProviderID: "t2"},
+		}, SyncCursor: "hist-200"},
+	}}
+	status := &SyncStatus{Source: "gmail", IncrementalCursor: "hist-100"}
+	failT2 := true
+	var written []string
+	params := IngestParams{
+		Context: context.Background(), Fetcher: f, Kind: kindGmailThread, Status: status,
+		Write: func(m MappedMemory) error {
+			if failT2 && m.ProviderID == "t2" {
+				return errWrite
+			}
+			written = append(written, m.ProviderID)
+			return nil
+		},
+	}
+	if _, err := Ingest(params); err == nil {
+		t.Fatal("a run that dropped an item must return an error")
+	}
+	if status.IncrementalCursor != "hist-100" {
+		t.Fatalf("IncrementalCursor=%q after a dropped write, want hist-100 kept", status.IncrementalCursor)
+	}
+	if status.Checkpoint != "" || status.CursorMode != "" {
+		t.Fatalf("checkpoint=%q mode=%q, want both cleared so the retry starts the window again", status.Checkpoint, status.CursorMode)
+	}
+
+	failT2 = false
+	if _, err := Ingest(params); err != nil {
+		t.Fatalf("retry failed: %v", err)
+	}
+	if len(f.windows) != 2 || f.windows[1].SyncCursor != "hist-100" {
+		t.Fatalf("retry did not re-read from hist-100: windows=%+v", f.windows)
+	}
+	if got := strings.Join(written, ","); got != "t1,t1,t2" {
+		t.Fatalf("written=%s, want t2 recovered on retry", got)
+	}
+	if status.IncrementalCursor != "hist-200" {
+		t.Fatalf("IncrementalCursor=%q after a clean retry, want hist-200", status.IncrementalCursor)
+	}
+}
+
+// Codex review of V1: a drop on page 1, then a fetch failure on page 2, then a
+// clean resume must still withhold the cursor, because t2 never got written.
+func TestIngestDropSurvivesCheckpointResume(t *testing.T) {
+	f := &windowRecordingFetcher{pages: map[string]Page{
+		"":   {Items: []Item{{Kind: kindGmailThread, ProviderID: "t1"}, {Kind: kindGmailThread, ProviderID: "t2"}}, NextCursor: "h2", SyncCursor: "hist-200"},
+		"h2": {Items: []Item{{Kind: kindGmailThread, ProviderID: "t3"}}, SyncCursor: "hist-200"},
+	}}
+	status := &SyncStatus{Source: "gmail", IncrementalCursor: "hist-100"}
+	failFetch := true
+	fetcher := fetchFunc(func(k ItemKind, w FetchWindow, cursor string) (Page, error) {
+		if failFetch && cursor == "h2" {
+			return Page{}, errFetch
+		}
+		return f.FetchPage(k, w, cursor)
+	})
+	write := func(m MappedMemory) error {
+		if m.ProviderID == "t2" {
+			return errWrite
+		}
+		return nil
+	}
+	params := IngestParams{Context: context.Background(), Fetcher: fetcher, Kind: kindGmailThread, Status: status, Write: write}
+	if _, err := Ingest(params); err != errFetch {
+		t.Fatalf("first run: want fetch error, got %v", err)
+	}
+	failFetch = false
+	if _, err := Ingest(params); err == nil {
+		t.Fatal("resumed walk that finished a dropped walk must still report the drop")
+	}
+	if status.IncrementalCursor != "hist-100" {
+		t.Fatalf("IncrementalCursor=%q, want hist-100 kept after a resumed walk with an earlier drop", status.IncrementalCursor)
+	}
+}
+
+// Codex review of V1: an item that never writes must not pin the cursor forever.
+func TestIngestPoisonItemReleasesCursorAfterMaxWalks(t *testing.T) {
+	f := &windowRecordingFetcher{pages: map[string]Page{
+		"": {Items: []Item{{Kind: kindGmailThread, ProviderID: "bad"}}, SyncCursor: "hist-200"},
+	}}
+	status := &SyncStatus{Source: "gmail", IncrementalCursor: "hist-100"}
+	params := IngestParams{Context: context.Background(), Fetcher: f, Kind: kindGmailThread, Status: status,
+		Write: func(MappedMemory) error { return errWrite }}
+	for i := 1; i <= maxDroppedWalks; i++ {
+		_, err := Ingest(params)
+		if err == nil {
+			t.Fatalf("walk %d: a dropped item must stay an error", i)
+		}
+		want := "hist-100"
+		if i == maxDroppedWalks {
+			want = "hist-200"
+		}
+		if status.IncrementalCursor != want {
+			t.Fatalf("walk %d: IncrementalCursor=%q, want %q", i, status.IncrementalCursor, want)
+		}
+	}
+	if status.LastSuccessAt != "" {
+		t.Fatal("giving up on an item must not look like a successful sync")
+	}
+}
+
+type fetchFunc func(ItemKind, FetchWindow, string) (Page, error)
+
+func (f fetchFunc) FetchPage(k ItemKind, w FetchWindow, cursor string) (Page, error) {
+	return f(k, w, cursor)
+}
+
+// Codex re-check of V1: a drop left by a walk abandoned before its first
+// checkpoint must not fail a later fresh walk that writes everything.
+func TestIngestFreshWalkClearsAbandonedDrop(t *testing.T) {
+	f := &windowRecordingFetcher{pages: map[string]Page{
+		"": {Items: []Item{{Kind: kindGmailThread, ProviderID: "t1"}}, SyncCursor: "hist-200"},
+	}}
+	status := &SyncStatus{Source: "gmail", IncrementalCursor: "hist-100", WalkDropped: true}
+	if _, err := Ingest(IngestParams{Context: context.Background(), Fetcher: f, Kind: kindGmailThread, Status: status,
+		Write: func(MappedMemory) error { return nil }}); err != nil {
+		t.Fatalf("clean fresh walk reported %v", err)
+	}
+	if status.IncrementalCursor != "hist-200" || status.WalkDropped {
+		t.Fatalf("cursor=%q walkDropped=%v, want hist-200 and false", status.IncrementalCursor, status.WalkDropped)
+	}
+}
