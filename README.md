@@ -83,10 +83,6 @@ claude mcp add mora -s user -- mora mcp serve    # Claude Code tools
 codex mcp add mora -- mora mcp serve             # Codex tools
 ```
 
-<!-- VERIFY (Oct 29): the hook route passed a sandbox test (2026-10-28, Claude Code, haiku model) with a
-     different rule and prompt. This exact prompt, a clean Mac and the tools-only (MCP) route for Codex are
-     not tested. Run it on a second macOS user account. If the agent does not use the saved fix, cut the
-     "Open a new Claude Code session" sentence. -->
 
 ## Agents propose. You approve.
 
