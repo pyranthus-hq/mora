@@ -16,7 +16,8 @@
 #   MORA_VAULT=~/vault/mora  vault location (default: ~/vault/mora)
 set -eu
 
-VAULT="${MORA_VAULT:-$HOME/vault/mora}"
+VAULT="${MORA_VAULT:-${MORA_CONFIG_DIR:+$MORA_CONFIG_DIR/vault}}"
+VAULT="${VAULT:-$HOME/vault/mora}"
 PURGE="${MORA_PURGE:-0}"
 ASSUME_YES=0
 
@@ -62,15 +63,34 @@ try() { # try <label> <cmd...>: run quietly, report the outcome, never abort
 	if "$@" >/dev/null 2>&1; then say "Removed $label"; else say "Could not remove $label (continuing)"; fi
 }
 
+OS="$(uname -s 2>/dev/null || echo unknown)"
+SYSTEMD_UNIT="mora-serve-http.service"
+
 if [ -n "$FIRST_BIN" ]; then
 	try "Claude Code hooks" "$FIRST_BIN" hook uninstall
+	# On Linux `serve http uninstall` only deletes the unit file; it leaves the
+	# server running, so stop and disable it first (the unit must still exist).
+	if [ "$OS" = "Linux" ] && [ -e "$HOME/.config/systemd/user/$SYSTEMD_UNIT" ]; then
+		if command -v systemctl >/dev/null 2>&1; then
+			try "systemd unit $SYSTEMD_UNIT (stopped and disabled)" systemctl --user disable --now "$SYSTEMD_UNIT"
+		else
+			say "Note: systemctl not found; stop the server yourself: systemctl --user disable --now $SYSTEMD_UNIT"
+		fi
+	fi
 	try "background HTTP service" "$FIRST_BIN" serve http uninstall
+	if [ "$OS" = "Linux" ] && command -v systemctl >/dev/null 2>&1; then
+		systemctl --user daemon-reload >/dev/null 2>&1 || true
+	fi
 	# Same job names as `mora schedule install`; only touch jobs that exist.
+	# macOS only: on Linux mora installs no timer (it prints a cron/timer hint).
 	for job in pulse-daily doctor-pulse index-hourly backup-daily lint-weekly ingest-hourly git-daily update-daily; do
 		if [ -e "$HOME/Library/LaunchAgents/com.mora.$job.plist" ]; then
 			try "scheduled job $job" "$FIRST_BIN" schedule uninstall "$job"
 		fi
 	done
+	if [ "$OS" = "Linux" ]; then
+		say "Note: if you added a cron line or systemd timer for a Mora job, remove it by hand."
+	fi
 else
 	say "Note: no mora binary found, so hooks, the HTTP service and scheduled jobs were NOT removed."
 	say "      Install mora again (or set PREFIX) and re-run to clean them up."
@@ -84,16 +104,57 @@ DATA_DIR="${DATA_DIR:-$HOME/.local/share/mora}"
 STATE_DIR="${MORA_CONFIG_DIR:+$MORA_CONFIG_DIR/state}"
 STATE_DIR="${STATE_DIR:-$HOME/.local/state/mora}"
 
-remove_path() { # remove_path <path> <label>
-	case "$1" in ""|"/"|"$HOME") say "Refusing to remove unsafe path: '$1'"; return 0 ;; esac
+# Recursive deletes only ever happen through safe_rmdir. It refuses unless the
+# path is absolute, resolves to a real directory strictly inside $HOME (never
+# $HOME, "/" or an ancestor of $HOME), and looks like Mora's own:
+#   kind "dir"   the last component must be "mora"
+#   kind "vault" the directory must hold the .mora-vault.json marker
+# A symlink is removed as a link and never followed.
+refuse() { say "Refusing to delete $1: $2"; say "  Remove it yourself if it is really Mora's."; }
+safe_rmdir() { # safe_rmdir <path> <label> <dir|vault>
+	p="$1"; label="$2"; kind="$3"
+	[ -e "$p" ] || [ -L "$p" ] || return 0
+	case "$p" in /*) : ;; *) refuse "$label ($p)" "path is not absolute"; return 0 ;; esac
+	p="${p%/}"
+	[ -n "$p" ] || { refuse "$label (/)" "that is the filesystem root"; return 0; }
+	if [ "$kind" = "dir" ] && [ "${p##*/}" != "mora" ]; then
+		refuse "$label ($p)" "its name is not 'mora'"; return 0
+	fi
+	if [ "$kind" = "vault" ] && [ ! -f "$p/.mora-vault.json" ]; then
+		refuse "$label ($p)" "no .mora-vault.json marker, so it may not be a Mora vault"; return 0
+	fi
+	if [ -L "$p" ]; then
+		# Judge where the link itself lives, not where it points.
+		canon="$(cd -P "${p%/*}/" 2>/dev/null && pwd -P)/${p##*/}" || { refuse "$label ($p)" "cannot resolve its parent"; return 0; }
+	else
+		canon="$(cd -P "$p" 2>/dev/null && pwd -P)" || { refuse "$label ($p)" "cannot resolve it to a directory"; return 0; }
+	fi
+	home="$(cd -P "$HOME" 2>/dev/null && pwd -P)" || { refuse "$label ($p)" "cannot resolve \$HOME"; return 0; }
+	case "$canon" in
+		"$home"/?*) : ;;
+		*) refuse "$label ($p)" "it is not strictly inside your home directory"; return 0 ;;
+	esac
+	if [ -L "$p" ]; then
+		rm -f "$p" && say "Removed $label (symlink only; its target is untouched): $p"
+	else
+		rm -rf "$canon" && say "Removed $label: $p"
+	fi
+}
+remove_path() { # remove_path <path> <label>: a fixed Mora credential file or dir under CONFIG_DIR
 	if [ -e "$1" ]; then
 		rm -rf "$1" && say "Removed $2: $1"
 	fi
 }
+case "$CONFIG_DIR" in
+	/*) SECRETS_OK=1 ;;
+	*) SECRETS_OK=0; say "Config dir '$CONFIG_DIR' is not an absolute path: credentials there were NOT removed." ;;
+esac
+if [ "$SECRETS_OK" = "1" ]; then
 remove_path "$CONFIG_DIR/tokens" "login tokens"
 remove_path "$CONFIG_DIR/share/identity.txt" "sharing private key"
 remove_path "$CONFIG_DIR/share/signing.key" "sharing signing key"
 remove_path "$CONFIG_DIR/http.json" "HTTP bearer token"
+fi
 
 # --- remove the binary ----------------------------------------------------------
 printf '%s\n' "$CANDIDATES" | while IFS= read -r bin; do
@@ -121,10 +182,15 @@ if [ "$PURGE" = "1" ] && [ -d "$VAULT" ] && [ "$ASSUME_YES" != "1" ]; then
 fi
 if [ "$PURGE" = "1" ]; then
 	# The vault may sit inside CONFIG_DIR (MORA_CONFIG_DIR), so delete it first.
-	remove_path "$VAULT" "vault"
-	remove_path "$CONFIG_DIR" "config"
-	remove_path "$DATA_DIR" "data (search index)"
-	remove_path "$STATE_DIR" "state"
+	safe_rmdir "$VAULT" "vault" vault
+	if [ -n "${MORA_CONFIG_DIR:-}" ]; then
+		# Data and state live inside the isolated root; one delete covers them.
+		safe_rmdir "$CONFIG_DIR" "config, data and state" dir
+	else
+		safe_rmdir "$CONFIG_DIR" "config" dir
+		safe_rmdir "$DATA_DIR" "data (search index)" dir
+		safe_rmdir "$STATE_DIR" "state" dir
+	fi
 else
 	[ -d "$VAULT" ] && say "Kept your vault: $VAULT  (re-run with --purge to delete it)"
 	say "Kept config, data and state: $CONFIG_DIR, $DATA_DIR, $STATE_DIR  (--purge deletes them)"
