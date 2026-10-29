@@ -668,6 +668,35 @@ mora hook uninstall
 `mora hook status --json` emits the `mora.hook.status` v1 receipt. Its
 `harnesses` field is always an array, including when no hook is installed.
 
+For one project's corrections, run from its root directory:
+
+```bash
+mora hook install --project --scope project:my-app
+mora hook status --project --json
+mora write --scope project:my-app --type decision --title "Use pnpm" \
+  --text "Always use pnpm to install dependencies in this project."
+```
+
+Project installation writes only `.claude/settings.local.json`. It installs
+`UserPromptSubmit` recall for that exact memory scope and omits `SessionStart`,
+whose brief is global. It binds the installation directory explicitly instead
+of guessing a scope from a folder name. The hook checks Claude's `cwd` on every
+prompt: the root and its subdirectories are allowed; missing, relative,
+unresolvable, or outside paths inject nothing. Symlinks are resolved before
+checking containment. Use a different scope name for each project.
+
+The installer refuses if it finds managed global Mora hooks; remove those with
+`mora hook uninstall` first. It also refuses managed hooks in the project's
+`.claude/settings.json`, or an existing local Mora `SessionStart` hook. Other
+settings and hooks are preserved. From the same project root, remove the local
+Mora hook with `mora hook uninstall --project`.
+
+The plain `mora hook install` remains global and reads across scopes. Project
+hooks filter automatic recall only: MCP reads still use their existing scope
+arguments, other hooks may inject context, and previously read context remains
+in an agent's session. This installer supports Claude Code; Codex can use MCP
+but has no automatic Mora hook route.
+
 ## Companion
 
 ### Read verbs for desktop and scripts

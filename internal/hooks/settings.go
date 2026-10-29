@@ -186,6 +186,25 @@ func Install(path, exe string, threshold float64) error {
 	settings["hooks"] = groups
 	return Write(path, settings)
 }
+
+// InstallProjectRecall omits the unscoped brief and binds recall to one directory.
+func InstallProjectRecall(path, exe, scope, projectDir string, threshold float64) error {
+	settings, groups, err := Load(path)
+	if err != nil {
+		return err
+	}
+	if find(groups["SessionStart"], "session-start") >= 0 {
+		return errors.New("remove the existing Mora SessionStart hook before installing project recall")
+	}
+	recall := shellQuote(exe) + " hook recall --scope " + shellQuote(scope) + " --project-dir " + shellQuote(projectDir)
+	if threshold != 0 {
+		recall += " --threshold " + strconv.FormatFloat(threshold, 'g', -1, 64)
+	}
+	recall += " " + Marker + ":recall"
+	upsert(groups, "UserPromptSubmit", "recall", Command{Type: "command", Command: recall, Timeout: 10})
+	settings["hooks"] = groups
+	return Write(path, settings)
+}
 func Uninstall(path string) error {
 	settings, groups, err := Load(path)
 	if err != nil {

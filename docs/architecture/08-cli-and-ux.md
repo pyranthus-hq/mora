@@ -17,6 +17,26 @@ clean data to a machine or agent.
 
 `main.main()` (`cmd/mora/main.go:18`) is intentionally tiny: it copies the three release-injected vars (`version`, `commit`, `date`) into the package globals (`mora.BuildVersion` etc., declared at `internal/mora/mora.go:38`) and hands everything else to `mora.Run(ctx, os.Args[1:], os.Stdout, os.Stderr, os.Stdin)`. **The streams are passed as parameters, never read from `os.*` inside the package** — that is the seam that makes every command testable with a `bytes.Buffer` and is also the foundation of the byte-clean invariant (a buffer is not a `*os.File`, so styling auto-disables in tests). If `Run` returns an error, `main` prints it to stderr and exits 1. There is no other exit path.
 
+## Project-local Claude recall
+
+`hookInstall` in `internal/mora/hook.go` accepts `--project --scope project:NAME`.
+It writes a recall-only hook to the current directory's
+`.claude/settings.local.json` through `hooks.InstallProjectRecall`, preserving
+unrelated settings. It refuses existing managed Mora hooks in global settings
+or the project's shared settings, and a local managed `SessionStart` hook;
+the global brief would defeat scope isolation. The default global install is
+unchanged. `hook status --project [--json]` and `hook uninstall --project` target
+the same project-local file; run them from the installation root.
+
+The installed command carries the exact scope and canonical project directory.
+`hookRecall` requires an absolute, resolvable input `cwd` inside that directory
+before reading configuration or searching. `hookWithinProject` resolves
+symlinks and checks path components with `filepath.Rel`. The search scope is
+passed into the existing SQL predicate before ranking/limits, then checked
+again on hydrated memories. Scoped recall omits the global health banner,
+which can contain unrelated account names and source errors. This constrains automatic recall, not MCP reads,
+other hooks, or context already delivered to a client.
+
 ## `mora capabilities`
 
 `mora capabilities --json` emits the `mora.capabilities` v1 receipt. Its top-level payload names the build version, every command path with its JSON contract and payload schema, the static connector catalog, every published error code, the allocated and reserved process exit codes, registered MCP tools and configured MCP write policy, and known receipt schemas. Connector and global `repair` / `deep_link` support use the stable tri-state values `supported`, `unsupported`, or `planned`; Phase 3 and Phase 5 change those values when the features land rather than revising the receipt schema. The deliberately omitted `gdrive` connector remains absent because it is not a user-enableable catalog entry.
