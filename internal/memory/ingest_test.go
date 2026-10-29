@@ -927,3 +927,36 @@ func TestIngestFreshWalkClearsAbandonedDrop(t *testing.T) {
 		t.Fatalf("cursor=%q walkDropped=%v, want hist-200 and false", status.IncrementalCursor, status.WalkDropped)
 	}
 }
+
+// A chat the fetcher could not read arrives as an item with FetchError. It must
+// count as examined and failed, withhold the cursor and keep later pages flowing.
+func TestIngestFetchErrorItemIsCountedAndWithholdsCursor(t *testing.T) {
+	f := &windowRecordingFetcher{pages: map[string]Page{
+		"": {Items: []Item{
+			{Kind: kindGmailThread, ProviderID: "t1"},
+			{Kind: kindGmailThread, ProviderID: "bad", FetchError: errFetch},
+		}, NextCursor: "p2", SyncCursor: "hist-200"},
+		"p2": {Items: []Item{{Kind: kindGmailThread, ProviderID: "t3"}}, SyncCursor: "hist-200"},
+	}}
+	status := &SyncStatus{Source: "gmail", IncrementalCursor: "hist-100"}
+	var written []string
+	res, err := Ingest(IngestParams{
+		Context: context.Background(), Fetcher: f, Kind: kindGmailThread, Status: status,
+		Write: func(m MappedMemory) error { written = append(written, m.ProviderID); return nil },
+	})
+	if err == nil {
+		t.Fatal("a run with an unreadable item must return an error")
+	}
+	if got := strings.Join(written, ","); got != "t1,t3" {
+		t.Fatalf("written=%s, want t1,t3 (later pages still materialize, bad item never written)", got)
+	}
+	if res.Examined != 3 || res.Failed != 1 || res.Materialized != 2 {
+		t.Fatalf("examined=%d failed=%d materialized=%d, want 3/1/2", res.Examined, res.Failed, res.Materialized)
+	}
+	if status.IncrementalCursor != "hist-100" || status.DroppedWalks != 1 || status.ErrorCount != 1 {
+		t.Fatalf("cursor=%q droppedWalks=%d errors=%d, want hist-100/1/1", status.IncrementalCursor, status.DroppedWalks, status.ErrorCount)
+	}
+	if status.LastSuccessAt != "" {
+		t.Fatalf("LastSuccessAt=%q, a run that dropped a chat must not look fresh", status.LastSuccessAt)
+	}
+}

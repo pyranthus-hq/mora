@@ -290,6 +290,14 @@ func Ingest(p IngestParams) (IngestResult, error) {
 			result.Examined++
 			itemBytes := itemSizes[itemIndex]
 			result.Stages.Bytes += int64(itemBytes)
+			if it.FetchError != nil {
+				result.Failed++
+				p.Status.WalkDropped = true
+				p.Status.ErrorCount++
+				p.Status.LastError = fmt.Sprintf("read %s: %s", it.ProviderID, it.FetchError)
+				p.Status.ErrorCode = ""
+				continue
+			}
 			if itemBytes > limits.MaxRecordBytes {
 				result.Failed++
 				p.Status.WalkDropped = true
