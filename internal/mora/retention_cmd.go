@@ -112,13 +112,7 @@ func cmdRetention(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		if err != nil {
 			return err
 		}
-		if err := emitRetention(stdout, *jsonOut, "mora.retention.execution", receipt); err != nil {
-			return err
-		}
-		if len(receipt.FailedIDs) > 0 {
-			return fmt.Errorf("retention left %d candidate(s) untouched because they changed after the snapshot: %s", len(receipt.FailedIDs), strings.Join(receipt.FailedIDs, ", "))
-		}
-		return nil
+		return emitRetention(stdout, *jsonOut, "mora.retention.execution", receipt)
 	case "recover":
 		fs := flag.NewFlagSet("retention recover", flag.ContinueOnError)
 		fs.SetOutput(stderr)

@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -262,27 +264,21 @@ func TestRetentionDeleteKeepsFileRewrittenAfterSnapshot(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() { retentionBeforeRemoveHook = nil })
-	receipt, err := executeRetentionReport(context.Background(), cfg, report.ReportID, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(receipt.FailedIDs) != 1 || receipt.FailedIDs[0] != "raced" || receipt.FailureReasons["raced"] == "" {
-		t.Fatalf("failed=%v reasons=%v", receipt.FailedIDs, receipt.FailureReasons)
-	}
-	if len(receipt.DeletedIDs) != 1 || receipt.DeletedIDs[0] != "plain" {
-		t.Fatalf("deleted=%v", receipt.DeletedIDs)
+	_, err = executeRetentionReport(context.Background(), cfg, report.ReportID, now)
+	if err == nil || !strings.Contains(err.Error(), "raced") {
+		t.Fatalf("want abort naming raced, got %v", err)
 	}
 	for _, c := range report.Candidates {
-		if c.ID != "raced" {
-			continue
-		}
 		path, _ := retentionCandidatePath(cfg, c)
-		got, err := os.ReadFile(path)
-		if err != nil || string(got) != newBody {
-			t.Fatalf("rewritten file lost: %q err=%v", got, err)
+		got, rerr := os.ReadFile(path)
+		if rerr != nil {
+			t.Fatalf("%s deleted despite abort: %v", c.ID, rerr)
 		}
-		if _, err := os.Stat(path + ".retention-quarantine"); err == nil {
-			t.Fatal("quarantine file left behind")
+		if c.ID == "raced" && string(got) != newBody {
+			t.Fatalf("rewritten file lost: %q", got)
 		}
+	}
+	if m, _ := filepath.Glob(filepath.Join(retentionRoot(cfg), "recovery", "*.json")); len(m) != 0 {
+		t.Fatalf("snapshot left behind: %v", m)
 	}
 }
