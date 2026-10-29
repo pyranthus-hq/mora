@@ -1065,6 +1065,15 @@ files deleted outside Mora still exist. Unhealthy checks retain the existing CLI
 contract: exit 1 with diagnostics on stderr, including with `--json`; only healthy
 checks emit a versioned JSON receipt on stdout.
 
+Retention execution refuses a report that would leave no current, non-tombstoned
+memory. This preflight happens before recovery-key, manifest, ledger, or vault
+writes. Keep a current memory or compact a candidate into a current survivor;
+historical files and tombstones do not count. The normal empty-index and vault
+identity guards stay enabled. Run execution against an unchanged vault: preflight
+is not a transaction against concurrent edits or Teach decisions, and other
+mid-execution failures can still require recovery. Intentional emptying through
+retention is not supported by this policy.
+
 
 Execution refuses incomplete decisions, changed files, or a target set that no
 longer matches the reviewed report. Before mutation it writes an AES-GCM

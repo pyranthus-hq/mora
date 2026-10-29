@@ -384,6 +384,9 @@ func executeRetentionReport(ctx context.Context, cfg Config, reportID string, no
 	if err != nil {
 		return retentionExecutionReceipt{}, err
 	}
+	if err := validateRetentionSurvivor(cfg, report); err != nil {
+		return retentionExecutionReceipt{}, err
+	}
 	var entries []recoveryEntry
 	for _, candidate := range report.Candidates {
 		if candidate.Decision.Action == "keep" {
