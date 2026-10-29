@@ -363,6 +363,9 @@ func cmdSearch(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		return emitReceipt(stdout, "mora.search", 1, newMemoriesPayload(items))
 	}
 	printHealthBannerLine(stdout, cfg, now)
+	if len(items) == 0 {
+		fmt.Fprintf(stderr, "No memories match %q. Search matches whole words only.\n", strings.Join(queryArgs, " "))
+	}
 	return emit(stdout, items, false)
 }
 func cmdDelete(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -426,8 +429,28 @@ func cmdContext(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	query := fs.String("query", "", "query")
 	budget := fs.Int("budget", 0, "token budget (default: profile default)")
 	jsonOut := fs.Bool("json", false, "json")
-	if err := fs.Parse(args); err != nil {
-		return err
+	// flag stops at the first bare word, so collect words and keep parsing:
+	// `mora context lunch --scope x` must match `mora search lunch` (AUD2).
+	var words []string
+	for rest := args; ; {
+		if err := fs.Parse(rest); err != nil {
+			return err
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		if n := len(rest) - fs.NArg(); n > 0 && rest[n-1] == "--" {
+			words = append(words, fs.Args()...) // after "--" every word is literal
+			break
+		}
+		words = append(words, fs.Arg(0))
+		rest = fs.Args()[1:]
+	}
+	if len(words) > 0 {
+		if *query != "" {
+			return errors.New("context takes the query once: as words or as --query, not both")
+		}
+		*query = strings.Join(words, " ")
 	}
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
