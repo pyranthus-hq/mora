@@ -125,10 +125,16 @@ func AcquireLease(ctx context.Context, cfg config.Config, sourceKey string, seam
 		return nil, ctx.Err()
 	}
 	nonce := newNonce()
+	took := false
+	defer func() {
+		if !took {
+			<-slot // an error or panic while taking the lease must not strand siblings
+		}
+	}()
 	if err := takeLease(cfg, sourceKey, seams, nonce); err != nil {
-		<-slot
 		return nil, err
 	}
+	took = true
 	var once sync.Once
 	return func() {
 		once.Do(func() {

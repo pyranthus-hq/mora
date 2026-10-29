@@ -1213,7 +1213,11 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		if ctx.Err() != nil {
 			return result, ctx.Err()
 		}
-		releaseLease = func() { ingestpkg.ReleaseLeaseOwnedHere(cfg, sourceKey, ingestLeaseSeams()) } // journal init reports the real problem
+		// Continuing without the slot would let journal init re-enter a sibling's
+		// same-PID lease, so a lease error stops this source.
+		err := classifyConnectorError(fmt.Errorf("taking %s sync lease: %w", sourceKey, leaseErr))
+		stampSyncAttemptFailure(cfg, s, err, attemptStart, out)
+		return result, err
 	}
 	defer releaseLease()
 	// The activity receipt and matching journal header are both durable before
