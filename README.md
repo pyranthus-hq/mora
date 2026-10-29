@@ -378,6 +378,13 @@ patterns are masked without changing the pending file. If `redacted` is true,
 reject and resubmit a proposal without credentials rather than approving the
 masked view. Pattern matching cannot identify every secret.
 
+Approval and rejection are serialized per proposal. Repeating a decision returns
+a conflict, including after the published memory is deleted. An interrupted
+decision remains blocked for manual reconciliation; `show` and `list` display its
+recorded status and memory ID while a pending file remains. Keep the private
+decision records in Mora’s state directory. See the [guide](docs/guide.md) for the
+recovery limitations.
+
 ## Durable loops
 
 Long-running automation can record a lease and a result. This prevents two

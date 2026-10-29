@@ -614,6 +614,21 @@ proposal directories/files, nonregular files, and files over 32 MiB. It does not
 change the pending queue on either success or refusal. This local read adds no
 authorization boundary or approval authority.
 
+Proposal decisions are serialized across processes and retained privately under
+`<StateDir>/mcp-proposal-decisions/`, outside the vault. A durable decision claim
+records the intended memory ID before publication. Concurrent approve/reject
+commands and later retries return a conflict; deleting or retracting the memory
+does not reset that proposal. Successful commands keep the existing receipt shape.
+
+If a process stops after claiming a decision, the outcome may be unresolved.
+`show` and `list` label any remaining pending file with the recorded decision
+status and memory ID. Do not approve it again or remove its decision record:
+reconcile that ID and the vault manually before recovery. There is no automatic
+retry or recovery command for an interrupted decision. These guarantees require
+all deciding processes to use this version and the same retained state directory;
+older binaries and manually deleted state can bypass them.
+
+
 
 ### Loopback HTTP
 

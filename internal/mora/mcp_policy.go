@@ -7,7 +7,6 @@ import (
 	configstore "github.com/pyranthus-hq/mora/internal/config"
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	"io"
-	"os"
 	"time"
 )
 
@@ -70,6 +69,8 @@ type mcpProposalRow struct {
 	Scope      string `json:"scope"`
 	Type       string `json:"type"`
 	Title      string `json:"title"`
+	Status     string `json:"status,omitempty"`
+	MemoryID   string `json:"memory_id,omitempty"`
 }
 
 // mcpProposalsPayload carries the queue under a named key, never null.
@@ -107,10 +108,18 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 				fmt.Fprintf(stderr, "warning: skipping invalid proposal %s: %v\n", proposal.ID, err)
 				continue
 			}
-			rows = append(rows, mcpProposalRow{
+			row := mcpProposalRow{
 				ID: proposal.ID, ProposedAt: proposal.ProposedAt,
 				Scope: memory.Scope, Type: memory.Type, Title: memory.Title,
-			})
+			}
+			d, err := readMCPProposalDecision(cfg, proposal.ID)
+			if err != nil {
+				return err
+			}
+			if d != nil {
+				row.Status, row.MemoryID = d.Status, d.MemoryID
+			}
+			rows = append(rows, row)
 		}
 		if jsonOut {
 			return emitReceipt(stdout, "mora.mcp.proposals", 1, mcpProposalsPayload{Proposals: rows})
@@ -120,7 +129,11 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 			return nil
 		}
 		for _, row := range rows {
-			fmt.Fprintf(stdout, "%s  %s  [%s/%s] %s\n", row.ID, row.ProposedAt, row.Scope, row.Type, row.Title)
+			fmt.Fprintf(stdout, "%s  %s  [%s/%s] %s", row.ID, row.ProposedAt, row.Scope, row.Type, row.Title)
+			if row.Status != "" {
+				fmt.Fprintf(stdout, "  [decision: %s; memory: %s; do not approve again]", row.Status, row.MemoryID)
+			}
+			fmt.Fprintln(stdout)
 		}
 		return nil
 	}
@@ -134,42 +147,27 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 		if err := refuseDashLedPositional("mcp proposals approve", "proposal id", args[1]); err != nil {
 			return err
 		}
-		proposal, path, err := readMCPWriteProposal(cfg, args[1])
+		memoryID, err := decideMCPWriteProposal(ctx, cfg, args[1], "approve")
 		if err != nil {
 			return err
 		}
-		result, err := mcpWriteMemory(ctx, cfg, proposal.Arguments)
-		if err != nil {
-			return err
-		}
-		if err := os.Remove(path); err != nil {
-			return fmt.Errorf("proposal %s was written to the vault but its pending file could not be removed: %w", proposal.ID, err)
-		}
-		memoryID := ""
-		if wrapped, ok := result.(map[string]any); ok {
-			if memory, ok := wrapped["memory"].(Memory); ok {
-				memoryID = memory.ID
-			}
-		}
+
 		if jsonOut {
 			return emitReceipt(stdout, "mora.mcp.proposals", 1, mcpProposalsPayload{
-				Proposals: []mcpProposalRow{{ID: proposal.ID}}, Decision: "approve", MemoryID: memoryID,
+				Proposals: []mcpProposalRow{{ID: args[1]}}, Decision: "approve", MemoryID: memoryID,
 			})
 		}
-		fmt.Fprintf(stdout, "Approved %s as memory %s.\n", proposal.ID, memoryID)
+		fmt.Fprintf(stdout, "Approved %s as memory %s.\n", args[1], memoryID)
 		return nil
 	}
 	if len(args) == 2 && args[0] == "reject" {
 		if err := refuseDashLedPositional("mcp proposals reject", "proposal id", args[1]); err != nil {
 			return err
 		}
-		_, path, err := readMCPWriteProposal(cfg, args[1])
-		if err != nil {
+		if _, err := decideMCPWriteProposal(ctx, cfg, args[1], "reject"); err != nil {
 			return err
 		}
-		if err := os.Remove(path); err != nil {
-			return err
-		}
+
 		if jsonOut {
 			return emitReceipt(stdout, "mora.mcp.proposals", 1, mcpProposalsPayload{
 				Proposals: []mcpProposalRow{{ID: args[1]}}, Decision: "reject",
