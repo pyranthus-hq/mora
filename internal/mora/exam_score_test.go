@@ -430,10 +430,10 @@ func examDailyPredictions(d Digest, inventory ...Commitment) []exam.Prediction {
 			}
 			continue
 		}
-		direction := string(item.Direction)
-		if direction == "" {
-			direction = exam.Unknown
+		if item.Direction == "" {
+			continue // plain item: no obligation claim, not scored
 		}
+		direction := string(item.Direction)
 		lifecycle := item.Lifecycle
 		if lifecycle == "" {
 			lifecycle = exam.Unknown

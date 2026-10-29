@@ -347,11 +347,17 @@ func TestDigestUsesMaterializedCommitmentGeneration(t *testing.T) {
 
 	byMemory := map[string][]Commitment{}
 	for _, commitment := range snapshot.Commitments {
+		if !commitmentDailyEligible(commitment, at) {
+			continue
+		}
 		byMemory[commitment.OpenedBy.MemoryID] = append(byMemory[commitment.OpenedBy.MemoryID], commitment)
 	}
 	typed := 0
 	for _, item := range digestAllItems(digest) {
 		commitments := byMemory[item.ID]
+		if len(commitments) == 0 && item.Direction != "" {
+			t.Fatalf("digest item %s has no in-window commitment but renders Direction %q", item.ID, item.Direction)
+		}
 		if len(commitments) != 1 {
 			if item.Direction != "" {
 				t.Fatalf("digest item %s guessed among %d materialized commitments: %+v", item.ID, len(commitments), item)
