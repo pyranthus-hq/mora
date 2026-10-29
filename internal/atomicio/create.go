@@ -44,7 +44,9 @@ func CreateExclusive(path string, body []byte, mode os.FileMode, options ...Clai
 	}
 	err = link(temp, path)
 	if err == nil {
-		return SyncDirFn(dir)
+		// shortcut: a dir-sync failure after publication is ignored so callers never retry and duplicate; upgrade to a published-but-not-durable outcome if a caller needs to know
+		_ = SyncDirFn(dir)
+		return nil
 	}
 	if errors.Is(err, os.ErrExist) || !unsupported(err) {
 		return err
@@ -59,5 +61,7 @@ func CreateExclusive(path string, body []byte, mode os.FileMode, options ...Clai
 	if renameErr := RenameReplaceWithRetry(temp, path); renameErr != nil {
 		return errors.Join(renameErr, os.Remove(path))
 	}
-	return SyncDirFn(dir)
+	// shortcut: a dir-sync failure after publication is ignored so callers never retry and duplicate; upgrade to a published-but-not-durable outcome if a caller needs to know
+	_ = SyncDirFn(dir)
+	return nil
 }

@@ -296,3 +296,16 @@ func TestCreateExclusiveSyncFailureLeavesNoFile(t *testing.T) {
 		t.Fatalf("leftover files after sync failure: %v", names)
 	}
 }
+
+func TestCreateExclusiveDirSyncFailureAfterPublishIsIgnored(t *testing.T) {
+	old := SyncDirFn
+	SyncDirFn = func(string) error { return errors.New("dir sync boom") }
+	defer func() { SyncDirFn = old }()
+	path := filepath.Join(t.TempDir(), "m.md")
+	if err := atomicCreate(path, []byte("x"), 0o644); err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("published file missing: %v", err)
+	}
+}
