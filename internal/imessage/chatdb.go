@@ -3,10 +3,13 @@ package imessage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"modernc.org/sqlite"
 )
 
 // chatPageSize bounds how many chats one FetchPage assembles before returning a
@@ -23,6 +26,29 @@ var requiredMessageColumns = []string{
 // testHookAfterChatList lets cancellation tests stop the fetch between the
 // page query and the per-conversation queries. It is nil in production.
 var testHookAfterChatList func()
+
+// testHookChatReadErr lets tests inject a per-chat read error. Nil in production.
+var testHookChatReadErr func(rowid int64) error
+
+// chatReadFatal reports whether a per-chat read error is not scoped to one chat:
+// a cancelled/expired context, SQLITE_BUSY/LOCKED (Messages.app holds the lock),
+// or SQLITE_ERROR (no such table/column, bad query: the source query itself is
+// broken). Matched on the driver's primary result code, not on message text.
+// shortcut: every other error is treated as chat-scoped; narrow it if a
+// database-wide failure code (IOERR, CORRUPT) turns up that should stay fatal.
+func chatReadFatal(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var se *sqlite.Error
+	if errors.As(err, &se) {
+		switch se.Code() & 0xff {
+		case 5, 6, 1: // SQLITE_BUSY, SQLITE_LOCKED, SQLITE_ERROR
+			return true
+		}
+	}
+	return false
+}
 
 // optionalMessageColumns enrich rendering when present but are NOT required (their
 // names/availability vary by macOS version): item_type distinguishes system events
@@ -208,13 +234,24 @@ func (f *LiveFetcher) FetchPageContext(ctx context.Context, kind ItemKind, w Fet
 	for _, c := range chats {
 		lastROWID = c.rowid
 		it, ok, err := f.assembleConversationContext(ctx, c.guid, c.display, c.identifier, c.rowid, sinceNanos)
+		if testHookChatReadErr != nil {
+			if herr := testHookChatReadErr(c.rowid); herr != nil {
+				it, ok, err = Item{}, false, herr
+			}
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return Page{}, ctx.Err()
 			}
-			// Per-conversation failure: skip, never abort the page (schema-defensive,
-			// honest-snapshot — the caller's Ingest loop counts the gap).
-			continue
+			if !chatReadFatal(err) {
+				// Isolated to this chat: keep the rest of the page and let Ingest
+				// count the gap (Failed, WalkDropped) so the next walk retries it.
+				items = append(items, Item{Kind: KindIMessageChat, ProviderID: c.guid, FetchError: err})
+				continue
+			}
+			// Contention or a broken source query would hit every chat: fail the
+			// page so the checkpoint keeps it and the next run retries.
+			return Page{}, fmt.Errorf("read chat %d: %w", c.rowid, err)
 		}
 		if ok {
 			items = append(items, it)
