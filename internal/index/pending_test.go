@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -151,5 +152,45 @@ func TestMarkFTSCommittedRenamesWithoutRetiring(t *testing.T) {
 	}
 	if _, err := os.Stat(PendingPath(cfg, "w2")); err != nil {
 		t.Fatalf("dirty-form marker lost after a failed rename: %v", err)
+	}
+}
+
+func TestForeignToVault(t *testing.T) {
+	root := t.TempDir()
+	vault := filepath.Join(root, "vault")
+	if err := os.MkdirAll(filepath.Join(vault, "memories"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(vault, link); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	cfg := config.Config{VaultDir: vault}
+	for _, c := range []struct {
+		op   PendingOp
+		want bool
+	}{
+		{PendingOp{Kind: KindWrite, Path: filepath.Join(vault, "memories", "a.md")}, false},
+		{PendingOp{Kind: KindWrite, Path: filepath.Join(link, "memories", "a.md")}, false},
+		// A writer marks before it creates a new parent directory.
+		{PendingOp{Kind: KindWrite, Path: filepath.Join(link, "memories", "project", "new", "a.md")}, false},
+		{PendingOp{Kind: KindWrite, Path: filepath.Join(root, "other", "memories", "a.md")}, true},
+		{PendingOp{Kind: KindDelete, Path: filepath.Join(root, "vault2", "a.md")}, true},
+		{PendingOp{Kind: KindRebuild}, false},
+		{PendingOp{Kind: KindWrite}, false},
+	} {
+		if got := foreignToVault(cfg, c.op); got != c.want {
+			t.Errorf("foreignToVault(%+v) = %v, want %v", c.op, got, c.want)
+		}
+	}
+	// Case-insensitive filesystems (macOS default) accept a case-variant spelling.
+	if fi, err := os.Stat(strings.ToUpper(vault)); err == nil {
+		if real, _ := os.Stat(vault); os.SameFile(fi, real) && foreignToVault(cfg, PendingOp{Kind: KindWrite, Path: filepath.Join(strings.ToUpper(vault), "memories", "a.md")}) {
+			t.Error("case-variant spelling of the vault read as foreign")
+		}
+	}
+	// Seen from the symlinked spelling, a marker on the real path is ours too.
+	if foreignToVault(config.Config{VaultDir: link}, PendingOp{Kind: KindWrite, Path: filepath.Join(vault, "memories", "a.md")}) {
+		t.Error("real-path marker read as foreign from a symlinked vault_dir")
 	}
 }
