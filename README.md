@@ -75,6 +75,7 @@ mora hook install    # Claude Code: adds matching memories to each prompt you se
 
 Open a new Claude Code session and ask: "What is our test command?"
 The prompt must share a word with the saved fix. The hook adds memories from every scope, not only the current project.
+To limit recall to one project, see [project-scoped recall](docs/guide.md#claude-code-hooks) in the guide.
 
 Other agents, such as Codex, can call Mora's tools. The agent decides when to look.
 

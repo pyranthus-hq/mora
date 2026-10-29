@@ -670,6 +670,50 @@ mora hook uninstall
 `mora hook status --json` emits the `mora.hook.status` v1 receipt. Its
 `harnesses` field is always an array, including when no hook is installed.
 
+For one project's corrections, run from its root directory:
+
+```bash
+mora hook install --project --scope project:my-app
+mora hook status --project --json
+mora write --scope project:my-app --type decision --title "Use pnpm" \
+  --text "Always use pnpm to install dependencies in this project."
+```
+
+Project installation writes only `.claude/settings.local.json`. It installs
+`UserPromptSubmit` recall for that exact memory scope and omits `SessionStart`,
+whose brief is global. It binds the installation directory explicitly instead
+of guessing a scope from a folder name. The hook checks Claude's `cwd` on every
+prompt: the root and its subdirectories are allowed; missing, relative,
+unresolvable, or outside paths inject nothing. Symlinks are resolved before
+checking containment. Use a different scope name for each project.
+
+This first project installer supports the default Claude configuration directory
+and regular settings files. Project install, status, and uninstall reject a
+nonempty `CLAUDE_CONFIG_DIR`, linked worktrees (or other `.git` files), and
+symlinked `.git` or Claude settings entries. Inside a Git repository, run project
+commands from the main checkout root: Claude may use the root local settings file
+even when started below it. No alternate or main-checkout settings are changed
+on refusal. See the [Claude settings location rules](https://code.claude.com/docs/en/settings#where-claude-code-keeps-the-local-file-in-a-git-repository).
+
+The installer refuses if it finds managed global Mora hooks; remove those with
+`mora hook uninstall` first. It also refuses managed hooks in the project's
+`.claude/settings.json`, or existing local managed hooks outside
+`UserPromptSubmit` recall. Multiple managed local recall entries are refused
+without writing; remove duplicates explicitly before retrying. Other settings
+and hooks are preserved. From the same project root, remove the local
+Mora hook with `mora hook uninstall --project`.
+
+The binding is a directory subtree, not a repository identity: nested
+repositories inside it are included. Moving or renaming the installed root stops
+new recall until you reinstall there. Global hooks added after project setup can
+reintroduce broad context; this installer does not monitor future settings edits.
+
+The plain `mora hook install` remains global and reads across scopes. Project
+hooks filter automatic recall only: MCP reads still use their existing scope
+arguments, other hooks may inject context, and previously read context remains
+in an agent's session. This installer supports Claude Code; Codex can use MCP
+but has no automatic Mora hook route.
+
 ## Companion
 
 ### Read verbs for desktop and scripts
