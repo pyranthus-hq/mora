@@ -253,6 +253,28 @@ The `SessionStart` hook adds the brief. The `UserPromptSubmit` hook adds a small
 set of related memories for each prompt. Mora keeps existing valid Claude
 hooks. It refuses to rewrite a settings file that it cannot parse.
 
+For corrections scoped to one project, run this from that project's root:
+
+```bash
+mora hook install --project --scope project:my-app
+mora hook status --project
+```
+
+This installs recall in `.claude/settings.local.json`, includes only the exact
+`project:my-app` scope, and omits the global brief. Save corrections with the same
+`--scope`. It requires Claude's hook `cwd` to be inside the installed directory;
+missing or outside directories inject nothing. Remove it from that root with
+`mora hook uninstall --project`. If global Mora hooks are installed, the project
+installer asks you to remove them first with `mora hook uninstall`.
+Project hook commands reject `CLAUDE_CONFIG_DIR`, linked worktrees, and symlinked
+Claude settings. In a Git repository, run them from the main checkout root.
+Duplicate managed local hooks are refused without writing. The binding covers the
+directory subtree, including nested repositories; moving the root requires a new
+installation. Adding global hooks later can reintroduce context from other scopes.
+The plain global install still reads across scopes. These hook settings do not
+restrict MCP tools or memories an agent has already read. Codex has no Mora hook
+installer; it can retrieve through MCP when asked.
+
 ## Correct or remove memory
 
 Mora can propose that two addresses belong to the same person. It never accepts
