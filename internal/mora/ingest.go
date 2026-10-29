@@ -1691,7 +1691,10 @@ func ingestWhatsAppDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	defer fetcher.Close()
 
 	statusPath := whatsAppStatusPath(cfg, s.Name)
-	st, _ := memory.LoadStatus(statusPath)
+	st, err := loadSyncStatus(statusPath)
+	if err != nil {
+		return sourceIngestResult{}, err
+	}
 	st.Source = s.Name
 	win := windowForWhatsApp(s)
 
@@ -1815,7 +1818,10 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	resolver, _ := imessage.NewResolver(addressBookRoot(cfg))
 
 	statusPath := imessageStatusPath(cfg, s.Name)
-	st, _ := memory.LoadStatus(statusPath)
+	st, err := loadSyncStatus(statusPath)
+	if err != nil {
+		return sourceIngestResult{}, err
+	}
 	st.Source = s.Name
 	win := windowForIMessage(s)
 
@@ -1931,7 +1937,10 @@ func ingestAppleCalDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	defer fetcher.Close()
 
 	statusPath := appleCalStatusPath(cfg, s.Name)
-	st, _ := memory.LoadStatus(statusPath)
+	st, err := loadSyncStatus(statusPath)
+	if err != nil {
+		return sourceIngestResult{}, err
+	}
 	st.Source = s.Name
 	prog := newProgress(out, s.Name, "events")
 	write := func(mm memory.MappedMemory) (bool, error) {
@@ -1973,7 +1982,10 @@ func ingestGitHubDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		return sourceIngestResult{}, err
 	}
 	statusPath := syncStatusPathFor(cfg, s)
-	st, _ := memory.LoadStatus(statusPath)
+	st, err := loadSyncStatus(statusPath)
+	if err != nil {
+		return sourceIngestResult{}, err
+	}
 	st.Source = s.Name
 	prog := newProgress(out, s.Name, "issues")
 	write := func(mm memory.MappedMemory) (bool, error) {
@@ -2694,4 +2706,15 @@ func extractDocxText(path string) (string, error) {
 		}
 	}
 	return strings.TrimSpace(b.String()), nil
+}
+
+// loadSyncStatus refuses a corrupt status file instead of handing back nil:
+// four connectors dereferenced that nil and the panic took sibling sources in
+// the same run down with them (audit V8).
+func loadSyncStatus(path string) (*memory.SyncStatus, error) {
+	st, err := memory.LoadStatus(path)
+	if err != nil {
+		return nil, fmt.Errorf("sync status %s is unreadable (%w); fix or delete it to start this source over", path, err)
+	}
+	return st, nil
 }
