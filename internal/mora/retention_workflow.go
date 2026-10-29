@@ -88,8 +88,62 @@ type retentionExecutionReceipt struct {
 	ChangedIDs    []string `json:"changed_ids"`
 	CompactedIDs  []string `json:"compacted_ids"`
 	DeletedIDs    []string `json:"deleted_ids"`
-	ExecutedAt    string   `json:"executed_at"`
-	IndexCount    int      `json:"index_count"`
+	// FailedIDs lists candidates left untouched because their file changed
+	// after the recovery snapshot; FailureReasons maps each to the reason.
+	FailedIDs      []string          `json:"failed_ids,omitempty"`
+	FailureReasons map[string]string `json:"failure_reasons,omitempty"`
+	ExecutedAt     string            `json:"executed_at"`
+	IndexCount     int               `json:"index_count"`
+}
+
+// retentionBeforeRemoveHook is a test seam: it runs after the recovery snapshot
+// and before a candidate file is quarantined for removal.
+var retentionBeforeRemoveHook func(candidateID, path string)
+
+// quarantineRetentionFile moves path aside (same directory, so the rename stays
+// on one filesystem and is atomic; the name is not .md so the vault walk skips
+// it), then checks the moved bytes against wantSHA. A connector writer can
+// replace the file after the hash check and the snapshot; if the moved bytes
+// differ, the file is put back and an error is returned. If a writer already
+// recreated path, the newer file is not overwritten and the moved copy stays.
+func quarantineRetentionFile(path, wantSHA string) (string, error) {
+	q := path + ".retention-quarantine"
+	if _, err := os.Lstat(q); err == nil {
+		return "", fmt.Errorf("stale retention quarantine file exists: %s", q)
+	}
+	if err := os.Rename(path, q); err != nil {
+		return "", err
+	}
+	raw, err := os.ReadFile(q)
+	if err == nil && sha256Hex(raw) == wantSHA {
+		return q, nil
+	}
+	if err == nil {
+		err = errors.New("file changed after recovery snapshot; not removed")
+	}
+	if linkErr := os.Link(q, path); linkErr != nil {
+		return "", fmt.Errorf("%w; could not restore, changed copy kept at %s: %v", err, q, linkErr)
+	}
+	_ = os.Remove(q)
+	return "", err
+}
+
+func removeQuarantine(q string) error {
+	if q == "" {
+		return nil
+	}
+	if err := os.Remove(q); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// restoreRetentionQuarantine puts a verified quarantined file back after a later
+// step failed. It never overwrites a file that appeared at path meanwhile.
+func restoreRetentionQuarantine(path, q string) {
+	if os.Link(q, path) == nil {
+		_ = os.Remove(q)
+	}
 }
 
 type retentionIntegrityReceipt struct {
@@ -432,6 +486,25 @@ func executeRetentionReport(ctx context.Context, cfg Config, reportID string, no
 			return retentionExecutionReceipt{}, err
 		}
 		dirtyOps = append(dirtyOps, op)
+		quarantined := ""
+		if decision.Action == "compact" || decision.Action == "delete" {
+			if retentionBeforeRemoveHook != nil {
+				retentionBeforeRemoveHook(candidate.ID, path)
+			}
+			q, err := quarantineRetentionFile(path, candidate.ContentSHA)
+			if errors.Is(err, os.ErrNotExist) {
+				q, err = "", nil
+			}
+			if err != nil {
+				receipt.FailedIDs = append(receipt.FailedIDs, candidate.ID)
+				if receipt.FailureReasons == nil {
+					receipt.FailureReasons = map[string]string{}
+				}
+				receipt.FailureReasons[candidate.ID] = err.Error()
+				continue
+			}
+			quarantined = q
+		}
 		switch decision.Action {
 		case "change-class":
 			m.Type = strings.TrimSpace(decision.Class)
@@ -447,20 +520,23 @@ func executeRetentionReport(ctx context.Context, cfg Config, reportID string, no
 			compactID := retentionCompactID(report.ReportID, candidate.ID)
 			compact := Memory{ID: compactID, Scope: m.Scope, Type: "durable", Title: "Retained: " + m.Title, Text: strings.TrimSpace(decision.Summary), Source: "retention:" + report.ReportID, CreatedAt: stamp, ContentHash: ContentHash(decision.Summary), Meta: map[string]any{"retention_source_ids": []string{candidate.ID}, "retention_manifest_id": manifestID}}
 			if err := writeMemory(cfg, compact); err != nil {
+				restoreRetentionQuarantine(path, quarantined)
 				return retentionExecutionReceipt{}, err
 			}
 			if _, err := appendGovernanceEntry(cfg, govEntry{Kind: govKindPrune, Action: govActionSuppress, Atom: govAtom{Kind: atomStableID, Value: candidate.ID, Provider: m.Provider}, Reason: "retention compact " + report.ReportID}); err != nil {
+				restoreRetentionQuarantine(path, quarantined)
 				return retentionExecutionReceipt{}, err
 			}
-			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			if err := removeQuarantine(quarantined); err != nil {
 				return retentionExecutionReceipt{}, err
 			}
 			receipt.CompactedIDs = append(receipt.CompactedIDs, candidate.ID)
 		case "delete":
 			if _, err := appendGovernanceEntry(cfg, govEntry{Kind: govKindPrune, Action: govActionSuppress, Atom: govAtom{Kind: atomStableID, Value: candidate.ID, Provider: m.Provider}, Reason: "retention delete " + report.ReportID}); err != nil {
+				restoreRetentionQuarantine(path, quarantined)
 				return retentionExecutionReceipt{}, err
 			}
-			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			if err := removeQuarantine(quarantined); err != nil {
 				return retentionExecutionReceipt{}, err
 			}
 			receipt.DeletedIDs = append(receipt.DeletedIDs, candidate.ID)

@@ -232,3 +232,57 @@ func TestRecoveryManifestEncryptionRoundTripAndTamperFails(t *testing.T) {
 		t.Fatal("tampered ciphertext decrypted")
 	}
 }
+
+func TestRetentionDeleteKeepsFileRewrittenAfterSnapshot(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	for _, id := range []string{"raced", "plain"} {
+		if err := writeMemory(cfg, Memory{ID: id, Scope: "personal", Type: "note", Title: id, Text: "old " + id, CreatedAt: "2024-01-01T00:00:00Z", ContentHash: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writeMemory(cfg, Memory{ID: "survivor", Scope: "personal", Type: "note", Title: "Keep", Text: "survivor", CreatedAt: "2026-08-24T00:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	report, err := buildRetentionReport(cfg, now, 365, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"raced", "plain"} {
+		if report, err = decideRetentionCandidate(cfg, report.ReportID, id, retentionDecision{Action: "delete"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const newBody = "new reply arrived from the connector"
+	retentionBeforeRemoveHook = func(id, path string) {
+		if id == "raced" {
+			if err := os.WriteFile(path, []byte(newBody), 0o644); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	t.Cleanup(func() { retentionBeforeRemoveHook = nil })
+	receipt, err := executeRetentionReport(context.Background(), cfg, report.ReportID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(receipt.FailedIDs) != 1 || receipt.FailedIDs[0] != "raced" || receipt.FailureReasons["raced"] == "" {
+		t.Fatalf("failed=%v reasons=%v", receipt.FailedIDs, receipt.FailureReasons)
+	}
+	if len(receipt.DeletedIDs) != 1 || receipt.DeletedIDs[0] != "plain" {
+		t.Fatalf("deleted=%v", receipt.DeletedIDs)
+	}
+	for _, c := range report.Candidates {
+		if c.ID != "raced" {
+			continue
+		}
+		path, _ := retentionCandidatePath(cfg, c)
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != newBody {
+			t.Fatalf("rewritten file lost: %q err=%v", got, err)
+		}
+		if _, err := os.Stat(path + ".retention-quarantine"); err == nil {
+			t.Fatal("quarantine file left behind")
+		}
+	}
+}
