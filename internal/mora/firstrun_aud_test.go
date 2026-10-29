@@ -27,6 +27,9 @@ func TestFirstRunNoMatchAndPositionalContext(t *testing.T) {
 	if !strings.Contains(out, "Lunch plan") {
 		t.Fatalf("context lunch should find the memory, got:\n%s", out)
 	}
+	if out := run(t, "context", "--", "lunch", "--scope"); !strings.Contains(out, "No memory matched this query.") {
+		t.Fatalf("words after -- are literal query words, got:\n%s", out)
+	}
 	if _, _, err := runSplit(t, "context", "lunch", "--query", "dinner"); err == nil {
 		t.Fatal("context with both a word and --query should be a usage error")
 	}

@@ -439,6 +439,10 @@ func cmdContext(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		if fs.NArg() == 0 {
 			break
 		}
+		if n := len(rest) - fs.NArg(); n > 0 && rest[n-1] == "--" {
+			words = append(words, fs.Args()...) // after "--" every word is literal
+			break
+		}
 		words = append(words, fs.Arg(0))
 		rest = fs.Args()[1:]
 	}
