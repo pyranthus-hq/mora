@@ -911,3 +911,19 @@ type fetchFunc func(ItemKind, FetchWindow, string) (Page, error)
 func (f fetchFunc) FetchPage(k ItemKind, w FetchWindow, cursor string) (Page, error) {
 	return f(k, w, cursor)
 }
+
+// Codex re-check of V1: a drop left by a walk abandoned before its first
+// checkpoint must not fail a later fresh walk that writes everything.
+func TestIngestFreshWalkClearsAbandonedDrop(t *testing.T) {
+	f := &windowRecordingFetcher{pages: map[string]Page{
+		"": {Items: []Item{{Kind: kindGmailThread, ProviderID: "t1"}}, SyncCursor: "hist-200"},
+	}}
+	status := &SyncStatus{Source: "gmail", IncrementalCursor: "hist-100", WalkDropped: true}
+	if _, err := Ingest(IngestParams{Context: context.Background(), Fetcher: f, Kind: kindGmailThread, Status: status,
+		Write: func(MappedMemory) error { return nil }}); err != nil {
+		t.Fatalf("clean fresh walk reported %v", err)
+	}
+	if status.IncrementalCursor != "hist-200" || status.WalkDropped {
+		t.Fatalf("cursor=%q walkDropped=%v, want hist-200 and false", status.IncrementalCursor, status.WalkDropped)
+	}
+}

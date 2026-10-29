@@ -180,6 +180,11 @@ func Ingest(p IngestParams) (IngestResult, error) {
 		mapFn = MapItem
 	}
 	cursor := p.Status.Checkpoint
+	if cursor == "" {
+		// A walk from the start retries everything, so a drop left by an
+		// abandoned walk no longer applies.
+		p.Status.WalkDropped = false
+	}
 	// A checkpoint only tells us WHERE we stopped; CursorMode tells us which
 	// endpoint that token belongs to. Resuming a half-walked snapshot must stay
 	// on the snapshot endpoint even though an incremental cursor is already on
@@ -233,6 +238,7 @@ func Ingest(p IngestParams) (IngestResult, error) {
 			result.Incremental = false
 			p.Status.CursorMode = ""
 			p.Status.PendingSyncCursor = ""
+			p.Status.WalkDropped = false
 			continue
 		}
 		if err != nil {
