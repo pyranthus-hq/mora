@@ -1202,16 +1202,20 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 	// One sync per source: a live holder means skip, before any activity record
 	// or status is written. The lease is released on every exit path below.
 	sourceKey := ingestOperationSourceKey(s)
-	if leaseErr := ingestpkg.EnsureLease(cfg, sourceKey, ingestLeaseSeams()); leaseErr != nil {
+	// Same-key siblings in this process wait here rather than share the lease.
+	releaseLease, leaseErr := ingestpkg.AcquireLease(ctx, cfg, sourceKey, ingestLeaseSeams())
+	if leaseErr != nil {
 		var held *ingestpkg.LeaseHeldError
 		if errors.As(leaseErr, &held) {
 			warnf(out, "%s sync skipped: %v", sourceKey, held)
 			return sourceIngestResult{Skipped: true}, nil
 		}
+		if ctx.Err() != nil {
+			return result, ctx.Err()
+		}
+		releaseLease = func() { ingestpkg.ReleaseLeaseOwnedHere(cfg, sourceKey, ingestLeaseSeams()) } // journal init reports the real problem
 	}
-	// Release only this source's lease. Concurrent in-process ingests share a PID;
-	// releasing every lease here would abandon the still-running sibling.
-	defer ingestpkg.ReleaseLeaseOwnedHere(cfg, sourceKey, ingestLeaseSeams())
+	defer releaseLease()
 	// The activity receipt and matching journal header are both durable before
 	// dispatch can publish a vault file. Even a zero-item run gets a header, so
 	// its success can be closed only by the covering committed rebuild.
