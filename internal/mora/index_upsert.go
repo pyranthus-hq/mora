@@ -113,6 +113,17 @@ func retryWhileIndexBusy(ctx context.Context, op func() error) error {
 }
 
 func indexUpsertOnce(ctx context.Context, cfg Config, m Memory) error {
+	return indexMutateOnce(ctx, cfg, false,
+		func() error { _, err := rebuildIndex(ctx, cfg); return err },
+		func(tx *sql.Tx) error { return stageUpsert(ctx, cfg, tx, m) })
+}
+
+// indexMutateOnce runs ONE small incremental index transaction: the stage
+// callback edits rows, then the shared tail applies the vault-identity guard,
+// identity binding, count/timestamp stamps and manifest invalidation before
+// commit. fallback runs instead on a cold/legacy/unbound index. allowEmpty lets
+// a user delete empty the index (Allow mode); identity mismatches still block.
+func indexMutateOnce(ctx context.Context, cfg Config, allowEmpty bool, fallback func() error, stage func(*sql.Tx) error) error {
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return err
 	}
@@ -130,8 +141,7 @@ func indexUpsertOnce(ctx context.Context, cfg Config, m Memory) error {
 		return err
 	}
 	if !ready || indexID == "" {
-		_, rerr := rebuildIndex(ctx, cfg)
-		return rerr
+		return fallback()
 	}
 
 	// Incremental fast path. Share rebuildIndex's writer DSN (rwIndexDSN) and its
@@ -160,64 +170,8 @@ func indexUpsertOnce(ctx context.Context, cfg Config, m Memory) error {
 	curIndexID := ""
 	_ = tx.QueryRowContext(ctx, `SELECT value FROM index_meta WHERE key='vault_id'`).Scan(&curIndexID)
 
-	// Delete-then-insert this one id in memories AND its FTS row (the FTS5 table is
-	// a plain, non-external-content table, so an ordinary DELETE ... WHERE id=? is
-	// valid). Insert shapes mirror rebuildIndex exactly so an incrementally-added
-	// row is byte-identical to a fully-rebuilt one. A tombstone (deleted_at set)
-	// stays deleted from the searchable tables, mirroring rebuild's DeletedAt skip —
-	// authored writes are never tombstones, so this is defensive.
-	if _, err := tx.ExecContext(ctx, `DELETE FROM memories WHERE id=?`, m.ID); err != nil {
+	if err := stage(tx); err != nil {
 		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM memories_fts WHERE id=?`, m.ID); err != nil {
-		return err
-	}
-	// Issue #243 parity — the incremental path carries no explicit contract
-	// pin, so this mirrors the full rebuild's own fail-closed rules exactly:
-	// clear this memory's prior segment/diagnostic rows before re-deriving
-	// (or a tombstone gets none, mirroring the memories/memories_fts skip
-	// below).
-	if err := clearGmailSegmentsFor(ctx, tx, m.ID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM activity_stamps WHERE memory_id=?`, m.ID); err != nil {
-		return err
-	}
-	if m.DeletedAt == "" {
-		path, err := memoryPath(cfg, m)
-		if err != nil {
-			return err
-		}
-		tags := strings.Join(m.Tags, ",")
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			m.ID, m.Scope, m.Type, m.Title, tags, m.Source, m.CreatedAt, path, m.Text,
-			providerToType(m.Provider), m.Account, createdAtUnix(m.CreatedAt)); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO memories_fts VALUES (?, ?, ?, ?, ?, ?)`,
-			m.ID, m.Scope, m.Title, tags, m.Source, m.Text); err != nil {
-			return err
-		}
-		gsegStmts, err := prepareGmailSegStmts(ctx, tx)
-		if err != nil {
-			return err
-		}
-		werr := writeGmailSegments(ctx, gsegStmts, m)
-		gsegStmts.Close()
-		if werr != nil {
-			return werr
-		}
-		stampStmt, err := prepareActivityStampStmt(ctx, tx)
-		if err != nil {
-			return err
-		}
-		werr = writeActivityStamp(ctx, stampStmt, m)
-		stampStmt.Close()
-		if werr != nil {
-			return werr
-		}
 	}
 
 	// Real post-count (reflects this tx's staged delete+insert). Feeding the TRUE
@@ -240,7 +194,7 @@ func indexUpsertOnce(ctx context.Context, cfg Config, m Memory) error {
 		return err
 	}
 	decision := assessRebuild(oldCount, newCount, marker.VaultID, markerPresent, curIndexID)
-	if decision == decBlockEmpty || decision == decBlockIdentity {
+	if (decision == decBlockEmpty && !allowEmpty) || decision == decBlockIdentity {
 		if werr := writeBlockRecord(cfg, decision, cfg.VaultDir, oldCount, newCount); werr != nil {
 			_ = werr // best-effort; do not mask the block error
 		}
@@ -296,6 +250,132 @@ func indexUpsertOnce(ctx context.Context, cfg Config, m Memory) error {
 	}
 	_ = clearBlockRecord(cfg) // best-effort: a stale block record must not fail a good write
 	return nil
+}
+
+// stageUpsert delete-then-inserts one memory's rows (memories + FTS, plus the
+// Gmail-segment and activity-stamp projections) inside tx. Insert shapes mirror
+// rebuildIndex exactly so an incrementally-added row is byte-identical to a
+// fully-rebuilt one. A tombstone (deleted_at set) stays deleted from the
+// searchable tables, mirroring rebuild's DeletedAt skip — authored writes are
+// never tombstones, so this is defensive.
+func stageUpsert(ctx context.Context, cfg Config, tx *sql.Tx, m Memory) error {
+	if err := deleteMemoryRows(ctx, tx, m.ID); err != nil {
+		return err
+	}
+	if m.DeletedAt == "" {
+		path, err := memoryPath(cfg, m)
+		if err != nil {
+			return err
+		}
+		tags := strings.Join(m.Tags, ",")
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			m.ID, m.Scope, m.Type, m.Title, tags, m.Source, m.CreatedAt, path, m.Text,
+			providerToType(m.Provider), m.Account, createdAtUnix(m.CreatedAt)); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO memories_fts VALUES (?, ?, ?, ?, ?, ?)`,
+			m.ID, m.Scope, m.Title, tags, m.Source, m.Text); err != nil {
+			return err
+		}
+		gsegStmts, err := prepareGmailSegStmts(ctx, tx)
+		if err != nil {
+			return err
+		}
+		werr := writeGmailSegments(ctx, gsegStmts, m)
+		gsegStmts.Close()
+		if werr != nil {
+			return werr
+		}
+		stampStmt, err := prepareActivityStampStmt(ctx, tx)
+		if err != nil {
+			return err
+		}
+		werr = writeActivityStamp(ctx, stampStmt, m)
+		stampStmt.Close()
+		if werr != nil {
+			return werr
+		}
+	}
+	return nil
+}
+
+// deleteMemoryRows removes one memory id from the memories table, its FTS row
+// (a plain, non-external-content FTS5 table, so an ordinary DELETE ... WHERE
+// id=? is valid) and the Gmail-segment / activity-stamp projections. Issue #243
+// parity: the incremental path carries no explicit contract pin, so it mirrors
+// the full rebuild's own fail-closed rules.
+func deleteMemoryRows(ctx context.Context, tx *sql.Tx, id string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memories WHERE id=?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memories_fts WHERE id=?`, id); err != nil {
+		return err
+	}
+	if err := clearGmailSegmentsFor(ctx, tx, id); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM activity_stamps WHERE memory_id=?`, id)
+	return err
+}
+
+// deleteMemoryProjections removes the derived rows that quote or point at one
+// memory: its graph hub node and every edge it is evidence for (these feed
+// list_entities, get_entity, neighbours and counts), its embedding vector and its
+// commitment rows (think and the brief read these without a file check). Unlike
+// an upsert, a delete must not leave them for a later rebuild: they would keep
+// serving the deleted content. Entity mention_count aggregates are not per
+// memory and are corrected by the deferred reconcile; entities left with no
+// evidence are already hidden by the evidence-based read paths. Tables a full
+// rebuild writes per memory: memories, memories_fts, gmail segments,
+// activity_stamps (deleteMemoryRows), plus edges, entities(hub), mem_vectors and
+// commitments here.
+func deleteMemoryProjections(ctx context.Context, tx *sql.Tx, id string) error {
+	for _, q := range []string{
+		`DELETE FROM edges WHERE src=?`, // idx_edges_src
+		`DELETE FROM edges WHERE evidence_id=?`,
+		`DELETE FROM entities WHERE id=?`,
+		`DELETE FROM mem_vectors WHERE memory_id=?`,
+		`DELETE FROM commitments WHERE memory_id=?`,
+	} {
+		arg := id
+		if strings.Contains(q, "src=?") || strings.Contains(q, "entities") {
+			arg = "memory:" + id // hubID(stableID)
+		}
+		if _, err := tx.ExecContext(ctx, q, arg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// indexDelete drops one memory from the search index in a single small
+// transaction, replacing the whole-vault rebuild a delete used to run inline
+// (which held the SQLite writer lock 30-75s on a real vault). It returns the
+// row count left in the index; a cold/legacy index falls back to the (cheap, in
+// that case) Allow-mode rebuild. Graph, vector and commitment projections catch
+// up in the deferred reconcile; the caller's pending-delete marker suppresses
+// the id on every read path until then.
+func indexDelete(ctx context.Context, cfg Config, id string) (remaining int, err error) {
+	err = retryWhileIndexBusy(ctx, func() error {
+		return indexMutateOnce(ctx, cfg, true,
+			func() error {
+				n, rerr := rebuildIndexWithPolicy(ctx, cfg, policyAllow)
+				remaining = n
+				return rerr
+			},
+			func(tx *sql.Tx) error {
+				if err := deleteMemoryRows(ctx, tx, id); err != nil {
+					return err
+				}
+				if err := deleteMemoryProjections(ctx, tx, id); err != nil {
+					return err
+				}
+				return tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories`).Scan(&remaining)
+			})
+	})
+	return remaining, err
 }
 
 // indexReadyForUpsert reports whether the on-disk index is usable for an

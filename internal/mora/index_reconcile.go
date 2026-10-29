@@ -145,9 +145,11 @@ func reconcileAuthoredWrites(ctx context.Context, cfg Config) error {
 		if err != nil {
 			return err
 		}
+		// Authored writes and pending deletes mean a rebuild that raced them may
+		// have missed rows: go again.
 		hasWrite := false
 		for _, op := range ops {
-			if op.Kind == opKindWrite {
+			if op.Kind == opKindWrite || op.Kind == opKindDelete {
 				hasWrite = true
 				break
 			}

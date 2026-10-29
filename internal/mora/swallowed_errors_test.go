@@ -111,7 +111,16 @@ func TestMCPDeleteMemorySurfacesRebuildFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	poisonInserts(t, cfg)
+	// Delete no longer rebuilds: it runs one targeted DELETE, so poison deletes.
+	db, derr := sql.Open("sqlite", dbPath(cfg))
+	if derr != nil {
+		t.Fatal(derr)
+	}
+	if _, derr := db.Exec(`CREATE TRIGGER fail_del BEFORE DELETE ON memories
+		BEGIN SELECT RAISE(FAIL, 'forced delete failure'); END;`); derr != nil {
+		t.Fatal(derr)
+	}
+	db.Close()
 	_, err = callMCPTool(testCtx(t), "delete_memory", map[string]any{"id": doomed.ID})
 	if err == nil {
 		t.Fatal("delete_memory returned success despite a failed index rebuild — search would keep serving the deleted memory")

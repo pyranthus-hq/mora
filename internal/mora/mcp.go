@@ -928,15 +928,18 @@ func mcpDeleteMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 		_ = unmarkIndexDirty(cfg, op.OpID)
 		return nil, err
 	}
-	// A failed rebuild after a delete is worse than after a write: search
+	// A failed index update after a delete is worse than after a write: search
 	// keeps SERVING the deleted content as if it still existed. Delete is the
-	// privacy path, so it rebuilds in Allow mode (mirrors cmdDelete): a
-	// last-memory delete (newCount==0) must still drop the deleted row from the
-	// index — the Enforce decBlockEmpty guard would roll it back and keep
-	// serving it. Allow is safe here because no write is being committed over a
-	// populated vault; the destructive intent is the user's own delete.
-	if _, rerr := rebuildIndexWithPolicy(ctx, cfg, policyAllow); rerr != nil {
+	// privacy path, so the failure stays a LOUD error and the pending-delete
+	// marker stays (reads keep suppressing the id). The update is one targeted
+	// transaction, not a whole-vault rebuild: that rebuild held the writer lock
+	// 30-75s on a real vault, past MCP client timeouts (V3).
+	reconcile, rerr := reflectDeleteInIndex(ctx, cfg, m.ID)
+	if rerr != nil {
 		return nil, fmt.Errorf("memory %s deleted, but the search index could not be updated and may still serve it: %w — run `mora index rebuild`", id, rerr)
+	}
+	if reconcile {
+		scheduleAuthoredReconciliation(cfg)
 	}
 	return map[string]any{"deleted": id, "health": compactHealthOf(cfg, time.Now())}, nil
 }
