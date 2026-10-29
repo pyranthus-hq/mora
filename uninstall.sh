@@ -140,17 +140,23 @@ safe_rmdir() { # safe_rmdir <path> <label> <dir|vault>
 		rm -rf "$canon" && say "Removed $label: $p"
 	fi
 }
-remove_path() { # remove_path <path> <label>: a fixed Mora credential file or dir under CONFIG_DIR
-	if [ -e "$1" ]; then
-		rm -rf "$1" && say "Removed $2: $1"
+remove_path() { # remove_path <path> <label>: one regular credential file, never a directory or link
+	if [ -f "$1" ] && [ ! -L "$1" ]; then
+		rm -f "$1" && say "Removed $2: $1"
 	fi
 }
+# Credentials are deleted file by file, never recursively, and only from a config
+# dir that is absolute and holds Mora's config.toml, so an odd MORA_CONFIG_DIR
+# such as /tmp cannot point these deletes at someone else's files.
 case "$CONFIG_DIR" in
-	/*) SECRETS_OK=1 ;;
+	/*) if [ -f "$CONFIG_DIR/config.toml" ]; then SECRETS_OK=1; else SECRETS_OK=0; say "No config.toml in '$CONFIG_DIR': credentials there were NOT removed."; fi ;;
 	*) SECRETS_OK=0; say "Config dir '$CONFIG_DIR' is not an absolute path: credentials there were NOT removed." ;;
 esac
 if [ "$SECRETS_OK" = "1" ]; then
-remove_path "$CONFIG_DIR/tokens" "login tokens"
+if [ -d "$CONFIG_DIR/tokens" ] && [ ! -L "$CONFIG_DIR/tokens" ]; then
+	for f in "$CONFIG_DIR"/tokens/*; do remove_path "$f" "login token"; done
+	rmdir "$CONFIG_DIR/tokens" 2>/dev/null || true
+fi
 remove_path "$CONFIG_DIR/share/identity.txt" "sharing private key"
 remove_path "$CONFIG_DIR/share/signing.key" "sharing signing key"
 remove_path "$CONFIG_DIR/http.json" "HTTP bearer token"
