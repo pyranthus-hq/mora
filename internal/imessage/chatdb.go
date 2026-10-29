@@ -212,9 +212,10 @@ func (f *LiveFetcher) FetchPageContext(ctx context.Context, kind ItemKind, w Fet
 			if ctx.Err() != nil {
 				return Page{}, ctx.Err()
 			}
-			// Per-conversation failure: skip, never abort the page (schema-defensive,
-			// honest-snapshot — the caller's Ingest loop counts the gap).
-			continue
+			// Honest snapshot: a skipped chat would never reach the page, so Ingest
+			// could not count the gap. Fail the page; the checkpoint keeps it and the
+			// next run retries (same as the WhatsApp fetcher).
+			return Page{}, fmt.Errorf("read chat %d: %w", c.rowid, err)
 		}
 		if ok {
 			items = append(items, it)

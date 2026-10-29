@@ -2,6 +2,7 @@ package imessage
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"reflect"
 	"testing"
@@ -55,5 +56,41 @@ func TestFetchPageCompatibilityWrapper(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("FetchPage = %#v, want %#v", got, want)
+	}
+}
+
+// A per-chat read error (e.g. chat.db locked past busy_timeout) must fail the page
+// so the checkpoint keeps it and the next run retries; skipping would drop the chat
+// silently while status reads fresh.
+func TestFetchPageContextChatReadErrorFailsPage(t *testing.T) {
+	path := seedChatDB(t,
+		[]seedChat{
+			{rowid: 1, guid: "chat-1", identifier: "+14155550100", participants: []string{"+14155550100"}},
+			{rowid: 42, guid: "chat-42", identifier: "+14155550142", participants: []string{"+14155550142"}},
+		},
+		[]seedMsg{
+			{chatID: 1, text: "hello", handle: "+14155550100"},
+			{chatID: 42, text: "world", handle: "+14155550142"},
+		},
+	)
+	f, err := NewLiveFetcher(path, DenyList{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+
+	// Break the message query after the fetcher has probed the schema.
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP TABLE attachment`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	page, err := f.FetchPageContext(context.Background(), KindIMessageChat, FetchWindow{}, "")
+	if err == nil {
+		t.Fatalf("FetchPageContext error = nil, want a conversation query error; page has %d items", len(page.Items))
 	}
 }
