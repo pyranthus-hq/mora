@@ -74,6 +74,8 @@ const (
 	sourceRunStatusEmpty     = "empty"
 	sourceRunStatusFailed    = "failed"
 	sourceRunStatusCancelled = "cancelled"
+	// Skipped: another live process was already syncing the source. Not a failure.
+	sourceRunStatusSkipped = "skipped"
 )
 
 type sourceRunOutcome struct {
@@ -86,6 +88,7 @@ type sourceRunOutcome struct {
 	Missing                 int
 	Err                     error
 	Cancelled               bool
+	Skipped                 bool
 	TimedOut                bool
 	LastSuccessAt           string
 	LastAttemptAt           string
@@ -168,6 +171,9 @@ func aggregateSourceRuns(plans []sourceRunPlan, outcomes []sourceRunOutcome, not
 		switch {
 		case outcome.Cancelled:
 			receipt.Status = sourceRunStatusCancelled
+		case outcome.Skipped:
+			receipt.Status = sourceRunStatusSkipped
+			receipt.Usable = true
 		case timedOut:
 			receipt.ErrorCode = connectorErrorCode(context.DeadlineExceeded)
 			receipt.ErrorClass = connectorErrorClassOf(receipt.ErrorCode)
@@ -212,6 +218,7 @@ func aggregateSourceRuns(plans []sourceRunPlan, outcomes []sourceRunOutcome, not
 		receipts = append(receipts, receipt)
 	}
 	aggregate := sourceRunAggregate{Sources: receipts, SystemNotices: notices}
+	skipped := 0
 	for _, receipt := range receipts {
 		switch receipt.Status {
 		case sourceRunStatusSuccess, sourceRunStatusEmpty:
@@ -226,9 +233,11 @@ func aggregateSourceRuns(plans []sourceRunPlan, outcomes []sourceRunOutcome, not
 			aggregate.FailedSources++
 		case sourceRunStatusCancelled:
 			aggregate.CancelledSources++
+		case sourceRunStatusSkipped:
+			skipped++
 		}
 	}
-	aggregate.Usable = aggregate.SuccessfulSources > 0 || len(receipts) == 0
+	aggregate.Usable = aggregate.SuccessfulSources > 0 || skipped > 0 || len(receipts) == 0
 	switch {
 	case infrastructureErr != nil:
 		aggregate.Status = sourceRunStatusFailed
@@ -407,7 +416,7 @@ func sourceRunCoordinator(ctx context.Context, req sourceRunRequest) (sourceRunR
 			outcome = sourceRunOutcome{
 				Key: plan.Key, Items: ingested.Materialized, Examined: ingested.Examined,
 				Materialized: ingested.Materialized, Failed: ingested.Failed, Unchanged: ingested.Unchanged,
-				Missing: ingested.Missing, Stages: ingested.Stages, Incremental: ingested.Incremental, Err: runErr,
+				Missing: ingested.Missing, Stages: ingested.Stages, Incremental: ingested.Incremental, Skipped: ingested.Skipped, Err: runErr,
 			}
 		}
 		traceMu.Lock()
