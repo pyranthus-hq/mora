@@ -40,6 +40,11 @@ func BuildContext(cfg config.Config, items []memory.Memory, budget int, hasQuery
 	if budget <= 0 {
 		return ""
 	}
+	if hasQuery && len(items) == 0 {
+		// Without this, a miss fell through to the control files below and read
+		// like an answer (first-run audit AUD1).
+		return genericutil.TruncateRunes("No memory matched this query.\n", budget)
+	}
 	var wiki []contextBlock
 	for _, rel := range []string{"index.md", "priority-map.md", "live-tasks.md", "heartbeat.md", "auto-resolver.md"} {
 		path := filepath.Join(cfg.VaultDir, rel)
