@@ -161,28 +161,25 @@ func (f *LiveFetcher) getGmailThread(ctx context.Context, id string) (*gmail.Thr
 
 // gmailThreadExcluded mirrors the snapshot query on the history path: skip a
 // thread when every message is Promotions/Social, or when labels are
-// configured and no message carries one. w.Labels are label IDs (they are passed
-// to threads.list LabelIds). shortcut: the Since/Query filters are not re-applied.
+// configured and no single message carries ALL of them (threads.list LabelIds
+// is an AND filter; per-message matching is our reading of it at thread level).
+// w.Labels are label IDs. shortcut: the Since/Query filters are not re-applied.
 func gmailThreadExcluded(th *gmail.Thread, labels []string) bool {
 	if len(th.Messages) == 0 {
 		return false
 	}
-	want := map[string]bool{}
-	for _, l := range labels {
-		want[l] = true
-	}
 	allBulk, labelHit := true, len(labels) == 0
 	for _, msg := range th.Messages {
-		bulk := false
+		have := map[string]bool{}
 		for _, id := range msg.LabelIds {
-			if id == "CATEGORY_PROMOTIONS" || id == "CATEGORY_SOCIAL" {
-				bulk = true
-			}
-			if want[id] {
-				labelHit = true
-			}
+			have[id] = true
 		}
-		allBulk = allBulk && bulk
+		allBulk = allBulk && (have["CATEGORY_PROMOTIONS"] || have["CATEGORY_SOCIAL"])
+		all := true
+		for _, l := range labels {
+			all = all && have[l]
+		}
+		labelHit = labelHit || all
 	}
 	return allBulk || !labelHit
 }

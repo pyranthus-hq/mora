@@ -18,12 +18,14 @@ func TestGmailHistorySkipsThreadsTheSnapshotQueryExcludes(t *testing.T) {
 		"social": `{"id":"social","messages":[{"id":"m2","threadId":"social","labelIds":["CATEGORY_SOCIAL"],"payload":{"headers":[]}}]}`,
 		"mixed":  `{"id":"mixed","messages":[{"id":"m3","threadId":"mixed","labelIds":["CATEGORY_PROMOTIONS"],"payload":{"headers":[]}},{"id":"m4","threadId":"mixed","labelIds":["INBOX"],"payload":{"headers":[]}}]}`,
 		"normal": `{"id":"normal","messages":[{"id":"m5","threadId":"normal","labelIds":["INBOX","Label_work"],"payload":{"headers":[]}}]}`,
+		"inbox":  `{"id":"inbox","messages":[{"id":"m7","threadId":"inbox","labelIds":["INBOX"],"payload":{"headers":[]}}]}`,
+		"both":   `{"id":"both","messages":[{"id":"m8","threadId":"both","labelIds":["INBOX","IMPORTANT"],"payload":{"headers":[]}}]}`,
 		"other":  `{"id":"other","messages":[{"id":"m6","threadId":"other","labelIds":["INBOX"],"payload":{"headers":[]}}]}`,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasSuffix(r.URL.Path, "/history") {
-			fmt.Fprint(w, `{"historyId":"200","history":[{"messages":[{"id":"m1","threadId":"promo"},{"id":"m2","threadId":"social"},{"id":"m3","threadId":"mixed"},{"id":"m5","threadId":"normal"},{"id":"m6","threadId":"other"}]}]}`)
+			fmt.Fprint(w, `{"historyId":"200","history":[{"messages":[{"id":"m1","threadId":"promo"},{"id":"m2","threadId":"social"},{"id":"m3","threadId":"mixed"},{"id":"m5","threadId":"normal"},{"id":"m6","threadId":"other"},{"id":"m7","threadId":"inbox"},{"id":"m8","threadId":"both"}]}]}`)
 			return
 		}
 		fmt.Fprint(w, threads[r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]])
@@ -48,10 +50,14 @@ func TestGmailHistorySkipsThreadsTheSnapshotQueryExcludes(t *testing.T) {
 		}
 		return strings.Join(got, ",")
 	}
-	if got := ids(nil); got != "mixed,normal,other" {
-		t.Fatalf("no labels: got %q, want mixed,normal,other", got)
+	if got := ids(nil); got != "both,inbox,mixed,normal,other" {
+		t.Fatalf("no labels: got %q, want both,inbox,mixed,normal,other", got)
 	}
 	if got := ids([]string{"Label_work"}); got != "normal" {
 		t.Fatalf("with labels: got %q, want normal", got)
+	}
+	// threads.list LabelIds is AND: an INBOX-only thread must not match.
+	if got := ids([]string{"INBOX", "IMPORTANT"}); got != "both" {
+		t.Fatalf("two labels: got %q, want both", got)
 	}
 }
