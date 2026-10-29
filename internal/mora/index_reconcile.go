@@ -134,25 +134,6 @@ func reconcileAuthoredWrites(ctx context.Context, cfg Config) error {
 	case <-time.After(75 * time.Millisecond):
 	}
 
-	// A delete stamps its rebuild marker one second ahead (second-resolution
-	// stamps). Only a rebuild that lists after the stamp retires it, so wait the
-	// stamp out (at most ~1s) and the first pass is guaranteed to cover it.
-	if ops, lerr := listPendingOps(cfg); lerr == nil {
-		var until time.Time
-		for _, op := range ops {
-			if t, perr := time.Parse(time.RFC3339, op.MarkedAt); perr == nil && op.Kind == opKindRebuild && op.RunID == "" && t.After(until) {
-				until = t
-			}
-		}
-		if d := time.Until(until); d > 0 && d <= 2*time.Second {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(d):
-			}
-		}
-	}
-
 	// A write can land while a rebuild is listing. Repeat a bounded number of
 	// times while there are still authored-write markers. Each pass is a normal
 	// atomic rebuild; on any failure markers remain and health stays dirty.
@@ -164,12 +145,11 @@ func reconcileAuthoredWrites(ctx context.Context, cfg Config) error {
 		if err != nil {
 			return err
 		}
-		// Authored writes, pending deletes and command-issued rebuild markers (a
-		// delete leaves one stamped after its file was removed) mean a rebuild
-		// that raced them may have missed or re-added rows: go again.
+		// Authored writes and pending deletes mean a rebuild that raced them may
+		// have missed rows: go again.
 		hasWrite := false
 		for _, op := range ops {
-			if op.Kind == opKindWrite || op.Kind == opKindDelete || (op.Kind == opKindRebuild && op.RunID == "") {
+			if op.Kind == opKindWrite || op.Kind == opKindDelete {
 				hasWrite = true
 				break
 			}

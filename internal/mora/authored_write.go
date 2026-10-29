@@ -1,9 +1,6 @@
 package mora
 
-import (
-	"context"
-	"time"
-)
+import "context"
 
 // An authored write whose FTS upsert committed answers with searchable=true,
 // and its health reads index "refreshing": it is searchable now, and the
@@ -42,16 +39,13 @@ func authoredWriteProjectionPending(cfg Config, op pendingOp) bool {
 // caller's pending-delete marker is left in place: it keeps suppressing the id
 // on every read path until a covering rebuild retires it.
 //
-// A rebuild that listed the file before it was removed can commit the row back
-// and retire the delete marker (it parsed the path). So a rebuild-kind marker is
-// written AFTER the file is gone; ShouldClear retires it only for a rebuild that
-// listed after it, which therefore cannot have seen the file. It is stamped one
-// second ahead because markers carry second resolution. The reconcile keeps
-// passing while such a marker is pending.
-//
 // Emptying the vault rebuilds inline (instant, Allow mode) and needs no
 // reconcile: an Enforce rebuild would refuse an empty vault and strand markers.
 func reflectDeleteInIndex(ctx context.Context, cfg Config, id string) (reconcile bool, err error) {
+	// Relies on rebuilds holding BEGIN IMMEDIATE across listing and commit: a
+	// rebuild that parsed the file before removal commits before this delete
+	// transaction, which then removes its rows. A change that moves listing
+	// outside that transaction (audit V2) must revisit this.
 	remaining, err := indexDelete(ctx, cfg, id)
 	if err != nil {
 		return false, err
@@ -60,6 +54,5 @@ func reflectDeleteInIndex(ctx context.Context, cfg Config, id string) (reconcile
 		_, err = rebuildIndexWithPolicy(ctx, cfg, policyAllow)
 		return false, err
 	}
-	_, err = markIndexDirty(ctx, cfg, pendingOp{Kind: opKindRebuild, MemoryID: id, MarkedAt: indexClock().Add(time.Second).UTC().Format(time.RFC3339)})
-	return true, err
+	return true, nil
 }

@@ -266,13 +266,11 @@ func TestMCPDeleteDropsDerivedProjections(t *testing.T) {
 	}
 }
 
-// TestDeleteMarkersAreReconciled: a delete leaves a delete marker plus a
-// rebuild marker stamped after the file went away; the reconciler retires both,
-// and a rebuild that listed before the removal cannot.
-func TestDeleteMarkersAreReconciled(t *testing.T) {
+// TestDeleteMarkerIsReconciled: a delete leaves its delete marker and schedules
+// the reconcile; the reconciler retires the marker.
+func TestDeleteMarkerIsReconciled(t *testing.T) {
 	cfg, ids, scheduled := deleteFixture(t, 3)
 	ctx := testCtx(t)
-	gonePath := mustMemoryPathByID(t, cfg, ids[0])
 	if _, err := callMCPTool(ctx, "delete_memory", map[string]any{"id": ids[0]}); err != nil {
 		t.Fatal(err)
 	}
@@ -281,23 +279,9 @@ func TestDeleteMarkersAreReconciled(t *testing.T) {
 		t.Fatalf("scheduled reconciles = %d, want 1", scheduled.Load())
 	}
 	ops, _ := listPendingOps(cfg)
-	kinds := map[string]bool{}
-	for _, op := range ops {
-		kinds[op.Kind] = true
+	if len(ops) != 1 || ops[0].Kind != opKindDelete {
+		t.Fatalf("want exactly the delete marker pending, got %+v", ops)
 	}
-	if !kinds[opKindDelete] || !kinds[opKindRebuild] {
-		t.Fatalf("want delete + rebuild markers pending, got %+v", ops)
-	}
-	// A stale rebuild: listed before the file went away, so it parsed the path.
-	stale := time.Now().Add(-time.Minute)
-	if err := clearCoveredPendingOps(cfg, stale, []string{gonePath}, []string{gonePath}); err != nil {
-		t.Fatal(err)
-	}
-	ops, _ = listPendingOps(cfg)
-	if len(ops) != 1 || ops[0].Kind != opKindRebuild {
-		t.Fatalf("a stale rebuild must retire only the delete marker, got %+v", ops)
-	}
-	// Reconciling (the real one, not the inert seam) retires what is left.
 	if err := reconcileAuthoredWrites(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
