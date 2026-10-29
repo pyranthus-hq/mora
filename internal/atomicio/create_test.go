@@ -282,3 +282,17 @@ func TestAtomicCreateSurfacesRealLinkError(t *testing.T) {
 		t.Fatalf("orphan temp left after real link error: %v", names)
 	}
 }
+
+func TestCreateExclusiveSyncFailureLeavesNoFile(t *testing.T) {
+	boom := errors.New("sync boom")
+	old := MarkerSyncFn
+	MarkerSyncFn = func(*os.File) error { return boom }
+	defer func() { MarkerSyncFn = old }()
+	dir := t.TempDir()
+	if err := atomicCreate(filepath.Join(dir, "m.md"), []byte("x"), 0o644); !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want sync error", err)
+	}
+	if names := dirBaseNames(t, dir); len(names) != 0 {
+		t.Fatalf("leftover files after sync failure: %v", names)
+	}
+}
