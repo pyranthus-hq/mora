@@ -19,6 +19,8 @@ read the [architecture documents](architecture/00-overview.md).
 - [Settings and environment variables](#settings-and-environment-variables)
 - [How search works](#how-search-works)
 - [Privacy boundary](#privacy-boundary)
+- [Ask an agent to set it up](#ask-an-agent-to-set-it-up)
+- [Source receipts and traces](#source-receipts-and-traces)
 - [Troubleshooting](#troubleshooting)
 
 ## Install
@@ -1540,6 +1542,33 @@ The exact boundary is:
   cannot control that client's data policy.
 - The local vault is plaintext. Protect the disk and your operating-system
   account.
+
+## Ask an agent to set it up
+
+Copy this prompt into an agent that can run local shell commands:
+
+```text
+Install Mora from the official pyranthus-hq/mora repository and set up a small,
+safe first run. On macOS, use the signed Mora.app Homebrew Cask, or the direct
+signed-app installer if I do not use Homebrew. Verify `mora version` and run
+`mora doctor`. Ask me before any Google
+OAuth approval, GitHub token use, Full Disk Access change, backup, sharing, or
+schedule install. Do not say you clicked or approved a system screen. I will do
+those steps myself. Start with one folder that I choose, connect it, run a test
+search, then offer to wire `mora mcp serve` into my agent. Report every command,
+what it changed, and any check that did not pass.
+```
+
+## Source receipts and traces
+
+Source receipts include the observation and attempt times, last success, next
+expected run, duration, freshness budget, consecutive failures, and a
+correlation ID. A source cannot report `fresh` unless its observation and last
+success both fall inside that budget. Search evidence manifests carry the
+ingest correlation ID for each cited memory plus a deterministic query ID;
+sanitized stage events live only in Mora's state directory under
+`observability/traces.jsonl`. Doctor uses the same ID as its diagnostic evidence
+link. Trace events never contain source content or local paths.
 
 ## Troubleshooting
 
