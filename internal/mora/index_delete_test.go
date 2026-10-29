@@ -35,7 +35,7 @@ func deleteFixture(t *testing.T, n int) (Config, []string, *atomic.Int32) {
 	for i := 0; i < n; i++ {
 		id := newID()
 		ids = append(ids, id)
-		if err := writeMemory(cfg, Memory{ID: id, Scope: "global", Type: "insight", Title: "t", Source: "manual", CreatedAt: nowRFC3339(), Text: "zebrafinch " + id}); err != nil {
+		if err := writeMemory(cfg, Memory{ID: id, Scope: "global", Type: "insight", Title: "t", Source: "manual", CreatedAt: nowRFC3339(), Text: "zebrafinch [[Acme Corp]] " + id}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -183,4 +183,156 @@ func TestDeleteIndexFailureStaysLoud(t *testing.T) {
 	if res := gate2Search(t, cfg, "zebrafinch"); len(res) != 1 || res[0].ID != ids[1] {
 		t.Fatalf("search must suppress the pending-delete id, got %+v", res)
 	}
+}
+
+func indexExec(t *testing.T, cfg Config, q string, args ...any) {
+	t.Helper()
+	db, err := sql.Open("sqlite", rwIndexDSN(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(q, args...); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestMCPDeleteDropsDerivedProjections: a deleted memory must leave no graph,
+// vector or commitment trace, because those reads (list_entities, get_entity,
+// think's commitment snapshot) do not consult the file or the pending ledger.
+func TestMCPDeleteDropsDerivedProjections(t *testing.T) {
+	cfg, ids, _ := deleteFixture(t, 2)
+	doomed := ids[0]
+	// A real commitment is hard to provoke from prose; seed a row under the live
+	// generation exactly as writeCommitments shapes it.
+	indexExec(t, cfg, `INSERT INTO commitments(generation, row_key, commitment_id, memory_id, payload)
+		SELECT value, 'rk_'||?, NULL, ?, '{}' FROM index_meta WHERE key='commitments_generation'`, doomed, doomed)
+	ctx := testCtx(t)
+	if snap, err := readCommitmentSnapshot(ctx, cfg); err != nil || len(snap.Commitments) != 1 {
+		t.Fatalf("seed: snapshot = %+v, err %v", snap, err)
+	}
+	if n := indexScalar(t, cfg, `SELECT COUNT(*) FROM edges WHERE evidence_id=?`, doomed); n == 0 {
+		t.Fatal("seed: expected graph edges for the memory")
+	}
+	if n := indexScalar(t, cfg, `SELECT COUNT(*) FROM mem_vectors WHERE memory_id=?`, doomed); n != 1 {
+		t.Fatalf("seed: expected a vector, got %d", n)
+	}
+
+	if _, err := callMCPTool(ctx, "delete_memory", map[string]any{"id": doomed}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, q := range []string{
+		`SELECT COUNT(*) FROM edges WHERE evidence_id=? OR src='memory:'||?`,
+		`SELECT COUNT(*) FROM entities WHERE id='memory:'||?`,
+		`SELECT COUNT(*) FROM mem_vectors WHERE memory_id=?`,
+		`SELECT COUNT(*) FROM commitments WHERE memory_id=?`,
+	} {
+		args := []any{doomed}
+		if strings.Count(q, "?") == 2 {
+			args = append(args, doomed)
+		}
+		if n := indexScalar(t, cfg, q, args...); n != 0 {
+			t.Fatalf("%s left %d rows", q, n)
+		}
+	}
+	if snap, err := readCommitmentSnapshot(ctx, cfg); err != nil || len(snap.Commitments) != 0 {
+		t.Fatalf("commitment snapshot still shows the deleted memory: %+v, err %v", snap, err)
+	}
+	ents, err := graphListEntities(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		for _, id := range e.MemoryIDs {
+			if id == doomed {
+				t.Fatalf("list_entities entity %q still names the deleted memory", e.Name)
+			}
+		}
+	}
+	got, err := graphGetEntity(ctx, cfg, "Acme Corp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range got["memories"].([]Memory) {
+		if m.ID == doomed {
+			t.Fatal("get_entity still returns the deleted memory")
+		}
+	}
+	for _, e := range got["edges"].([]map[string]any) {
+		if e["evidence_id"] == doomed {
+			t.Fatal("get_entity edges still cite the deleted memory")
+		}
+	}
+}
+
+// TestDeleteMarkersAreReconciled: a delete leaves a delete marker plus a
+// rebuild marker stamped after the file went away; the reconciler retires both,
+// and a rebuild that listed before the removal cannot.
+func TestDeleteMarkersAreReconciled(t *testing.T) {
+	cfg, ids, scheduled := deleteFixture(t, 3)
+	ctx := testCtx(t)
+	gonePath := mustMemoryPathByID(t, cfg, ids[0])
+	if _, err := callMCPTool(ctx, "delete_memory", map[string]any{"id": ids[0]}); err != nil {
+		t.Fatal(err)
+	}
+	waitForAuthoredReconciles(5 * time.Second)
+	if scheduled.Load() != 1 {
+		t.Fatalf("scheduled reconciles = %d, want 1", scheduled.Load())
+	}
+	ops, _ := listPendingOps(cfg)
+	kinds := map[string]bool{}
+	for _, op := range ops {
+		kinds[op.Kind] = true
+	}
+	if !kinds[opKindDelete] || !kinds[opKindRebuild] {
+		t.Fatalf("want delete + rebuild markers pending, got %+v", ops)
+	}
+	// A stale rebuild: listed before the file went away, so it parsed the path.
+	stale := time.Now().Add(-time.Minute)
+	if err := clearCoveredPendingOps(cfg, stale, []string{gonePath}, []string{gonePath}); err != nil {
+		t.Fatal(err)
+	}
+	ops, _ = listPendingOps(cfg)
+	if len(ops) != 1 || ops[0].Kind != opKindRebuild {
+		t.Fatalf("a stale rebuild must retire only the delete marker, got %+v", ops)
+	}
+	// Reconciling (the real one, not the inert seam) retires what is left.
+	if err := reconcileAuthoredWrites(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if ops, _ = listPendingOps(cfg); len(ops) != 0 {
+		t.Fatalf("reconcile left markers pending: %+v", ops)
+	}
+	assertGone(t, cfg, ids[0])
+}
+
+// TestReconcileRetiresBareDeleteMarker: a delete marker alone (e.g. a racing
+// delete whose worker lost the lease) is picked up by the reconciler.
+func TestReconcileRetiresBareDeleteMarker(t *testing.T) {
+	cfg, ids, _ := deleteFixture(t, 2)
+	ctx := testCtx(t)
+	p := mustMemoryPathByID(t, cfg, ids[0])
+	if _, err := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindDelete, Path: p, MemoryID: ids[0]}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileAuthoredWrites(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if ops, _ := listPendingOps(cfg); len(ops) != 0 {
+		t.Fatalf("delete marker not reconciled: %+v", ops)
+	}
+	assertGone(t, cfg, ids[0])
+}
+
+func mustMemoryPathByID(t *testing.T, cfg Config, id string) string {
+	t.Helper()
+	m, err := findMemory(cfg, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m.Path
 }

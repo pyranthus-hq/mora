@@ -894,10 +894,13 @@ func mcpDeleteMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	// marker stays (reads keep suppressing the id). The update is one targeted
 	// transaction, not a whole-vault rebuild: that rebuild held the writer lock
 	// 30-75s on a real vault, past MCP client timeouts (V3).
-	if rerr := reflectDeleteInIndex(ctx, cfg, m.ID); rerr != nil {
+	reconcile, rerr := reflectDeleteInIndex(ctx, cfg, m.ID)
+	if rerr != nil {
 		return nil, fmt.Errorf("memory %s deleted, but the search index could not be updated and may still serve it: %w — run `mora index rebuild`", id, rerr)
 	}
-	scheduleDeleteReconciliation(cfg, op)
+	if reconcile {
+		scheduleAuthoredReconciliation(cfg)
+	}
 	return map[string]any{"deleted": id, "health": compactHealthOf(cfg, time.Now())}, nil
 }
 

@@ -320,6 +320,36 @@ func deleteMemoryRows(ctx context.Context, tx *sql.Tx, id string) error {
 	return err
 }
 
+// deleteMemoryProjections removes the derived rows that quote or point at one
+// memory: its graph hub node and every edge it is evidence for (these feed
+// list_entities, get_entity, neighbours and counts), its embedding vector and its
+// commitment rows (think and the brief read these without a file check). Unlike
+// an upsert, a delete must not leave them for a later rebuild: they would keep
+// serving the deleted content. Entity mention_count aggregates are not per
+// memory and are corrected by the deferred reconcile; entities left with no
+// evidence are already hidden by the evidence-based read paths. Tables a full
+// rebuild writes per memory: memories, memories_fts, gmail segments,
+// activity_stamps (deleteMemoryRows), plus edges, entities(hub), mem_vectors and
+// commitments here.
+func deleteMemoryProjections(ctx context.Context, tx *sql.Tx, id string) error {
+	for _, q := range []string{
+		`DELETE FROM edges WHERE src=?`, // idx_edges_src
+		`DELETE FROM edges WHERE evidence_id=?`,
+		`DELETE FROM entities WHERE id=?`,
+		`DELETE FROM mem_vectors WHERE memory_id=?`,
+		`DELETE FROM commitments WHERE memory_id=?`,
+	} {
+		arg := id
+		if strings.Contains(q, "src=?") || strings.Contains(q, "entities") {
+			arg = "memory:" + id // hubID(stableID)
+		}
+		if _, err := tx.ExecContext(ctx, q, arg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // indexDelete drops one memory from the search index in a single small
 // transaction, replacing the whole-vault rebuild a delete used to run inline
 // (which held the SQLite writer lock 30-75s on a real vault). It returns the
@@ -337,6 +367,9 @@ func indexDelete(ctx context.Context, cfg Config, id string) (remaining int, err
 			},
 			func(tx *sql.Tx) error {
 				if err := deleteMemoryRows(ctx, tx, id); err != nil {
+					return err
+				}
+				if err := deleteMemoryProjections(ctx, tx, id); err != nil {
 					return err
 				}
 				return tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories`).Scan(&remaining)

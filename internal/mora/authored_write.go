@@ -1,6 +1,9 @@
 package mora
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // An authored write whose FTS upsert committed answers with searchable=true,
 // and its health reads index "refreshing": it is searchable now, and the
@@ -33,29 +36,30 @@ func authoredWriteProjectionPending(cfg Config, op pendingOp) bool {
 	return false
 }
 
-// reflectDeleteInIndex removes one just-deleted memory from the search index
-// with a single targeted transaction (no whole-vault rebuild). The caller's
-// pending-delete marker is left in place: it keeps suppressing the id on every
-// read path and pins graph/vector/commitment lag until a covering rebuild
-// retires it. Emptying the vault is the one case that rebuilds inline (instant,
-// Allow mode): the deferred Enforce rebuild would otherwise refuse an empty
-// vault and strand the marker.
-func reflectDeleteInIndex(ctx context.Context, cfg Config, id string) error {
+// reflectDeleteInIndex removes one just-deleted memory from the search index and
+// its derived projections with a single targeted transaction (no whole-vault
+// rebuild). It reports whether the caller must run the deferred reconcile. The
+// caller's pending-delete marker is left in place: it keeps suppressing the id
+// on every read path until a covering rebuild retires it.
+//
+// A rebuild that listed the file before it was removed can commit the row back
+// and retire the delete marker (it parsed the path). So a rebuild-kind marker is
+// written AFTER the file is gone; ShouldClear retires it only for a rebuild that
+// listed after it, which therefore cannot have seen the file. It is stamped one
+// second ahead because markers carry second resolution. The reconcile keeps
+// passing while such a marker is pending.
+//
+// Emptying the vault rebuilds inline (instant, Allow mode) and needs no
+// reconcile: an Enforce rebuild would refuse an empty vault and strand markers.
+func reflectDeleteInIndex(ctx context.Context, cfg Config, id string) (reconcile bool, err error) {
 	remaining, err := indexDelete(ctx, cfg, id)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if remaining == 0 {
 		_, err = rebuildIndexWithPolicy(ctx, cfg, policyAllow)
+		return false, err
 	}
-	return err
-}
-
-// scheduleDeleteReconciliation schedules the deferred projection catch-up for a
-// delete whose marker is still pending (an emptying delete's inline rebuild
-// already retired it).
-func scheduleDeleteReconciliation(cfg Config, op pendingOp) {
-	if authoredWriteProjectionPending(cfg, op) {
-		scheduleAuthoredReconciliation(cfg)
-	}
+	_, err = markIndexDirty(ctx, cfg, pendingOp{Kind: opKindRebuild, MemoryID: id, MarkedAt: indexClock().Add(time.Second).UTC().Format(time.RFC3339)})
+	return true, err
 }
