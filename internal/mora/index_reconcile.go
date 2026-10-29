@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
+
+	"github.com/pyranthus-hq/mora/internal/leasefile"
+	"github.com/pyranthus-hq/mora/internal/operation"
 )
 
 // authoredReconcileLockPath is a short-lived, cross-process election for the
@@ -17,7 +21,25 @@ func authoredReconcileLockPath(cfg Config) string {
 	return filepath.Join(cfg.StateDir, "index", "authored-reconcile.lock")
 }
 
-const authoredReconcileTTL = 2 * time.Minute
+// authoredReconcileTTL must outlast a live owner's whole run (up to three full
+// rebuilds, each 30-75s on a ~12k-file vault); a dead owner is reaped at once by
+// PID instead of waiting this out.
+const authoredReconcileTTL = 10 * time.Minute
+
+// authoredReconcilesInFlight lets a short-lived process (an MCP server whose
+// session just closed stdin) wait for its background reconcile instead of
+// exiting mid-rebuild and leaving a stalled receipt behind.
+var authoredReconcilesInFlight sync.WaitGroup
+
+// waitForAuthoredReconciles waits up to limit for in-flight reconciles.
+func waitForAuthoredReconciles(limit time.Duration) {
+	done := make(chan struct{})
+	go func() { authoredReconcilesInFlight.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(limit):
+	}
+}
 
 // defaultAuthoredReconcileScheduler resolves the reconciler from the config:
 // configs resolved under a context that pinned an override (tests keeping the
@@ -32,7 +54,9 @@ func defaultAuthoredReconcileScheduler(cfg Config) {
 	if runner == nil {
 		runner = reconcileAuthoredWrites
 	}
+	authoredReconcilesInFlight.Add(1)
 	go func(run func(context.Context, Config) error) {
+		defer authoredReconcilesInFlight.Done()
 		if err := run(context.Background(), cfg); err != nil {
 			// stderr is outside the MCP stdio transport. Do not clear or alter a
 			// marker here: a logged failure must remain visible to health and the
@@ -75,7 +99,17 @@ func reconcileAuthoredWrites(ctx context.Context, cfg Config) error {
 		return err
 	}
 	if !published {
-		reaped, rerr := reapStaleLockTTL(path, now, authoredReconcileTTL)
+		var reaped bool
+		var rerr error
+		held, readErr := os.ReadFile(path)
+		var owner loopLockBody
+		if readErr == nil && json.Unmarshal(held, &owner) == nil && owner.PID > 0 && !operation.ProcessAlive(owner.PID) {
+			// The owner is gone. Break only the exact bytes inspected, so a live
+			// replacement lease published meanwhile is never removed.
+			reaped, rerr = leasefile.Break(path, held, leaseRemovalOptions())
+		} else {
+			reaped, rerr = reapStaleLockTTL(path, now, authoredReconcileTTL)
+		}
 		if rerr != nil {
 			return rerr
 		}

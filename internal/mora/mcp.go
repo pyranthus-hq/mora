@@ -46,7 +46,12 @@ func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin 
 	return errors.New("usage: mora mcp serve | mora mcp proposals <list|approve ID|reject ID>")
 }
 func serveMCP(ctx context.Context, stdout io.Writer, stdin io.Reader) error {
-	return mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, handleMCP)
+	err := mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, handleMCP)
+	// The client is gone, but a rebuild it triggered may be mid-flight; exiting
+	// now would kill it and leave a stalled receipt. Bounded so a stuck rebuild
+	// cannot turn this into a zombie server.
+	waitForAuthoredReconciles(5 * time.Minute)
+	return err
 }
 
 // contextDefaultTokens resolves the ContextProfile to the default token budget
@@ -262,7 +267,9 @@ func mcpWriteMemoryWith(ctx context.Context, cfg Config, args map[string]any, op
 	// the SAME bounded envelope under the "memory" key (Open Q1 shape).
 	if rerr := indexUpsert(ctx, cfg, m); rerr != nil {
 		// Degraded SUCCESS — the op REMAINS so the index reads dirty (A2), now
-		// backed by durable state instead of one lost warning string.
+		// backed by durable state instead of one lost warning string. The
+		// reconcile still runs, so the write is covered without a manual rebuild.
+		scheduleAuthoredReconciliation(cfg)
 		return map[string]any{
 			"memory":      m,
 			"index_stale": true,
