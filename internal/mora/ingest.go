@@ -172,7 +172,7 @@ func runEnabledSourceBackfill(ctx context.Context, cfg Config, stdout io.Writer,
 	output := io.Writer(&synchronizedWriter{w: stdout})
 	outcomes := runSourcePlan(ctx, plans, sourceRunOptions{Run: func(runCtx context.Context, plan sourceRunPlan) sourceRunOutcome {
 		result, runErr := ingestSourceFn(runCtx, cfg, plan.Source, output)
-		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Err: runErr}
+		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Skipped: result.Skipped, Err: runErr}
 	}})
 	for i, outcome := range outcomes {
 		if outcome.Err != nil && !outcome.Cancelled && report != nil {
@@ -302,7 +302,7 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 		result, runErr := ingestSourceFn(runCtx, cfg, plan.Source, progress)
 		outcome := sourceRunOutcome{
 			Key: plan.Key, Items: result.Materialized, Examined: result.Examined,
-			Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Err: runErr,
+			Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Skipped: result.Skipped, Err: runErr,
 		}
 		if path := syncStatusPathFor(cfg, plan.Source); path != "" {
 			if status, statusErr := memory.LoadStatus(path); statusErr == nil && status != nil {
@@ -1122,7 +1122,7 @@ func cmdReingest(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	}
 	outcomes := runSourcePlan(ctx, plans, sourceRunOptions{Run: func(runCtx context.Context, plan sourceRunPlan) sourceRunOutcome {
 		result, runErr := ingestSourceFn(runCtx, cfg, plan.Source, progress)
-		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Err: runErr}
+		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Skipped: result.Skipped, Err: runErr}
 	}})
 	total := sourceOutcomesMaterialized(outcomes)
 	for _, outcome := range outcomes {
@@ -1177,6 +1177,8 @@ type sourceIngestResult struct {
 	Missing      int
 	Stages       memory.IngestStages
 	Incremental  bool
+	// Skipped: another live process holds this source's lease, nothing ran.
+	Skipped bool
 }
 
 func sourceIngestResultFromMemory(result memory.IngestResult) sourceIngestResult {
@@ -1197,6 +1199,19 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 	// attemptStart is captured before ANY step that can fail, so every failure at
 	// this chokepoint — activity bookkeeping included — stamps the same attempt.
 	attemptStart := time.Now()
+	// One sync per source: a live holder means skip, before any activity record
+	// or status is written. The lease is released on every exit path below.
+	sourceKey := ingestOperationSourceKey(s)
+	if leaseErr := ingestpkg.EnsureLease(cfg, sourceKey, ingestLeaseSeams()); leaseErr != nil {
+		var held *ingestpkg.LeaseHeldError
+		if errors.As(leaseErr, &held) {
+			warnf(out, "%s sync skipped: %v", sourceKey, held)
+			return sourceIngestResult{Skipped: true}, nil
+		}
+	}
+	// Release only this source's lease. Concurrent in-process ingests share a PID;
+	// releasing every lease here would abandon the still-running sibling.
+	defer ingestpkg.ReleaseLeaseOwnedHere(cfg, sourceKey, ingestLeaseSeams())
 	// The activity receipt and matching journal header are both durable before
 	// dispatch can publish a vault file. Even a zero-item run gets a header, so
 	// its success can be closed only by the covering committed rebuild.
@@ -1224,7 +1239,6 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		}, code, cfg.OperationClock())
 		return errors.Join(cause, finishErr)
 	}
-	sourceKey := ingestOperationSourceKey(s)
 	// Every publish below journals under this run's key (writeMappedMemoryDetailed
 	// reads it back), so the lease taken here is the only one the run owns and the
 	// deferred release below actually retires it.
@@ -1232,9 +1246,6 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 	if err := ingestpkg.EnsureJournalHeader(cfg, sourceKey, ingestPublishSeams()); err != nil {
 		return result, finishFailed("journal_start_failed", err)
 	}
-	// Release only this source's lease. Concurrent in-process ingests share a PID;
-	// releasing every lease here would abandon the still-running sibling.
-	defer ingestpkg.ReleaseLeaseOwnedHere(cfg, sourceKey, ingestLeaseSeams())
 
 	progress := startOperationProgress(cfg, h, "ingesting")
 	if err := progress.Update("ingesting", operationCounts{}); err != nil {
