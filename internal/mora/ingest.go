@@ -2364,8 +2364,10 @@ func backfillEnabledAppleCalendar(ctx context.Context, cfg Config, stdout io.Wri
 var testHookFSPreWrite func(id string)
 
 type filesystemManifestEntry struct {
-	Size    int64 `json:"size"`
-	ModTime int64 `json:"mod_time_unix_nano"`
+	Size          int64 `json:"size"`
+	ModTime       int64 `json:"mod_time_unix_nano"`
+	TargetSize    int64 `json:"target_size,omitempty"`
+	TargetModTime int64 `json:"target_mod_time_unix_nano,omitempty"`
 }
 
 func filesystemManifestPath(cfg Config, source string) string {
@@ -2454,6 +2456,17 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 			return fmt.Errorf("stat filesystem source %q file %q: %w", s.Name, path, infoErr)
 		}
 		entry := filesystemManifestEntry{Size: info.Size(), ModTime: info.ModTime().UnixNano()}
+		if d.Type()&os.ModeSymlink != 0 {
+			target, err := os.Stat(path)
+			if err != nil {
+				return fmt.Errorf("reading filesystem source %q symlink target %q metadata: %w", s.Name, path, err)
+			}
+			if !target.Mode().IsRegular() {
+				return fmt.Errorf("filesystem source %q symlink target %q is not a regular file", s.Name, path)
+			}
+			// Staging links stay unchanged when Claude edits the memory they point to.
+			entry.TargetSize, entry.TargetModTime = target.Size(), target.ModTime().UnixNano()
+		}
 		if prior, ok := priorManifest[rel]; ok && prior == entry {
 			nextManifest[rel] = entry
 			result.Examined++
