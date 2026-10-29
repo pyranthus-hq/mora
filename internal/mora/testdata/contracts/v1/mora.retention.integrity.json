@@ -1,6 +1,7 @@
 {
   "dangling_graph_edges": null,
   "healthy": true,
+  "historical_count": 0,
   "index_count": 2,
   "missing_index_ids": null,
   "orphan_index_ids": null,

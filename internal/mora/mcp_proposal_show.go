@@ -40,6 +40,7 @@ type mcpProposalInspection struct {
 	Arguments  map[string]any `json:"arguments"`
 	Redacted   bool           `json:"redacted"`
 	Notice     string         `json:"notice,omitempty"`
+	MemoryID   string         `json:"memory_id,omitempty"`
 }
 
 func showMCPWriteProposal(cfg Config, id string, stdout io.Writer) error {
@@ -80,6 +81,17 @@ func showMCPWriteProposal(cfg Config, id string, stdout io.Writer) error {
 	inspection := mcpProposalInspection{ID: p.ID, ProposedAt: p.ProposedAt, Status: "pending", Scope: scope, Type: kind, Source: source, Arguments: arguments.(map[string]any), Redacted: redacted || scopeRedacted || typeRedacted || sourceRedacted}
 	if inspection.Redacted {
 		inspection.Notice = "Credential-like values were hidden. Reject rather than approve this redacted view; the stored proposal is unchanged."
+	}
+	d, err := readMCPProposalDecision(cfg, id)
+	if err != nil {
+		return err
+	}
+	if d != nil {
+		inspection.Status, inspection.MemoryID = d.Status, d.MemoryID
+		if inspection.Notice != "" {
+			inspection.Notice += " "
+		}
+		inspection.Notice += "A decision has already been attempted. Do not approve again; reconcile the recorded memory ID manually if unresolved."
 	}
 	var encoded bytes.Buffer
 	if err := emitReceipt(&encoded, "mora.mcp.proposals", 1, mcpProposalsPayload{Proposals: []mcpProposalRow{}, Inspection: &inspection}); err != nil {

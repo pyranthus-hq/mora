@@ -154,6 +154,12 @@ func TestRetentionRecoveryRestoresRecordAndIndexIntegrity(t *testing.T) {
 	if err := writeMemory(cfg, original); err != nil {
 		t.Fatal(err)
 	}
+	// Retention explicitly requires a current survivor. Keep this test focused
+	// on recovery rather than emptying the entire corpus.
+	if err := writeMemory(cfg, Memory{ID: "recovery-survivor", Scope: "personal", Type: "note", Title: "Keep", Text: "Synthetic survivor", CreatedAt: "2026-08-24T00:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+
 	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	report, err := buildRetentionReport(cfg, now, 365, 30)
 	if err != nil {

@@ -614,6 +614,21 @@ proposal directories/files, nonregular files, and files over 32 MiB. It does not
 change the pending queue on either success or refusal. This local read adds no
 authorization boundary or approval authority.
 
+Proposal decisions are serialized across processes and retained privately under
+`<StateDir>/mcp-proposal-decisions/`, outside the vault. A durable decision claim
+records the intended memory ID before publication. Concurrent approve/reject
+commands and later retries return a conflict; deleting or retracting the memory
+does not reset that proposal. Successful commands keep the existing receipt shape.
+
+If a process stops after claiming a decision, the outcome may be unresolved.
+`show` and `list` label any remaining pending file with the recorded decision
+status and memory ID. Do not approve it again or remove its decision record:
+reconcile that ID and the vault manually before recovery. There is no automatic
+retry or recovery command for an interrupted decision. These guarantees require
+all deciding processes to use this version and the same retained state directory;
+older binaries and manually deleted state can bypass them.
+
+
 
 ### Loopback HTTP
 
@@ -982,6 +997,17 @@ mora teach undo <ledger-id>
 Identity matches are proposals until you confirm them. Connector source files
 stay unchanged. Memory revision commands apply only to memories that you wrote.
 
+Concurrent correction, supersession, and retraction commands for the same current
+memory have one winner. Losing commands return a conflict before creating a
+replacement. Re-read the current revision before deciding again. Undo checks for
+active descendants under the same governance lease, so undo the newest revision
+first. Rebuild runs after releasing that lease; if rebuilding fails, the committed
+decision and replacement remain with dirty markers for recovery. A failed ledger
+append removes its own replacement; cleanup failures explicitly name the leftover.
+This does not make the memory file and ledger a single crash-atomic transaction,
+and does not repair historical forks created by older versions.
+
+
 `mora teach identity confirm --json` and `mora teach identity reject --json`
 emit the `mora.teach.identity.confirm` and `mora.teach.identity.reject` v1
 receipts with the decided pair, the ledger entry id, the corroborating evidence,
@@ -1028,6 +1054,26 @@ mora retention execute <report-id> --yes --json
 mora retention verify --json
 mora retention recover <manifest-id> --yes --json
 ```
+
+`retention verify` compares `vault_count` with the current, non-tombstoned Teach
+projection in the index. Retained superseded, retracted, and undone replacement
+files are counted separately in `historical_count`. All listed files are still
+parsed; unreadable or invalid documents make verification unhealthy and appear
+as vault-relative `invalid_memory_paths`. History excluded from ordinary search
+is not an index omission. This checks retained files, not proof that historical
+files deleted outside Mora still exist. Unhealthy checks retain the existing CLI
+contract: exit 1 with diagnostics on stderr, including with `--json`; only healthy
+checks emit a versioned JSON receipt on stdout.
+
+Retention execution refuses a report that would leave no current, non-tombstoned
+memory. This preflight happens before recovery-key, manifest, ledger, or vault
+writes. Keep a current memory or compact a candidate into a current survivor;
+historical files and tombstones do not count. The normal empty-index and vault
+identity guards stay enabled. Run execution against an unchanged vault: preflight
+is not a transaction against concurrent edits or Teach decisions, and other
+mid-execution failures can still require recovery. Intentional emptying through
+retention is not supported by this policy.
+
 
 Execution refuses incomplete decisions, changed files, or a target set that no
 longer matches the reviewed report. Before mutation it writes an AES-GCM
