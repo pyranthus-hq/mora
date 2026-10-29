@@ -142,9 +142,8 @@ func TestInstallAppScriptMigratesStandaloneToAppSymlink(t *testing.T) {
 		t.Fatalf("PATH symlink = %q, want %q", linkTarget, wantTarget)
 	}
 	assertFileBody(t, legacy+".standalone-backup", "legacy signed binary")
-	if !strings.Contains(string(output), "Planned Mora.app Full Disk Access migration") ||
-		!strings.Contains(string(output), "continuity is not proven") {
-		t.Fatalf("installer output omitted FDA migration: %s", output)
+	if strings.Contains(string(output), "Full Disk Access") {
+		t.Fatalf("installer output still shows the FDA migration text: %s", output)
 	}
 }
 
