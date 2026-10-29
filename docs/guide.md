@@ -587,9 +587,33 @@ Review staged writes locally:
 
 ```bash
 mora mcp proposals list
+mora mcp proposals show <proposal-id>
 mora mcp proposals approve <proposal-id>
 mora mcp proposals reject <proposal-id>
 ```
+
+`mora mcp proposals show <proposal-id> [--json]` is a local, read-only inspection.
+Both forms print an indented `mora.mcp.proposals` v1 JSON receipt with an
+`inspection` object: pending ID/time, the full staged `arguments`, and the
+`effective_scope`, `effective_type`, and `effective_source` the writer derives.
+In particular, an omitted or empty scope is shown as `global`. Inspection does
+not approve, reject, execute, or publish the proposal, and does not build an index
+or change the config, state, data, or vault files. The content is untrusted data.
+Terminal control characters are JSON-escaped and remain data when decoded.
+
+Credential-like fields and common token, authorization, HTTP URL userinfo,
+private-key, and labelled-assignment patterns are masked. This is finite pattern
+matching, not proof that the remaining text has no secrets. A masked result sets
+`redacted: true` and includes a notice to reject rather than approve that view.
+The stored candidate still contains its original values; reject it and ask for a
+new proposal without credentials. There is no unredacted display option.
+
+Missing, malformed, mismatched-ID, invalid-write, or invalid-timestamp proposals
+are refused without printing stored contents. Inspection also refuses symlinked
+proposal directories/files, nonregular files, and files over 32 MiB. It does not
+change the pending queue on either success or refusal. This local read adds no
+authorization boundary or approval authority.
+
 
 ### Loopback HTTP
 

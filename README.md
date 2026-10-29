@@ -362,7 +362,21 @@ default changed that never set a policy have no `mcp_write_policy` line, so
 after upgrading they also run in `propose`. To keep the old behavior, run
 `mora config mcp-write-policy open`. `mora config` shows the policy in force.
 
-Review proposals with `mora mcp proposals list`, `approve`, and `reject`.
+Review a pending write locally before deciding:
+
+```bash
+mora mcp proposals list
+mora mcp proposals show <proposal-id>
+# After reviewing the full content and scope, explicitly choose:
+mora mcp proposals approve <proposal-id>
+# or: mora mcp proposals reject <proposal-id>
+```
+
+`show` is read-only. It prints the full staged arguments and effective scope,
+type, and source as JSON; `--json` prints the same receipt. Common credential
+patterns are masked without changing the pending file. If `redacted` is true,
+reject and resubmit a proposal without credentials rather than approving the
+masked view. Pattern matching cannot identify every secret.
 
 ## Durable loops
 

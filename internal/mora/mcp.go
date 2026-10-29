@@ -43,7 +43,7 @@ func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin 
 	if len(args) >= 2 && args[0] == "proposals" {
 		return cmdMCPProposals(ctx, args[1:], stdout, stderr)
 	}
-	return errors.New("usage: mora mcp serve | mora mcp proposals <list|approve ID|reject ID>")
+	return errors.New("usage: mora mcp serve | mora mcp proposals <list|show ID|approve ID|reject ID>")
 }
 func serveMCP(ctx context.Context, stdout io.Writer, stdin io.Reader) error {
 	err := mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, handleMCP)

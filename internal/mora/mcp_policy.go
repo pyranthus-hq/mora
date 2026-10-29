@@ -58,7 +58,7 @@ func stageMCPWriteProposal(cfg Config, args map[string]any) (any, error) {
 	}
 	return map[string]any{
 		"proposal": map[string]any{"id": proposal.ID, "status": "pending", "proposed_at": proposal.ProposedAt},
-		"message":  fmt.Sprintf("not written to the vault; the owner can inspect and approve with `mora mcp proposals approve %s`", proposal.ID),
+		"message":  fmt.Sprintf("not written to the vault; inspect with `mora mcp proposals show %s` before approving with `mora mcp proposals approve %s`", proposal.ID, proposal.ID),
 		"health":   compactHealthOf(cfg, now),
 	}, nil
 }
@@ -74,9 +74,10 @@ type mcpProposalRow struct {
 
 // mcpProposalsPayload carries the queue under a named key, never null.
 type mcpProposalsPayload struct {
-	Proposals []mcpProposalRow `json:"proposals"`
-	Decision  string           `json:"decision,omitempty"`
-	MemoryID  string           `json:"memory_id,omitempty"`
+	Proposals  []mcpProposalRow       `json:"proposals"`
+	Decision   string                 `json:"decision,omitempty"`
+	MemoryID   string                 `json:"memory_id,omitempty"`
+	Inspection *mcpProposalInspection `json:"inspection,omitempty"`
 }
 
 func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -122,6 +123,12 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 			fmt.Fprintf(stdout, "%s  %s  [%s/%s] %s\n", row.ID, row.ProposedAt, row.Scope, row.Type, row.Title)
 		}
 		return nil
+	}
+	if len(args) == 2 && args[0] == "show" {
+		if err := refuseDashLedPositional("mcp proposals show", "proposal id", args[1]); err != nil {
+			return err
+		}
+		return showMCPWriteProposal(cfg, args[1], stdout)
 	}
 	if len(args) == 2 && args[0] == "approve" {
 		if err := refuseDashLedPositional("mcp proposals approve", "proposal id", args[1]); err != nil {
@@ -171,5 +178,5 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 		fmt.Fprintf(stdout, "Rejected %s.\n", args[1])
 		return nil
 	}
-	return errors.New("usage: mora mcp proposals <list|approve ID|reject ID>")
+	return errors.New("usage: mora mcp proposals <list|show ID|approve ID|reject ID>")
 }
