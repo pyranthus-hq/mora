@@ -24,9 +24,16 @@ It writes a recall-only hook to the current directory's
 `.claude/settings.local.json` through `hooks.InstallProjectRecall`, preserving
 unrelated settings. It refuses existing managed Mora hooks in global settings
 or the project's shared settings, and a local managed `SessionStart` hook;
-the global brief would defeat scope isolation. The default global install is
+the global brief would defeat scope isolation. Duplicate or misplaced managed
+local hooks are refused without writing, so upsert cannot leave a second broad
+recall command behind. The default global install is
 unchanged. `hook status --project [--json]` and `hook uninstall --project` target
-the same project-local file; run them from the installation root.
+the same project-local file; run them from the installation root. A nonempty
+`CLAUDE_CONFIG_DIR`, linked worktrees/other `.git` files, repository subdirectories,
+and symlinked `.git` or Claude settings entries are rejected for this bounded
+first slice. `hooks.ProjectSettingsPath` checks settings destinations before
+installation and before project status/uninstall; it refuses links instead of
+following or replacing them.
 
 The installed command carries the exact scope and canonical project directory.
 `hookRecall` requires an absolute, resolvable input `cwd` inside that directory
@@ -35,7 +42,9 @@ symlinks and checks path components with `filepath.Rel`. The search scope is
 passed into the existing SQL predicate before ranking/limits, then checked
 again on hydrated memories. Scoped recall omits the global health banner,
 which can contain unrelated account names and source errors. This constrains automatic recall, not MCP reads,
-other hooks, or context already delivered to a client.
+other hooks, or context already delivered to a client. It is a directory-subtree
+binding, so nested repositories remain included. A renamed root fails closed;
+global hooks added later can still inject broad context.
 
 ## `mora capabilities`
 

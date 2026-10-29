@@ -255,6 +255,10 @@ func hookInstall(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 	if *project {
+		projectPath, err := claudeProjectSettingsPath()
+		if err != nil {
+			return err
+		}
 		start, recall, err := hookspkg.Status(path)
 		if err != nil {
 			return err
@@ -262,10 +266,7 @@ func hookInstall(ctx context.Context, args []string, stdout io.Writer) error {
 		if start == "installed" || recall == "installed" {
 			return errors.New("global Mora hooks read all scopes; run mora hook uninstall before installing project recall")
 		}
-		path, err = claudeProjectSettingsPath()
-		if err != nil {
-			return err
-		}
+		path = projectPath
 		root := filepath.Dir(filepath.Dir(path))
 		start, recall, err = hookspkg.Status(filepath.Join(root, ".claude", "settings.json"))
 		if err != nil {
@@ -347,6 +348,9 @@ func hookStatus(ctx context.Context, stdout io.Writer, jsonOutput ...bool) error
 }
 
 func claudeProjectSettingsPath() (string, error) {
+	if os.Getenv("CLAUDE_CONFIG_DIR") != "" {
+		return "", errors.New("project hooks do not support CLAUDE_CONFIG_DIR; use the default Claude configuration directory")
+	}
 	root, err := os.Getwd()
 	if err != nil {
 		return "", err
@@ -355,7 +359,25 @@ func claudeProjectSettingsPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(root, ".claude", "settings.local.json"), nil
+	for dir := root; ; dir = filepath.Dir(dir) {
+		entry, err := os.Lstat(filepath.Join(dir, ".git"))
+		if err == nil {
+			if !entry.IsDir() || entry.Mode()&os.ModeSymlink != 0 {
+				return "", errors.New("project hooks do not support linked worktrees or .git files; install from the main checkout root")
+			}
+			if dir != root {
+				return "", errors.New("run project hook commands from the repository root")
+			}
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		if filepath.Dir(dir) == dir {
+			break
+		}
+	}
+	return hookspkg.ProjectSettingsPath(root)
 }
 
 // claudeSettingsPath derives ~/.claude/settings.json from the context-resolved

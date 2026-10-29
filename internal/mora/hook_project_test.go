@@ -91,12 +91,17 @@ func TestHookProjectRecallIsolation(t *testing.T) {
 	if err := os.Mkdir(subdir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	nested := filepath.Join(root, "nested-repository")
+	if err := os.MkdirAll(filepath.Join(nested, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		name, cwd string
 		want      bool
 	}{
 		{"project", root, true},
 		{"subdirectory", subdir, true},
+		{"nested-repo-is-still-in-directory-subtree", nested, true},
 		{"other", other, false},
 		{"sibling-prefix", root + "-other", false},
 		{"missing-cwd", "", false},
@@ -199,5 +204,160 @@ func TestHookProjectRecallSymlinkContainment(t *testing.T) {
 	}
 	if !hookWithinProject(root, alias) || hookWithinProject(root, escape) {
 		t.Fatal("symlink aliases must resolve inside the project; escapes must be refused")
+	}
+}
+
+func TestHookProjectInstallRefusesAlternateConfig(t *testing.T) {
+	withTempHookHome(t)
+	project, alternate := t.TempDir(), t.TempDir()
+	t.Chdir(project)
+	t.Setenv("CLAUDE_CONFIG_DIR", alternate)
+	body := []byte(`{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"mora hook session-start #mora-managed:session-start"}]}]}}`)
+	path := filepath.Join(alternate, "settings.json")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := cmdHook(testCtx(t), []string{"install", "--project", "--scope", "project:demo"}, &out, testStderr, strings.NewReader(""))
+	if err == nil || !strings.Contains(err.Error(), "CLAUDE_CONFIG_DIR") {
+		t.Fatalf("expected alternate-config refusal, got %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("alternate settings changed: %s, %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(project, ".claude")); !os.IsNotExist(err) {
+		t.Fatalf("refusal wrote project settings: %v", err)
+	}
+}
+
+func TestHookProjectInstallRefusesGitLayouts(t *testing.T) {
+	for _, layout := range []string{"linked-worktree", "repo-subdirectory"} {
+		subRun(t, layout, func(t *testing.T) {
+			withTempHookHome(t)
+			main, project := t.TempDir(), t.TempDir()
+			body := []byte(`{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"mora hook session-start #mora-managed:session-start"}]}]}}`)
+			mainLocal := filepath.Join(main, ".claude", "settings.local.json")
+			if err := os.MkdirAll(filepath.Dir(mainLocal), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(mainLocal, body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if layout == "linked-worktree" {
+				if err := os.WriteFile(filepath.Join(project, ".git"), []byte("gitdir: "+filepath.Join(main, ".git", "worktrees", "linked")+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := os.Mkdir(filepath.Join(main, ".git"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				project = filepath.Join(main, "src")
+				if err := os.Mkdir(project, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Chdir(project)
+			var out bytes.Buffer
+			err := cmdHook(testCtx(t), []string{"install", "--project", "--scope", "project:demo"}, &out, testStderr, strings.NewReader(""))
+			if err == nil {
+				t.Fatal("unsupported effective settings layout was accepted")
+			}
+			got, err := os.ReadFile(mainLocal)
+			if err != nil || !bytes.Equal(got, body) {
+				t.Fatalf("main-checkout settings changed: %s, %v", got, err)
+			}
+			if _, err := os.Stat(filepath.Join(project, ".claude")); !os.IsNotExist(err) {
+				t.Fatalf("refusal wrote project settings: %v", err)
+			}
+		})
+	}
+}
+
+func TestHookProjectInstallRefusesSettingsSymlinks(t *testing.T) {
+	for _, target := range []string{"directory", "local-file", "shared-file"} {
+		subRun(t, target, func(t *testing.T) {
+			withTempHookHome(t)
+			project, other := t.TempDir(), t.TempDir()
+			t.Chdir(project)
+			body := []byte(`{"theme":"PRIVATE_OTHER_PROJECT"}`)
+			foreign := filepath.Join(other, "settings.local.json")
+			if err := os.WriteFile(foreign, body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(project, ".claude")
+			destination := other
+			if target != "directory" {
+				if err := os.Mkdir(link, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				name := "settings.local.json"
+				if target == "shared-file" {
+					name = "settings.json"
+				}
+				link = filepath.Join(link, name)
+				destination = foreign
+			}
+			if err := os.Symlink(destination, link); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			for _, command := range [][]string{{"install", "--project", "--scope", "project:demo"}, {"uninstall", "--project"}} {
+				var out bytes.Buffer
+				if err := cmdHook(testCtx(t), command, &out, testStderr, strings.NewReader("")); err == nil {
+					t.Fatalf("settings link accepted: %v", command)
+				}
+			}
+			info, err := os.Lstat(link)
+			if err != nil || info.Mode()&os.ModeSymlink == 0 {
+				t.Fatalf("settings link replaced: %v", err)
+			}
+			got, err := os.ReadFile(foreign)
+			if err != nil || !bytes.Equal(got, body) {
+				t.Fatalf("foreign settings modified: %s, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestHookProjectRecallRenamedRootIsSilent(t *testing.T) {
+	withTempHome(t)
+	parent := t.TempDir()
+	root, moved := filepath.Join(parent, "original"), filepath.Join(parent, "renamed")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(root, moved); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := cmdHook(testCtx(t), []string{"recall", "--scope", "project:demo", "--project-dir", root}, &out, testStderr,
+		strings.NewReader(`{"prompt":"Always install pnpm", "cwd":`+quoteJSON(moved)+`}`))
+	if err != nil || out.Len() != 0 {
+		t.Fatalf("renamed root must not use the old binding: %s, %v", &out, err)
+	}
+}
+
+func TestHookProjectLaterGlobalHooksRemainBroad(t *testing.T) {
+	withTempHookHome(t)
+	root := t.TempDir()
+	t.Chdir(root)
+	run(t, "init")
+	run(t, "write", "--scope", "project:demo", "--type", "decision", "--title", "pnpm", "--text", "Always install pnpm LOCAL_CORRECTION")
+	run(t, "write", "--scope", "personal", "--type", "decision", "--title", "pnpm", "--text", "Always install pnpm PRIVATE_PERSONAL")
+	run(t, "hook", "install", "--project", "--scope", "project:demo")
+	run(t, "hook", "install")
+	input := `{"prompt":"Always install pnpm", "cwd":` + quoteJSON(root) + `}`
+	var scoped, global bytes.Buffer
+	if err := cmdHook(testCtx(t), []string{"recall", "--scope", "project:demo", "--project-dir", root}, &scoped, testStderr, strings.NewReader(input)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(scoped.String(), "LOCAL_CORRECTION") || strings.Contains(scoped.String(), "PRIVATE_PERSONAL") {
+		t.Fatalf("scoped command changed: %s", &scoped)
+	}
+	if err := cmdHook(testCtx(t), []string{"recall"}, &global, testStderr, strings.NewReader(input)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(global.String(), "PRIVATE_PERSONAL") {
+		t.Fatalf("fixture must demonstrate that a later global hook can still expose personal context: %s", &global)
 	}
 }

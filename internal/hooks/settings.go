@@ -189,12 +189,37 @@ func Install(path, exe string, threshold float64) error {
 
 // InstallProjectRecall omits the unscoped brief and binds recall to one directory.
 func InstallProjectRecall(path, exe, scope, projectDir string, threshold float64) error {
+	if !filepath.IsAbs(projectDir) || filepath.Clean(path) != filepath.Join(projectDir, ".claude", "settings.local.json") {
+		return errors.New("project recall settings must be in the project directory")
+	}
+	path, err := ProjectSettingsPath(projectDir)
+	if err != nil {
+		return err
+	}
+	projectDir = filepath.Dir(filepath.Dir(path))
 	settings, groups, err := Load(path)
 	if err != nil {
 		return err
 	}
-	if find(groups["SessionStart"], "session-start") >= 0 {
-		return errors.New("remove the existing Mora SessionStart hook before installing project recall")
+	if settings == nil || groups == nil {
+		return errors.New("project Claude settings and hooks must be JSON objects")
+	}
+	managedRecall := 0
+	for event, eventGroups := range groups {
+		for _, group := range eventGroups {
+			for _, hook := range group.Hooks {
+				if !strings.Contains(hook.Command, Marker+":") {
+					continue
+				}
+				if event != "UserPromptSubmit" || !strings.Contains(hook.Command, Marker+":recall") {
+					return errors.New("remove other managed Mora hooks before installing project recall")
+				}
+				managedRecall++
+			}
+		}
+	}
+	if managedRecall > 1 {
+		return errors.New("remove duplicate managed Mora recall hooks before installing project recall")
 	}
 	recall := shellQuote(exe) + " hook recall --scope " + shellQuote(scope) + " --project-dir " + shellQuote(projectDir)
 	if threshold != 0 {
@@ -204,6 +229,32 @@ func InstallProjectRecall(path, exe, scope, projectDir string, threshold float64
 	upsert(groups, "UserPromptSubmit", "recall", Command{Type: "command", Command: recall, Timeout: 10})
 	settings["hooks"] = groups
 	return Write(path, settings)
+}
+
+// ProjectSettingsPath refuses symlinks instead of following or replacing user configuration.
+func ProjectSettingsPath(projectDir string) (string, error) {
+	root, err := filepath.EvalSymlinks(projectDir)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(root, ".claude")
+	local := filepath.Join(dir, "settings.local.json")
+	for _, path := range []string{dir, filepath.Join(dir, "settings.json"), local} {
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("project hooks do not support symlinked Claude settings: %s", path)
+		}
+		if (path == dir && !info.IsDir()) || (path != dir && !info.Mode().IsRegular()) {
+			return "", fmt.Errorf("unsupported project Claude settings entry: %s", path)
+		}
+	}
+	return local, nil
 }
 func Uninstall(path string) error {
 	settings, groups, err := Load(path)
