@@ -316,6 +316,46 @@ func decryptRecoveryManifest(cfg Config, encrypted encryptedRecoveryManifest) (r
 	return plain, nil
 }
 
+// retentionBeforeRemoveHook is a test seam: it runs after the recovery snapshot
+// is written and before the pre-mutation re-hash of each candidate file.
+var retentionBeforeRemoveHook func(candidateID, path string)
+
+// removeIfUnchanged re-hashes path and removes it only if it still matches want.
+// shortcut: a connector writer can still replace the file between this hash and
+// os.Remove; closing that fully needs the vault write lock held for the run.
+func removeIfUnchanged(path, want string) error {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if sha256Hex(raw) != want {
+		return fmt.Errorf("%s changed since the report", path)
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// retentionPartialError names what the run already applied and what is left.
+func retentionPartialError(report retentionReport, failedID string, r retentionExecutionReceipt, cause error) error {
+	var remaining []string
+	seen := false
+	for _, c := range report.Candidates {
+		if c.ID == failedID {
+			seen = true
+		}
+		if seen && c.Decision.Action != "keep" {
+			remaining = append(remaining, c.ID)
+		}
+	}
+	applied := append(append(append([]string{}, r.ChangedIDs...), r.CompactedIDs...), r.DeletedIDs...)
+	return fmt.Errorf("retention stopped at candidate %q: %w; applied=%v remaining=%v (recovery manifest %s covers all targets)", failedID, cause, applied, remaining, r.ManifestID)
+}
+
 func retentionCandidatePath(cfg Config, candidate retentionCandidate) (string, error) {
 	path := filepath.Clean(filepath.Join(cfg.VaultDir, filepath.FromSlash(candidate.Path)))
 	rel, err := filepath.Rel(cfg.VaultDir, path)
@@ -414,6 +454,25 @@ func executeRetentionReport(ctx context.Context, cfg Config, reportID string, no
 	if err := writeEncryptedRecovery(cfg, plain); err != nil {
 		return retentionExecutionReceipt{}, err
 	}
+	// A connector may rewrite a candidate between validation and now. Re-check
+	// every file before the first mutation; on mismatch drop the snapshot and abort.
+	for _, candidate := range report.Candidates {
+		if candidate.Decision.Action == "keep" {
+			continue
+		}
+		path, _ := retentionCandidatePath(cfg, candidate)
+		if retentionBeforeRemoveHook != nil {
+			retentionBeforeRemoveHook(candidate.ID, path)
+		}
+		raw, err := os.ReadFile(path)
+		if err == nil && sha256Hex(raw) != candidate.ContentSHA {
+			err = errors.New("content changed after the recovery snapshot")
+		}
+		if err != nil {
+			_ = os.Remove(recoveryManifestPath(cfg, manifestID))
+			return retentionExecutionReceipt{}, fmt.Errorf("retention aborted before any change: candidate %q (%s): %w", candidate.ID, candidate.Path, err)
+		}
+	}
 	receipt := retentionExecutionReceipt{SchemaVersion: retentionSchemaVersion, ReportID: report.ReportID, ManifestID: manifestID, TargetIDs: targets, ExecutedAt: stamp}
 	var dirtyOps []pendingOp
 	for _, candidate := range report.Candidates {
@@ -452,16 +511,16 @@ func executeRetentionReport(ctx context.Context, cfg Config, reportID string, no
 			if _, err := appendGovernanceEntry(cfg, govEntry{Kind: govKindPrune, Action: govActionSuppress, Atom: govAtom{Kind: atomStableID, Value: candidate.ID, Provider: m.Provider}, Reason: "retention compact " + report.ReportID}); err != nil {
 				return retentionExecutionReceipt{}, err
 			}
-			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return retentionExecutionReceipt{}, err
+			if err := removeIfUnchanged(path, candidate.ContentSHA); err != nil {
+				return retentionExecutionReceipt{}, retentionPartialError(report, candidate.ID, receipt, err)
 			}
 			receipt.CompactedIDs = append(receipt.CompactedIDs, candidate.ID)
 		case "delete":
 			if _, err := appendGovernanceEntry(cfg, govEntry{Kind: govKindPrune, Action: govActionSuppress, Atom: govAtom{Kind: atomStableID, Value: candidate.ID, Provider: m.Provider}, Reason: "retention delete " + report.ReportID}); err != nil {
 				return retentionExecutionReceipt{}, err
 			}
-			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return retentionExecutionReceipt{}, err
+			if err := removeIfUnchanged(path, candidate.ContentSHA); err != nil {
+				return retentionExecutionReceipt{}, retentionPartialError(report, candidate.ID, receipt, err)
 			}
 			receipt.DeletedIDs = append(receipt.DeletedIDs, candidate.ID)
 		}

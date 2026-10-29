@@ -282,3 +282,30 @@ func TestAtomicCreateSurfacesRealLinkError(t *testing.T) {
 		t.Fatalf("orphan temp left after real link error: %v", names)
 	}
 }
+
+func TestCreateExclusiveSyncFailureLeavesNoFile(t *testing.T) {
+	boom := errors.New("sync boom")
+	old := MarkerSyncFn
+	MarkerSyncFn = func(*os.File) error { return boom }
+	defer func() { MarkerSyncFn = old }()
+	dir := t.TempDir()
+	if err := atomicCreate(filepath.Join(dir, "m.md"), []byte("x"), 0o644); !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want sync error", err)
+	}
+	if names := dirBaseNames(t, dir); len(names) != 0 {
+		t.Fatalf("leftover files after sync failure: %v", names)
+	}
+}
+
+func TestCreateExclusiveDirSyncFailureAfterPublishIsIgnored(t *testing.T) {
+	old := SyncDirFn
+	SyncDirFn = func(string) error { return errors.New("dir sync boom") }
+	defer func() { SyncDirFn = old }()
+	path := filepath.Join(t.TempDir(), "m.md")
+	if err := atomicCreate(path, []byte("x"), 0o644); err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("published file missing: %v", err)
+	}
+}

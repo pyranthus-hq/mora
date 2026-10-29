@@ -199,10 +199,10 @@ func TestIm_FetchPageChatRowsErr(t *testing.T) {
 	}
 }
 
-// TestIm_FetchPageSkipsConversationOnParticipantError proves a per-conversation
-// failure (here: the roster tables are absent, so chatParticipants errors) is skipped,
-// never aborting the whole page — the honest-snapshot behavior.
-func TestIm_FetchPageSkipsConversationOnParticipantError(t *testing.T) {
+// TestIm_FetchPageFailsOnParticipantError proves a per-conversation failure (here:
+// the roster tables are absent, so chatParticipants errors) fails the page, so the
+// checkpoint keeps it and the next run retries — the honest-snapshot behavior.
+func TestIm_FetchPageFailsOnParticipantError(t *testing.T) {
 	// message table is complete (NewLiveFetcher probe passes) but chat_handle_join /
 	// handle are absent → chatParticipants' JOIN query fails per-conversation.
 	path := imMakeDB(t,
@@ -216,19 +216,15 @@ func TestIm_FetchPageSkipsConversationOnParticipantError(t *testing.T) {
 		t.Fatalf("NewLiveFetcher: %v", err)
 	}
 	defer f.Close()
-	page, err := f.FetchPage(KindIMessageChat, FetchWindow{}, "")
-	if err != nil {
-		t.Fatalf("FetchPage must not abort on a per-conversation error: %v", err)
-	}
-	if len(page.Items) != 0 {
-		t.Fatalf("conversation with an unreadable roster should be skipped, got %d items", len(page.Items))
+	if _, err := f.FetchPage(KindIMessageChat, FetchWindow{}, ""); err == nil || !strings.Contains(err.Error(), "participants query") {
+		t.Fatalf("FetchPage error = %v, want a participants-query error", err)
 	}
 }
 
-// TestIm_FetchPageSkipsConversationOnMessageError proves a conversation whose message
-// query fails (here: the attachment join tables are absent) is skipped rather than
-// aborting the page.
-func TestIm_FetchPageSkipsConversationOnMessageError(t *testing.T) {
+// TestIm_FetchPageFailsOnMessageError proves a conversation whose message query
+// fails (here: the attachment join tables are absent) fails the page rather than
+// being dropped silently.
+func TestIm_FetchPageFailsOnMessageError(t *testing.T) {
 	// Roster tables present (chatParticipants succeeds) but attachment join tables
 	// absent → the conversation message query fails per-conversation.
 	path := imMakeDB(t,
@@ -246,12 +242,8 @@ func TestIm_FetchPageSkipsConversationOnMessageError(t *testing.T) {
 		t.Fatalf("NewLiveFetcher: %v", err)
 	}
 	defer f.Close()
-	page, err := f.FetchPage(KindIMessageChat, FetchWindow{}, "")
-	if err != nil {
-		t.Fatalf("FetchPage must not abort on a per-conversation message error: %v", err)
-	}
-	if len(page.Items) != 0 {
-		t.Fatalf("conversation with an unreadable message query should be skipped, got %d items", len(page.Items))
+	if _, err := f.FetchPage(KindIMessageChat, FetchWindow{}, ""); err == nil || !strings.Contains(err.Error(), "conversation query") {
+		t.Fatalf("FetchPage error = %v, want a conversation-query error", err)
 	}
 }
 

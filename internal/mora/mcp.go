@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sort"
 	"time"
 
@@ -45,7 +46,46 @@ func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin 
 	}
 	return errors.New("usage: mora mcp serve | mora mcp proposals <list|show ID|approve ID|reject ID>")
 }
+
+// Seams for the parent-death watchdog.
+var (
+	getppid             = os.Getppid
+	exitFn              = os.Exit
+	parentWatchInterval = 2 * time.Second
+	parentWatchGOOS     = runtime.GOOS
+)
+
+// watchParent exits when the client that launched us dies and we get reparented. Exiting releases the
+// SQLite lock and SQLite rolls back the open transaction; Markdown writes are temp+link atomic and dirty
+// markers are retired by the next rebuild. The returned func stops the watch.
+// shortcut: Windows has no reparenting signal here, so it is skipped; upgrade by watching the parent handle.
+func watchParent(stderr io.Writer) func() {
+	orig := getppid()
+	if parentWatchGOOS == "windows" || orig <= 1 {
+		return func() {}
+	}
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(parentWatchInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				if getppid() != orig {
+					fmt.Fprintln(stderr, "mora mcp serve: client process exited; shutting down")
+					exitFn(0)
+					return
+				}
+			}
+		}
+	}()
+	return func() { close(done) }
+}
+
 func serveMCP(ctx context.Context, stdout io.Writer, stdin io.Reader) error {
+	defer watchParent(os.Stderr)()
 	err := mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, handleMCP)
 	// The client is gone, but a rebuild it triggered may be mid-flight; exiting
 	// now would kill it and leave a stalled receipt. Bounded so a stuck rebuild
