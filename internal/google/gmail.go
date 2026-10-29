@@ -128,7 +128,10 @@ func (f *LiveFetcher) fetchGmailHistoryPage(ctx context.Context, w FetchWindow, 
 	for _, id := range ids {
 		full, getErr := f.getGmailThread(ctx, id)
 		if getErr == nil {
-			items = append(items, gmailThreadToItem(full))
+			// Apply the snapshot's rule (-category:promotions/social, configured labels).
+			if !gmailThreadExcluded(full, w.Labels) {
+				items = append(items, gmailThreadToItem(full))
+			}
 			continue
 		}
 		if apiErr, ok := getErr.(*googleapi.Error); ok && apiErr.Code == 404 {
@@ -154,6 +157,34 @@ func (f *LiveFetcher) getGmailThread(ctx context.Context, id string) (*gmail.Thr
 		}
 	}
 	return gmailRequest(ctx, f.gmailWait, f.gmail.Users.Threads.Get("me", id).Format("full").Context(ctx).Do)
+}
+
+// gmailThreadExcluded mirrors the snapshot query on the history path: skip a
+// thread when every message is Promotions/Social, or when labels are
+// configured and no message carries one. w.Labels are label IDs (they are passed
+// to threads.list LabelIds). shortcut: the Since/Query filters are not re-applied.
+func gmailThreadExcluded(th *gmail.Thread, labels []string) bool {
+	if len(th.Messages) == 0 {
+		return false
+	}
+	want := map[string]bool{}
+	for _, l := range labels {
+		want[l] = true
+	}
+	allBulk, labelHit := true, len(labels) == 0
+	for _, msg := range th.Messages {
+		bulk := false
+		for _, id := range msg.LabelIds {
+			if id == "CATEGORY_PROMOTIONS" || id == "CATEGORY_SOCIAL" {
+				bulk = true
+			}
+			if want[id] {
+				labelHit = true
+			}
+		}
+		allBulk = allBulk && bulk
+	}
+	return allBulk || !labelHit
 }
 
 func buildGmailQuery(w FetchWindow) string {
