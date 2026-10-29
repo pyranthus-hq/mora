@@ -160,6 +160,9 @@ func itemApproxBytes(item Item) int {
 // page so a crash resumes instead of restarting; it is cleared on completed
 // paging (so a re-run re-attempts dropped items from the start). Page-fetch
 // errors stop the run but preserve the checkpoint for resume.
+// maxDroppedWalks bounds re-reads when one item never writes (audit V1).
+const maxDroppedWalks = 3
+
 func Ingest(p IngestParams) (IngestResult, error) {
 	ctx := p.Context
 	if ctx == nil {
@@ -199,11 +202,6 @@ func Ingest(p IngestParams) (IngestResult, error) {
 		nextSyncCursor = p.Status.PendingSyncCursor
 	}
 	fallbackUsed := false
-	// Snapshot the prior error tally so the clean-completion reset only clears
-	// errors carried in from a PRIOR run — a run that itself accumulates per-item
-	// write errors is not a clean attempt and keeps its errors (M-3: health is the
-	// last attempt's outcome, not a "paging finished" signal).
-	errorsBefore := p.Status.ErrorCount
 	finish := func() IngestResult {
 		p.Status.ObservedAt = time.Now().UTC().Format(time.RFC3339)
 		p.Status.DurationMS = time.Since(started).Milliseconds()
@@ -288,6 +286,7 @@ func Ingest(p IngestParams) (IngestResult, error) {
 			result.Stages.Bytes += int64(itemBytes)
 			if itemBytes > limits.MaxRecordBytes {
 				result.Failed++
+				p.Status.WalkDropped = true
 				p.Status.ErrorCount++
 				p.Status.LastError = fmt.Sprintf("record %s exceeds %d-byte ingest limit", it.ProviderID, limits.MaxRecordBytes)
 				p.Status.ErrorCode = ""
@@ -313,6 +312,7 @@ func Ingest(p IngestParams) (IngestResult, error) {
 			}
 			if werr != nil {
 				result.Failed++
+				p.Status.WalkDropped = true
 				p.Status.ErrorCount++
 				p.Status.LastError = werr.Error()
 				p.Status.ErrorCode = "" // prose only here; see the fetch-failure branch above
@@ -342,29 +342,43 @@ func Ingest(p IngestParams) (IngestResult, error) {
 			}
 		}
 	}
-	// Paging finished, so the staged baseline is now a legitimate between-run
-	// position. This is the ONLY place it is promoted.
-	p.Status.Checkpoint = ""
-	p.Status.CursorMode = ""
-	p.Status.PendingSyncCursor = ""
-	p.Status.IncrementalCursor = nextSyncCursor
 	// Paging finished. Every completed attempt — clean OR partial — stamps
 	// LastAttemptAt (when it was tried). The SUCCESS timestamps are stamped only
 	// below, and only on a genuinely clean run, so a partial-failure run never
 	// looks fresh/healthy.
 	now := time.Now().UTC().Format(time.RFC3339)
 	p.Status.LastAttemptAt = now
+	p.Status.Checkpoint = ""
+	p.Status.CursorMode = ""
 
 	// Partial-failure honesty (M-3): a run that dropped items is NOT a success.
 	// Leave LastSynced/LastSuccessAt at their prior values (so search doesn't
 	// report incomplete data as fresh and skip-if-fresh still retries) and keep
 	// this run's error tally. The cleared checkpoint means a re-run re-fetches
-	// from the start and re-attempts the dropped items. The caller decides how
-	// loudly to surface the returned error.
-	if dropped := p.Status.ErrorCount - errorsBefore; dropped > 0 {
+	// from the start and re-attempts the dropped items. The between-run cursor is
+	// NOT promoted (audit V1): promoting it here skipped the dropped item for good
+	// unless it changed again. WalkDropped carries a drop across a checkpoint
+	// resume. After maxDroppedWalks walks in a row the cursor moves on anyway and
+	// the error stays loud. The caller decides how loudly to surface the error.
+	if p.Status.WalkDropped {
+		p.Status.WalkDropped = false
+		p.Status.DroppedWalks++
 		p.Status.ConsecutiveFailureCount++
-		return finish(), fmt.Errorf("%d item(s) failed to write and were dropped (last error: %s) — successfully written items are saved; re-run the sync to retry", dropped, p.Status.LastError)
+		gaveUp := ""
+		if p.Status.DroppedWalks >= maxDroppedWalks {
+			p.Status.DroppedWalks = 0
+			p.Status.PendingSyncCursor = ""
+			p.Status.IncrementalCursor = nextSyncCursor
+			gaveUp = fmt.Sprintf("; after %d failed walks the sync moved past them, so run `mora reingest --full` once the cause is fixed", maxDroppedWalks)
+		}
+		return finish(), fmt.Errorf("item(s) failed to write and were dropped in this walk (last error: %s) — successfully written items are saved; re-run the sync to retry%s", p.Status.LastError, gaveUp)
 	}
+
+	// Paging finished cleanly, so the staged baseline is now a legitimate
+	// between-run position. This is the ONLY place it is promoted.
+	p.Status.DroppedWalks = 0
+	p.Status.PendingSyncCursor = ""
+	p.Status.IncrementalCursor = nextSyncCursor
 
 	// Clean completion: model health as a LAST-ATTEMPT outcome (M-3). One instant
 	// shared across LastSynced / LastSuccessAt / LastAttemptAt keeps them
