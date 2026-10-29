@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"sort"
+	"syscall"
 	"time"
 
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
@@ -46,7 +48,10 @@ func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin 
 	return errors.New("usage: mora mcp serve | mora mcp proposals <list|show ID|approve ID|reject ID>")
 }
 func serveMCP(ctx context.Context, stdout io.Writer, stdin io.Reader) error {
-	err := mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, handleMCP)
+	// SIGTERM/SIGINT cancel the running handler so a stuck rebuild releases its lock.
+	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	err := mcppkg.Serve(sigCtx, stdout, stdin, mcpMaxRequestBytes, handleMCP)
 	// The client is gone, but a rebuild it triggered may be mid-flight; exiting
 	// now would kill it and leave a stalled receipt. Bounded so a stuck rebuild
 	// cannot turn this into a zombie server.

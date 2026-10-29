@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestServeIgnoresMalformedAndNotifications(t *testing.T) {
@@ -75,4 +77,65 @@ func TestCallToolResultShapes(t *testing.T) {
 func reflectMap(got any, want map[string]any) bool {
 	m, ok := got.(map[string]any)
 	return ok && m["x"] == want["x"]
+}
+
+func TestServeCancelsHandlerOnInputEOF(t *testing.T) {
+	defer func(d time.Duration) { EOFGrace = d }(EOFGrace)
+	EOFGrace = 20 * time.Millisecond
+	pr, pw := io.Pipe()
+	started := make(chan struct{})
+	observed := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(context.Background(), io.Discard, pr, 4<<20, func(ctx context.Context, req Request) Response {
+			close(started)
+			<-ctx.Done()
+			close(observed)
+			return Response{JSONRPC: "2.0", ID: req.ID}
+		})
+	}()
+	if _, err := io.WriteString(pw, `{"jsonrpc":"2.0","id":1,"method":"slow"}`+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	pw.Close()
+	select {
+	case <-observed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not observe cancellation after input EOF")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after input EOF")
+	}
+}
+
+func TestServeCancelsHandlerOnContextCancel(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(ctx, io.Discard, pr, 4<<20, func(hctx context.Context, req Request) Response {
+			close(started)
+			<-hctx.Done()
+			return Response{JSONRPC: "2.0", ID: req.ID}
+		})
+	}()
+	io.WriteString(pw, `{"jsonrpc":"2.0","id":1,"method":"slow"}`+"\n")
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after context cancel")
+	}
 }
