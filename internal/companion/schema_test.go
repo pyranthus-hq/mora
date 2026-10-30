@@ -205,13 +205,20 @@ func TestWrongSchemaNameIsRejected(t *testing.T) {
 
 func TestScopeIsPersonalOrProject(t *testing.T) {
 	cases := map[string]bool{
-		"personal":       true,
-		"project:pilot":  true,
-		"project:":       false,
-		"projects:pilot": false,
-		"gmail":          false,
-		"":               false,
-		"project:a b":    false,
+		"personal":              true,
+		"project:pilot":         true,
+		"project:my-app.v2":     true,
+		"project:..:..:outside": false,
+		"project:..":            false,
+		"project:.":             false,
+		"project:a/b":           false,
+		`project:a\b`:           false,
+		"project:a:b":           false,
+		"project:":              false,
+		"projects:pilot":        false,
+		"gmail":                 false,
+		"":                      false,
+		"project:a b":           false,
 	}
 	for in, ok := range cases {
 		if err := validateScope("scope", in); ok != (err == nil) {

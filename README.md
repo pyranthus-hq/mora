@@ -163,8 +163,10 @@ command line also handles setup and maintenance.
 Mora also publishes an experimental [Agent Plugins 1.0 package](plugins/mora/README.md)
 that bundles the stdio MCP declaration with portable Agent Skills. It does not
 install Mora, grant source permissions, or sandbox the client. Enabling it may
-auto-start the local MCP server, so review the client's data policy and choose
-`mora config mcp-write-policy propose` or `readonly` before first use.
+auto-start the local MCP server, so review the client's data policy before first
+use. Unless you set a policy, Mora runs in `propose`, so agent writes wait for
+your approval. That holds however the server starts, including a client that
+auto-starts `mora mcp serve` before you ever run `mora init`.
 
 ## Check health and add a schedule
 
@@ -251,6 +253,28 @@ The `SessionStart` hook adds the brief. The `UserPromptSubmit` hook adds a small
 set of related memories for each prompt. Mora keeps existing valid Claude
 hooks. It refuses to rewrite a settings file that it cannot parse.
 
+For corrections scoped to one project, run this from that project's root:
+
+```bash
+mora hook install --project --scope project:my-app
+mora hook status --project
+```
+
+This installs recall in `.claude/settings.local.json`, includes only the exact
+`project:my-app` scope, and omits the global brief. Save corrections with the same
+`--scope`. It requires Claude's hook `cwd` to be inside the installed directory;
+missing or outside directories inject nothing. Remove it from that root with
+`mora hook uninstall --project`. If global Mora hooks are installed, the project
+installer asks you to remove them first with `mora hook uninstall`.
+Project hook commands reject `CLAUDE_CONFIG_DIR`, linked worktrees, and symlinked
+Claude settings. In a Git repository, run them from the main checkout root.
+Duplicate managed local hooks are refused without writing. The binding covers the
+directory subtree, including nested repositories; moving the root requires a new
+installation. Adding global hooks later can reintroduce context from other scopes.
+The plain global install still reads across scopes. These hook settings do not
+restrict MCP tools or memories an agent has already read. Codex has no Mora hook
+installer; it can retrieve through MCP when asked.
+
 ## Correct or remove memory
 
 Mora can propose that two addresses belong to the same person. It never accepts
@@ -327,11 +351,39 @@ mora config mcp-write-policy propose
 mora config mcp-write-policy readonly
 ```
 
-- `open` lets the connected agent write and delete. This is the default.
+- `open` lets the connected agent write and delete.
 - `propose` stores write proposals for local approval. It refuses deletes.
+  This is the default: it applies whenever `config.toml` has no
+  `mcp_write_policy` line, however Mora was started.
 - `readonly` refuses writes and deletes.
 
-Review proposals with `mora mcp proposals list`, `approve`, and `reject`.
+A policy you set explicitly is always kept. Installs created before this
+default changed that never set a policy have no `mcp_write_policy` line, so
+after upgrading they also run in `propose`. To keep the old behavior, run
+`mora config mcp-write-policy open`. `mora config` shows the policy in force.
+
+Review a pending write locally before deciding:
+
+```bash
+mora mcp proposals list
+mora mcp proposals show <proposal-id>
+# After reviewing the full content and scope, explicitly choose:
+mora mcp proposals approve <proposal-id>
+# or: mora mcp proposals reject <proposal-id>
+```
+
+`show` is read-only. It prints the full staged arguments and effective scope,
+type, and source as JSON; `--json` prints the same receipt. Common credential
+patterns are masked without changing the pending file. If `redacted` is true,
+reject and resubmit a proposal without credentials rather than approving the
+masked view. Pattern matching cannot identify every secret.
+
+Approval and rejection are serialized per proposal. Repeating a decision returns
+a conflict, including after the published memory is deleted. An interrupted
+decision remains blocked for manual reconciliation; `show` and `list` display its
+recorded status and memory ID while a pending file remains. Keep the private
+decision records in Mora’s state directory. See the [guide](docs/guide.md) for the
+recovery limitations.
 
 To give one agent its own limits, use an agent profile: the scopes it can read,
 whether it can see connector evidence, and its own write policy.

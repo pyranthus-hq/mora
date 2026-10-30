@@ -570,18 +570,63 @@ mora config mcp-write-policy propose
 mora config mcp-write-policy readonly
 ```
 
-- `open` allows `write_memory` and `delete_memory`. It is the current default.
+- `open` allows `write_memory` and `delete_memory`.
 - `propose` stores write proposals in the local config directory. It does not
-  add them to the vault before approval. It refuses deletes.
+  add them to the vault before approval. It refuses deletes. This is the
+  default whenever `config.toml` has no `mcp_write_policy` line, however Mora
+  was started (`mora init`, `mora setup`, or `mora mcp serve` on a machine that
+  was never initialized).
 - `readonly` refuses writes and deletes.
+
+An explicit policy is never changed. An install created before this default
+changed that never set a policy has no `mcp_write_policy` line, so after
+upgrading it runs in `propose` too. Run `mora config mcp-write-policy open` to
+go back to direct writes.
 
 Review staged writes locally:
 
 ```bash
 mora mcp proposals list
+mora mcp proposals show <proposal-id>
 mora mcp proposals approve <proposal-id>
 mora mcp proposals reject <proposal-id>
 ```
+
+`mora mcp proposals show <proposal-id> [--json]` is a local, read-only inspection.
+Both forms print an indented `mora.mcp.proposals` v1 JSON receipt with an
+`inspection` object: pending ID/time, the full staged `arguments`, and the
+`effective_scope`, `effective_type`, and `effective_source` the writer derives.
+In particular, an omitted or empty scope is shown as `global`. Inspection does
+not approve, reject, execute, or publish the proposal, and does not build an index
+or change the config, state, data, or vault files. The content is untrusted data.
+Terminal control characters are JSON-escaped and remain data when decoded.
+
+Credential-like fields and common token, authorization, HTTP URL userinfo,
+private-key, and labelled-assignment patterns are masked. This is finite pattern
+matching, not proof that the remaining text has no secrets. A masked result sets
+`redacted: true` and includes a notice to reject rather than approve that view.
+The stored candidate still contains its original values; reject it and ask for a
+new proposal without credentials. There is no unredacted display option.
+
+Missing, malformed, mismatched-ID, invalid-write, or invalid-timestamp proposals
+are refused without printing stored contents. Inspection also refuses symlinked
+proposal directories/files, nonregular files, and files over 32 MiB. It does not
+change the pending queue on either success or refusal. This local read adds no
+authorization boundary or approval authority.
+
+Proposal decisions are serialized across processes and retained privately under
+`<StateDir>/mcp-proposal-decisions/`, outside the vault. A durable decision claim
+records the intended memory ID before publication. Concurrent approve/reject
+commands and later retries return a conflict; deleting or retracting the memory
+does not reset that proposal. Successful commands keep the existing receipt shape.
+
+If a process stops after claiming a decision, the outcome may be unresolved.
+`show` and `list` label any remaining pending file with the recorded decision
+status and memory ID. Do not approve it again or remove its decision record:
+reconcile that ID and the vault manually before recovery. There is no automatic
+retry or recovery command for an interrupted decision. These guarantees require
+all deciding processes to use this version and the same retained state directory;
+older binaries and manually deleted state can bypass them.
 
 ### Agent profiles
 
@@ -671,7 +716,8 @@ mora serve http
 ```
 
 The server binds only to `127.0.0.1:7777`. It creates a bearer token in
-`<config_dir>/http.json` with file mode `0600`. Data routes need the token. Mora
+`<config_dir>/http.json` with file mode `0600`. Every route, including the landing page at `/`, needs
+the token except `/healthz`. Mora
 checks the Host header, sends no CORS allow header, and leaves `delete_memory`
 out of the generic `/call` allowlist.
 
@@ -680,6 +726,26 @@ Print the token without starting the server:
 ```bash
 mora serve http --print-token
 ```
+
+On the first start after upgrading from a build that exposed the unauthenticated
+landing page, Mora replaces the old token once. `token_version: 2` in
+`<config_dir>/http.json` records the migration; new installs write it immediately.
+The same migration runs with `--print-token`. Old token banner lines in
+`<state_dir>/serve-http.out.log` are scrubbed in place, preserving other log lines.
+The scrub runs only on the rotating start; if it fails, Mora prints a warning and
+startup continues, leaving banner lines containing only the revoked token.
+Companion/browser clients using
+the shared HTTP token must re-pair or fetch the new token with
+`mora serve http --print-token`. Startup output never includes the token.
+
+Any already-running `mora serve http` process or installed HTTP service must be
+restarted for rotation to take effect, including rotation by `--print-token`;
+until then it still accepts the old token and rejects the new one.
+On macOS, run `mora serve http install` again to stop and start the daemon.
+On Linux, run `systemctl --user restart mora-serve-http.service` (`install` only
+writes the unit). On Windows or for a manually started server, stop the running
+process and start `mora serve http` again. There is no `mora serve http restart`
+subcommand.
 
 Choose another loopback port with `--port` or `MORA_PORT`. To keep the server
 running as a user service:
@@ -716,6 +782,50 @@ mora hook uninstall
 
 `mora hook status --json` emits the `mora.hook.status` v1 receipt. Its
 `harnesses` field is always an array, including when no hook is installed.
+
+For one project's corrections, run from its root directory:
+
+```bash
+mora hook install --project --scope project:my-app
+mora hook status --project --json
+mora write --scope project:my-app --type decision --title "Use pnpm" \
+  --text "Always use pnpm to install dependencies in this project."
+```
+
+Project installation writes only `.claude/settings.local.json`. It installs
+`UserPromptSubmit` recall for that exact memory scope and omits `SessionStart`,
+whose brief is global. It binds the installation directory explicitly instead
+of guessing a scope from a folder name. The hook checks Claude's `cwd` on every
+prompt: the root and its subdirectories are allowed; missing, relative,
+unresolvable, or outside paths inject nothing. Symlinks are resolved before
+checking containment. Use a different scope name for each project.
+
+This first project installer supports the default Claude configuration directory
+and regular settings files. Project install, status, and uninstall reject a
+nonempty `CLAUDE_CONFIG_DIR`, linked worktrees (or other `.git` files), and
+symlinked `.git` or Claude settings entries. Inside a Git repository, run project
+commands from the main checkout root: Claude may use the root local settings file
+even when started below it. No alternate or main-checkout settings are changed
+on refusal. See the [Claude settings location rules](https://code.claude.com/docs/en/settings#where-claude-code-keeps-the-local-file-in-a-git-repository).
+
+The installer refuses if it finds managed global Mora hooks; remove those with
+`mora hook uninstall` first. It also refuses managed hooks in the project's
+`.claude/settings.json`, or existing local managed hooks outside
+`UserPromptSubmit` recall. Multiple managed local recall entries are refused
+without writing; remove duplicates explicitly before retrying. Other settings
+and hooks are preserved. From the same project root, remove the local
+Mora hook with `mora hook uninstall --project`.
+
+The binding is a directory subtree, not a repository identity: nested
+repositories inside it are included. Moving or renaming the installed root stops
+new recall until you reinstall there. Global hooks added after project setup can
+reintroduce broad context; this installer does not monitor future settings edits.
+
+The plain `mora hook install` remains global and reads across scopes. Project
+hooks filter automatic recall only: MCP reads still use their existing scope
+arguments, other hooks may inject context, and previously read context remains
+in an agent's session. This installer supports Claude Code; Codex can use MCP
+but has no automatic Mora hook route.
 
 ## Companion
 
@@ -963,6 +1073,17 @@ mora teach undo <ledger-id>
 Identity matches are proposals until you confirm them. Connector source files
 stay unchanged. Memory revision commands apply only to memories that you wrote.
 
+Concurrent correction, supersession, and retraction commands for the same current
+memory have one winner. Losing commands return a conflict before creating a
+replacement. Re-read the current revision before deciding again. Undo checks for
+active descendants under the same governance lease, so undo the newest revision
+first. Rebuild runs after releasing that lease; if rebuilding fails, the committed
+decision and replacement remain with dirty markers for recovery. A failed ledger
+append removes its own replacement; cleanup failures explicitly name the leftover.
+This does not make the memory file and ledger a single crash-atomic transaction,
+and does not repair historical forks created by older versions.
+
+
 `mora teach identity confirm --json` and `mora teach identity reject --json`
 emit the `mora.teach.identity.confirm` and `mora.teach.identity.reject` v1
 receipts with the decided pair, the ledger entry id, the corroborating evidence,
@@ -1009,6 +1130,26 @@ mora retention execute <report-id> --yes --json
 mora retention verify --json
 mora retention recover <manifest-id> --yes --json
 ```
+
+`retention verify` compares `vault_count` with the current, non-tombstoned Teach
+projection in the index. Retained superseded, retracted, and undone replacement
+files are counted separately in `historical_count`. All listed files are still
+parsed; unreadable or invalid documents make verification unhealthy and appear
+as vault-relative `invalid_memory_paths`. History excluded from ordinary search
+is not an index omission. This checks retained files, not proof that historical
+files deleted outside Mora still exist. Unhealthy checks retain the existing CLI
+contract: exit 1 with diagnostics on stderr, including with `--json`; only healthy
+checks emit a versioned JSON receipt on stdout.
+
+Retention execution refuses a report that would leave no current, non-tombstoned
+memory. This preflight happens before recovery-key, manifest, ledger, or vault
+writes. Keep a current memory or compact a candidate into a current survivor;
+historical files and tombstones do not count. The normal empty-index and vault
+identity guards stay enabled. Run execution against an unchanged vault: preflight
+is not a transaction against concurrent edits or Teach decisions, and other
+mid-execution failures can still require recovery. Intentional emptying through
+retention is not supported by this policy.
+
 
 Execution refuses incomplete decisions, changed files, or a target set that no
 longer matches the reviewed report. Before mutation it writes an AES-GCM
@@ -1185,6 +1326,13 @@ mora hook uninstall
 mora serve http uninstall
 ```
 
+### macOS and Linux script (`uninstall.sh`)
+
+The script first runs `mora hook uninstall`, `mora serve http uninstall`, and
+`mora schedule uninstall` for each installed job. It then deletes your login
+tokens, sharing keys, and `http.json`, and removes the binary. It keeps the
+vault, config, data, and state; add `--purge` to delete those too.
+
 ### Windows
 
 ```powershell
@@ -1291,6 +1439,12 @@ mora share remove neil --yes
 
 Received data has its own index beside the vault. Search results name the
 publisher. Received data does not join your person graph or local backup.
+
+When the publisher has not pushed since your last pull, `mora share pull`
+checks the copy you already have and prints `up to date`. It does not decrypt
+or rebuild anything, and the share stays fresh in `mora doctor`. When something
+changed, the pull rebuilds and prints how many memories are new or changed and
+how many were removed.
 
 ### S3 or R2 bucket sharing
 
@@ -1566,6 +1720,11 @@ mora doctor
 ```
 
 The index is a cache. Rebuilding it does not rewrite the source Markdown.
+
+An index that reads `refreshing` needs no action. Search is already current; Mora
+is rebuilding the entity graph, vectors and commitments in the background after a
+write, or a rebuild is running. Starting another rebuild then only competes with
+it for the index lock. If the catch-up stops, the state turns `dirty`.
 
 ### Google setup uses the placeholder client
 

@@ -414,7 +414,9 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	// state and embedder provenance are critical checks — a stale source timestamp
 	// can never mask an older/degraded index.
 	idxH := indexHealthOf(cfg, now)
-	checks = append(checks, doctorCheck{Name: "index_fresh", OK: idxH.State == idxFresh, Critical: true})
+	// refreshing passes: search is current and the in-flight work is tracked by
+	// markers that turn dirty if it stops (indexHealthOf rule 4).
+	checks = append(checks, doctorCheck{Name: "index_fresh", OK: idxH.State == idxFresh || idxH.State == idxRefreshing, Critical: true})
 	checks = append(checks, doctorCheck{Name: "index_embedder", OK: idxH.Embedder.Match, Critical: true})
 	activities := operationActivities(cfg, now, operationProcessAlive)
 	for _, a := range activities {
@@ -460,7 +462,8 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	// is surfaced for investigation). The Index arm carries the per-share sub-arm.
 	shareHealth := shareHealthAll(cfg, now)
 	for _, sh := range shareHealth {
-		checks = append(checks, doctorCheck{Name: "share_fresh:" + sh.Name, OK: sh.State == healthFresh, Critical: true})
+		// A pull in progress keeps serving a verified committed generation.
+		checks = append(checks, doctorCheck{Name: "share_fresh:" + sh.Name, OK: sh.State == healthFresh || sh.State == shareRefreshing, Critical: true})
 	}
 	idxH.Shares = shareIndexHealthAll(cfg, now)
 

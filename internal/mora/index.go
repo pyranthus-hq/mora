@@ -249,7 +249,10 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// deferred tx.Rollback below). Its own op is cleared by the covering commit
 	// (rule a: marked_at <= listing_started_at). A no-op on a cold-start index
 	// (indexReadyForUpsert==false): the state is already `never`, worse than dirty.
-	if _, markErr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindRebuild}); markErr != nil {
+	// The op carries this run's activity id: while that receipt is live and
+	// running, health reads the self-op as refreshing; once the run fails or its
+	// owner dies, the same op reads dirty.
+	if _, markErr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindRebuild, RunID: activity.RunID}); markErr != nil {
 		return 0, fmt.Errorf("marking index rebuild dirty: %w", markErr)
 	}
 	// On ANY failed return, best-effort stamp the reason in a separate tx (after the
@@ -659,6 +662,13 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	}
 	if err := errors.Join(recoveryErr, completionErr); err != nil {
 		return count, fmt.Errorf("index committed but ingest-journal retirement failed: %w", err)
+	}
+	// Only now, with the commit durable and every covered marker and journal
+	// retired, does this success supersede an earlier failure stamp. A failure
+	// stamped after this rebuild listed belongs to another attempt and stays.
+	// Best-effort: a stale diagnosis must not turn a good rebuild into a failure.
+	if cerr := indexstore.ClearAttemptFailure(ctx, db, listingStartedAt); cerr != nil {
+		fmt.Fprintf(os.Stderr, "warn: could not clear the previous index failure stamp: %v\n", cerr)
 	}
 
 	// Refresh the state-cache index page from the SAME stamp written into index_meta.

@@ -98,6 +98,7 @@ type gitPin struct {
 	sha     string
 	repo    string
 	run     execFunc
+	batch   gitBatchReader
 	cleanup func()
 }
 
@@ -187,7 +188,7 @@ func acquireGitPin(ctx context.Context, cfg Config, sub shareSubscription, runID
 		cleanup()
 		return nil, fmt.Errorf("subscription %q: ancestry check failed: %w", sub.Name, err)
 	}
-	return &gitPin{ref: pinRef, sha: sha, repo: repo, run: run, cleanup: cleanup}, nil
+	return &gitPin{ref: pinRef, sha: sha, repo: repo, run: run, batch: gitCatFileBatchFn, cleanup: cleanup}, nil
 }
 
 // mustExec returns the combined output of a git command, or "" on error (used for
@@ -210,28 +211,34 @@ func (p *gitPin) manifest(ctx context.Context) (shareManifest, error) {
 	return parseShareManifestBytes([]byte(out))
 }
 
-// gitPinBlobs iterates memories/*.md.age blobs from the pinned ref only.
+// gitPinBlobs iterates memories/*.md.age blobs from the pinned ref only. One
+// `git cat-file --batch` process reads them all; every object it is asked for
+// is named through the run-private pin ref, never the working tree or a branch.
 func (p *gitPin) blobs(ctx context.Context) shareBlobIter {
 	return func(yield func(stem string, ct []byte) error) error {
 		list, err := p.run(ctx, p.repo, "git", "ls-tree", "-r", "--name-only", p.ref, "--", "memories/")
 		if err != nil {
 			return err
 		}
+		var objects, stems []string
 		for _, line := range strings.Split(strings.TrimSpace(list), "\n") {
 			line = strings.TrimSpace(line)
 			if !strings.HasSuffix(line, ".md.age") {
 				continue
 			}
-			stem := strings.TrimSuffix(filepath.Base(line), ".md.age")
-			ct, cerr := p.run(ctx, p.repo, "git", "cat-file", "blob", p.ref+":"+line)
-			if cerr != nil {
-				return cerr
-			}
-			if err := yield(stem, []byte(ct)); err != nil {
-				return err
-			}
+			objects = append(objects, p.ref+":"+line)
+			stems = append(stems, strings.TrimSuffix(filepath.Base(line), ".md.age"))
 		}
-		return nil
+		// The ciphertext ceiling decryptShareBlobs enforces. Checking it here, from
+		// git's size header, also keeps an oversized blob out of memory.
+		const maxCT = shareMaxMemoryBytes + (1 << 20)
+		err = p.batch(ctx, p.repo, objects, maxCT, func(i int, ct []byte) error {
+			return yield(stems[i], ct)
+		})
+		if o, ok := asGitBatchOversize(err); ok {
+			return fmt.Errorf("entry %s exceeds the %d-byte per-memory cap — refusing to import", stems[o.index], shareMaxMemoryBytes)
+		}
+		return err
 	}
 }
 
@@ -266,15 +273,25 @@ func bucketDirBlobs(fetchDir string) shareBlobIter {
 // immutable generation from the decrypted entries, then publish it via the
 // lease-fenced atomic seq-claim. Returns the committed seq and stats.
 func buildAndCommitGeneration(ctx context.Context, cfg Config, sub shareSubscription, runID, sourceRev string, entries []shareBlobEntry, cp shareCommitParams) (int, shareImportStats, error) {
+	// Count against the head this generation replaces, before anything is built.
+	// The import lease held by shareBuildAndPublish keeps that head still.
+	changed, removed := shareImportDelta(cfg, sub.Name, entries)
+
 	// Whole-product admission (H3b): reject before building if this generation
 	// would push the footprint over the configured limit (default 15 GiB). The
-	// storage lease held by shareBuildAndPublish serializes this snapshot.
-	if aerr := admitShareGeneration(cfg, sub.Name, entries); aerr != nil {
-		return 0, shareImportStats{}, aerr
+	// storage lease held by shareBuildAndPublish serializes this snapshot, and
+	// the build admits its own writes against the same one walk.
+	storage, err := newShareStorageAdmission(cfg, sub.Name)
+	if err != nil {
+		return 0, shareImportStats{}, err
+	}
+	ledger, err := reserveShareGeneration(storage, sub.Name, entries)
+	if err != nil {
+		return 0, shareImportStats{}, err
 	}
 
 	gen := "gen-" + runID
-	corpusDigest, indexDigest, err := buildShareGenerationFromEntries(ctx, cfg, sub.Name, gen, entries)
+	corpusDigest, indexDigest, err := buildShareGenerationBounded(ctx, cfg, sub.Name, gen, entries, storage, ledger)
 	if err != nil {
 		return 0, shareImportStats{}, err
 	}
@@ -299,7 +316,78 @@ func buildAndCommitGeneration(ctx context.Context, cfg Config, sub shareSubscrip
 		// durable. The outer attempt lifecycle records this as a failed refresh.
 		return seq, shareImportStats{}, err
 	}
-	return seq, shareImportStats{Imported: len(entries), Total: len(entries)}, nil
+	return seq, shareImportStats{Imported: changed, Removed: removed, Total: len(entries)}, nil
+}
+
+// shareImportDelta compares a decrypted entry set with the published head's
+// frozen corpus: changed counts entries that are new or whose bytes differ,
+// removed counts head entries the new set no longer has. With no readable head
+// (first import, or a lost generation) every entry counts as changed.
+func shareImportDelta(cfg Config, name string, entries []shareBlobEntry) (changed, removed int) {
+	commit, ok, err := resolvePublishedCommit(cfg, name)
+	if err != nil || !ok {
+		return len(entries), 0
+	}
+	corpusDir := shareGenCorpusDir(cfg, name, commit.Gen)
+	files, err := os.ReadDir(corpusDir)
+	if err != nil {
+		return len(entries), 0
+	}
+	prev := make(map[string]bool, len(files))
+	for _, f := range files {
+		if f.Type().IsRegular() && strings.HasSuffix(f.Name(), ".md") {
+			prev[strings.TrimSuffix(f.Name(), ".md")] = true
+		}
+	}
+	for _, e := range entries {
+		if !prev[e.mem.ID] {
+			changed++
+			continue
+		}
+		delete(prev, e.mem.ID)
+		old, rerr := os.ReadFile(filepath.Join(corpusDir, e.mem.ID+".md"))
+		if rerr != nil || !bytes.Equal(old, e.body) {
+			changed++
+		}
+	}
+	return changed, len(prev)
+}
+
+// shareNoopHead reports whether a pull can skip decrypt and build: the published
+// head was built from exactly sourceRev (a git commit sha or a bucket version)
+// and its frozen artifacts still verify. Detection keys on the source revision
+// plus the committed corpus digest, never on the index digest, because index
+// bytes also depend on the SQLite build that wrote them. The head index is
+// still checked against its own committed digest and the current schema, so a
+// corrupt or outdated head is rebuilt by a real import, never re-verified.
+func shareNoopHead(ctx context.Context, cfg Config, name, sourceRev string) (shareCommit, bool) {
+	if sourceRev == "" {
+		return shareCommit{}, false
+	}
+	commit, ok, err := resolvePublishedCommit(cfg, name)
+	if err != nil || !ok || commit.SourceRev != sourceRev {
+		return shareCommit{}, false
+	}
+	if shareHeadIntegrityError(cfg, name, commit) != "" {
+		return shareCommit{}, false
+	}
+	// The digest was checked above; this open adds the schema gates a serve uses.
+	db, err := openShareIndexRO(ctx, shareGenIndexPath(cfg, name, commit.Gen), "")
+	if err != nil {
+		return shareCommit{}, false
+	}
+	_ = db.Close()
+	return commit, true
+}
+
+// shareVerifiedNoop finishes a no-op pull: it repeats the migrated-latch
+// self-heal a real import performs after its commit, then reports the head it
+// re-verified.
+func shareVerifiedNoop(cfg Config, name string, head shareCommit) (shareRunOutcome, shareImportStats, error) {
+	if err := writeMigratedLatch(cfg, name); err != nil {
+		return shareRunOutcome{}, shareImportStats{}, err
+	}
+	return shareRunOutcome{Seq: head.Seq, Verified: true}, shareImportStats{Total: head.Count}, nil
 }
 
 // writeMigratedLatch installs the durable one-way migrated latch (present ⇒
@@ -331,68 +419,123 @@ func writeMigratedLatch(cfg Config, name string) error {
 
 // gitShareImport pins the merge source into a run-private ref, decrypts from that
 // immutable object store, builds a generation, and commits it. Runs under the
-// import lease held by shareBuildAndPublish.
-func gitShareImport(ctx context.Context, cfg Config, sub shareSubscription, runID string, run execFunc) (int, shareImportStats, error) {
+// import lease held by shareBuildAndPublish. allowNoop lets a pull of a
+// registered subscription stop at a verified head built from the same commit;
+// subscribe always builds, so it never adopts files left under a reused name.
+func gitShareImport(ctx context.Context, cfg Config, sub shareSubscription, runID string, run execFunc, allowNoop bool) (shareRunOutcome, shareImportStats, error) {
 	pin, err := acquireGitPin(ctx, cfg, sub, runID, run)
 	if err != nil {
-		return 0, shareImportStats{}, err
+		return shareRunOutcome{}, shareImportStats{}, err
 	}
 	defer pin.cleanup()
 	man, err := pin.manifest(ctx)
 	if err != nil {
-		return 0, shareImportStats{}, err
+		return shareRunOutcome{}, shareImportStats{}, err
+	}
+	if head, ok := shareNoopHead(ctx, cfg, sub.Name, pin.sha); allowNoop && ok {
+		out, stats, nerr := shareVerifiedNoop(cfg, sub.Name, head)
+		stats.Owner, stats.Scope = man.Owner, man.Scope
+		return out, stats, nerr
 	}
 	entries, err := decryptShareBlobs(cfg, man, pin.blobs(ctx))
 	if err != nil {
-		return 0, shareImportStats{}, err
+		return shareRunOutcome{}, shareImportStats{}, err
 	}
 	seq, stats, err := buildAndCommitGeneration(ctx, cfg, sub, runID, pin.sha, entries, shareCommitParams{parentFloor: -1})
 	stats.Owner, stats.Scope = man.Owner, man.Scope
-	return seq, stats, err
+	return shareRunOutcome{Seq: seq}, stats, err
 }
 
 // bucketShareImport materializes each fetch into a run-private fetch-<run_id>
 // staging dir, decrypts, builds a generation, and commits it with the inherited
-// monotonic bucket floor. Returns the pin + version to persist on success.
-func bucketShareImport(ctx context.Context, cfg Config, sub shareSubscription, bc bucketConfig, runID string) (int, shareImportStats, ed25519.PublicKey, int, error) {
+// monotonic bucket floor. Returns the pin + version to persist on success. With
+// allowNoop (a pull of a registered subscription), a verified envelope that
+// names the version the head was built from downloads no blob and reports a
+// verified no-op instead. A bucket version is not unique across buckets, so
+// subscribe never takes that path.
+func bucketShareImport(ctx context.Context, cfg Config, sub shareSubscription, bc bucketConfig, runID string, allowNoop bool) (shareRunOutcome, shareImportStats, ed25519.PublicKey, int, error) {
 	store, err := newObjectStore(bc)
 	if err != nil {
-		return 0, shareImportStats{}, nil, 0, err
+		return shareRunOutcome{}, shareImportStats{}, nil, 0, err
 	}
-	return bucketShareImportWithStore(ctx, cfg, sub, bc, runID, store)
+	return bucketShareImportWithStore(ctx, cfg, sub, bc, runID, store, allowNoop)
 }
 
-func bucketShareImportWithStore(ctx context.Context, cfg Config, sub shareSubscription, bc bucketConfig, runID string, store objectStore) (int, shareImportStats, ed25519.PublicKey, int, error) {
+// bucketSourceRev is the commit-record source revision of a verified bucket
+// envelope: its version plus its payload digest. The version alone is not
+// enough, because two publishers racing from one version can each sign a
+// different manifest with the next version number.
+func bucketSourceRev(snap bucketSnapshot) string {
+	return fmt.Sprintf("bucket-v%d-%s", snap.Version, snap.PayloadDigest)
+}
+
+func bucketShareImportWithStore(ctx context.Context, cfg Config, sub shareSubscription, bc bucketConfig, runID string, store objectStore, allowNoop bool) (shareRunOutcome, shareImportStats, ed25519.PublicKey, int, error) {
 	ids, err := loadShareIdentities(cfg)
 	if err != nil {
-		return 0, shareImportStats{}, nil, 0, err
+		return shareRunOutcome{}, shareImportStats{}, nil, 0, err
+	}
+	snap, err := bucketOpen(ctx, store, bc, sub, ids)
+	if err != nil {
+		return shareRunOutcome{}, shareImportStats{}, nil, 0, err
+	}
+	if head, ok := shareNoopHead(ctx, cfg, sub.Name, bucketSourceRev(snap)); allowNoop && ok {
+		// The replay floor a real import enforces at publish time still applies.
+		if ferr := shareBucketFloorCheck(cfg, sub, snap.Version); ferr != nil {
+			return shareRunOutcome{}, shareImportStats{}, nil, 0, ferr
+		}
+		out, stats, nerr := shareVerifiedNoop(cfg, sub.Name, head)
+		if nerr != nil {
+			return shareRunOutcome{}, shareImportStats{}, nil, 0, nerr
+		}
+		stats.Owner, stats.Scope = snap.Manifest.Owner, snap.Manifest.Scope
+		return out, stats, snap.SignPub, snap.Version, nil
 	}
 	dest := shareFetchDir(cfg, sub.Name, runID)
 	_ = os.RemoveAll(dest)
 	if err := os.MkdirAll(dest, 0o700); err != nil {
-		return 0, shareImportStats{}, nil, 0, err
+		return shareRunOutcome{}, shareImportStats{}, nil, 0, err
 	}
 	// Normal returns never retain run-private network staging. A SIGKILL can
 	// still strand it for manual GC, but an admission refusal followed by the
 	// printed storage-limit retry must not accumulate fetch-N, fetch-N+1, ... .
 	defer os.RemoveAll(dest)
-	pin, ver, err := bucketFetch(ctx, store, bc, sub, ids, dest)
-	if err != nil {
-		return 0, shareImportStats{}, nil, 0, err
+	if err := bucketMaterialize(ctx, store, bc, sub, snap, dest); err != nil {
+		return shareRunOutcome{}, shareImportStats{}, nil, 0, err
 	}
 	man, err := readShareManifest(dest)
 	if err != nil {
-		return 0, shareImportStats{}, nil, 0, err
+		return shareRunOutcome{}, shareImportStats{}, nil, 0, err
 	}
 	entries, err := decryptShareBlobs(cfg, man, bucketDirBlobs(dest))
 	if err != nil {
-		return 0, shareImportStats{}, nil, 0, err
+		return shareRunOutcome{}, shareImportStats{}, nil, 0, err
 	}
-	seq, stats, err := buildAndCommitGeneration(ctx, cfg, sub, runID, fmt.Sprintf("bucket-v%d", ver), entries,
+	ver := snap.Version
+	seq, stats, err := buildAndCommitGeneration(ctx, cfg, sub, runID, bucketSourceRev(snap), entries,
 		shareCommitParams{isBucket: true, fetched: ver, subVersion: sub.LastVersion, parentFloor: -1})
 	if err != nil {
-		return 0, shareImportStats{}, nil, 0, err
+		return shareRunOutcome{}, shareImportStats{}, nil, 0, err
 	}
 	stats.Owner, stats.Scope = man.Owner, man.Scope
-	return seq, stats, pin, ver, nil
+	return shareRunOutcome{Seq: seq}, stats, snap.SignPub, ver, nil
+}
+
+// shareBucketFloorCheck applies publishShareGeneration's anti-rollback rule to a
+// version that will not be published: it must not sit below any committed floor
+// or the subscription's last seen version.
+func shareBucketFloorCheck(cfg Config, sub shareSubscription, version int) error {
+	records, err := readAllCommits(cfg, sub.Name)
+	if err != nil {
+		return err
+	}
+	floor := sub.LastVersion
+	for _, r := range records {
+		if r.BucketFloor > floor {
+			floor = r.BucketFloor
+		}
+	}
+	if version < floor {
+		return errRollback
+	}
+	return nil
 }

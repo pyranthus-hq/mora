@@ -238,69 +238,104 @@ func teachMemory(ctx context.Context, args []string, stdout io.Writer) error {
 	if original.Provider != "" {
 		return errors.New("teach memory revisions apply only to authored memories; connector evidence is immutable")
 	}
-	governance, err := loadGovernance(cfg)
-	if err != nil {
-		return err
-	}
-	if !governance.memoryVisible(original.ID) {
-		return errors.New("memory is historical, not current; undo the active revision before changing it")
-	}
-	entry := govEntry{
-		Kind:     govKindTeachMemory,
-		Action:   govActionRecord,
-		TargetID: original.ID,
-		Decision: decision,
-		Reason:   strings.TrimSpace(*reason),
-	}
-	if entry.Reason == "" {
-		entry.Reason = "mora teach memory " + decision
-	}
-
-	var replacement Memory
-	var replacementOp pendingOp
+	// Validate caller-supplied scope before even creating lease bookkeeping.
 	if decision != teachMemoryRetract {
 		if *title == "" || *text == "" {
 			return errors.New("correct and supersede require --title and --text")
 		}
-		replacement = Memory{
-			Scope:     original.Scope,
-			Type:      original.Type,
-			Title:     *title,
-			Text:      *text,
-			Tags:      append([]string(nil), original.Tags...),
-			Source:    original.Source,
-			CreatedAt: nowRFC3339(),
-		}
+		effectiveScope := original.Scope
 		if *scope != "" {
-			replacement.Scope = *scope
+			effectiveScope = *scope
 		}
-		if *mtype != "" {
-			replacement.Type = *mtype
+		if _, err := memoryPath(cfg, Memory{ID: "validation", Scope: effectiveScope}); err != nil {
+			return err
 		}
-		if *tags != "" {
-			replacement.Tags = genericutil.SplitCSV(*tags)
-		}
-		if replacement.Type == "decision" {
-			replacement.Decision = decisionValidityFromFlags(replacement.CreatedAt, *asOf, *durability, *flip, *reviewBy)
-		}
-		replacement, replacementOp, err = createMemory(ctx, cfg, replacement)
+	}
+	var replacement Memory
+	var stored govEntry
+	err = func() error {
+		governance, release, err := governanceWriteLease(cfg)
 		if err != nil {
 			return err
 		}
-		entry.ReplacementID = replacement.ID
-	}
-
-	stored, err := appendTeachAndRebuild(ctx, cfg, entry)
-	if err != nil {
-		// Roll back the newly-created file only if the governance append never
-		// committed. Once stored.ID exists the revision is durable truth; a failed
-		// rebuild must leave both file and dirty marker for recovery.
-		if stored.ID == "" && replacement.Path != "" {
-			_ = os.Remove(replacement.Path)
-			_ = unmarkIndexDirty(cfg, replacementOp.OpID)
+		defer release()
+		original, err = findMemoryRaw(cfg, *id)
+		if err != nil {
+			return err
 		}
+		if original.Provider != "" {
+			return errors.New("teach memory revisions apply only to authored memories; connector evidence is immutable")
+		}
+		if !governance.memoryVisible(original.ID) {
+			return errors.New("conflict: memory is historical, not current; undo the active revision before changing it")
+		}
+		entry := govEntry{
+			Kind:     govKindTeachMemory,
+			Action:   govActionRecord,
+			TargetID: original.ID,
+			Decision: decision,
+			Reason:   strings.TrimSpace(*reason),
+		}
+		if entry.Reason == "" {
+			entry.Reason = "mora teach memory " + decision
+		}
+
+		var replacementOp pendingOp
+		if decision != teachMemoryRetract {
+			if *title == "" || *text == "" {
+				return errors.New("correct and supersede require --title and --text")
+			}
+			replacement = Memory{
+				Scope:     original.Scope,
+				Type:      original.Type,
+				Title:     *title,
+				Text:      *text,
+				Tags:      append([]string(nil), original.Tags...),
+				Source:    original.Source,
+				CreatedAt: nowRFC3339(),
+			}
+			if *scope != "" {
+				replacement.Scope = *scope
+			}
+			if *mtype != "" {
+				replacement.Type = *mtype
+			}
+			if *tags != "" {
+				replacement.Tags = genericutil.SplitCSV(*tags)
+			}
+			if replacement.Type == "decision" {
+				replacement.Decision = decisionValidityFromFlags(replacement.CreatedAt, *asOf, *durability, *flip, *reviewBy)
+			}
+			replacement, replacementOp, err = createMemory(ctx, cfg, replacement)
+			if err != nil {
+				return err
+			}
+			entry.ReplacementID = replacement.ID
+		}
+
+		op, err := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindRebuild, MemoryID: entry.TargetID})
+		if err != nil {
+			return rollbackTeachReplacement(cfg, replacement, replacementOp, err)
+		}
+		stored, err = appendGovernanceEntryLocked(cfg, governance, entry)
+		if err != nil {
+			if unmarkErr := unmarkIndexDirty(cfg, op.OpID); unmarkErr != nil {
+				err = errors.Join(err, fmt.Errorf("cannot clear abandoned Teach rebuild marker: %w", unmarkErr))
+			}
+			return rollbackTeachReplacement(cfg, replacement, replacementOp, err)
+		}
+		return nil
+
+	}()
+	if err != nil {
 		return err
 	}
+	// Rebuilding can take much longer than a ledger transaction. Release the
+	// governance lease first; currentness and publication have already committed.
+	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
+		return err
+	}
+
 	if *jsonOut {
 		return emitReceipt(stdout, "mora.teach.memory", 1, map[string]any{"decision": stored, "replacement": replacement})
 	}
@@ -353,40 +388,49 @@ func teachUndo(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	g, err := loadGovernance(cfg)
-	if err != nil {
-		return err
-	}
-	var target *govEntry
-	for i := range g.Entries {
-		if g.Entries[i].ID == args[0] && !govEntryRevoked(g.Entries[i]) {
-			target = &g.Entries[i]
-			break
+	// Check descendants and revoke under the same lease as corrections, so an
+	// undo cannot restore an ancestor after a newer replacement commits.
+	err = func() error {
+		g, release, err := governanceWriteLease(cfg)
+		if err != nil {
+			return err
 		}
-	}
-	if target == nil || (target.Kind != govKindTeachCommitment && target.Kind != govKindTeachMemory) {
-		return fmt.Errorf("no active Teach decision %q", args[0])
-	}
-	if target.ReplacementID != "" {
-		for _, e := range g.Entries {
-			if !govEntryRevoked(e) && e.Kind == govKindTeachMemory && e.TargetID == target.ReplacementID {
-				return fmt.Errorf("cannot undo %s while later revision %s is active; undo newest first", target.ID, e.ID)
+		defer release()
+		var target *govEntry
+		for i := range g.Entries {
+			if g.Entries[i].ID == args[0] && !govEntryRevoked(g.Entries[i]) {
+				target = &g.Entries[i]
+				break
 			}
 		}
-	}
-	op, err := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindRebuild, MemoryID: target.TargetID})
+		if target == nil || (target.Kind != govKindTeachCommitment && target.Kind != govKindTeachMemory) {
+			return fmt.Errorf("no active Teach decision %q", args[0])
+		}
+		if target.ReplacementID != "" {
+			for _, e := range g.Entries {
+				if !govEntryRevoked(e) && e.Kind == govKindTeachMemory && e.TargetID == target.ReplacementID {
+					return fmt.Errorf("cannot undo %s while later revision %s is active; undo newest first", target.ID, e.ID)
+				}
+			}
+		}
+		op, err := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindRebuild, MemoryID: target.TargetID})
+		if err != nil {
+			return err
+		}
+		target.RevokedAt = nowRFC3339()
+		if err := governanceStore(cfg).Save(toGovernanceLedger(g)); err != nil {
+			if unmarkErr := unmarkIndexDirty(cfg, op.OpID); unmarkErr != nil {
+				return errors.Join(err, unmarkErr)
+			}
+			return err
+		}
+		return nil
+
+	}()
 	if err != nil {
 		return err
 	}
-	found, err := revokeGovernanceEntry(cfg, args[0])
-	if err != nil {
-		_ = unmarkIndexDirty(cfg, op.OpID)
-		return err
-	}
-	if !found {
-		_ = unmarkIndexDirty(cfg, op.OpID)
-		return fmt.Errorf("no active Teach decision %q", args[0])
-	}
+
 	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
 		return err
 	}
@@ -591,4 +635,19 @@ type teachConsentReceipt struct {
 	Decision string `json:"decision"`
 	Enabled  bool   `json:"enabled"`
 	EntryID  string `json:"entry_id"`
+}
+
+// A failed append has not committed a revision. Remove only its own replacement;
+// retain its dirty marker when removal fails so recovery can still see the file.
+func rollbackTeachReplacement(cfg Config, replacement Memory, op pendingOp, cause error) error {
+	if replacement.Path == "" {
+		return cause
+	}
+	if err := os.Remove(replacement.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return errors.Join(cause, fmt.Errorf("Teach decision did not commit; replacement %s remains and requires cleanup: %w", replacement.ID, err))
+	}
+	if err := unmarkIndexDirty(cfg, op.OpID); err != nil {
+		return errors.Join(cause, fmt.Errorf("Teach replacement removed but dirty marker cleanup failed: %w", err))
+	}
+	return cause
 }

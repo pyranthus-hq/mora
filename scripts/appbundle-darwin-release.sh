@@ -374,7 +374,25 @@ for arch in amd64 arm64; do
 
 	# Staple the ticket INTO the bundle, then re-validate everything: the
 	# staple, the seal it must not have broken, and Gatekeeper's verdict.
-	xcrun stapler staple "$app"
+	# stapler fetches the ticket from Apple's CloudKit service, which can drop
+	# the connection (error 68, NSURLErrorDomain -1005) or lag the notarization
+	# verdict by a minute or more. Retry with backoff; a real refusal still
+	# fails after the last attempt.
+	stapled=0
+	for attempt in 1 2 3 4 5 6; do
+		if xcrun stapler staple "$app"; then
+			stapled=1
+			break
+		fi
+		if [[ "$attempt" -lt 6 ]]; then
+			echo "stapler attempt $attempt failed for Darwin $arch app; retrying in $((attempt * 20))s" >&2
+			sleep $((attempt * 20))
+		fi
+	done
+	if [[ "$stapled" -ne 1 ]]; then
+		echo "error: stapling the notarization ticket failed for Darwin $arch app after 6 attempts" >&2
+		exit 1
+	fi
 	[[ -f "$app/Contents/CodeResources" ]] || {
 		echo "error: stapler reported success but $app carries no stapled ticket" >&2
 		exit 1

@@ -425,11 +425,11 @@
       "name": "mcp",
       "paths": ["mcp", "mcp serve", "mcp proposals"],
       "evidence": {
-        "success": {"status": "test", "tests": ["TestMCPInitializeServesInstructions", "TestCoreB_McpServeSkipsNotificationAndMalformed", "TestMCPWritePolicyProposeStagesThenOwnerApproves"]},
-        "json": {"status": "test", "tests": ["TestMCPToolsCallReturnsCallToolResult"], "reason": "MCP serve is a JSON-RPC pipe."},
+        "success": {"status": "test", "tests": ["TestMCPInitializeServesInstructions", "TestCoreB_McpServeSkipsNotificationAndMalformed", "TestMCPWritePolicyProposeStagesThenOwnerApproves", "TestMCPProposalShowFullContentReadOnly", "TestMCPProposalShowEffectiveDefaults"]},
+        "json": {"status": "test", "tests": ["TestMCPToolsCallReturnsCallToolResult", "TestMCPProposalShowFullContentReadOnly"], "reason": "MCP serve is a JSON-RPC pipe; proposal show emits a versioned CLI receipt."},
         "state": {"status": "test", "tests": ["TestCoreB_McpCallWriteMemoryHappy", "TestCoreB_McpCallDeleteMemoryHappy", "TestMCPWritePolicyProposeStagesThenOwnerApproves"], "reason": "Tool calls may mutate Mora state; propose mode stages writes for explicit local approval."},
-        "error": {"status": "test", "tests": ["TestCoreB_McpServeScannerError", "TestServeMCPOverHardCapErrorsLoudly"]},
-        "refusal": {"status": "test", "tests": ["TestCoreB_McpCallDeleteMemoryMissingID", "TestMCPWritePolicyReadonlyRefusesMutationsBeforeLookup", "TestMCPWritePolicyProposeNeverStagesDelete"]}
+        "error": {"status": "test", "tests": ["TestCoreB_McpServeScannerError", "TestServeMCPOverHardCapErrorsLoudly", "TestMCPProposalShowRejectsInvalidOrMissingInput"]},
+        "refusal": {"status": "test", "tests": ["TestCoreB_McpCallDeleteMemoryMissingID", "TestMCPWritePolicyReadonlyRefusesMutationsBeforeLookup", "TestMCPWritePolicyProposeNeverStagesDelete", "TestMCPProposalShowRefusesUnsafeFiles", "TestMCPProposalShowMasksCredentialPatterns"]}
       }
     },
     {

@@ -1,8 +1,12 @@
 package mora
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -55,11 +59,111 @@ func TestServeHTTPCallAllowlistShape(t *testing.T) {
 func TestServeHTTPPortGuardRejectsZero(t *testing.T) {
 	t.Setenv("MORA_CONFIG_DIR", t.TempDir())
 	var out strings.Builder
-	err := serveLoopbackHTTP(testCtx(t), []string{"--port", "0"}, &out)
+	err := serveLoopbackHTTP(testCtx(t), []string{"--port", "0"}, &out, &out)
 	if err == nil {
 		t.Fatal("serveLoopbackHTTP(--port 0): want error, got nil")
 	}
 	if !strings.Contains(err.Error(), "invalid --port") {
 		t.Fatalf("want an 'invalid --port' error, got: %v", err)
+	}
+}
+
+func TestServeHTTPTokenUpgrade(t *testing.T) {
+	for _, mode := range []string{"legacy", "fresh", "scrub-failure"} {
+		t.Run(mode, func(t *testing.T) {
+			withTempHome(t)
+			run(t, "init")
+			cfg := mustConfig(t)
+			old := strings.Repeat("a", 64)
+			if mode != "fresh" {
+				if err := os.WriteFile(filepath.Join(cfg.ConfigDir, "http.json"), []byte(`{"token":"`+old+`"}`), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			log := filepath.Join(cfg.StateDir, "serve-http.out.log")
+			if err := os.MkdirAll(cfg.StateDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			banner := "  token: " + old + "\n"
+			if mode == "scrub-failure" {
+				if err := os.Mkdir(log, 0700); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(log, []byte("keep\n"+banner), 0640); err != nil {
+				t.Fatal(err)
+			}
+			var out, warnings bytes.Buffer
+			if err := cmdServe(testCtx(t), []string{"http", "--print-token"}, &out, &warnings); err != nil {
+				t.Fatal(err)
+			}
+			token := strings.TrimSpace(out.String())
+			if len(token) != 64 || token == old {
+				t.Fatal("print-token did not return the new token alone")
+			}
+			var stored struct {
+				Token   string `json:"token"`
+				Version int    `json:"token_version"`
+			}
+			b, err := os.ReadFile(filepath.Join(cfg.ConfigDir, "http.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(b, &stored); err != nil {
+				t.Fatal(err)
+			}
+			if stored.Token != token || stored.Version != 2 {
+				t.Fatal("printed token differs from persisted version 2 token")
+			}
+			if strings.Contains(warnings.String(), token) || strings.Contains(warnings.String(), old) {
+				t.Fatal("token leaked to stderr")
+			}
+			if strings.Contains(warnings.String(), "HTTP token rotated") != (mode != "fresh") {
+				t.Fatalf("rotation notice: %s", &warnings)
+			}
+			if mode != "fresh" {
+				for _, want := range []string{"Restart any already-running mora serve http", "still accepts the old token and rejects the new one", "mora serve http install", "systemctl --user restart mora-serve-http.service"} {
+					if !strings.Contains(warnings.String(), want) {
+						t.Fatalf("rotation notice missing %q: %s", want, &warnings)
+					}
+				}
+			}
+			if strings.Contains(warnings.String(), "warning:") != (mode == "scrub-failure") {
+				t.Fatalf("scrub warning: %s", &warnings)
+			}
+			if mode != "scrub-failure" {
+				b, err := os.ReadFile(log)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := "keep\n"
+				if mode == "fresh" {
+					want += banner
+				}
+				if string(b) != want {
+					t.Fatalf("log=%q, want %q", b, want)
+				}
+				// A versioned start must not scrub again, even if a banner is reintroduced.
+				if err := os.WriteFile(log, []byte(banner), 0640); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out.Reset()
+			warnings.Reset()
+			if err := cmdServe(testCtx(t), []string{"http", "--print-token"}, &out, &warnings); err != nil {
+				t.Fatal(err)
+			}
+			if strings.TrimSpace(out.String()) != token || warnings.Len() != 0 {
+				t.Fatal("second start rotated, warned, or changed output")
+			}
+			if mode != "scrub-failure" {
+				b, err := os.ReadFile(log)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(b) != banner {
+					t.Fatal("non-rotating start scrubbed log")
+				}
+			}
+		})
 	}
 }

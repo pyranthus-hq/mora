@@ -3,6 +3,7 @@ package mora
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -92,7 +93,7 @@ func TestIndexUpsertAddsAndReplacesSingleRow(t *testing.T) {
 	}
 	// The stored path column must match what a full rebuild would store (memoryPath),
 	// so an incrementally-added row is indistinguishable from a rebuilt one.
-	if got, want := res[0].Path, memoryPath(cfg, m); got != want {
+	if got, want := res[0].Path, mustMemoryPath(t, cfg, m); got != want {
 		t.Fatalf("stored path = %q, want %q (must match rebuild's memoryPath)", got, want)
 	}
 
@@ -269,8 +270,10 @@ func TestIndexUpsertColdStartDelegatesToRebuild(t *testing.T) {
 
 // TestAuthoredWriteDefersFullProjectionsUntilExplicitRebuild pins the fast
 // authored-write contract: write_memory must never synchronously walk/rebuild the
-// vault after its FTS upsert. Its durable pending marker keeps health dirty until
-// the ordinary explicit/scheduled rebuild restores every full projection.
+// vault after its FTS upsert. Its durable pending marker stays until the ordinary
+// explicit/scheduled rebuild restores every full projection, but in its
+// FTS-committed form: health reads refreshing (search is current), never dirty,
+// and the response names no rebuild command for an agent to collide with.
 func TestAuthoredWriteDefersFullProjectionsUntilExplicitRebuild(t *testing.T) {
 	withTempHome(t)
 	t.Setenv("MORA_EMBEDDER", "")
@@ -295,8 +298,16 @@ func TestAuthoredWriteDefersFullProjectionsUntilExplicitRebuild(t *testing.T) {
 		t.Fatalf("write result id=%q warning=%q err=%v", id, warning, err)
 	}
 	wrapped, ok := res.(map[string]any)
-	if !ok || wrapped["projections_pending"] != true || wrapped["reconcile_hint"] != authoredWriteReconcileHint {
-		t.Fatalf("write result must expose pending full projections and the explicit reconciliation path, got %#v", res)
+	if !ok || wrapped["searchable"] != true {
+		t.Fatalf("write result must report searchable-now with projections refreshing in the background, got %#v", res)
+	}
+	for _, stale := range []string{"index_stale", "reconcile_hint", "warning", "projections_pending"} {
+		if _, present := wrapped[stale]; present {
+			t.Fatalf("a committed FTS write must not carry %q (it reads as a failure or a rebuild hint), got %#v", stale, res)
+		}
+	}
+	if b, err := json.Marshal(res); err != nil || strings.Contains(string(b), "index rebuild") || strings.Contains(string(b), "DIRTY") {
+		t.Fatalf("write response tells the agent to rebuild or calls the index dirty: %s (err=%v)", b, err)
 	}
 	if rebuildListings != 0 {
 		t.Fatalf("write_memory ran %d full rebuild listing(s), want 0 on the request path", rebuildListings)
@@ -305,11 +316,16 @@ func TestAuthoredWriteDefersFullProjectionsUntilExplicitRebuild(t *testing.T) {
 	if err != nil || len(got) != 1 || got[0].ID != id {
 		t.Fatalf("immediate FTS = %+v err=%v, want %s", got, err, id)
 	}
-	if ops, err := listPendingOps(cfg); err != nil || len(ops) != 1 || ops[0].Kind != opKindWrite || !strings.Contains(ops[0].Path, id) {
-		t.Fatalf("pending after FTS-only write = %+v err=%v, want its durable write marker", ops, err)
+	if ops, err := listPendingOps(cfg); err != nil || len(ops) != 1 || ops[0].Kind != opKindWrite || !ops[0].FTSCommitted || !strings.Contains(ops[0].Path, id) {
+		t.Fatalf("pending after FTS-only write = %+v err=%v, want its durable write marker in FTS-committed form", ops, err)
 	}
-	if h := indexHealthOf(cfg, time.Now()); h.State != idxDirty {
-		t.Fatalf("index health = %+v, want dirty while full projections are pending", h)
+	if h := indexHealthOf(cfg, time.Now()); h.State != idxRefreshing || h.PendingOps != 1 {
+		t.Fatalf("index health = %+v, want refreshing with 1 pending while full projections are pending", h)
+	}
+	// The marker still bounds the lag honestly: one that outlives the projection
+	// threshold means the catch-up stopped, and reads dirty.
+	if h := indexHealthOf(cfg, time.Now().Add(indexProjectionLagThreshold+time.Minute)); h.State != idxDirty {
+		t.Fatalf("index health past the projection threshold = %+v, want dirty", h)
 	}
 	db, err := sql.Open("sqlite", roIndexDSN(cfg))
 	if err != nil {
@@ -404,11 +420,11 @@ func TestMCPAuthoredWriteSchedulesProjectionReconciliation(t *testing.T) {
 		t.Fatalf("write_memory: %v", outcome.err)
 	}
 	wrapped, ok := outcome.result.(map[string]any)
-	if !ok || wrapped["projections_pending"] != true {
-		t.Fatalf("MCP response must return pending before asynchronous reconciliation, got %#v", outcome.result)
+	if !ok || wrapped["searchable"] != true {
+		t.Fatalf("MCP response must return searchable before asynchronous reconciliation, got %#v", outcome.result)
 	}
-	if health, ok := wrapped["health"].(compactHealth); !ok || health.Index != idxDirty {
-		t.Fatalf("MCP response health must remain dirty before reconciliation is released, got %#v", wrapped["health"])
+	if health, ok := wrapped["health"].(compactHealth); !ok || health.Index != idxRefreshing || health.Banner != "" {
+		t.Fatalf("MCP response health must read refreshing, with no alarm banner, before reconciliation is released, got %#v", wrapped["health"])
 	}
 
 	close(releaseRunner)

@@ -38,12 +38,52 @@ type PendingOp struct {
 	Path     string `json:"path,omitempty"`      // filepath.Clean'd absolute vault path ("" for rebuild)
 	MemoryID string `json:"memory_id,omitempty"` // delete -> the read-path suppression list (B4)
 	MarkedAt string `json:"marked_at"`           // RFC3339
+	// RunID ties a rebuild's own self-op to its operation receipt, so health can
+	// tell a live rebuild's marker from one a failed rebuild left behind.
+	RunID string `json:"run_id,omitempty"`
+	// FTSCommitted is derived from the marker's file name, never stored in it: a
+	// write marker renamed to <op_id>.fts.json after its FTS upsert committed.
+	// The marker still pins the graph, vector and commitment projections until a
+	// covering full rebuild retires it.
+	FTSCommitted bool `json:"-"`
 }
+
+// ftsCommittedSuffix names a write marker whose FTS row has committed. The
+// transition is one rename, so it cannot resurrect a marker a concurrent
+// rebuild already retired: a rename of a missing file fails instead.
+const ftsCommittedSuffix = ".fts.json"
 
 func PendingDir(cfg config.Config) string { return filepath.Join(cfg.StateDir, "pending") }
 
 func PendingPath(cfg config.Config, opID string) string {
 	return filepath.Join(PendingDir(cfg), opID+".json")
+}
+
+// FTSCommittedPath is where a write marker lives after its FTS upsert committed.
+func FTSCommittedPath(cfg config.Config, opID string) string {
+	return filepath.Join(PendingDir(cfg), opID+ftsCommittedSuffix)
+}
+
+// MarkFTSCommitted records that a write's FTS upsert committed by renaming its
+// marker. It never retires the marker: graph, vectors and commitments still lag
+// until a covering rebuild. A marker that is already gone was covered by a
+// concurrent rebuild, which is success. Any other failure leaves the marker in
+// its dirty form, which is the safe direction.
+func MarkFTSCommitted(cfg config.Config, opID string, rename func(oldPath, newPath string) error) error {
+	if opID == "" {
+		return nil
+	}
+	err := rename(PendingPath(cfg, opID), FTSCommittedPath(cfg, opID))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	// Best-effort: losing the rename on power loss only reverts the marker to
+	// its dirty form.
+	_ = atomicio.SyncDir(PendingDir(cfg))
+	return nil
 }
 
 func CleanVaultPath(p string) string {
@@ -69,7 +109,11 @@ func ListPending(cfg config.Config) ([]PendingOp, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
+		ftsCommitted := strings.HasSuffix(e.Name(), ftsCommittedSuffix)
 		id := strings.TrimSuffix(e.Name(), ".json")
+		if ftsCommitted {
+			id = strings.TrimSuffix(e.Name(), ftsCommittedSuffix)
+		}
 		b, rerr := os.ReadFile(filepath.Join(PendingDir(cfg), e.Name()))
 		if errors.Is(rerr, os.ErrNotExist) {
 			continue // a concurrent committed writer retired it after ReadDir
@@ -81,6 +125,9 @@ func ListPending(cfg config.Config) ([]PendingOp, error) {
 		if json.Unmarshal(b, &op) != nil || op.OpID == "" {
 			op = PendingOp{OpID: id} // corrupt: fail closed, no valid kind/path
 		}
+		// Only a write marker has an FTS-committed form. Any other kind under
+		// that name is not a state Mora writes, so it stays dirty.
+		op.FTSCommitted = ftsCommitted && op.Kind == KindWrite && op.OpID == id
 		ops = append(ops, op)
 	}
 	return ops, nil
@@ -177,13 +224,39 @@ func ClearCovered(cfg config.Config, listingStartedAt time.Time, files, parsed [
 	}
 	var clearErr error
 	for _, op := range ops {
-		if ShouldClear(op, listingStartedAt, filesSet, parsedSet) {
+		if ShouldClear(op, listingStartedAt, filesSet, parsedSet) || foreignToVault(cfg, op) {
 			if err := unmark(cfg, op.OpID); err != nil {
 				clearErr = errors.Join(clearErr, fmt.Errorf("retiring pending operation: %w", err))
 			}
 		}
 	}
 	return clearErr
+}
+
+// foreignToVault reports a write or delete marker whose path lies outside this
+// vault. No rebuild ever lists such a path, so without this rule the marker pins
+// the index dirty forever (seen live: a run with MORA_VAULT on a temp vault but
+// state_dir on the real one). Containment is decided by file identity on every
+// existing ancestor, so symlinked or case-variant spellings of the vault, and a
+// parent directory a concurrent writer has not created yet, all stay ours.
+func foreignToVault(cfg config.Config, op PendingOp) bool {
+	if (op.Kind != KindWrite && op.Kind != KindDelete) || op.Path == "" || cfg.VaultDir == "" {
+		return false
+	}
+	vault, err := os.Stat(cfg.VaultDir)
+	if err != nil {
+		return false // cannot identify our own vault: fail closed, keep the marker
+	}
+	for dir := filepath.Dir(CleanVaultPath(op.Path)); ; dir = filepath.Dir(dir) {
+		if fi, err := os.Stat(dir); err == nil && os.SameFile(fi, vault) {
+			return false
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return false // unreadable ancestor: cannot prove foreign
+		}
+		if parent := filepath.Dir(dir); parent == dir {
+			return true
+		}
+	}
 }
 
 func SuppressPendingDeletes(cfg config.Config, mems []memory.Memory) []memory.Memory {

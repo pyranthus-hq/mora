@@ -63,7 +63,7 @@ func TestCoreB_McpCmdMCPBadSubcommand(t *testing.T) {
 		if err == nil {
 			t.Fatalf("cmdMCP(%v) = nil, want usage error", args)
 		}
-		const usage = "usage: mora mcp serve [--profile NAME] | mora mcp serve-http [--port N] [--allow-host HOST] | mora mcp proposals <list|approve ID|reject ID>"
+		const usage = "usage: mora mcp serve [--profile NAME] | mora mcp serve-http [--port N] [--allow-host HOST] | mora mcp proposals <list|show ID|approve ID|reject ID>"
 		if err.Error() != usage {
 			t.Fatalf("cmdMCP(%v) error = %q, want %q", args, err.Error(), usage)
 		}
@@ -725,7 +725,7 @@ func TestCoreB_McpCallDigestEntityResolves(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	if err := writeMemory(cfg, personMemNamed("p-riya", "gmail", "riya@a.com", "Riya Karode", time.Now().Add(-2*time.Hour))); err != nil {
+	if err := writeMemory(cfg, personMemNamed("p-riya", "gmail", "riya@a.com", "Riya Varden", time.Now().Add(-2*time.Hour))); err != nil {
 		t.Fatalf("seed person: %v", err)
 	}
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
@@ -746,7 +746,7 @@ func TestCoreB_McpCallBriefEntityResolves(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
-	if err := writeMemory(cfg, personMemNamed("p-riya", "gmail", "riya@a.com", "Riya Karode", time.Now().Add(-2*time.Hour))); err != nil {
+	if err := writeMemory(cfg, personMemNamed("p-riya", "gmail", "riya@a.com", "Riya Varden", time.Now().Add(-2*time.Hour))); err != nil {
 		t.Fatalf("seed person: %v", err)
 	}
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
@@ -775,11 +775,11 @@ func TestCoreB_McpCallMeetingPrepWithEvent(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("save self source: %v", err)
 	}
-	if err := writeMemory(cfg, personMemNamed("e1", "gmail", "riya@a.com", "Riya Karode", now.Add(-48*time.Hour))); err != nil {
+	if err := writeMemory(cfg, personMemNamed("e1", "gmail", "riya@a.com", "Riya Varden", now.Add(-48*time.Hour))); err != nil {
 		t.Fatalf("seed person: %v", err)
 	}
 	if err := writeMemory(cfg, eventMemFull("evt", "Acme sync", now.Add(2*time.Hour).Format(time.RFC3339),
-		map[string]string{"riya@a.com": "Riya Karode"}, "riya@a.com")); err != nil {
+		map[string]string{"riya@a.com": "Riya Varden"}, "riya@a.com")); err != nil {
 		t.Fatalf("seed event: %v", err)
 	}
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {

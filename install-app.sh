@@ -5,7 +5,7 @@
 # whole bundle with Darwin's atomic directory-swap primitive.
 set -eu
 
-VERSION="${VERSION:-0.15.1}"
+VERSION="${VERSION:-0.15.3}"
 REPO="${REPO:-pyranthus-hq/mora}"
 VAULT="${MORA_VAULT:-$HOME/vault/mora}"
 APP_PARENT="${MORA_APP_DIR:-$HOME/Applications}"
@@ -396,22 +396,11 @@ cat <<EOF
   app:     $APP_DEST
   command: $LINK_DEST -> $APP_EXECUTABLE
   vault:   $ACTIVE_VAULT
-
-Planned Mora.app Full Disk Access migration:
-  1. Open System Settings > Privacy & Security > Full Disk Access.
-  2. Add $APP_DEST and enable it.
-  3. Keep the old Mora entry until these pass:
-       mora doctor
-       mora sync imessage
-
-After that, mora upgrade is designed to replace the whole signed bundle at the same path.
-FDA continuity is not proven until a real signed N to N+1 upgrade passes without a re-grant.
-The old standalone binary remains at ${BACKUP:-<no prior standalone install>} for rollback.
 EOF
 
 # Emit the user's future $PATH literally.
 # shellcheck disable=SC2016
 case ":$PATH:" in
 	*":$LINK_DIR:"*) : ;;
-	*) printf '\nAdd to PATH, then restart your shell:\n  echo '\''export PATH="%s:$PATH"'\'' >> ~/.zshrc\n' "$LINK_DIR" ;;
+	*) printf '\nTo use mora in Terminal, paste this line, then open a new Terminal window:\n  echo '\''export PATH="%s:$PATH"'\'' >> ~/.zshrc\n' "$LINK_DIR" ;;
 esac

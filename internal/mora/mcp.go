@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sort"
 	"time"
 
@@ -49,7 +50,7 @@ func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin 
 	if len(args) >= 2 && args[0] == "proposals" {
 		return cmdMCPProposals(ctx, args[1:], stdout, stderr)
 	}
-	return errors.New("usage: mora mcp serve [--profile NAME] | mora mcp serve-http [--port N] [--allow-host HOST] | mora mcp proposals <list|approve ID|reject ID>")
+	return errors.New("usage: mora mcp serve [--profile NAME] | mora mcp serve-http [--port N] [--allow-host HOST] | mora mcp proposals <list|show ID|approve ID|reject ID>")
 }
 
 // serveMCPProfile is `mora mcp serve --profile NAME`: stdio MCP bound to one
@@ -70,12 +71,61 @@ func serveMCPProfile(ctx context.Context, name string, stdout io.Writer, stdin i
 		return err
 	}
 	ctx = withAgentProfile(ctx, profile)
-	return mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, func(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
+	// Same lifecycle as serveMCP: exit when the client dies, and let a rebuild
+	// the session triggered finish first.
+	defer watchParent(os.Stderr)()
+	err = mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, func(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
 		return handleAgentMCP(ctx, profile, req)
 	})
+	waitForAuthoredReconciles(5 * time.Minute)
+	return err
 }
+
+// Seams for the parent-death watchdog.
+var (
+	getppid             = os.Getppid
+	exitFn              = os.Exit
+	parentWatchInterval = 2 * time.Second
+	parentWatchGOOS     = runtime.GOOS
+)
+
+// watchParent exits when the client that launched us dies and we get reparented. Exiting releases the
+// SQLite lock and SQLite rolls back the open transaction; Markdown writes are temp+link atomic and dirty
+// markers are retired by the next rebuild. The returned func stops the watch.
+// shortcut: Windows has no reparenting signal here, so it is skipped; upgrade by watching the parent handle.
+func watchParent(stderr io.Writer) func() {
+	orig := getppid()
+	if parentWatchGOOS == "windows" || orig <= 1 {
+		return func() {}
+	}
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(parentWatchInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				if getppid() != orig {
+					fmt.Fprintln(stderr, "mora mcp serve: client process exited; shutting down")
+					exitFn(0)
+					return
+				}
+			}
+		}
+	}()
+	return func() { close(done) }
+}
+
 func serveMCP(ctx context.Context, stdout io.Writer, stdin io.Reader) error {
-	return mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, handleMCP)
+	defer watchParent(os.Stderr)()
+	err := mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, handleMCP)
+	// The client is gone, but a rebuild it triggered may be mid-flight; exiting
+	// now would kill it and leave a stalled receipt. Bounded so a stuck rebuild
+	// cannot turn this into a zombie server.
+	waitForAuthoredReconciles(5 * time.Minute)
+	return err
 }
 
 // contextDefaultTokens resolves the ContextProfile to the default token budget
@@ -291,7 +341,9 @@ func mcpWriteMemoryWith(ctx context.Context, cfg Config, args map[string]any, op
 	// the SAME bounded envelope under the "memory" key (Open Q1 shape).
 	if rerr := indexUpsert(ctx, cfg, m); rerr != nil {
 		// Degraded SUCCESS — the op REMAINS so the index reads dirty (A2), now
-		// backed by durable state instead of one lost warning string.
+		// backed by durable state instead of one lost warning string. The
+		// reconcile still runs, so the write is covered without a manual rebuild.
+		scheduleAuthoredReconciliation(cfg)
 		return map[string]any{
 			"memory":      m,
 			"index_stale": true,
@@ -299,18 +351,26 @@ func mcpWriteMemoryWith(ctx context.Context, cfg Config, args map[string]any, op
 			"health":      compactHealthOf(cfg, now),
 		}, nil
 	}
-	// The request path ends after the durable FTS upsert. The marker remains until
-	// an explicit or scheduled full rebuild catches graph/vector/commitment up;
-	// health reports that pending state instead of claiming a fresh full index.
+	// The request path ends after the durable FTS upsert: the write is searchable
+	// now. Its marker stays until the coalesced background reconcile (or the
+	// scheduled rebuild) catches graph/vector/commitment up, but in its
+	// FTS-committed form, so health reads refreshing instead of dirty and nothing
+	// tells the caller to run a rebuild that would collide with that reconcile.
 	if authoredWriteProjectionPending(cfg, op) {
+		if merr := markFTSCommitted(cfg, op); merr != nil {
+			// The marker keeps its dirty form, which is the safe direction.
+			fmt.Fprintf(os.Stderr, "warn: could not record the committed FTS row for %s: %v\n", m.ID, merr)
+		}
 		scheduleAuthoredReconciliation(cfg)
-		return map[string]any{
-			"memory": m, "index_stale": true, "projections_pending": true,
-			"reconcile_hint": authoredWriteReconcileHint,
-			"health":         compactHealthOf(cfg, now),
-		}, nil
+		// searchable=true plus health.index "refreshing" is the whole account.
+		// Every byte here rides the tightest MCP ceiling (write_memory 1500 tok
+		// with a max-cap banner), so the response carries no second flag that
+		// restates what health.index already says.
+		return map[string]any{"memory": m, "searchable": true, "health": compactHealthOf(cfg, now)}, nil
 	}
-	return map[string]any{"memory": m, "health": compactHealthOf(cfg, now)}, nil
+	// A covering rebuild (the cold-start delegate, or a concurrent rebuild that
+	// parsed this file) already retired the marker: searchable and fully indexed.
+	return map[string]any{"memory": m, "searchable": true, "health": compactHealthOf(cfg, now)}, nil
 }
 
 // mcpMemoryFromArgs validates and shapes a write_memory request without
@@ -902,15 +962,18 @@ func mcpDeleteMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 		_ = unmarkIndexDirty(cfg, op.OpID)
 		return nil, err
 	}
-	// A failed rebuild after a delete is worse than after a write: search
+	// A failed index update after a delete is worse than after a write: search
 	// keeps SERVING the deleted content as if it still existed. Delete is the
-	// privacy path, so it rebuilds in Allow mode (mirrors cmdDelete): a
-	// last-memory delete (newCount==0) must still drop the deleted row from the
-	// index — the Enforce decBlockEmpty guard would roll it back and keep
-	// serving it. Allow is safe here because no write is being committed over a
-	// populated vault; the destructive intent is the user's own delete.
-	if _, rerr := rebuildIndexWithPolicy(ctx, cfg, policyAllow); rerr != nil {
+	// privacy path, so the failure stays a LOUD error and the pending-delete
+	// marker stays (reads keep suppressing the id). The update is one targeted
+	// transaction, not a whole-vault rebuild: that rebuild held the writer lock
+	// 30-75s on a real vault, past MCP client timeouts (V3).
+	reconcile, rerr := reflectDeleteInIndex(ctx, cfg, m.ID)
+	if rerr != nil {
 		return nil, fmt.Errorf("memory %s deleted, but the search index could not be updated and may still serve it: %w — run `mora index rebuild`", id, rerr)
+	}
+	if reconcile {
+		scheduleAuthoredReconciliation(cfg)
 	}
 	return map[string]any{"deleted": id, "health": compactHealthOf(cfg, time.Now())}, nil
 }

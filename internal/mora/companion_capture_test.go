@@ -1002,7 +1002,7 @@ func TestCompanionCaptureForeignFileAtThePinnedIDIsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	path := memoryPath(cfg, foreign)
+	path := mustMemoryPath(t, cfg, foreign)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -1061,7 +1061,7 @@ func TestCompanionCaptureOwnFileAtThePinnedIDIsAppliedWithoutASecondWrite(t *tes
 	if err != nil {
 		t.Fatalf("first publish: %v", err)
 	}
-	before, err := os.ReadFile(memoryPath(cfg, Memory{Scope: "personal", Type: "insight", ID: captureTestMemoryID}))
+	before, err := os.ReadFile(mustMemoryPath(t, cfg, Memory{Scope: "personal", Type: "insight", ID: captureTestMemoryID}))
 	if err != nil {
 		t.Fatalf("read the published memory: %v", err)
 	}
@@ -1235,7 +1235,7 @@ func TestCompanionCaptureForeignRejectionLeavesNoResidue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	path := memoryPath(cfg, foreign)
+	path := mustMemoryPath(t, cfg, foreign)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -1346,7 +1346,7 @@ func TestCompanionCapturePrePlantedOwnerCannotClaimALaterMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	path := memoryPath(cfg, foreign)
+	path := mustMemoryPath(t, cfg, foreign)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -1670,7 +1670,7 @@ func TestCompanionCaptureAtCapRejectionLeavesTheTreeIdentical(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	path := memoryPath(cfg, foreign)
+	path := mustMemoryPath(t, cfg, foreign)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -2728,5 +2728,36 @@ func TestCompanionCaptureTokenReleaseOnlyRemovesItsOwn(t *testing.T) {
 	}
 	if _, err := os.Stat(token); !os.IsNotExist(err) {
 		t.Fatalf("the owner's release left the token behind: %v", err)
+	}
+}
+
+func TestCompanionCaptureScopeContainment(t *testing.T) {
+	for _, scope := range []string{"project:..:..:outside", "project:..", "project:a/b", "project:my-app.v2"} {
+		t.Run(scope, func(t *testing.T) {
+			handler, token, cfg, _ := captureListener(t, mcpWritePolicyOpen)
+			c := captureFixture(t, companionListenerDevice(t, cfg), "key.scope", "Synthetic scope capture")
+			c.Scope = scope
+			before := scopeVaultTree(t, cfg.VaultDir)
+			// Marshal the wire payload directly so malformed input reaches the server.
+			body, err := json.Marshal(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, companionRequest(t, http.MethodPost, companion.RouteCapture, token, string(body)).WithContext(testCtx(t)))
+			if scope == "project:my-app.v2" {
+				if rec.Code != http.StatusOK {
+					t.Fatalf("valid scope: %d %s", rec.Code, rec.Body)
+				}
+			} else {
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("bad scope: %d %s", rec.Code, rec.Body)
+				}
+				if !sameTree(before, scopeVaultTree(t, cfg.VaultDir)) || proposalCount(t, cfg) != 0 {
+					t.Fatal("rejected capture changed vault or staged a proposal")
+				}
+			}
+			assertNoOutsideFiles(t, lookupTestEnv(t).home, cfg.VaultDir, cfg.ConfigDir, cfg.StateDir, cfg.DataDir)
+		})
 	}
 }

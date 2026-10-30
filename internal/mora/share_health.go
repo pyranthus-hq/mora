@@ -12,12 +12,17 @@ import (
 	"time"
 )
 
+// shareRefreshing is a subscription whose committed generation verified intact
+// while a live, owned pull replaces it. It serves normally and is not an alarm:
+// a pull that dies leaves an abandoned attempt, which reads failed.
+const shareRefreshing = "refreshing"
+
 // shareStaleThreshold is the share head's staleness bound (the fifth threshold
 // family, Landmine 13). A committed generation older than this ages to `stale`.
 const shareStaleThreshold = 48 * time.Hour
 
 // shareHealth is one subscription's freshness snapshot in the sourceHealth
-// four-state vocabulary (never/failed/stale/fresh).
+// four-state vocabulary (never/failed/stale/fresh), plus shareRefreshing.
 type shareHealth struct {
 	Name      string
 	State     string
@@ -46,19 +51,14 @@ func shareHealthOne(cfg Config, name string, now time.Time) shareHealth {
 	}
 	h.BuiltAt = commit.BuiltAt
 
-	// Head artifact integrity (hash BOTH digests — per-artifact serving, cross-
-	// artifact visibility).
-	genIndex := shareGenIndexPath(cfg, name, commit.Gen)
-	if d, derr := fileDigestOf(genIndex); derr != nil || d != commit.IndexDigest {
-		return shareHealth{Name: name, State: healthFailed, LastError: "published index failed its integrity digest", BuiltAt: commit.BuiltAt}
-	}
-	if d, derr := corpusDigestOf(shareGenCorpusDir(cfg, name, commit.Gen)); derr != nil || d != commit.CorpusDigest {
-		return shareHealth{Name: name, State: healthFailed, LastError: "published corpus failed its integrity digest", BuiltAt: commit.BuiltAt}
+	if msg := shareHeadIntegrityError(cfg, name, commit); msg != "" {
+		return shareHealth{Name: name, State: healthFailed, LastError: msg, BuiltAt: commit.BuiltAt}
 	}
 
 	// The durable attempt record: a terminal-failed or active-but-abandoned latest
-	// attempt is failed; a currently-owned active attempt is stale ("refresh in
-	// progress"); `fresh` requires a matching durable succeeded record.
+	// attempt is failed; a currently-owned active attempt is refreshing (the
+	// verified head keeps serving); `fresh` requires a matching durable succeeded
+	// record.
 	attempt, haveAttempt, attemptErr := loadShareAttempt(cfg, name)
 	if attemptErr != nil {
 		return shareHealth{Name: name, State: healthFailed, LastError: attemptErr.Error(), BuiltAt: commit.BuiltAt}
@@ -70,24 +70,38 @@ func shareHealthOne(cfg Config, name string, now time.Time) shareHealth {
 		return shareHealth{Name: name, State: healthFailed, LastError: "attempt record missing after migration — run `mora share pull " + name + "`", BuiltAt: commit.BuiltAt}
 	}
 	freshOK := false
+	// confirmedAt is when the served head was last confirmed current: its build
+	// time, or a later verified no-op pull of that same head.
+	confirmedAt := commit.BuiltAt
 	switch attempt.State {
 	case "failed":
 		return shareHealth{Name: name, State: healthFailed, LastError: attempt.LastError, BuiltAt: commit.BuiltAt}
 	case "active":
 		if liveImportOwner(cfg, name, now) == attempt.RunID {
-			return shareHealth{Name: name, State: healthStale, LastError: "refresh in progress", BuiltAt: commit.BuiltAt}
+			// A pull in progress does not excuse a head that is already stale:
+			// until it commits, that old generation is what gets served.
+			if headStale(commit.BuiltAt, now) {
+				return shareHealth{Name: name, State: healthStale, LastError: "refresh in progress", BuiltAt: commit.BuiltAt}
+			}
+			return shareHealth{Name: name, State: shareRefreshing, BuiltAt: commit.BuiltAt}
 		}
 		// Active but abandoned/interrupted (its lease is gone/expired).
 		return shareHealth{Name: name, State: healthFailed, LastError: "import interrupted — run `mora share pull " + name + "`", BuiltAt: commit.BuiltAt}
 	case "succeeded":
-		freshOK = attempt.Seq == commit.Seq && attempt.RunID == commit.RunID
+		switch {
+		case attempt.Seq != commit.Seq:
+		case attempt.RunID == commit.RunID:
+			freshOK = true
+		case attempt.VerifiedAt != "":
+			// A verified no-op pull re-checked this exact head without building.
+			freshOK = true
+			confirmedAt = laterRFC3339(commit.BuiltAt, attempt.VerifiedAt)
+		}
 	}
 
-	// Staleness of the committed head's built_at.
-	if t, perr := time.Parse(time.RFC3339, commit.BuiltAt); perr == nil {
-		if now.Sub(t) > shareStaleThreshold {
-			return shareHealth{Name: name, State: healthStale, BuiltAt: commit.BuiltAt}
-		}
+	// Staleness of the last confirmation (built_at, or a later verified pull).
+	if headStale(confirmedAt, now) {
+		return shareHealth{Name: name, State: healthStale, BuiltAt: commit.BuiltAt}
 	}
 	if !freshOK {
 		// A committed head with no matching succeeded attempt (e.g. a crash before
@@ -95,6 +109,41 @@ func shareHealthOne(cfg Config, name string, now time.Time) shareHealth {
 		return shareHealth{Name: name, State: healthStale, LastError: "no matching completed import record", BuiltAt: commit.BuiltAt}
 	}
 	return h
+}
+
+// headStale reports whether a confirmation instant (a head's built_at, or a
+// later verified pull) is past the share staleness bound. An unparseable
+// instant is not judged here; the attempt record still gates freshness.
+func headStale(confirmedAt string, now time.Time) bool {
+	t, err := time.Parse(time.RFC3339, confirmedAt)
+	return err == nil && now.Sub(t) > shareStaleThreshold
+}
+
+// shareHeadIntegrityError hashes BOTH head artifacts against the committed
+// digests (per-artifact serving, cross-artifact visibility) and returns the
+// health error for the first mismatch, or "" when both verify. A no-op pull
+// runs the same check before it re-verifies a head instead of rebuilding it.
+func shareHeadIntegrityError(cfg Config, name string, commit shareCommit) string {
+	if d, err := fileDigestOf(shareGenIndexPath(cfg, name, commit.Gen)); err != nil || d != commit.IndexDigest {
+		return "published index failed its integrity digest"
+	}
+	if d, err := corpusDigestOf(shareGenCorpusDir(cfg, name, commit.Gen)); err != nil || d != commit.CorpusDigest {
+		return "published corpus failed its integrity digest"
+	}
+	return ""
+}
+
+// laterRFC3339 returns whichever RFC 3339 instant is later; an unparseable b
+// never displaces a.
+func laterRFC3339(a, b string) string {
+	tb, err := time.Parse(time.RFC3339, b)
+	if err != nil {
+		return a
+	}
+	if ta, err := time.Parse(time.RFC3339, a); err == nil && !tb.After(ta) {
+		return a
+	}
+	return b
 }
 
 // hasLegacyFlat reports whether a subscription still carries the pre-upgrade flat
@@ -135,7 +184,7 @@ type shareUnhealth struct {
 func sharesUnhealthy(cfg Config, now time.Time) []shareUnhealth {
 	out := []shareUnhealth{}
 	for _, h := range shareHealthAll(cfg, now) {
-		if h.State == healthFresh {
+		if h.State == healthFresh || h.State == shareRefreshing {
 			continue
 		}
 		out = append(out, shareUnhealth{Name: h.Name, State: h.State, LastError: h.LastError})
@@ -153,6 +202,8 @@ func shareIndexHealthAll(cfg Config, now time.Time) []indexHealth {
 		switch h.State {
 		case healthFresh:
 			ih.State = idxFresh
+		case shareRefreshing:
+			ih.State = idxRefreshing
 		case healthStale:
 			ih.State = idxDegraded
 		case healthNever:

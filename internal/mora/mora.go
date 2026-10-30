@@ -298,7 +298,8 @@ USAGE:
   mora usage off|on
   mora disconnect google
   mora mcp serve
-  mora mcp proposals list          # inspect writes staged by propose-mode MCP clients
+  mora mcp proposals list          # list writes staged by propose-mode MCP clients
+  mora mcp proposals show <id>     # inspect full staged content before approving
   mora serve http                  # loopback HTTP for sandboxed AI browsers (Aside); token in ~/.config/mora/http.json
   mora serve http install          # run it as an auto-restarting background service (launchd/systemd); also: uninstall|status
   mora companion pair              # pair a phone: prints a QR-able payload with a one-time code
@@ -849,7 +850,10 @@ func createMemory(ctx context.Context, cfg Config, m Memory, opts ...createOptio
 		if err != nil {
 			return Memory{}, pendingOp{}, err
 		}
-		path := memoryPath(cfg, m)
+		path, err := memoryPath(cfg, m)
+		if err != nil {
+			return Memory{}, pendingOp{}, err
+		}
 		op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindWrite, Path: path})
 		if merr != nil {
 			// errIndexUnmarkable: abort BEFORE a single vault byte changes, so a

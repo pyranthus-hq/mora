@@ -95,6 +95,8 @@ type retentionExecutionReceipt struct {
 type retentionIntegrityReceipt struct {
 	SchemaVersion      int      `json:"schema_version"`
 	VaultCount         int      `json:"vault_count"`
+	HistoricalCount    int      `json:"historical_count"`
+	InvalidMemoryPaths []string `json:"invalid_memory_paths,omitempty"`
 	IndexCount         int      `json:"index_count"`
 	MissingIndexIDs    []string `json:"missing_index_ids"`
 	OrphanIndexIDs     []string `json:"orphan_index_ids"`
@@ -314,6 +316,46 @@ func decryptRecoveryManifest(cfg Config, encrypted encryptedRecoveryManifest) (r
 	return plain, nil
 }
 
+// retentionBeforeRemoveHook is a test seam: it runs after the recovery snapshot
+// is written and before the pre-mutation re-hash of each candidate file.
+var retentionBeforeRemoveHook func(candidateID, path string)
+
+// removeIfUnchanged re-hashes path and removes it only if it still matches want.
+// shortcut: a connector writer can still replace the file between this hash and
+// os.Remove; closing that fully needs the vault write lock held for the run.
+func removeIfUnchanged(path, want string) error {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if sha256Hex(raw) != want {
+		return fmt.Errorf("%s changed since the report", path)
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// retentionPartialError names what the run already applied and what is left.
+func retentionPartialError(report retentionReport, failedID string, r retentionExecutionReceipt, cause error) error {
+	var remaining []string
+	seen := false
+	for _, c := range report.Candidates {
+		if c.ID == failedID {
+			seen = true
+		}
+		if seen && c.Decision.Action != "keep" {
+			remaining = append(remaining, c.ID)
+		}
+	}
+	applied := append(append(append([]string{}, r.ChangedIDs...), r.CompactedIDs...), r.DeletedIDs...)
+	return fmt.Errorf("retention stopped at candidate %q: %w; applied=%v remaining=%v (recovery manifest %s covers all targets)", failedID, cause, applied, remaining, r.ManifestID)
+}
+
 func retentionCandidatePath(cfg Config, candidate retentionCandidate) (string, error) {
 	path := filepath.Clean(filepath.Join(cfg.VaultDir, filepath.FromSlash(candidate.Path)))
 	rel, err := filepath.Rel(cfg.VaultDir, path)
@@ -321,6 +363,10 @@ func retentionCandidatePath(cfg Config, candidate retentionCandidate) (string, e
 		return "", fmt.Errorf("retention path escapes vault: %q", candidate.Path)
 	}
 	return path, nil
+}
+
+func retentionCompactID(reportID, candidateID string) string {
+	return "retained_" + sha256Hex([]byte(reportID + ":" + candidateID))[:16]
 }
 
 func validateRetentionReport(cfg Config, report retentionReport) ([]string, error) {
@@ -339,6 +385,15 @@ func validateRetentionReport(cfg Config, report retentionReport) ([]string, erro
 		}
 		if sha256Hex(raw) != candidate.ContentSHA {
 			return nil, fmt.Errorf("candidate %q changed since report; generate a new preview", candidate.ID)
+		}
+		if candidate.Decision.Action == "compact" {
+			m, err := parseMemoryBytes(path, raw)
+			if err != nil {
+				return nil, fmt.Errorf("compact candidate %q: %w", candidate.ID, err)
+			}
+			if _, err := memoryPath(cfg, Memory{ID: retentionCompactID(report.ReportID, candidate.ID), Scope: m.Scope}); err != nil {
+				return nil, fmt.Errorf("compact candidate %q destination: %w", candidate.ID, err)
+			}
 		}
 		if candidate.Decision.Action != "keep" {
 			targets = append(targets, candidate.ID)
@@ -369,6 +424,9 @@ func executeRetentionReport(ctx context.Context, cfg Config, reportID string, no
 	if err != nil {
 		return retentionExecutionReceipt{}, err
 	}
+	if err := validateRetentionSurvivor(cfg, report); err != nil {
+		return retentionExecutionReceipt{}, err
+	}
 	var entries []recoveryEntry
 	for _, candidate := range report.Candidates {
 		if candidate.Decision.Action == "keep" {
@@ -395,6 +453,25 @@ func executeRetentionReport(ctx context.Context, cfg Config, reportID string, no
 	plain := recoveryPlaintext{SchemaVersion: retentionSchemaVersion, ManifestID: manifestID, ReportID: report.ReportID, CreatedAt: stamp, ExpiresAt: now.Add(time.Duration(report.RecoveryDays) * 24 * time.Hour).UTC().Format(time.RFC3339), Entries: entries}
 	if err := writeEncryptedRecovery(cfg, plain); err != nil {
 		return retentionExecutionReceipt{}, err
+	}
+	// A connector may rewrite a candidate between validation and now. Re-check
+	// every file before the first mutation; on mismatch drop the snapshot and abort.
+	for _, candidate := range report.Candidates {
+		if candidate.Decision.Action == "keep" {
+			continue
+		}
+		path, _ := retentionCandidatePath(cfg, candidate)
+		if retentionBeforeRemoveHook != nil {
+			retentionBeforeRemoveHook(candidate.ID, path)
+		}
+		raw, err := os.ReadFile(path)
+		if err == nil && sha256Hex(raw) != candidate.ContentSHA {
+			err = errors.New("content changed after the recovery snapshot")
+		}
+		if err != nil {
+			_ = os.Remove(recoveryManifestPath(cfg, manifestID))
+			return retentionExecutionReceipt{}, fmt.Errorf("retention aborted before any change: candidate %q (%s): %w", candidate.ID, candidate.Path, err)
+		}
 	}
 	receipt := retentionExecutionReceipt{SchemaVersion: retentionSchemaVersion, ReportID: report.ReportID, ManifestID: manifestID, TargetIDs: targets, ExecutedAt: stamp}
 	var dirtyOps []pendingOp
@@ -426,7 +503,7 @@ func executeRetentionReport(ctx context.Context, cfg Config, reportID string, no
 			}
 			receipt.ChangedIDs = append(receipt.ChangedIDs, candidate.ID)
 		case "compact":
-			compactID := "retained_" + sha256Hex([]byte(report.ReportID + ":" + candidate.ID))[:16]
+			compactID := retentionCompactID(report.ReportID, candidate.ID)
 			compact := Memory{ID: compactID, Scope: m.Scope, Type: "durable", Title: "Retained: " + m.Title, Text: strings.TrimSpace(decision.Summary), Source: "retention:" + report.ReportID, CreatedAt: stamp, ContentHash: ContentHash(decision.Summary), Meta: map[string]any{"retention_source_ids": []string{candidate.ID}, "retention_manifest_id": manifestID}}
 			if err := writeMemory(cfg, compact); err != nil {
 				return retentionExecutionReceipt{}, err
@@ -434,16 +511,16 @@ func executeRetentionReport(ctx context.Context, cfg Config, reportID string, no
 			if _, err := appendGovernanceEntry(cfg, govEntry{Kind: govKindPrune, Action: govActionSuppress, Atom: govAtom{Kind: atomStableID, Value: candidate.ID, Provider: m.Provider}, Reason: "retention compact " + report.ReportID}); err != nil {
 				return retentionExecutionReceipt{}, err
 			}
-			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return retentionExecutionReceipt{}, err
+			if err := removeIfUnchanged(path, candidate.ContentSHA); err != nil {
+				return retentionExecutionReceipt{}, retentionPartialError(report, candidate.ID, receipt, err)
 			}
 			receipt.CompactedIDs = append(receipt.CompactedIDs, candidate.ID)
 		case "delete":
 			if _, err := appendGovernanceEntry(cfg, govEntry{Kind: govKindPrune, Action: govActionSuppress, Atom: govAtom{Kind: atomStableID, Value: candidate.ID, Provider: m.Provider}, Reason: "retention delete " + report.ReportID}); err != nil {
 				return retentionExecutionReceipt{}, err
 			}
-			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return retentionExecutionReceipt{}, err
+			if err := removeIfUnchanged(path, candidate.ContentSHA); err != nil {
+				return retentionExecutionReceipt{}, retentionPartialError(report, candidate.ID, receipt, err)
 			}
 			receipt.DeletedIDs = append(receipt.DeletedIDs, candidate.ID)
 		}
@@ -486,12 +563,31 @@ func verifyRetentionIntegrity(ctx context.Context, cfg Config) (retentionIntegri
 	if err != nil {
 		return receipt, err
 	}
+	governance, err := loadGovernance(cfg)
+	if err != nil {
+		return receipt, err
+	}
 	vaultIDs := map[string]bool{}
 	for _, path := range files {
 		m, err := parseMemory(path)
-		if err != nil || m.DeletedAt != "" {
+		if err != nil {
+			relative, relErr := filepath.Rel(cfg.VaultDir, path)
+			if relErr != nil {
+				return receipt, relErr
+			}
+			receipt.InvalidMemoryPaths = append(receipt.InvalidMemoryPaths, filepath.ToSlash(relative))
 			continue
 		}
+		// Retained Teach history is evidence, not part of the current index. Still
+		// parse every retained file above so hiding history does not hide corruption.
+		if !governance.memoryVisible(m.ID) {
+			receipt.HistoricalCount++
+			continue
+		}
+		if m.DeletedAt != "" {
+			continue
+		}
+
 		vaultIDs[m.ID] = true
 	}
 	receipt.VaultCount = len(vaultIDs)
@@ -560,9 +656,10 @@ func verifyRetentionIntegrity(ctx context.Context, cfg Config) (retentionIntegri
 	if err := edges.Close(); err != nil {
 		return receipt, err
 	}
+	sort.Strings(receipt.InvalidMemoryPaths)
 	sort.Strings(receipt.MissingIndexIDs)
 	sort.Strings(receipt.OrphanIndexIDs)
-	receipt.Healthy = len(receipt.MissingIndexIDs) == 0 && len(receipt.OrphanIndexIDs) == 0 && len(receipt.DanglingGraphEdges) == 0
+	receipt.Healthy = len(receipt.InvalidMemoryPaths) == 0 && len(receipt.MissingIndexIDs) == 0 && len(receipt.OrphanIndexIDs) == 0 && len(receipt.DanglingGraphEdges) == 0
 	return receipt, nil
 }
 
