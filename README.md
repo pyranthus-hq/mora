@@ -503,6 +503,40 @@ sanitized stage events live only in Mora's state directory under
 `observability/traces.jsonl`. Doctor uses the same ID as its diagnostic evidence
 link. Trace events never contain source content or local paths.
 
+## How Mora differs from other memory tools
+
+Several projects call themselves memory for AI agents. They store different
+things, so they are not substitutes for each other. This table is a map, not a
+ranking. Facts about the other projects come from their own repositories as
+checked on 2026-10-23.
+
+| Tool | What it remembers | Where it lives | Typical user |
+|------|-------------------|----------------|--------------|
+| Mora | Your own mail, messages, calendars, chosen files, and GitHub issues, copied read-only into Markdown with stable IDs and provenance | Your computer, local SQLite index, no model required | A person who wants every agent to share one cited memory of their life and work |
+| Beads (gastownhall/beads) | Units of coding work: issues, dependencies, and decisions as a graph that agents update as they go | Inside a repository, next to the code | A developer running coding agents that must resume a job after a session ends |
+| mem0 (mem0ai/mem0) | Facts extracted from conversations with an agent or app | A memory API layer that the application calls | A developer adding memory to an agent product |
+| Letta (letta-ai/letta) | The state of a long-running agent, including what it has learned | An agent platform; the agent owns its memory | A developer building stateful agents |
+| supermemory (supermemoryai/supermemory) | Content you save plus conversation context, served through a memory API | A hosted or self-run service | A developer or power user who wants a memory API across apps |
+| Zep (getzep/zep) | Conversation and business data as a temporal knowledge graph | A service the agent calls | A team building agents over changing business data |
+| LangMem (langchain-ai/langmem) | Long-term memory for agents built with LangChain | A library inside the agent | A LangChain developer |
+| Built-in harness memory (Claude Code, Codex, Cursor) | Notes and preferences the agent writes for itself | Files owned by one harness | Anyone using that harness |
+
+Three differences follow from what Mora stores.
+
+- Mora starts from your sources, not from the conversation. An agent does not
+  have to be told a fact for Mora to find it. The fact is already in the mail,
+  the message, or the file, and the result cites that record.
+- Mora is one memory for every harness. Claude Code, Codex, and any MCP client
+  read the same vault. Built-in harness memory is per tool; Mora can project
+  durable facts into those files so each harness starts warm.
+- Mora does not run a model by default and does not send your data anywhere.
+  The connectors are read-only, the vault is plain Markdown, and backup and
+  sharing are separate choices you make. See [Privacy boundary](#privacy-boundary).
+
+Mora and Beads work well together. Beads keeps the state of a coding job inside
+the repository. Mora keeps what the person knows across every repository and
+every source. A coding agent can read both.
+
 ## More
 
 - [Guide](docs/guide.md) — commands, connectors, and upkeep.
