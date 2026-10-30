@@ -295,6 +295,13 @@
       "reason": "long-running JSON-RPC server; its protocol is the contract"
     },
     {
+      "path": "agents",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
       "path": "serve",
       "kind": "verb",
       "platform": "all",
@@ -848,6 +855,55 @@
       "platform": "all",
       "json_contract": "exempt",
       "reason": "long-running JSON-RPC server; its protocol is the contract"
+    },
+    {
+      "path": "agents add",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "prints a new bearer token once; no two runs produce the same output, and a secret must never enter a golden document"
+    },
+    {
+      "path": "agents update",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "text-only confirmation of a profile-store change"
+    },
+    {
+      "path": "agents list",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "profile rows carry creation times that differ on every run; its --json output is not yet a published payload"
+    },
+    {
+      "path": "agents revoke",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "text-only confirmation of a profile-store change"
+    },
+    {
+      "path": "agents rotate",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "prints a new bearer token once; no two runs produce the same output, and a secret must never enter a golden document"
+    },
+    {
+      "path": "agents log",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "receipt lines carry call times that differ on every run; its --json output is not yet a published payload"
+    },
+    {
+      "path": "mcp serve-http",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "long-running Streamable HTTP server; its protocol is the contract"
     },
     {
       "path": "serve http",

@@ -433,6 +433,17 @@
       }
     },
     {
+      "name": "agent profiles",
+      "paths": ["agents", "agents add", "agents update", "agents list", "agents revoke", "agents rotate", "agents log", "mcp serve-http"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestAgentsCLIStoresOnlyTokenHashAndRevokes", "TestMCPHTTPRequiresProfileTokenAndAllowedHost"], "reason": "add, update, list, rotate and revoke run through cmdAgents against a temp home; serve-http is driven through its real handler."},
+        "json": {"status": "test", "tests": ["TestMCPHTTPRequiresProfileTokenAndAllowedHost"], "reason": "serve-http answers JSON-RPC over HTTP; the agents verbs are exempt from the CLI JSON contract."},
+        "state": {"status": "test", "tests": ["TestAgentsCLIStoresOnlyTokenHashAndRevokes", "TestAgentReceiptsRecordRowsNeverText", "TestAgentProfileProposesEvenWhenVaultPolicyIsOpen"], "reason": "Durable state is agents.json in ConfigDir (token hashes only) and per-agent receipts in StateDir."},
+        "error": {"status": "test", "tests": ["TestAgentProfileValidation"]},
+        "refusal": {"status": "test", "tests": ["TestAgentProfileNeverReturnsRawSourcesOrForeignScopes", "TestMCPHTTPRequiresProfileTokenAndAllowedHost"], "reason": "A profile never receives raw sources or foreign scopes, and serve-http refuses missing or wrong tokens, foreign hosts, browser origins and batches."}
+      }
+    },
+    {
       "name": "http service",
       "paths": ["serve", "serve http", "serve http install", "serve http uninstall", "serve http status"],
       "evidence": {

@@ -16,6 +16,7 @@ import (
 type Proposal struct {
 	ID         string         `json:"id"`
 	ProposedAt string         `json:"proposed_at"`
+	ProposedBy string         `json:"proposed_by,omitempty"`
 	Arguments  map[string]any `json:"arguments"`
 }
 
