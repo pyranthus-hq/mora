@@ -246,6 +246,13 @@
       "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
+      "path": "eywa",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
       "path": "reingest",
       "kind": "verb",
       "platform": "all",
@@ -661,6 +668,13 @@
       "payload": "mora.connect.github"
     },
     {
+      "path": "connect eywa",
+      "kind": "subcommand",
+      "platform": "network-seam",
+      "json_contract": "receipt",
+      "payload": "mora.connect.eywa"
+    },
+    {
       "path": "connect imessage",
       "kind": "subcommand",
       "platform": "darwin-seam",
@@ -694,6 +708,13 @@
       "platform": "network-seam",
       "json_contract": "receipt",
       "payload": "mora.sync.github"
+    },
+    {
+      "path": "sync eywa",
+      "kind": "subcommand",
+      "platform": "network-seam",
+      "json_contract": "receipt",
+      "payload": "mora.sync.eywa"
     },
     {
       "path": "sync filesystem",
@@ -806,6 +827,27 @@
       "platform": "all",
       "json_contract": "result",
       "payload": "mora.share.storage-limit"
+    },
+    {
+      "path": "eywa push",
+      "kind": "subcommand",
+      "platform": "network-seam",
+      "json_contract": "receipt",
+      "payload": "mora.eywa.push"
+    },
+    {
+      "path": "eywa preview",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "human-auditable full-text preview of exactly what a push would send; sends nothing"
+    },
+    {
+      "path": "eywa status",
+      "kind": "subcommand",
+      "platform": "network-seam",
+      "json_contract": "receipt",
+      "payload": "mora.eywa.status"
     },
     {
       "path": "usage report",

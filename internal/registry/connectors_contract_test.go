@@ -7,6 +7,7 @@ import (
 
 	"github.com/pyranthus-hq/mora/internal/applecal"
 	"github.com/pyranthus-hq/mora/internal/config"
+	"github.com/pyranthus-hq/mora/internal/eywa"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"github.com/pyranthus-hq/mora/internal/githubissues"
 	"github.com/pyranthus-hq/mora/internal/google"
@@ -255,6 +256,9 @@ func TestConnectorProviderKeysReconcile(t *testing.T) {
 		},
 		"github": func() string {
 			return githubissues.MapIssue(memory.Item{Kind: githubissues.KindIssue}, "global", 0).Provider
+		},
+		"eywa": func() string {
+			return eywa.MapFact(memory.Item{Kind: eywa.KindFact}, "global", 0).Provider
 		},
 		// filesystem mints NO Provider on purpose: sourceInstanceKey rejects the
 		// empty provider and the brief skips filesystem by design (brief.go).

@@ -467,7 +467,8 @@ absolute vault path for one process. It does not change `config.toml`.
   plus SQLite `query_only(1)` so it can read the live write-ahead log safely.
 - The vault, index, tokens, sync state, and usage log stay local by default.
 - Mora uses the network for source APIs, GitHub release checks, and any backup
-  or share target that you choose.
+  or share target that you choose. Pushing authored memories to a company
+  memory service (`mora eywa push`) is off until you enable it and asks first.
 - Optional Ollama embeddings are allowed only on a loopback address.
 - Mora's local usage log leaves out query text by default. Turn it off with
   `mora usage off` or `DO_NOT_TRACK=1`.
