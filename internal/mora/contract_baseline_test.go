@@ -32,6 +32,7 @@ var contractBaselineNonExecutable = map[string]string{
 	"schedule install":   "mutates host scheduler configuration",
 	"schedule uninstall": "mutates host scheduler configuration",
 	"delete":             "destructive memory mutation",
+	"undo":               "destructive memory mutation",
 	"forget":             "destructive governance mutation",
 	"unforget":           "governance mutation",
 	"disconnect":         "mutates connector configuration",

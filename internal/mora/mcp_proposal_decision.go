@@ -157,7 +157,7 @@ func decideMCPWriteProposal(ctx context.Context, cfg Config, id, action string) 
 			return fmt.Errorf("cannot durably claim proposal decision; nothing published: %w", err)
 		}
 		if action == "approve" {
-			result, err := mcpWriteMemoryWith(ctx, cfg, p.Arguments, withExplicitMemoryID(memoryID))
+			result, err := mcpWriteMemoryWith(withAgentCaller(ctx, "approved-proposal"), cfg, p.Arguments, withExplicitMemoryID(memoryID))
 			if err != nil {
 				return fmt.Errorf("proposal decision remains unresolved for memory %s; do not retry approval: %w", memoryID, err)
 			}

@@ -805,7 +805,7 @@ func (w *companionWriter) Publish(ctx context.Context, c companion.Capture, id c
 			}
 			return companion.WriteOutcome{}, claimErr
 		}
-		value, writeErr = mcpWriteMemoryWith(traced, cfg, args, withExplicitMemoryID(id.MemoryID))
+		value, writeErr = mcpWriteMemoryWith(withAgentCaller(traced, "companion"), cfg, args, withExplicitMemoryID(id.MemoryID))
 	}
 	// Some handlers, mutations included, have no tool-specific structural counts.
 	// They still get one content-free event and an honest envelope size — the

@@ -103,6 +103,17 @@
       }
     },
     {
+      "name": "memory undo",
+      "paths": ["undo"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestUndoRemovesAgentMemoryAndLogs"]},
+        "json": {"status": "test", "tests": ["TestUndoJSONReceipt"]},
+        "state": {"status": "test", "tests": ["TestUndoRemovesAgentMemoryAndLogs"]},
+        "error": {"status": "test", "tests": ["TestUndoRemovesAgentMemoryAndLogs"]},
+        "refusal": {"status": "test", "tests": ["TestUndoRefusesNonAgentMemoryWithoutForce"]}
+      }
+    },
+    {
       "name": "entities",
       "paths": ["entities"],
       "evidence": {

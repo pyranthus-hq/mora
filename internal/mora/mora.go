@@ -114,6 +114,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdGraph(ctx, args[1:], stdout, stderr)
 	case "delete":
 		return cmdDelete(ctx, args[1:], stdout, stderr)
+	case "undo":
+		return cmdUndo(ctx, args[1:], stdout, stderr)
 	case "forget":
 		return cmdForget(ctx, args[1:], stdout, stderr)
 	case "retention":
@@ -243,6 +245,7 @@ USAGE:
   mora read <id> --json
   mora list --scope project:acme --json
   mora delete <id> --yes
+  mora undo <memory-id> [--force]  # remove an agent-written memory; refuses others without --force (log: <vault>/agent-writes.log)
   mora context --scope project:acme --query "auth" --budget 6000 --json
   mora think "what did Sam decide about the launch" --json   # cited evidence + gap analysis
   mora brief --event-id <id>       # cited unfinished-business brief for one calendar event
@@ -298,6 +301,7 @@ USAGE:
   mora mcp serve
   mora mcp proposals list          # list writes staged by propose-mode MCP clients
   mora mcp proposals show <id>     # inspect full staged content before approving
+  mora mcp proposals approve <id>  # publish a staged write to the vault
   mora serve http                  # loopback HTTP for sandboxed AI browsers (Aside); token in ~/.config/mora/http.json
   mora serve http install          # run it as an auto-restarting background service (launchd/systemd); also: uninstall|status
   mora companion pair              # pair a phone: prints a QR-able payload with a one-time code

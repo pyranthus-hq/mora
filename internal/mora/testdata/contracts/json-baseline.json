@@ -580,6 +580,10 @@
     "status": "empty"
   },
   {
+    "path": "undo",
+    "status": "static_only"
+  },
+  {
     "path": "unforget",
     "status": "static_only"
   },

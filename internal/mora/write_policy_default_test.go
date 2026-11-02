@@ -3,6 +3,8 @@ package mora
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,27 +13,10 @@ import (
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 )
 
-// The MCP write policy fails safe. With no mcp_write_policy line in
-// config.toml, agent writes wait in the proposal queue and deletes are refused,
-// however Mora was started: `mora mcp serve` on an empty HOME, `mora init`,
-// `mora setup`, or an older install that never named the key. An explicit
-// value, including `open`, is always kept.
-
-// shippedUnsetMCPWritePolicy is captured by TestMain before it points the seam
-// at open for the older open-mode tests.
-var shippedUnsetMCPWritePolicy string
-
-// useShippedWritePolicyDefault restores the production resolution of an unset
-// policy for one test. Callers must not be parallel: the seam is package state.
-func useShippedWritePolicyDefault(t *testing.T) {
-	t.Helper()
-	if shippedUnsetMCPWritePolicy != mcpWritePolicyPropose {
-		t.Fatalf("shipped default for an unset policy = %q, want propose", shippedUnsetMCPWritePolicy)
-	}
-	prev := unsetMCPWritePolicy
-	unsetMCPWritePolicy = shippedUnsetMCPWritePolicy
-	t.Cleanup(func() { unsetMCPWritePolicy = prev })
-}
+// The MCP write policy defaults to open. With no mcp_write_policy line in
+// config.toml, agent writes land in the vault at once, each one leaves a line in
+// <vault>/agent-writes.log, and `mora undo <memory-id>` reverses it. propose and
+// readonly remain explicit opt-ins and behave exactly as before.
 
 // policyTestServe runs one `mcp serve` session (initialize, then one
 // write_memory call) and returns the initialize instructions and the
@@ -93,82 +78,94 @@ func writeRawConfig(t *testing.T, cfg Config, body string) {
 	}
 }
 
-func TestShippedUnsetWritePolicyIsPropose(t *testing.T) {
-	if mcppkg.DefaultWritePolicy != mcpWritePolicyPropose {
-		t.Fatalf("mcp.DefaultWritePolicy = %q, want propose", mcppkg.DefaultWritePolicy)
+func TestUnsetWritePolicyIsOpen(t *testing.T) {
+	if mcppkg.DefaultWritePolicy != mcpWritePolicyOpen {
+		t.Fatalf("mcp.DefaultWritePolicy = %q, want open", mcppkg.DefaultWritePolicy)
 	}
-	useShippedWritePolicyDefault(t)
-	if got := configMCPWritePolicy(Config{}); got != mcpWritePolicyPropose {
-		t.Fatalf("unset policy resolves to %q, want propose", got)
+	if got := configMCPWritePolicy(Config{}); got != mcpWritePolicyOpen {
+		t.Fatalf("unset policy resolves to %q, want open", got)
 	}
 }
 
-// The reported bug: `mora mcp serve` on an empty HOME executed agent writes at
-// once and created the vault and index, so a later `mora init` saw an existing
-// install and never turned propose on.
-func TestMCPServeOnFreshHomeStagesWritesAndInitKeepsPropose(t *testing.T) {
-	useShippedWritePolicyDefault(t)
-	withTempHome(t)
-	cfg := mustConfig(t)
-	if configFileExists(cfg) {
-		t.Fatal("precondition: a fresh home must have no config.toml")
+// writeMemoryID pulls the memory id out of a write_memory result text.
+func writeMemoryID(t *testing.T, text string) string {
+	t.Helper()
+	var res struct {
+		Memory struct {
+			ID   string `json:"id"`
+			Path string `json:"path"`
+		} `json:"memory"`
 	}
+	if err := json.Unmarshal([]byte(text), &res); err != nil || res.Memory.ID == "" {
+		t.Fatalf("write_memory result has no memory id (%v):\n%s", err, text)
+	}
+	return res.Memory.ID
+}
 
-	instructions, text, isErr := policyTestServe(t, "Fresh home candidate")
+func readAgentWriteLog(t *testing.T, cfg Config) string {
+	t.Helper()
+	b, err := os.ReadFile(agentWriteLogPath(cfg))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// An unset policy writes directly over MCP stdio, on a fresh HOME and after
+// init, and every write is logged.
+func TestUnsetPolicyWritesDirectlyAndLogs(t *testing.T) {
+	withTempHome(t)
+	instructions, text, isErr := policyTestServe(t, "Fresh home write")
 	if isErr {
 		t.Fatalf("write_memory on a fresh home errored: %s", text)
 	}
-	if !strings.Contains(instructions, "pending proposal queue") || strings.Contains(instructions, mcppkg.OpenWriteInstruction) {
-		t.Fatalf("fresh-home initialize advertises open writes: %s", instructions)
+	if !strings.Contains(instructions, mcppkg.OpenWriteInstruction) {
+		t.Fatalf("unset policy initialize lost the open instructions: %s", instructions)
 	}
-	if n := vaultMemoryCount(t, cfg); n != 0 {
-		t.Fatalf("mcp serve on a fresh home wrote %d memories to the vault before approval", n)
-	}
-	if n := pendingProposalCount(t, cfg); n != 1 {
-		t.Fatalf("pending proposals after fresh-home write = %d, want 1", n)
-	}
-
-	// The later `mora init` must leave the install in propose.
 	run(t, "init")
-	loaded := mustConfig(t)
-	if got := configMCPWritePolicy(loaded); got != mcpWritePolicyPropose {
-		t.Fatalf("policy after mcp serve then init = %q, want propose", got)
+	cfg := mustConfig(t)
+	if body := readTestConfigTOML(t, cfg); strings.Contains(body, "mcp_write_policy") {
+		t.Fatalf("init must not write a policy line:\n%s", body)
 	}
-	_, text, isErr = policyTestServe(t, "After init candidate")
+	_, text2, isErr := policyTestServe(t, "After init write")
 	if isErr {
-		t.Fatalf("write_memory after init errored: %s", text)
+		t.Fatalf("write_memory after init errored: %s", text2)
 	}
-	if n := vaultMemoryCount(t, loaded); n != 0 {
-		t.Fatalf("write after mcp serve then init reached the vault (%d memories)", n)
+	if n := vaultMemoryCount(t, cfg); n != 2 {
+		t.Fatalf("vault memories = %d, want 2", n)
 	}
-	if n := pendingProposalCount(t, loaded); n != 2 {
-		t.Fatalf("pending proposals = %d, want 2", n)
+	if n := pendingProposalCount(t, cfg); n != 0 {
+		t.Fatalf("unset policy staged %d proposals, want 0", n)
 	}
-	if _, err := mcppkg.MutationAction(configMCPWritePolicy(loaded), "delete_memory"); err == nil {
-		t.Fatal("the default policy must refuse MCP deletes")
+	log := readAgentWriteLog(t, cfg)
+	for _, tc := range []struct{ id, title string }{{writeMemoryID(t, text), "Fresh home write"}, {writeMemoryID(t, text2), "After init write"}} {
+		want := " write " + tc.id + " scope=global source=mcp caller=mcp-stdio/t title=\"" + tc.title + "\"\n"
+		if !strings.Contains(log, want) {
+			t.Fatalf("agent-writes.log missing %q:\n%s", want, log)
+		}
+	}
+	if strings.Contains(log, "body for") {
+		t.Fatalf("agent-writes.log must not copy memory bodies:\n%s", log)
 	}
 }
 
-func TestFreshInitAndSetupResolveToPropose(t *testing.T) {
-	useShippedWritePolicyDefault(t)
+func TestFreshInitAndSetupResolveToOpen(t *testing.T) {
 	for _, args := range [][]string{{"init"}, {"setup", "--local-layout"}} {
-		t.Run(args[0], func(t *testing.T) {
+		subRun(t, args[0], func(t *testing.T) {
 			withTempHome(t)
 			run(t, args...)
-			if got := configMCPWritePolicy(mustConfig(t)); got != mcpWritePolicyPropose {
-				t.Fatalf("fresh %s policy = %q, want propose", args[0], got)
+			if got := configMCPWritePolicy(mustConfig(t)); got != mcpWritePolicyOpen {
+				t.Fatalf("fresh %s policy = %q, want open", args[0], got)
 			}
-			if out := run(t, "config"); !strings.Contains(out, "mcp_write_policy = propose") {
-				t.Fatalf("mora config does not show the effective propose default:\n%s", out)
+			if out := run(t, "config"); !strings.Contains(out, "mcp_write_policy = open") {
+				t.Fatalf("mora config does not show the effective open default:\n%s", out)
 			}
 		})
 	}
 }
 
-// Existing installs that never wrote the key are not migrated to open: they
-// resolve to propose after upgrading, the same as a new install.
-func TestExistingConfigWithoutWritePolicyResolvesToPropose(t *testing.T) {
-	useShippedWritePolicyDefault(t)
+// An install upgraded from v0.15.3 without the key resolves back to open.
+func TestExistingConfigWithoutWritePolicyResolvesToOpen(t *testing.T) {
 	withTempHome(t)
 	cfg := mustConfig(t)
 	writeRawConfig(t, cfg, "vault_dir = \""+cfg.VaultDir+"\"\n")
@@ -177,15 +174,13 @@ func TestExistingConfigWithoutWritePolicyResolvesToPropose(t *testing.T) {
 	if body := readTestConfigTOML(t, cfg); strings.Contains(body, "mcp_write_policy") {
 		t.Fatalf("re-init must not write a policy line into an existing config:\n%s", body)
 	}
-	if got := configMCPWritePolicy(mustConfig(t)); got != mcpWritePolicyPropose {
-		t.Fatalf("existing install without the key resolves to %q, want propose", got)
+	if got := configMCPWritePolicy(mustConfig(t)); got != mcpWritePolicyOpen {
+		t.Fatalf("existing install without the key resolves to %q, want open", got)
 	}
 }
 
-// An explicit policy, including the open opt-out, survives init and setup and
-// is what the MCP server enforces.
+// An explicit policy survives init and setup and is what the server enforces.
 func TestExplicitWritePolicyIsKeptAndEnforced(t *testing.T) {
-	useShippedWritePolicyDefault(t)
 	for _, tc := range []struct {
 		policy, action string
 	}{
@@ -193,7 +188,7 @@ func TestExplicitWritePolicyIsKeptAndEnforced(t *testing.T) {
 		{mcpWritePolicyPropose, mcppkg.ActionPropose},
 		{mcpWritePolicyReadonly, mcppkg.ActionRefuse},
 	} {
-		t.Run(tc.policy, func(t *testing.T) {
+		subRun(t, tc.policy, func(t *testing.T) {
 			withTempHome(t)
 			cfg := mustConfig(t)
 			writeRawConfig(t, cfg, "vault_dir = \""+cfg.VaultDir+"\"\nmcp_write_policy = \""+tc.policy+"\"\n")
@@ -210,25 +205,205 @@ func TestExplicitWritePolicyIsKeptAndEnforced(t *testing.T) {
 	}
 }
 
-// The opt-out works end to end through the CLI and the MCP server.
-func TestOptOutToOpenExecutesWritesOverMCP(t *testing.T) {
-	useShippedWritePolicyDefault(t)
+// propose still queues, refuses deletes, logs nothing until approval, and doctor
+// counts what is waiting.
+func TestExplicitProposeStillQueuesAndDoctorCountsPending(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
-	run(t, "config", "mcp-write-policy", "open")
+	run(t, "config", "mcp-write-policy", "propose")
 	cfg := mustConfig(t)
-	instructions, text, isErr := policyTestServe(t, "Opted out write")
+	instructions, text, isErr := policyTestServe(t, "Staged one")
 	if isErr {
-		t.Fatalf("open write_memory errored: %s", text)
+		t.Fatalf("propose write_memory errored: %s", text)
 	}
-	if !strings.Contains(instructions, mcppkg.OpenWriteInstruction) {
-		t.Fatalf("open policy initialize lost the open instructions: %s", instructions)
+	if !strings.Contains(instructions, "pending proposal queue") {
+		t.Fatalf("propose initialize lost the queue instructions: %s", instructions)
 	}
-	if n := vaultMemoryCount(t, cfg); n != 1 {
-		t.Fatalf("open policy wrote %d memories, want 1", n)
+	policyTestServe(t, "Staged two")
+	if n := vaultMemoryCount(t, cfg); n != 0 {
+		t.Fatalf("propose wrote %d memories before approval", n)
+	}
+	if n := pendingProposalCount(t, cfg); n != 2 {
+		t.Fatalf("pending proposals = %d, want 2", n)
+	}
+	if _, err := mcppkg.MutationAction(configMCPWritePolicy(cfg), "delete_memory"); err == nil {
+		t.Fatal("propose must refuse MCP deletes")
+	}
+	if log := readAgentWriteLog(t, cfg); log != "" {
+		t.Fatalf("a staged proposal must not be logged as a write:\n%s", log)
+	}
+
+	out, _ := runErr(t, "doctor")
+	if !strings.Contains(out, "2 agent write(s) pending in the MCP proposal queue") || !strings.Contains(out, "mora mcp proposals approve <id>") {
+		t.Fatalf("doctor does not report the pending proposals:\n%s", out)
+	}
+	jsonOut, _ := runErr(t, "doctor", "--json")
+	if !strings.Contains(jsonOut, `"pending_mcp_proposals": 2`) {
+		t.Fatalf("doctor --json lacks pending_mcp_proposals=2:\n%s", jsonOut)
+	}
+
+	ps, err := listMCPWriteProposals(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved := run(t, "mcp", "proposals", "approve", ps[0].ID)
+	memID := strings.TrimSuffix(strings.TrimSpace(approved[strings.LastIndex(approved, "memory ")+len("memory "):]), ".")
+	if log := readAgentWriteLog(t, cfg); !strings.Contains(log, " write "+memID+" ") || !strings.Contains(log, "caller=approved-proposal") {
+		t.Fatalf("approved proposal %s not logged:\n%s", memID, log)
+	}
+	out, _ = runErr(t, "doctor")
+	if !strings.Contains(out, "1 agent write(s) pending") {
+		t.Fatalf("doctor pending count did not drop to 1:\n%s", out)
+	}
+	run(t, "mcp", "proposals", "reject", ps[1].ID)
+	out, _ = runErr(t, "doctor")
+	if strings.Contains(out, "pending in the MCP proposal queue") {
+		t.Fatalf("doctor still reports pending proposals after the queue emptied:\n%s", out)
+	}
+}
+
+func TestExplicitReadonlyStillRefuses(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	run(t, "config", "mcp-write-policy", "readonly")
+	cfg := mustConfig(t)
+	_, text, isErr := policyTestServe(t, "Refused write")
+	if !isErr || !strings.Contains(text, "mcp_write_policy=readonly") {
+		t.Fatalf("readonly write_memory = (%v) %s, want a policy refusal", isErr, text)
+	}
+	if n := vaultMemoryCount(t, cfg); n != 0 {
+		t.Fatalf("readonly wrote %d memories", n)
 	}
 	if n := pendingProposalCount(t, cfg); n != 0 {
-		t.Fatalf("open policy staged %d proposals, want 0", n)
+		t.Fatalf("readonly staged %d proposals", n)
+	}
+	if log := readAgentWriteLog(t, cfg); log != "" {
+		t.Fatalf("readonly logged a write:\n%s", log)
+	}
+}
+
+// The Aside loopback bridge writes under the same default and is logged as http.
+func TestHTTPCallWriteIsDirectAndLogged(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	h := (&httpServer{token: "tok", port: 7777}).handler(testCtx(t))
+	req := httptest.NewRequest(http.MethodPost, "/call",
+		strings.NewReader(`{"name":"write_memory","arguments":{"title":"From Aside","text":"bridge body","type":"fact"}}`))
+	req.Host = "127.0.0.1:7777"
+	req.Header.Set("Authorization", "Bearer tok")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /call write_memory: HTTP %d\n%s", rec.Code, rec.Body.String())
+	}
+	if n := vaultMemoryCount(t, cfg); n != 1 {
+		t.Fatalf("HTTP write landed %d memories, want 1", n)
+	}
+	if log := readAgentWriteLog(t, cfg); !strings.Contains(log, "caller=http title=\"From Aside\"") {
+		t.Fatalf("HTTP write not logged:\n%s", log)
+	}
+}
+
+func TestUndoRemovesAgentMemoryAndLogs(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	_, text, isErr := policyTestServe(t, "Agent guess to undo")
+	if isErr {
+		t.Fatal(text)
+	}
+	id := writeMemoryID(t, text)
+	m, err := findMemory(cfg, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := run(t, "undo", id)
+	if !strings.Contains(out, "undid "+id) {
+		t.Fatalf("undo output = %q", out)
+	}
+	if _, err := os.Stat(m.Path); !os.IsNotExist(err) {
+		t.Fatalf("memory file still present after undo: %v", err)
+	}
+	if _, err := findMemory(cfg, id); err == nil {
+		t.Fatal("undone memory is still readable")
+	}
+	if out := run(t, "search", "undo"); strings.Contains(out, id) {
+		t.Fatalf("undone memory still searchable:\n%s", out)
+	}
+	log := readAgentWriteLog(t, cfg)
+	if !strings.Contains(log, " write "+id+" ") || !strings.Contains(log, " undo "+id+" ") || !strings.Contains(log, "caller=cli") {
+		t.Fatalf("agent-writes.log does not record the write and the undo:\n%s", log)
+	}
+	if _, err := runErr(t, "undo", id); err == nil {
+		t.Fatal("a second undo of the same id must fail")
+	}
+}
+
+func TestUndoRefusesNonAgentMemoryWithoutForce(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	run(t, "write", "--title", "Human note", "--text", "typed by the owner")
+	ms, err := allMemoryFiles(cfg)
+	if err != nil || len(ms) != 1 {
+		t.Fatalf("want one memory, got %v (%v)", ms, err)
+	}
+	id := strings.TrimSuffix(filepath.Base(ms[0]), ".md")
+	out, err := runErr(t, "undo", id)
+	if err == nil || !strings.Contains(err.Error(), "not written by an agent") || !strings.Contains(err.Error(), "--force") {
+		t.Fatalf("undo of a CLI memory = %v (%s), want a refusal naming --force", err, out)
+	}
+	if _, err := os.Stat(ms[0]); err != nil {
+		t.Fatalf("refused undo touched the file: %v", err)
+	}
+	run(t, "undo", "--force", id)
+	if _, err := os.Stat(ms[0]); !os.IsNotExist(err) {
+		t.Fatalf("forced undo left the file: %v", err)
+	}
+	if log := readAgentWriteLog(t, cfg); !strings.Contains(log, " undo "+id+" scope=global source=manual") {
+		t.Fatalf("forced undo not logged:\n%s", log)
+	}
+}
+
+// An agent can choose its own source label; the audit log still marks the
+// memory as agent-written, so undo needs no --force.
+func TestUndoTrustsTheLogOverASpoofedSource(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	args, _ := json.Marshal(map[string]any{"title": "Claims to be manual", "text": "x", "type": "fact", "source": "manual"})
+	in := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"write_memory","arguments":` + string(args) + `}}` + "\n"
+	var out bytes.Buffer
+	if err := Run(testCtx(t), []string{"mcp", "serve"}, &out, &out, strings.NewReader(in)); err != nil {
+		t.Fatal(err)
+	}
+	frames := coreBMcpFrames(t, out.String())
+	res, _ := frames[0]["result"].(map[string]any)
+	content, _ := res["content"].([]any)
+	first, _ := content[0].(map[string]any)
+	text, _ := first["text"].(string)
+	id := writeMemoryID(t, text)
+	run(t, "undo", id)
+}
+
+func TestUndoJSONReceipt(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	_, text, isErr := policyTestServe(t, "Undo me as JSON")
+	if isErr {
+		t.Fatal(text)
+	}
+	id := writeMemoryID(t, text)
+	out := run(t, "undo", "--json", id)
+	var env struct {
+		Schema string `json:"schema"`
+		undoReceipt
+	}
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("undo --json is not one JSON document: %v\n%s", err, out)
+	}
+	if env.Schema != "mora.undo" || env.ID != id || !env.Deleted || !env.AgentWrite || !env.AuditLogged {
+		t.Fatalf("undo receipt = %+v\n%s", env, out)
 	}
 }
 
