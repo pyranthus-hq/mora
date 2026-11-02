@@ -1641,7 +1641,7 @@ func ingestGoogleDetailed(ctx context.Context, cfg Config, s Source, kind google
 	}
 
 	res, ingErr := memory.Ingest(memory.IngestParams{
-		Context: ctx, Fetcher: fetcher, Kind: kind, Window: win, Scope: s.Scope, BodyBudget: 16 * 1024,
+		Context: ctx, Fetcher: fetcher, Kind: kind, Window: win, Scope: s.Scope, BodyBudget: connectorBodyBudget,
 		Status: st, WriteResult: write, Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 	})
 	prog.done()
@@ -1669,6 +1669,14 @@ func googleTokenPath(cfg Config) string { return googleTokenPathFor(cfg, "") }
 func whatsAppStatusPath(cfg Config, name string) string {
 	return filepath.Join(cfg.StateDir, "sync", "whatsapp-"+name+".json")
 }
+
+// connectorBodyBudget is the byte budget for one Gmail thread, WhatsApp or
+// iMessage conversation, or Apple Calendar event body at ingest. Gmail and
+// Apple Calendar keep the head (memory.MapItem); WhatsApp and iMessage keep the
+// newest messages. A cut Gmail thread is marked Truncated and gets no
+// message-grain segments, so the budget is set to keep long threads whole.
+// GitHub issues use their own 64 KiB budget in ingestGitHubDetailed.
+const connectorBodyBudget = 64 * 1024
 
 const defaultWhatsAppLookbackDays = 90
 
@@ -1742,7 +1750,7 @@ func ingestWhatsAppDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ctx, Fetcher: fetcher, Kind: whatsapp.KindConversation, Window: win, Scope: s.Scope,
-		BodyBudget: 16 * 1024, Status: st, WriteResult: write,
+		BodyBudget: connectorBodyBudget, Status: st, WriteResult: write,
 		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 		Map:        whatsapp.MapConversationFn(),
 	})
@@ -1892,7 +1900,7 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	}
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ingestCtx, Fetcher: fetcher, Kind: imessage.KindIMessageChat, Window: win, Scope: s.Scope,
-		BodyBudget: 16 * 1024, Status: st, WriteResult: write,
+		BodyBudget: connectorBodyBudget, Status: st, WriteResult: write,
 		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 		Map:        mapFn,
 	})
@@ -1974,7 +1982,7 @@ func ingestAppleCalDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	}
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ctx, Fetcher: fetcher, Kind: applecal.KindAppleCalEvent, Window: windowForAppleCal(s, time.Now()),
-		Scope: s.Scope, BodyBudget: 16 * 1024, Status: st, WriteResult: write,
+		Scope: s.Scope, BodyBudget: connectorBodyBudget, Status: st, WriteResult: write,
 		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 	})
 	prog.done()
