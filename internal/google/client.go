@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -15,9 +16,10 @@ import (
 
 // LiveFetcher implements Fetcher against real Google services.
 type LiveFetcher struct {
-	gmail     *gmail.Service
-	cal       *calendar.Service
-	gmailWait func(context.Context, time.Duration) error
+	gmail           *gmail.Service
+	cal             *calendar.Service
+	gmailWait       func(context.Context, time.Duration) error
+	gmailThreadPace sync.Mutex
 }
 
 // NewLiveFetcher builds authed Gmail+Calendar services from a stored token.
