@@ -19,6 +19,14 @@ type Memory struct {
 	LastSynced  string   `json:"last_synced,omitempty"`
 	Truncated   bool     `json:"truncated,omitempty"`
 	DeletedAt   string   `json:"deleted_at,omitempty"`
+	// Agent is the signature of the writer that put an authored memory in the
+	// vault: "claude-code", "codex", "cli", or a named bot. It is persisted as
+	// the `agent:` frontmatter line on every authored write and is
+	// self-reported by the writer (an MCP client's clientInfo.name, an explicit
+	// write_memory agent argument, or the CLI), never authenticated. An authored
+	// memory written before signatures existed reads back as AgentUnknown.
+	// Connector records carry no signature: their origin is the provider.
+	Agent string `json:"agent,omitempty"`
 	// Provenance says where the record came from: "evidence" for a connector
 	// record with an outside sender, "document" for a file the filesystem
 	// connector copied from disk, and "authored" for something an agent wrote.

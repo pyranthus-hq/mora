@@ -1,6 +1,7 @@
 {
   "memories": [
     {
+      "agent": "cli",
       "created_at": "\u003ctimestamp\u003e",
       "id": "\u003cid\u003e",
       "path": "\u003chome\u003e/vault/mora/memories/global/\u003cid\u003e.md",
@@ -13,6 +14,7 @@
       "type": "insight"
     },
     {
+      "agent": "cli",
       "created_at": "\u003ctimestamp\u003e",
       "id": "\u003cid\u003e",
       "path": "\u003chome\u003e/vault/mora/memories/global/\u003cid\u003e.md",

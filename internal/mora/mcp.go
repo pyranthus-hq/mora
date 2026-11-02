@@ -86,7 +86,13 @@ func watchParent(stderr io.Writer) func() {
 
 func serveMCP(ctx context.Context, stdout io.Writer, stdin io.Reader) error {
 	defer watchParent(os.Stderr)()
-	err := mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, handleMCP)
+	// One stdio server serves one client: remember the clientInfo.name it sent
+	// in initialize so every write_memory it makes is signed with it.
+	session := &mcppkg.Session{}
+	err := mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, func(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
+		session.Observe(req)
+		return handleMCP(session.Context(ctx), req)
+	})
 	// The client is gone, but a rebuild it triggered may be mid-flight; exiting
 	// now would kill it and leave a stalled receipt. Bounded so a stuck rebuild
 	// cannot turn this into a zombie server.

@@ -1,6 +1,7 @@
 {
   "memories": [
     {
+      "agent": "unknown",
       "created_at": "2026-09-02T00:00:00Z",
       "id": "correction",
       "meta": {
@@ -17,6 +18,7 @@
       "type": "correction"
     },
     {
+      "agent": "unknown",
       "created_at": "2026-09-01T00:00:00Z",
       "disposition": {
         "at": "2026-09-02T00:00:00Z",

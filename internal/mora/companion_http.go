@@ -36,6 +36,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/memory"
 	"io"
 	"os"
 	"path/filepath"
@@ -964,6 +965,7 @@ func companionWriteArgs(c companion.Capture) map[string]any {
 		"title":  companionCaptureTitle(c.Text),
 		"text":   c.Text,
 		"source": companion.OriginCompanion,
+		"agent":  memory.AgentCompanion,
 	}
 }
 

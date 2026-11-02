@@ -30,7 +30,7 @@ func unescapedScalars(m Document) map[string]string {
 	fields := map[string]string{
 		"id": m.ID, "scope": m.Scope, "type": m.Type, "created_at": m.CreatedAt,
 		"provider": m.Provider, "account": m.Account, "content_hash": m.ContentHash,
-		"last_synced": m.LastSynced, "deleted_at": m.DeletedAt,
+		"last_synced": m.LastSynced, "deleted_at": m.DeletedAt, "agent": m.Agent,
 	}
 	for i, tag := range m.Tags {
 		fields[fmt.Sprintf("tags[%d]", i)] = tag
@@ -63,6 +63,12 @@ func Render(m Document) ([]byte, error) {
 	// depends on ProviderID surviving the round-trip. Every production connector
 	// already sets both together (memory.MapItem), so this only widens what
 	// persists, never narrows it.
+	if m.Agent != "" {
+		// The writer's signature. Absent on connector records and on authored
+		// memories written before signatures existed; readers show those as
+		// memory.AgentUnknown.
+		fmt.Fprintf(&b, "agent: %s\n", m.Agent)
+	}
 	if m.Provider != "" || m.ProviderID != "" {
 		fmt.Fprintf(&b, "provider: %s\nprovider_id: %s\n", m.Provider, QuoteYAML(m.ProviderID))
 	}
@@ -166,7 +172,7 @@ func ParseBytes(path string, b []byte) (Document, error) {
 		switch key {
 		case "id", "scope", "type", "title", "tags", "source", "created_at",
 			"provider", "provider_id", "account", "content_hash", "last_synced",
-			"truncated", "deleted_at":
+			"truncated", "deleted_at", "agent":
 			// Known scalar field; decode below.
 		default:
 			// Preserve forward compatibility: older Mora versions ignore fields
@@ -211,6 +217,8 @@ func ParseBytes(path string, b []byte) (Document, error) {
 			m.Truncated = val == "true"
 		case "deleted_at":
 			m.DeletedAt = val
+		case "agent":
+			m.Agent = val
 		}
 	}
 	if m.ID == "" {

@@ -69,6 +69,7 @@ type mcpProposalRow struct {
 	Scope      string `json:"scope"`
 	Type       string `json:"type"`
 	Title      string `json:"title"`
+	Agent      string `json:"agent"`
 	Status     string `json:"status,omitempty"`
 	MemoryID   string `json:"memory_id,omitempty"`
 }
@@ -111,6 +112,7 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 			row := mcpProposalRow{
 				ID: proposal.ID, ProposedAt: proposal.ProposedAt,
 				Scope: memory.Scope, Type: memory.Type, Title: memory.Title,
+				Agent: displayProposalAgent(memory.Agent),
 			}
 			d, err := readMCPProposalDecision(cfg, proposal.ID)
 			if err != nil {
@@ -129,7 +131,7 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 			return nil
 		}
 		for _, row := range rows {
-			fmt.Fprintf(stdout, "%s  %s  [%s/%s] %s", row.ID, row.ProposedAt, row.Scope, row.Type, row.Title)
+			fmt.Fprintf(stdout, "%s  %s  [%s/%s] %s  (by %s)", row.ID, row.ProposedAt, row.Scope, row.Type, row.Title, row.Agent)
 			if row.Status != "" {
 				fmt.Fprintf(stdout, "  [decision: %s; memory: %s; do not approve again]", row.Status, row.MemoryID)
 			}
@@ -177,4 +179,13 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 		return nil
 	}
 	return errors.New("usage: mora mcp proposals <list|show ID|approve ID|reject ID>")
+}
+
+// displayProposalAgent shows an unsigned proposal as unknown, matching how an
+// unsigned authored memory reads back.
+func displayProposalAgent(agent string) string {
+	if agent == "" {
+		return memoryAgentUnknown
+	}
+	return agent
 }

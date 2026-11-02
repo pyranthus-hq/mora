@@ -52,6 +52,11 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 		return inv
 	}
 	inv.loggable = true
+	if name == "write_memory" {
+		// Sign before policy dispatch, so a propose-mode proposal stores the
+		// signature in its arguments and approval replays it unchanged.
+		args = signWriteArgs(ctx, args)
+	}
 	traced := context.WithValue(ctx, mcpUsageTraceKey{}, trace)
 	policyHandled := false
 	action, policyErr := mcppkg.MutationAction(configMCPWritePolicy(cfg), name)

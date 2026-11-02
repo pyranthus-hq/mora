@@ -142,7 +142,16 @@ func (s *Server) handleWrite(w http.ResponseWriter, r *http.Request) {
 		"type":   str(args, "type"),
 		"scope":  str(args, "scope"),
 		"source": str(args, "source"),
+		"agent":  agentOrHTTP(str(args, "agent")),
 	})
+}
+
+// agentOrHTTP signs a loopback write whose caller named no agent.
+func agentOrHTTP(agent string) string {
+	if agent == "" {
+		return "http"
+	}
+	return agent
 }
 func (s *Server) handleMeetingPrep(w http.ResponseWriter, r *http.Request) {
 	args := bodyArgs(r)

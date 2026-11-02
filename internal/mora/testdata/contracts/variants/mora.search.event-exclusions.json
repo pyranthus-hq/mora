@@ -7,6 +7,7 @@
   "exclusion_count_basis": "unexcluded-ranked-page",
   "memories": [
     {
+      "agent": "unknown",
       "automated": null,
       "created_at": "2026-08-01T00:00:00Z",
       "event_at": "2026-09-10T10:00:00Z",
@@ -15,8 +16,8 @@
         "occurred_at": "2026-09-10T10:00:00Z"
       },
       "path": "\u003cpath\u003e",
-      "provider": "calendar",
       "provenance": "authored",
+      "provider": "calendar",
       "scope": "global",
       "score": -8.89279437609842e-7,
       "source": "calendar",
