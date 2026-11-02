@@ -25,7 +25,7 @@ const (
 var (
 	hookNow            = time.Now
 	hookResolveBrief   = resolveBrief
-	hookSearchMemories = searchMemories
+	hookSearchMemories = hookRecallSearch
 	hookExecutable     = os.Executable
 )
 
@@ -165,7 +165,7 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 			}
 			mems = kept
 		}
-		body = formatRecallContext(mems, opts.threshold, hookNow())
+		body = formatRecallContextFor(mems, prompt, opts.threshold, hookNow())
 	}
 	body = prependBannerLine(banner, body)
 	if body == "" {
@@ -181,6 +181,29 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 func skipRecallPrompt(prompt string) bool { return hookspkg.SkipRecallPrompt(prompt) }
 func formatRecallContext(mems []Memory, threshold float64, now time.Time) string {
 	return hookspkg.FormatRecallContext(mems, threshold, now)
+}
+func formatRecallContextFor(mems []Memory, query string, threshold float64, now time.Time) string {
+	return hookspkg.FormatRecallContextFor(mems, query, threshold, now)
+}
+
+// hookRecallSearch is searchMemories with the hook's score domain restored.
+// --threshold is a BM25 max cost, but once the Gmail/message segment arm
+// participates searchMemoriesObserved returns positive RRF scores, and every
+// one of them is above the default threshold of 0, so a prompt that matched
+// an email or chat body used to inject nothing. The fused rank order is kept;
+// each row's Score is put back to its parent-grain BM25 cost. A row admitted
+// only by the segment arm has no parent cost and gets 0, which the default
+// threshold keeps and a stricter (negative) threshold drops.
+func hookRecallSearch(ctx context.Context, cfg Config, query, scope string, limit int, filters ...searchFilters) ([]Memory, error) {
+	var obs searchMemoryObservation
+	mems, err := searchMemoriesObserved(ctx, cfg, query, scope, limit, &obs, filters...)
+	if err != nil || !obs.ScoreFused {
+		return mems, err
+	}
+	for i := range mems {
+		mems[i].Score = obs.BM25[mems[i].ID]
+	}
+	return mems, nil
 }
 func prependBannerLine(banner, body string) string { return hookspkg.PrependBanner(banner, body) }
 
