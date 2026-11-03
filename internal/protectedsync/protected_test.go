@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testToken() string { return strings.Repeat("ab", 16) }
@@ -85,4 +86,40 @@ func TestReceiptValidationFailures(t *testing.T) {
 	if _, err := Relay(context.Background(), o); !errors.Is(err, ErrDirect) {
 		t.Fatalf("executable fallback=%v", err)
 	}
+}
+
+func TestReadReceiptAfterRejectsStaleAndAcceptsFresh(t *testing.T) {
+	state := t.TempDir()
+	token := testToken()
+	launch := mustParseRFC3339(t, "2026-09-29T10:00:00Z")
+
+	if err := WriteReceipt(state, Receipt{
+		Token: token, Source: "applecalendar", Items: 3, CompletedAt: "2026-09-29T09:59:59Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadReceiptAfter(state, token, "applecalendar", launch); err == nil ||
+		!strings.Contains(err.Error(), "older than invocation launch time") {
+		t.Fatalf("stale receipt err=%v", err)
+	}
+
+	token2 := strings.Repeat("cd", 16)
+	if err := WriteReceipt(state, Receipt{
+		Token: token2, Source: "applecalendar", Items: 5, CompletedAt: "2026-09-29T10:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadReceiptAfter(state, token2, "applecalendar", launch)
+	if err != nil || got.Items != 5 {
+		t.Fatalf("fresh receipt=%#v err=%v", got, err)
+	}
+}
+
+func mustParseRFC3339(t *testing.T, s string) time.Time {
+	t.Helper()
+	ts, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ts
 }
