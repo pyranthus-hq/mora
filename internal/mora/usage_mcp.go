@@ -52,19 +52,25 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 		return inv
 	}
 	inv.loggable = true
+	var signErr error
 	if name == "write_memory" {
 		// Sign before policy dispatch, so a propose-mode proposal stores the
 		// signature in its arguments and approval replays it unchanged.
-		args = signWriteArgs(ctx, args)
+		args, signErr = signWriteArgs(ctx, args)
 	}
 	traced := context.WithValue(ctx, mcpUsageTraceKey{}, trace)
 	policyHandled := false
 	action, policyErr := mcppkg.MutationAction(configMCPWritePolicy(cfg), name)
-	switch action {
-	case mcppkg.ActionRefuse:
+	switch {
+	case signErr != nil:
+		// A refused agent label stops the write before policy: nothing is
+		// staged and nothing is written.
+		inv.err = signErr
+		policyHandled = true
+	case action == mcppkg.ActionRefuse:
 		inv.err = policyErr
 		policyHandled = true
-	case mcppkg.ActionPropose:
+	case action == mcppkg.ActionPropose:
 		inv.value, inv.err = stageMCPWriteProposal(cfg, args)
 		policyHandled = true
 	}

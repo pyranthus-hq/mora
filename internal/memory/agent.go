@@ -25,6 +25,21 @@ const (
 // AgentMaxLen bounds a signature so it stays a label, not a payload.
 const AgentMaxLen = 64
 
+// reservedAgents are the labels Mora's own writers use. A caller that names
+// its own agent may not claim one: "(by cli)" at the approval step reads as
+// the owner, and "mora" as Mora itself. Every label stays self-reported.
+var reservedAgents = map[string]bool{
+	AgentUnknown:   true,
+	AgentCLI:       true,
+	AgentMora:      true,
+	AgentHTTP:      true,
+	AgentCompanion: true,
+}
+
+// IsReservedAgent reports whether a normalized label belongs to one of Mora's
+// own writers.
+func IsReservedAgent(agent string) bool { return reservedAgents[agent] }
+
 // clientAliases maps the clientInfo.name values well-known MCP clients send
 // in initialize to the short signature a reader recognizes. Any other name is
 // kept, normalized.
@@ -86,14 +101,16 @@ func agentRune(r rune) bool {
 }
 
 // DisplayAgent returns the signature a read surface shows: the persisted one,
-// AgentUnknown for an authored memory written without one, and "" for records
-// a connector or the filesystem produced.
+// AgentUnknown for an authored memory written without one (or with a value
+// that is not a valid label, such as a hand edit), and "" for records a
+// connector or the filesystem produced. The connector id check comes first,
+// as in DeriveProvenance, so an email never reads "by unknown".
 func DisplayAgent(m Memory) string {
-	if m.Agent != "" {
-		return m.Agent
+	if hasConnectorID(m) || !isAgentMemory(m) {
+		return ""
 	}
-	if isAgentMemory(m) {
-		return AgentUnknown
+	if agent, err := NormalizeAgent(m.Agent); err == nil && agent != "" {
+		return agent
 	}
-	return ""
+	return AgentUnknown
 }

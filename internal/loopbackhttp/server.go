@@ -136,22 +136,20 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) handleWrite(w http.ResponseWriter, r *http.Request) {
 	args := bodyArgs(r)
-	s.dispatch(w, r, "write_memory", map[string]any{
+	call := map[string]any{
 		"title":  str(args, "title"),
 		"text":   str(args, "text"),
 		"type":   str(args, "type"),
 		"scope":  str(args, "scope"),
 		"source": str(args, "source"),
-		"agent":  agentOrHTTP(str(args, "agent")),
-	})
-}
-
-// agentOrHTTP signs a loopback write whose caller named no agent.
-func agentOrHTTP(agent string) string {
-	if agent == "" {
-		return "http"
 	}
-	return agent
+	if agent, ok := args["agent"]; ok {
+		// Passed through unchanged, so write_memory refuses a non-string
+		// instead of it silently becoming the "http" default. The default
+		// itself is applied by the Dispatch caller, for /write and /call alike.
+		call["agent"] = agent
+	}
+	s.dispatch(w, r, "write_memory", call)
 }
 func (s *Server) handleMeetingPrep(w http.ResponseWriter, r *http.Request) {
 	args := bodyArgs(r)

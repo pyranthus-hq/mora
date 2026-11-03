@@ -24,7 +24,7 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	text := fs.String("text", "", "text")
 	tags := fs.String("tags", "", "comma-separated tags")
 	source := fs.String("source", "manual", "source")
-	agentFlag := fs.String("agent", memory.AgentCLI, "signature of the writing agent (a-z, 0-9, . _ -)")
+	agentFlag := fs.String("agent", memory.AgentCLI, "self-reported label of the writing agent (a-z, 0-9, . _ -)")
 	target := fs.String("target", "", "target memory id")
 	dispositionValue := fs.String("disposition", "", "not-context|keep|done|outdated")
 	asOf := fs.String("as-of", "", "decision validity instant (RFC3339)")

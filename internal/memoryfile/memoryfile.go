@@ -183,6 +183,23 @@ func ParseBytes(path string, b []byte) (Document, error) {
 			return Document{}, fmt.Errorf("frontmatter names %s twice; a value carrying a line break can forge a field", key)
 		}
 		seenKeys[key] = true
+		if key == "agent" {
+			// A self-reported display label never costs the whole memory. A
+			// malformed or unsafe value (an unclosed quote, a line break, a
+			// terminal escape from a hand edit) is dropped, so the memory reads
+			// back as unknown and a later rewrite does not trip Render.
+			agentVal, aerr := ParseFrontmatterScalar(key, val)
+			if aerr == nil {
+				var agent string
+				if agent, aerr = memory.NormalizeAgent(agentVal); aerr == nil {
+					m.Agent = agent
+				}
+			}
+			if aerr != nil {
+				fmt.Fprintf(os.Stderr, "warn: %s: agent frontmatter is invalid and was ignored: %v\n", path, aerr)
+			}
+			continue
+		}
 		parsedVal, err := ParseFrontmatterScalar(key, val)
 		if err != nil {
 			return Document{}, err
@@ -217,8 +234,6 @@ func ParseBytes(path string, b []byte) (Document, error) {
 			m.Truncated = val == "true"
 		case "deleted_at":
 			m.DeletedAt = val
-		case "agent":
-			m.Agent = val
 		}
 	}
 	if m.ID == "" {

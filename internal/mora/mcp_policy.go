@@ -69,7 +69,7 @@ type mcpProposalRow struct {
 	Scope      string `json:"scope"`
 	Type       string `json:"type"`
 	Title      string `json:"title"`
-	Agent      string `json:"agent"`
+	Agent      string `json:"agent,omitempty"`
 	Status     string `json:"status,omitempty"`
 	MemoryID   string `json:"memory_id,omitempty"`
 }

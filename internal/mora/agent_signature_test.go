@@ -3,7 +3,10 @@ package mora
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -284,5 +287,113 @@ func TestSignedMemoryUndoAndDelete(t *testing.T) {
 	}
 	if got := agentsByID(t, json.RawMessage(run(t, "search", "quillwort", "--json"))); got[originalID] != nil {
 		t.Fatalf("deleted signed memory still searchable: %#v", got)
+	}
+}
+
+// A caller may not claim a reserved label: an explicit "cli" is refused before
+// policy, and a client that names itself "cli" stays unsigned. A blank agent
+// argument counts as absent, and the trusted default applies last.
+func TestReservedAgentLabelsAreNotClaimable(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	ctx := testCtx(t)
+
+	for _, label := range []string{"cli", "CLI", "mora", "http", "companion", "unknown"} {
+		_, err := callMCPTool(mcppkg.WithClientName(ctx, "some-untrusted-client"), "write_memory", map[string]any{"title": "claims " + label, "text": "x", "agent": label})
+		if err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Fatalf("agent %q: err = %v, want a reserved-label refusal", label, err)
+		}
+	}
+	refused, err := listMemories(mustConfig(t), "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range refused {
+		if strings.HasPrefix(m.Title, "claims ") {
+			t.Fatalf("a refused write reached the vault: %q", m.Title)
+		}
+	}
+
+	cases := []struct {
+		name string
+		ctx  context.Context
+		args map[string]any
+		want string
+	}{
+		{"blank falls back to client", mcppkg.WithClientName(ctx, "codex-mcp-client"), map[string]any{"agent": "   "}, "codex"},
+		{"client named cli", mcppkg.WithClientName(ctx, "cli"), nil, ""},
+		{"default applies last", mcppkg.WithDefaultAgent(ctx, "http"), nil, "http"},
+		{"client beats default", mcppkg.WithDefaultAgent(mcppkg.WithClientName(ctx, "claude-code"), "http"), nil, "claude-code"},
+		{"explicit beats default", mcppkg.WithDefaultAgent(ctx, "http"), map[string]any{"agent": "named-bot"}, "named-bot"},
+	}
+	for i, tc := range cases {
+		args := map[string]any{"title": fmt.Sprintf("label case %d", i), "text": tc.name}
+		for k, v := range tc.args {
+			args[k] = v
+		}
+		res, err := callMCPTool(tc.ctx, "write_memory", args)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		m, err := findMemory(mustConfig(t), writtenID(t, res))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m.Agent != tc.want {
+			t.Fatalf("%s: agent = %q, want %q", tc.name, m.Agent, tc.want)
+		}
+	}
+}
+
+// Loopback /call writes are labeled "http" like /write, and approve/reject
+// receipts carry no empty agent field.
+func TestLoopbackCallWritesAreLabeledHTTP(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	h := newHTTPServer("tok", 7777).lower(testCtx(t)).Handler()
+	body := `{"name":"write_memory","arguments":{"title":"loopback call note","text":"written over /call"}}`
+	r := httptest.NewRequest("POST", "/call", strings.NewReader(body))
+	r.Host = "127.0.0.1:7777"
+	r.Header.Set("Authorization", "Bearer tok")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("/call = %d %s", w.Code, w.Body.String())
+	}
+	all, err := listMemories(mustConfig(t), "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	for _, m := range all {
+		if m.Title == "loopback call note" {
+			id = m.ID
+		}
+	}
+	m, err := findMemory(mustConfig(t), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Agent != "http" {
+		t.Fatalf("/call write agent = %q, want http", m.Agent)
+	}
+
+	run(t, "config", "mcp-write-policy", "propose")
+	staged, err := callMCPTool(mcppkg.WithClientName(testCtx(t), "claude-code"), "write_memory", map[string]any{"title": "pending", "text": "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposalID, _ := staged.(map[string]any)["proposal"].(map[string]any)["id"].(string)
+	var receipt struct {
+		Proposals []map[string]any `json:"proposals"`
+	}
+	if err := json.Unmarshal([]byte(run(t, "mcp", "proposals", "reject", proposalID, "--json")), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if len(receipt.Proposals) != 1 {
+		t.Fatalf("reject receipt proposals = %#v", receipt.Proposals)
+	}
+	if agent, ok := receipt.Proposals[0]["agent"]; ok {
+		t.Fatalf("reject receipt has agent %#v; an unknown agent is omitted", agent)
 	}
 }

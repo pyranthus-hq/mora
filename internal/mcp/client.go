@@ -23,6 +23,25 @@ func ClientName(ctx context.Context) string {
 	return name
 }
 
+type defaultAgentKey struct{}
+
+// WithDefaultAgent returns ctx carrying the agent label a trusted in-process
+// caller (the loopback HTTP server) applies to a write that names no agent
+// and comes from no named MCP client. Unlike an explicit agent argument, it
+// may be one of Mora's reserved labels, such as "http".
+func WithDefaultAgent(ctx context.Context, agent string) context.Context {
+	if agent == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, defaultAgentKey{}, agent)
+}
+
+// DefaultAgent returns the label set by WithDefaultAgent, or "".
+func DefaultAgent(ctx context.Context) string {
+	agent, _ := ctx.Value(defaultAgentKey{}).(string)
+	return agent
+}
+
 // Session remembers the clientInfo.name a client sent in initialize. A stdio
 // server process serves exactly one client, so one Session per Serve call is
 // one client's identity.

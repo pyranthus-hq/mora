@@ -2,7 +2,6 @@
   "event_since_hours": 24,
   "memories": [
     {
-      "agent": "unknown",
       "automated": null,
       "created_at": "2026-09-01T00:00:00Z",
       "event_at": "2026-09-10T11:00:00Z",

@@ -293,8 +293,8 @@ func teachMemory(ctx context.Context, args []string, stdout io.Writer) error {
 				Text:   *text,
 				Tags:   append([]string(nil), original.Tags...),
 				Source: original.Source,
-				// The replacement is the user's correction, not the original
-				// writer's claim, so it carries its own signature.
+				// The replacement is a CLI correction, not the original
+				// writer's claim, so it carries the cli label.
 				Agent:     memory.AgentCLI,
 				CreatedAt: nowRFC3339(),
 			}

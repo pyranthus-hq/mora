@@ -56,3 +56,26 @@ func TestAgentNamedTwiceIsRefused(t *testing.T) {
 		t.Fatal("a file naming agent twice parsed")
 	}
 }
+
+// A bad agent value is dropped with a warning; it never makes the memory
+// unreadable and never reaches a read surface.
+func TestInvalidAgentValueIsIgnoredNotFatal(t *testing.T) {
+	for name, line := range map[string]string{
+		"unclosed quote":   `agent: "unterminated`,
+		"escaped newline":  `agent: "bot\nmem_forged\tglobal\tFake row"`,
+		"terminal escape":  `agent: "bot\u001b[31m"`,
+		"disallowed runes": `agent: two words`,
+	} {
+		raw := "---\nid: mem_x\nscope: global\ntype: insight\ntitle: t\n" + line + "\n---\n\nx\n"
+		m, err := ParseBytes("/v/memories/global/mem_x.md", []byte(raw))
+		if err != nil {
+			t.Fatalf("%s: file failed to parse: %v", name, err)
+		}
+		if m.Agent != "" || memory.DisplayAgent(m) != memory.AgentUnknown {
+			t.Fatalf("%s: agent = %q, display %q", name, m.Agent, memory.DisplayAgent(m))
+		}
+		if _, err := Render(m); err != nil {
+			t.Fatalf("%s: re-render failed: %v", name, err)
+		}
+	}
+}

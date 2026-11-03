@@ -14,6 +14,8 @@ import (
 	configstore "github.com/pyranthus-hq/mora/internal/config"
 	"github.com/pyranthus-hq/mora/internal/httpservice"
 	loopbackhttp "github.com/pyranthus-hq/mora/internal/loopbackhttp"
+	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 const defaultHTTPPort = 7777
@@ -140,8 +142,10 @@ func (s *httpServer) lower(ctx context.Context) *loopbackhttp.Server {
 	return loopbackhttp.New(loopbackhttp.Options{Token: s.token, Port: s.port, Version: BuildVersion, AllowCall: func(name string) bool { return httpCallAllowed[name] }, Dispatch: func(reqCtx context.Context, name string, args map[string]any) (any, error) {
 		// Request contexts carry cancellation but not the launch context's
 		// injected sandbox; restore it so every dispatched tool resolves the
-		// same config the server was started under.
-		return callMCPTool(configstore.CarryInjection(reqCtx, ctx), name, args)
+		// same config the server was started under. A write that names no
+		// agent, through /write or /call, is labeled "http".
+		dispatchCtx := mcppkg.WithDefaultAgent(configstore.CarryInjection(reqCtx, ctx), memory.AgentHTTP)
+		return callMCPTool(dispatchCtx, name, args)
 	}, Health: func() loopbackhttp.Health {
 		cfg, err := loadConfigFor(ctx)
 		if err != nil {

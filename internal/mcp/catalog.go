@@ -16,7 +16,7 @@ var toolCatalog = []ToolDefinition{
 			{"scope", "string", `Scope/namespace, e.g. "global" or "project:acme" (default "global")`, false},
 			{"type", "string", `Memory type: insight|fact|decision|task|correction (default "insight")`, false},
 			{"source", "string", `Origin label (default "mcp")`, false},
-			{"agent", "string", `Signature of the writing agent, e.g. "claude-code", "codex" or a bot name (a-z, 0-9, . _ -; default: the MCP client's name)`, false},
+			{"agent", "string", `Self-reported label of the writing agent, not authenticated: e.g. "claude-code", "codex" or a bot name (a-z, 0-9, . _ -; default: the MCP client's name; cli, mora, http, companion and unknown are reserved)`, false},
 			{"target", "string", "Existing same-scope local memory id for an explicit correction", false},
 			{"disposition", "string", "Correction value: not-context|keep|done|outdated; implies type=correction", false},
 			{"as_of", "string", "Decision validity instant (RFC3339; decision memories only)", false},

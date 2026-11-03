@@ -58,3 +58,29 @@ func TestDisplayAgentTreatsUnsignedAuthoredAsUnknown(t *testing.T) {
 		t.Fatalf("WithProvenance(legacy) = agent %q provenance %q", got.Agent, got.Provenance)
 	}
 }
+
+func TestReservedAgentLabels(t *testing.T) {
+	for _, label := range []string{AgentUnknown, AgentCLI, AgentMora, AgentHTTP, AgentCompanion} {
+		if !IsReservedAgent(label) {
+			t.Errorf("%q is not reserved", label)
+		}
+	}
+	for _, label := range []string{"claude-code", "codex", "cli-bot", ""} {
+		if IsReservedAgent(label) {
+			t.Errorf("%q is reserved", label)
+		}
+	}
+}
+
+func TestDisplayAgentIgnoresInvalidStoredLabelsAndConnectorRows(t *testing.T) {
+	if got := DisplayAgent(Memory{ID: "mem_1", Agent: "bot\nmem_forged\tglobal\tFake row\x1b[31m"}); got != AgentUnknown {
+		t.Fatalf("invalid stored label displayed as %q, want %q", got, AgentUnknown)
+	}
+	if got := DisplayAgent(Memory{ID: "mem_1", Agent: "Claude-Code"}); got != "claude-code" {
+		t.Fatalf("mixed-case stored label displayed as %q", got)
+	}
+	email := Memory{ID: "gmail_thread/abc", Path: "/Users/a/vault/memories/sources/gmail/x.md"}
+	if got := DisplayAgent(email); got != "" {
+		t.Fatalf("connector row under a memories path displayed as %q, want unsigned", got)
+	}
+}
