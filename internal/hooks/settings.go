@@ -150,6 +150,13 @@ func Write(path string, settings map[string]any) error {
 	return atomicio.Write(path, append(body, '\n'), 0o600)
 }
 func upsert(groups map[string][]Group, event, sub string, def Command) {
+	upsertMatcher(groups, event, "", sub, def)
+}
+
+// upsertMatcher is upsert for events whose groups carry a matcher, such as
+// PreToolUse. Mora's own entry is replaced in place; otherwise a new group is
+// appended. A user's own groups, even with the same matcher, are never changed.
+func upsertMatcher(groups map[string][]Group, event, matcher, sub string, def Command) {
 	existing := groups[event]
 	if idx := find(existing, sub); idx >= 0 {
 		gi, hi := split(idx)
@@ -157,7 +164,7 @@ func upsert(groups map[string][]Group, event, sub string, def Command) {
 		groups[event] = existing
 		return
 	}
-	groups[event] = append(existing, Group{Hooks: []Command{def}})
+	groups[event] = append(existing, Group{Matcher: matcher, Hooks: []Command{def}})
 }
 func find(groups []Group, sub string) int {
 	marker := Marker + ":" + sub
@@ -183,6 +190,30 @@ func Install(path, exe string, threshold float64) error {
 	}
 	recall += " " + Marker + ":recall"
 	upsert(groups, "UserPromptSubmit", "recall", Command{Type: "command", Command: recall, Timeout: 10})
+	settings["hooks"] = groups
+	return Write(path, settings)
+}
+
+// PreToolSub is the managed marker suffix of the PreToolUse warning hook.
+const PreToolSub = "pre-tool-use"
+
+// PreToolCommand is the installed shell command. The hook already fails open
+// inside the process; the shell guard also turns a runtime fatal or an
+// unrecovered panic (exit 2, which Claude would show) into a silent exit 0.
+func PreToolCommand(exe string) string {
+	return shellQuote(exe) + " hook pre-tool-use 2>/dev/null || true " + Marker + ":" + PreToolSub
+}
+
+// InstallPreTool adds or replaces only Mora's PreToolUse entry for Bash.
+func InstallPreTool(path, exe string) error {
+	settings, groups, err := Load(path)
+	if err != nil {
+		return err
+	}
+	if settings == nil {
+		return fmt.Errorf("refusing to modify %s: settings must be a JSON object", path)
+	}
+	upsertMatcher(groups, "PreToolUse", "Bash", PreToolSub, Command{Type: "command", Command: PreToolCommand(exe), Timeout: 5})
 	settings["hooks"] = groups
 	return Write(path, settings)
 }
@@ -287,6 +318,58 @@ func Uninstall(path string) error {
 		settings["hooks"] = groups
 	}
 	return Write(path, settings)
+}
+
+// UninstallSub removes only the managed commands carrying Marker:sub, and
+// drops any group, then any event, left empty by that.
+func UninstallSub(path, sub string) error {
+	settings, groups, err := Load(path)
+	if err != nil {
+		return err
+	}
+	if settings == nil {
+		return fmt.Errorf("refusing to modify %s: settings must be a JSON object", path)
+	}
+	marker := Marker + ":" + sub
+	for event, eventGroups := range groups {
+		var kept []Group
+		for _, group := range eventGroups {
+			var commands []Command
+			for _, command := range group.Hooks {
+				if !strings.Contains(command.Command, marker) {
+					commands = append(commands, command)
+				}
+			}
+			// A group Mora emptied is dropped; any other group is kept as is.
+			if len(commands) > 0 || len(commands) == len(group.Hooks) {
+				group.Hooks = commands
+				kept = append(kept, group)
+			}
+		}
+		if len(kept) == 0 {
+			delete(groups, event)
+		} else {
+			groups[event] = kept
+		}
+	}
+	if len(groups) == 0 {
+		delete(settings, "hooks")
+	} else {
+		settings["hooks"] = groups
+	}
+	return Write(path, settings)
+}
+
+// PreToolStatus reports "installed" or "not installed" for the PreToolUse hook.
+func PreToolStatus(path string) (string, error) {
+	_, groups, err := Load(path)
+	if err != nil {
+		return "", err
+	}
+	if find(groups["PreToolUse"], PreToolSub) >= 0 {
+		return "installed", nil
+	}
+	return "not installed", nil
 }
 func Status(path string) (string, string, error) {
 	_, groups, err := Load(path)
