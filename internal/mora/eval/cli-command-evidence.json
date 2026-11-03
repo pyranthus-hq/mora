@@ -609,6 +609,53 @@
           "reason": "Named first-run tests witness invalid arguments and refusal before client configuration writes."
         }
       }
+    },
+    {
+      "name": "local allowlisted conversation continuity",
+      "paths": [
+        "conversation",
+        "conversation enable",
+        "conversation sync",
+        "conversation watch",
+        "conversation status",
+        "conversation list",
+        "conversation view",
+        "conversation search",
+        "conversation zoom",
+        "conversation reindex"
+      ],
+      "evidence": {
+        "success": {
+          "status": "test",
+          "tests": [
+            "TestConversationCLIAndMCPRecallUseOriginals"
+          ]
+        },
+        "json": {
+          "status": "test",
+          "tests": [
+            "TestConversationCLIAndMCPRecallUseOriginals"
+          ]
+        },
+        "state": {
+          "status": "test",
+          "tests": [
+            "TestConversationContinuityIsScopedAndDisabledByDefault"
+          ]
+        },
+        "error": {
+          "status": "test",
+          "tests": [
+            "TestConversationCLIValidationAndCaptureErrors"
+          ]
+        },
+        "refusal": {
+          "status": "test",
+          "tests": [
+            "TestConversationCLIValidationAndCaptureErrors"
+          ]
+        }
+      }
     }
   ]
 }

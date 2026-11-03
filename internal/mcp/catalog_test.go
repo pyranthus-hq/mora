@@ -7,7 +7,7 @@ import (
 
 func TestToolCatalogCanonicalOrderAndCompleteness(t *testing.T) {
 	defs := ToolCatalog()
-	want := []string{"write_memory", "read_memory", "search_memory", "calendar_events", "list_memory", "delete_memory", "context_memory", "think", "list_entities", "get_entity", "digest", "brief", "meeting_prep"}
+	want := []string{"write_memory", "read_memory", "search_memory", "calendar_events", "list_memory", "delete_memory", "context_memory", "think", "list_entities", "get_entity", "digest", "brief", "meeting_prep", "list_conversations", "search_conversations", "view_conversation", "zoom_conversation"}
 	if len(defs) != len(want) {
 		t.Fatalf("len=%d", len(defs))
 	}

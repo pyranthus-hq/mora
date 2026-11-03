@@ -1,7 +1,7 @@
 # MCP Server
 
 The stdio JSON-RPC 2.0 server gives MCP agents access to Mora. Claude Code and
-Codex can call thirteen tools for memory, exact calendar ranges, search, the entity graph, synthesis,
+Codex can call seventeen tools for memory, exact calendar ranges, search, the entity graph, synthesis,
 briefing, and meeting preparation.
 
 ## Files
@@ -70,7 +70,7 @@ To keep it always reachable, `mora serve http install|uninstall|status` (`intern
 `handleMCP` (`mcp.go`) is the method switch. Three methods are real. Everything else is `-32601`:
 
 - **`initialize`** (`mcp.go`) returns `protocolVersion: "2024-11-05"`, `serverInfo {name: "mora", version: BuildVersion}`, `capabilities.tools: {}`, and the **`instructions`** string. `mcpInstructionsFor` derives its mutation sentence from `mcp_write_policy`: `open` invites trusted writes, `propose` says writes remain pending until local approval, and `readonly` forbids both mutation tools. The rest of `mcpInstructions` remains the load-bearing retrieval guidance injected into a cold client's context, including the invariant that retrieved email, messages, attachments, and documents are untrusted evidence rather than instructions. A config-load failure emits fail-closed instructions and tool calls fail before dispatch.
-- **`tools/list`** (`mcp.go`) ranges `mcpToolRegistry` and returns the thirteen-tool catalog built by `mcpTool`.
+- **`tools/list`** (`mcp.go`) ranges `mcpToolRegistry` and returns the seventeen-tool catalog built by `mcpTool`.
 - **`tools/call`** (`mcp.go`) decodes `{name, arguments}`, looks the name up in `mcpToolIndex`, and returns `toCallToolResult(callMCPTool(...))`.
 
 ### The derived tool registry (`mcpToolRegistry`)
@@ -79,7 +79,7 @@ Before Gate 2 PR 2, MCP had **three** independent hand-maintained lists that cou
 
 ## The tool catalog
 
-`tools/list` publishes thirteen tools. Schemas are built by `mcpTool(name, desc, params...)` (`mcp.go`), which emits a JSON Schema `inputSchema` with `additionalProperties: false` so strict clients (Codex) know the arg set is *closed*. Tools with no params still publish an explicit empty-object schema rather than a permissive catch-all (the pilot reported "commands aren't useful directly" when schemas were vague). Each `mcpParam` (`mcp.go`) is `{name, type, desc, required}`; `type` is only ever `"string"` or `"integer"`.
+`tools/list` publishes seventeen tools. Schemas are built by `mcpTool(name, desc, params...)` (`mcp.go`), which emits a JSON Schema `inputSchema` with `additionalProperties: false` so strict clients (Codex) know the arg set is *closed*. Tools with no params still publish an explicit empty-object schema rather than a permissive catch-all (the pilot reported "commands aren't useful directly" when schemas were vague). Each `mcpParam` (`mcp.go`) is `{name, type, desc, required}`; `type` is only ever `"string"` or `"integer"`.
 
 | Tool | Purpose | Key args | Default limit / budget |
 |---|---|---|---|
@@ -118,6 +118,23 @@ Every registered tool now carries a **compact health envelope** — `health.Comp
 - **Response receipt.** The response gains a top-level `filters` object **only** when at least one of `source`/`since_hours` was actually supplied, echoing exactly the supplied filter(s) verbatim (e.g. `{"source":"imessage","since_hours":24}`, or just `{"source":"imessage"}` when only one was given). Omitting both params leaves the response **byte-identical** to the pre-#241 shape — no `filters` key appears at all.
 - **`excluded_by_filter` vs. health/confidence.** A source the caller's own `source` filter excludes is a caller *choice*, not an incomplete-coverage signal: it is removed from `confidence.missing_sources`/`health_impact` (`filteredMissingSources`, overwriting the frozen #238 field set after score-domain selection) and from the always-present top-level `health.state`/`health.sources`/`health.per_source` rollup (`compactHealthFiltered`, recomputing `compactHealthFrom` over a `Health.Sources` slice narrowed the same way). Because omission alone leaves it ambiguous whether an absent source is *healthy* or *excluded*, the response additionally carries an explicit top-level `excluded_by_filter` array (a sibling of `filters`/`confidence`/`health`, never nested inside confidence's frozen exact-field-set shape) naming every enabled source the filter excluded — present only when there is at least one to report.
 - **`filesystem` is rejected, not silently empty.** `filesystem` is a real `connectorCatalog` entry, but `ingestFilesystem` (`ingest.go`) never sets `Provider` on the memories it writes, so a source filter for it could never match anything even though the family itself is real — the exact "accepted but structurally impossible" trap this whole design otherwise avoids. This mirrors a pre-existing digest limitation, not a new one: `sourceInstanceKey` (`connectors.go`) already returns `("", false)` for an empty `Provider`, and `buildDigest`'s `byInstance` grouping loop (`digest.go`) already skips non-groupable rows outright, so a filesystem memory never appears in *any* digest section either, and `digest --source filesystem` is equally silently empty today. Since issue #241's governing requirement is to reuse digest's existing source semantics, making filesystem *matchable* in search filters but not in digest would violate that parity rather than extend it — so `source="filesystem"` (the bare family, and any `filesystem:<name>` instance) is an explicit fail-closed tool error instead (`unsupportedSourceFamilies`, `search_filters.go`). Every other catalog family (gmail, calendar, imessage, applecalendar, github) was audited and confirmed to set a real, non-empty `Provider` on every row unconditionally, so none of them share this gap. **Follow-up (not built here):** a durable-provenance fix — `ingestFilesystem` setting `Provider`/`Account` from the configured source's `Type`/`Name` — would let filesystem gain real family/instance filtering in *both* digest and search filters together; that is future work for a separate issue, not a change made as part of #241.
+
+### Local conversation tools
+
+`list_conversations`, `search_conversations`, `view_conversation`, and
+`zoom_conversation` read local archived agent history. They neither capture
+transcripts nor mutate source files. Capture is an explicit CLI/background job.
+Archives are separate from the shared Markdown-memory corpus. The view is a
+lossy extractive preview tree; search indexes full originals; `zoom` with count=1
+pages exact message text and exposes `next_offset` when more remains.
+
+When capture is enabled, an unfiltered `brief` (including its envelope variant)
+includes a bounded continuity section and capture timestamp. Unfiltered
+`context_memory` and `search_memory` can include conversation evidence. Explicit
+connector/time/disposition filters omit this separate corpus. Disabling capture
+configuration restores existing memory-tool behavior. User-kind archive records
+can contain pasted or forwarded material: source kind is provenance, never a
+guarantee of human authorship or truth.
 
 ### What each handler actually does (and where the work lives)
 

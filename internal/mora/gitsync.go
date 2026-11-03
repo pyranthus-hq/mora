@@ -34,6 +34,9 @@ const gitSyncDisclosure = `
     Restore on a new machine: git clone <remote> ~/vault/mora && mora index rebuild`
 
 func syncGit(ctx context.Context, cfg Config, args []string, stdout io.Writer, run execFunc) error {
+	if err := conversationGuardPaths(cfg); err != nil {
+		return err
+	}
 	fs := flag.NewFlagSet("sync git", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	doInit := fs.Bool("init", false, "bootstrap the vault as a git repo and push the first commit")

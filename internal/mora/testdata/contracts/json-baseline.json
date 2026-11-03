@@ -136,6 +136,46 @@
     "status": "parses"
   },
   {
+    "path": "conversation",
+    "status": "empty"
+  },
+  {
+    "path": "conversation enable",
+    "status": "empty"
+  },
+  {
+    "path": "conversation list",
+    "status": "parses"
+  },
+  {
+    "path": "conversation reindex",
+    "status": "parses"
+  },
+  {
+    "path": "conversation search",
+    "status": "parses"
+  },
+  {
+    "path": "conversation status",
+    "status": "parses"
+  },
+  {
+    "path": "conversation sync",
+    "status": "parses"
+  },
+  {
+    "path": "conversation view",
+    "status": "empty"
+  },
+  {
+    "path": "conversation watch",
+    "status": "static_only"
+  },
+  {
+    "path": "conversation zoom",
+    "status": "empty"
+  },
+  {
     "path": "delete",
     "status": "static_only"
   },

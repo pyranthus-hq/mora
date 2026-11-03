@@ -1121,6 +1121,76 @@
       "platform": "native-seam",
       "json_contract": "receipt",
       "payload": "mora.integrations.disconnect"
+    },
+    {
+      "path": "conversation",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "Dispatch-only family; select a subcommand."
+    },
+    {
+      "path": "conversation enable",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.conversation.enable"
+    },
+    {
+      "path": "conversation sync",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.conversation.sync"
+    },
+    {
+      "path": "conversation watch",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "Long-running stream of versioned mora.conversation.sync JSON receipts, not one document."
+    },
+    {
+      "path": "conversation status",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.conversation.status"
+    },
+    {
+      "path": "conversation list",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.conversation.list"
+    },
+    {
+      "path": "conversation view",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.conversation.view"
+    },
+    {
+      "path": "conversation search",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.conversation.search"
+    },
+    {
+      "path": "conversation zoom",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.conversation.zoom"
+    },
+    {
+      "path": "conversation reindex",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.conversation.reindex"
     }
   ]
 }
