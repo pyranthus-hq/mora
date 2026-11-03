@@ -253,6 +253,24 @@ func TestHookInstallPreToolThroughRun(t *testing.T) {
 	}
 }
 
+// The PreToolUse hook is global only, so --project status still reports it
+// from the global settings.
+func TestHookStatusProjectReportsGlobalPreTool(t *testing.T) {
+	withTempHookHome(t)
+	t.Chdir(t.TempDir())
+	run(t, "hook", "install", "--pre-tool")
+	if out := run(t, "hook", "status", "--project"); !strings.HasSuffix(out, "PreToolUse: installed\n") {
+		t.Fatalf("status --project = %q", out)
+	}
+	var payload hookStatusPayload
+	if err := json.Unmarshal([]byte(run(t, "hook", "status", "--project", "--json")), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.PreToolUse != "installed" {
+		t.Fatalf("pre_tool_use = %q", payload.PreToolUse)
+	}
+}
+
 func TestHookUninstallPreToolKeepsOtherHooks(t *testing.T) {
 	tmp := withTempHookHome(t)
 	run(t, "hook", "install")

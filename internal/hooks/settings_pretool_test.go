@@ -117,6 +117,35 @@ func TestUninstallSubRemovesOnlyMoraPreTool(t *testing.T) {
 	}
 }
 
+// A user's group with an empty hooks array is not Mora's to touch, and must
+// not come back as "hooks": null.
+func TestUninstallSubKeepsUserEmptyGroup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(path, []byte(`{"hooks":{"PostToolUse":[{"matcher":"Edit","hooks":[]}]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := InstallPreTool(path, "/bin/mora"); err != nil {
+		t.Fatal(err)
+	}
+	if err := UninstallSub(path, PreToolSub); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Hooks map[string][]map[string]json.RawMessage `json:"hooks"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	post := got.Hooks["PostToolUse"]
+	if len(got.Hooks) != 1 || len(post) != 1 || string(post[0]["hooks"]) != "[]" {
+		t.Fatalf("user's empty group changed:\n%s", body)
+	}
+}
+
 func TestPreToolStatus(t *testing.T) {
 	path := writePreToolFixture(t)
 	if got, err := PreToolStatus(path); err != nil || got != "not installed" {

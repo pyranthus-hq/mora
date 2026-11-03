@@ -340,11 +340,15 @@ func UninstallSub(path, sub string) error {
 					commands = append(commands, command)
 				}
 			}
-			// A group Mora emptied is dropped; any other group is kept as is.
-			if len(commands) > 0 || len(commands) == len(group.Hooks) {
+			// A group Mora emptied is dropped; any other group is kept as is,
+			// so a user's own "hooks": [] stays an array.
+			if len(commands) != len(group.Hooks) {
+				if len(commands) == 0 {
+					continue
+				}
 				group.Hooks = commands
-				kept = append(kept, group)
 			}
+			kept = append(kept, group)
 		}
 		if len(kept) == 0 {
 			delete(groups, event)

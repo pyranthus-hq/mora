@@ -2,6 +2,7 @@ package mora
 
 import (
 	"encoding/json"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"io"
@@ -15,18 +16,15 @@ import (
 	"github.com/pyranthus-hq/mora/internal/rules"
 )
 
-// clearAgentEnv removes CLAUDECODE and every CODEX_* variable for this test,
-// so the approval gate sees a person's terminal even when the suite itself
-// runs inside an agent session. t.Setenv restores them afterwards.
+// clearAgentEnv removes the agent-session variables for this test, so the
+// approval gate sees a person's terminal even when the suite itself runs
+// inside an agent session. t.Setenv restores them afterwards.
 func clearAgentEnv(t *testing.T) {
 	t.Helper()
-	for _, kv := range os.Environ() {
-		key, _, _ := strings.Cut(kv, "=")
-		if key == "CLAUDECODE" || strings.HasPrefix(key, "CODEX_") {
-			t.Setenv(key, "")
-			if err := os.Unsetenv(key); err != nil {
-				t.Fatal(err)
-			}
+	for _, key := range rulesAgentEnv {
+		t.Setenv(key, "")
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatal(err)
 		}
 	}
 }
@@ -139,14 +137,36 @@ func TestRulesApproveRefusesNonInteractive(t *testing.T) {
 func TestRulesApproveRefusesInsideAgentSession(t *testing.T) {
 	withTempHome(t)
 	run(t, "rules", "add", "--template", "compound-cd")
-	for _, key := range []string{"CLAUDECODE", "CODEX_SANDBOX"} {
+	for _, key := range rulesAgentEnv {
 		subRun(t, key, func(t *testing.T) {
 			stubRulesTerminal(t, "compound-cd")
 			t.Setenv(key, "1")
-			if _, err := runErr(t, "rules", "approve", "compound-cd", "--mode", "warn"); err == nil || err.Error() != rulesRefusal {
-				t.Fatalf("err = %v", err)
+			want := fmt.Sprintf(rulesAgentRefusal, key)
+			for _, args := range [][]string{
+				{"rules", "approve", "compound-cd", "--mode", "warn"},
+				{"rules", "off", "compound-cd"},
+			} {
+				if _, err := runErr(t, args...); err == nil || err.Error() != want {
+					t.Fatalf("%v: err = %v", args, err)
+				}
 			}
 		})
+	}
+}
+
+// Codex user settings such as CODEX_HOME live in people's own shell profiles.
+// They must not lock the person out of approving rules.
+func TestRulesApproveAllowsCodexUserSettings(t *testing.T) {
+	withTempHome(t)
+	run(t, "rules", "add", "--template", "compound-cd")
+	stubRulesTerminal(t, "compound-cd")
+	t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), ".codex"))
+	t.Setenv("CODEX_API_KEY", "x")
+	if _, err := runErr(t, "rules", "approve", "compound-cd", "--mode", "warn"); err != nil {
+		t.Fatalf("approve with only Codex user settings set: %v", err)
+	}
+	if got := rulesActiveIDs(t, mustConfig(t)); len(got) != 1 || got[0] != "compound-cd" {
+		t.Fatalf("active = %v", got)
 	}
 }
 
@@ -317,6 +337,21 @@ func TestMCPCatalogHasNoRuleTool(t *testing.T) {
 			if path, _ := strconv.Unquote(imp.Path.Value); path == "github.com/pyranthus-hq/mora/internal/rules" {
 				t.Fatalf("%s imports internal/rules", f)
 			}
+		}
+	}
+}
+
+// The approval screen quotes any value a terminal would not print as itself.
+func TestRulesShowQuotesNonGraphic(t *testing.T) {
+	for in, want := range map[string]string{
+		`^\s*cd\s+[^;&|\n]*?\s*(&&|;)`: `^\s*cd\s+[^;&|\n]*?\s*(&&|;)`,
+		"plain message":                "plain message",
+		".|\rmatch: x":                 `".|\rmatch: x"`,
+		"a\x1b7b":                      `"a\x1b7b"`,
+		"a\u202eb":                     `"a\u202eb"`,
+	} {
+		if got := rulesShow(in); got != want {
+			t.Fatalf("rulesShow(%q) = %s, want %s", in, got, want)
 		}
 	}
 }

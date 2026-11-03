@@ -20,6 +20,11 @@ func TestValidate(t *testing.T) {
 	if err := Validate(base); err != nil {
 		t.Fatalf("template rule should validate: %v", err)
 	}
+	escaped := base
+	escaped.Spec.Match = `\r|\x1b|\x{202e}`
+	if err := Validate(escaped); err != nil {
+		t.Fatalf("regex escapes for control characters should validate: %v", err)
+	}
 	cases := []struct {
 		name string
 		edit func(*Rule)
@@ -32,7 +37,7 @@ func TestValidate(t *testing.T) {
 		{"newline in message", func(r *Rule) { r.Message = "one\ntwo" }, "message must be a single line"},
 		{"empty message", func(r *Rule) { r.Message = "" }, "message is required"},
 		{"untrimmed message", func(r *Rule) { r.Message = " x" }, "must not start or end with whitespace"},
-		{"control char", func(r *Rule) { r.Message = "a\x07b" }, "control characters"},
+		{"control char", func(r *Rule) { r.Message = "a\x07b" }, "control or format characters"},
 		{"tool Edit", func(r *Rule) { r.Spec.Tool = "Edit" }, `spec tool must be Bash, got "Edit"`},
 		{"version 2", func(r *Rule) { r.Spec.Version = 2 }, "spec version must be 1"},
 		{"no match", func(r *Rule) { r.Spec.Match = "" }, "spec match is required"},
@@ -44,6 +49,11 @@ func TestValidate(t *testing.T) {
 		{"bad exclude", func(r *Rule) { r.Spec.Exclude = "(?=x)" }, "exclude: lookahead"},
 		{"bad unless", func(r *Rule) { r.Spec.Unless = "(" }, "unless: error parsing regexp"},
 		{"multi-line title", func(r *Rule) { r.Title = "a\nb" }, "title must be a single trimmed line"},
+		{"raw CR in match", func(r *Rule) { r.Spec.Match = ".|\rmatch:    " + r.Spec.Match }, "match must not contain raw control or format characters"},
+		{"raw ESC in exclude", func(r *Rule) { r.Spec.Exclude = "\x1b7x\x1b8" }, "exclude must not contain raw control"},
+		{"bidi override in unless", func(r *Rule) { r.Spec.Unless = "a\u202eb" }, "unless must not contain raw control"},
+		{"bidi isolate in message", func(r *Rule) { r.Message = "a\u2066b" }, "control or format characters"},
+		{"bidi override in title", func(r *Rule) { r.Title = "a\u202eb" }, "title must be a single trimmed line"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

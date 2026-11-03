@@ -52,6 +52,13 @@ func Validate(r Rule) error {
 	if !idRE.MatchString(r.ID) {
 		return fmt.Errorf("invalid rule id %q: use 1 to 48 lowercase letters, digits or dashes, starting with a letter or digit", r.ID)
 	}
+	// A raw CR, ESC or bidi control in a pattern could make the approval
+	// screen show a different pattern. Authors write \r or \x1b instead.
+	for _, f := range []struct{ name, val string }{{"match", r.Spec.Match}, {"exclude", r.Spec.Exclude}, {"unless", r.Spec.Unless}} {
+		if hasControl(f.val) {
+			return fmt.Errorf("%s must not contain raw control or format characters; write them as regex escapes such as \\r or \\x1b", f.name)
+		}
+	}
 	if _, err := NewMatcher(r.ID, r.Spec); err != nil {
 		return err
 	}
@@ -79,13 +86,18 @@ func validateMessage(msg string) error {
 	case utf8.RuneCountInString(msg) > MaxMessageRunes:
 		return fmt.Errorf("message is %d characters; the limit is %d", utf8.RuneCountInString(msg), MaxMessageRunes)
 	case hasControl(msg):
-		return errors.New("message must not contain control characters")
+		return errors.New("message must not contain control or format characters")
 	}
 	return nil
 }
 
+// hasControl reports a control rune (Cc) or a format rune (Cf). Cf covers the
+// bidi overrides and isolates (U+202A to U+202E, U+2066 to U+2069), which can
+// reorder what a terminal shows.
 func hasControl(s string) bool {
-	return strings.IndexFunc(s, unicode.IsControl) >= 0
+	return strings.IndexFunc(s, func(r rune) bool {
+		return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
+	}) >= 0
 }
 
 // Hash is the approval key: sha256 over the id, the spec and the message,

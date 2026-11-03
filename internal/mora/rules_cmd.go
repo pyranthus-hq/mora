@@ -10,9 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
 
 	"github.com/mattn/go-isatty"
 	"github.com/pyranthus-hq/mora/internal/rules"
@@ -23,6 +25,9 @@ const rulesUsage = "usage: mora rules add|test|approve|off|list|compile"
 // rulesRefusal is printed when approve or off runs where an agent could have
 // typed it. Only a person at their own terminal may change what warns.
 const rulesRefusal = "refusing to change rule approval from a non-interactive shell or from inside an agent session. Run this in your own terminal."
+
+// rulesAgentRefusal names the variable that marked the shell as an agent's.
+const rulesAgentRefusal = "refusing to change rule approval from inside an agent session (%s is set). Run this in your own terminal."
 
 // rulesInteractive and rulesReadConfirm are swapped in tests. Production asks
 // for a real terminal on stdin, as confirmVaultRepoint does.
@@ -195,23 +200,34 @@ func cutArgs(args []string, sep string) ([]string, string, bool) {
 	return args, "", false
 }
 
-// rulesAgentSession reports whether this process runs inside Claude Code or
-// Codex, which set CLAUDECODE and CODEX_* in the shells they start.
-func rulesAgentSession() bool {
-	if os.Getenv("CLAUDECODE") != "" {
-		return true
-	}
-	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "CODEX_") {
-			return true
+// rulesAgentEnv lists the variables Claude Code and Codex set in the shells
+// they start. It is not a CODEX_ prefix check: CODEX_HOME, CODEX_API_KEY and
+// similar are user settings that people export in their own shell profile.
+var rulesAgentEnv = []string{
+	"CLAUDECODE",
+	"CODEX_SANDBOX",
+	"CODEX_SANDBOX_NETWORK_DISABLED",
+	"CODEX_THREAD_ID",
+	"CODEX_CI",
+}
+
+// rulesAgentSession returns the first agent-session variable that is set, or
+// "" when none is.
+func rulesAgentSession() string {
+	for _, key := range rulesAgentEnv {
+		if os.Getenv(key) != "" {
+			return key
 		}
 	}
-	return false
+	return ""
 }
 
 // rulesRequireTerminal refuses unless a person is at their own terminal.
 func rulesRequireTerminal(stdin io.Reader) error {
-	if rulesAgentSession() || !rulesInteractive(stdin) {
+	if key := rulesAgentSession(); key != "" {
+		return fmt.Errorf(rulesAgentRefusal, key)
+	}
+	if !rulesInteractive(stdin) {
 		return errors.New(rulesRefusal)
 	}
 	return nil
@@ -222,7 +238,7 @@ func rulesRequireTerminal(stdin io.Reader) error {
 func rulesConfirm(stdout io.Writer, stdin io.Reader, id string, lines [][2]string) error {
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	for _, l := range lines {
-		fmt.Fprintf(tw, "%s:\t%s\n", l[0], l[1])
+		fmt.Fprintf(tw, "%s:\t%s\n", l[0], rulesShow(l[1]))
 	}
 	_ = tw.Flush()
 	fmt.Fprintf(stdout, "Type the rule id (%s) to confirm: ", id)
@@ -231,6 +247,16 @@ func rulesConfirm(stdout io.Writer, stdin io.Reader, id string, lines [][2]strin
 		return errors.New("the typed id did not match; nothing changed")
 	}
 	return nil
+}
+
+// rulesShow quotes a value that holds a rune the terminal would not print as
+// itself, such as a carriage return, ESC or a bidi control, so the screen
+// cannot show a different pattern from the one being approved.
+func rulesShow(v string) string {
+	if strings.IndexFunc(v, func(r rune) bool { return !unicode.IsGraphic(r) }) >= 0 {
+		return strconv.Quote(v)
+	}
+	return v
 }
 
 func rulesApprove(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {

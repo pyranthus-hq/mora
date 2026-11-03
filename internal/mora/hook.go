@@ -376,7 +376,13 @@ func hookStatus(ctx context.Context, stdout io.Writer, jsonOutput ...bool) error
 	if err != nil {
 		return err
 	}
-	preTool, err := hookspkg.PreToolStatus(path)
+	// The PreToolUse hook is global only, so read it from the global settings
+	// even under --project.
+	globalPath, err := claudeSettingsPath(ctx)
+	if err != nil {
+		return err
+	}
+	preTool, err := hookspkg.PreToolStatus(globalPath)
 	if err != nil {
 		return err
 	}

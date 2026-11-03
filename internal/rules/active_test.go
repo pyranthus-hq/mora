@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -55,8 +56,11 @@ func TestLoadActiveRoundTrip(t *testing.T) {
 	if err := WriteActive(path, want); err != nil {
 		t.Fatal(err)
 	}
-	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("active.json mode: %v %v", fi, err)
+	// Windows reports 0666 for any writable file.
+	if runtime.GOOS != "windows" {
+		if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o600 {
+			t.Fatalf("active.json mode: %v %v", fi, err)
+		}
 	}
 	got, present, err := LoadActive(path)
 	if !present || err != nil {

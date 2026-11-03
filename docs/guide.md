@@ -780,12 +780,19 @@ spaces.
 
 Approval happens only in your own terminal. `rules approve` and `rules off`
 refuse to run when stdin is not a terminal or when they run inside a Claude
-Code or Codex session. They show the rule and ask you to type its id. An
-approval is bound to the rule's content hash and is stored per device in
+Code or Codex session (`CLAUDECODE`, `CODEX_SANDBOX`,
+`CODEX_SANDBOX_NETWORK_DISABLED`, `CODEX_THREAD_ID` or `CODEX_CI` is set).
+Codex settings that you export yourself, such as `CODEX_HOME`, do not count.
+They show the rule and ask you to type its id. An approval is bound to the
+rule's content hash and is stored per device in
 `~/.local/state/mora/rules/approvals.jsonl`, outside the vault. If the rule
 file changes later, `rules list` shows `changed since approval` and the next
 `mora rules compile` drops it until you approve it again. No MCP tool can add,
 approve or change a rule.
+
+This check stops an agent from turning on a rule by accident or in passing.
+It does not stop a determined process that runs as you: anything that can
+write to `~/.local/state/mora/rules` can change what warns.
 
 Modes:
 
