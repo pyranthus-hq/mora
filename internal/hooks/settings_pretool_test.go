@@ -206,3 +206,28 @@ func TestInstallPreToolRefusesNullSettings(t *testing.T) {
 		t.Fatalf("settings rewritten: %q", body)
 	}
 }
+
+// TestInstallRefusesNullHooks covers "hooks": null, which Load returns as a
+// nil map. Both installers used to panic writing into it. They now refuse
+// and leave the file alone, as InstallProjectRecall already did.
+func TestInstallRefusesNullHooks(t *testing.T) {
+	for name, install := range map[string]func(string) error{
+		"pre-tool": func(p string) error { return InstallPreTool(p, "/opt/mora") },
+		"session":  func(p string) error { return Install(p, "/opt/mora", 0) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := `{"theme":"dark","hooks":null}`
+			path := filepath.Join(t.TempDir(), "settings.json")
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := install(path); err == nil || !strings.Contains(err.Error(), "must be JSON objects") {
+				t.Fatalf("install over null hooks: %v", err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil || string(got) != body {
+				t.Fatalf("refused install changed settings: %s, %v", got, err)
+			}
+		})
+	}
+}

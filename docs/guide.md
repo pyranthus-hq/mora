@@ -775,13 +775,15 @@ mora rules add --id no-sudo --match '^\s*sudo\b' --message "Do not use sudo here
 Patterns are Go RE2. Lookahead, lookbehind and backreferences are refused
 with a hint: put text that must be absent in `--unless`, which is checked
 against the rest of the same simple command, or remove it first with
-`--exclude`. `\b` and `\w` are ASCII only. Unicode spaces count as plain
+`--exclude`. Only the first 64 matches in a command are checked against
+`--unless`, so a very long command stays fast. `\b` and `\w` are ASCII only. Unicode spaces count as plain
 spaces.
 
 Approval happens only in your own terminal. `rules approve` and `rules off`
 refuse to run when stdin is not a terminal or when they run inside a Claude
 Code or Codex session (`CLAUDECODE`, `CODEX_SANDBOX`,
-`CODEX_SANDBOX_NETWORK_DISABLED`, `CODEX_THREAD_ID` or `CODEX_CI` is set).
+`CODEX_SANDBOX_NETWORK_DISABLED`, `CODEX_THREAD_ID`, `CODEX_CI` or
+`CODEX_MANAGED_BY_NPM` is set).
 Codex settings that you export yourself, such as `CODEX_HOME`, do not count.
 They show the rule and ask you to type its id. An approval is bound to the
 rule's content hash and is stored per device in

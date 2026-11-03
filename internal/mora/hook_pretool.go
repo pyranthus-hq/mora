@@ -66,9 +66,6 @@ func hookPreToolUse(ctx context.Context, stdout io.Writer, stdin io.Reader) (err
 // hookPreToolWork parses the call, matches it against the active rules, logs
 // one row and returns the warning text ("" for nothing to say).
 func hookPreToolWork(ctx context.Context, stdin io.Reader, deps hookPreToolDeps) string {
-	if os.Getenv("MORA_TEST") == "1" && os.Getenv("MORA_TEST_PRETOOL_PANIC") == "1" {
-		panic("mora test: pre-tool-use worker panic")
-	}
 	raw, err := io.ReadAll(io.LimitReader(stdin, hookPreToolMaxInput+1))
 	if err != nil || len(raw) > hookPreToolMaxInput {
 		return ""

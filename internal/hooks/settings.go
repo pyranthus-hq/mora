@@ -183,6 +183,9 @@ func Install(path, exe string, threshold float64) error {
 	if err != nil {
 		return err
 	}
+	if settings == nil || groups == nil {
+		return fmt.Errorf("refusing to modify %s: settings and hooks must be JSON objects", path)
+	}
 	upsert(groups, "SessionStart", "session-start", Command{Type: "command", Command: shellQuote(exe) + " hook session-start " + Marker + ":session-start", Timeout: 15})
 	recall := shellQuote(exe) + " hook recall"
 	if threshold != 0 {
@@ -210,8 +213,8 @@ func InstallPreTool(path, exe string) error {
 	if err != nil {
 		return err
 	}
-	if settings == nil {
-		return fmt.Errorf("refusing to modify %s: settings must be a JSON object", path)
+	if settings == nil || groups == nil {
+		return fmt.Errorf("refusing to modify %s: settings and hooks must be JSON objects", path)
 	}
 	upsertMatcher(groups, "PreToolUse", "Bash", PreToolSub, Command{Type: "command", Command: PreToolCommand(exe), Timeout: 5})
 	settings["hooks"] = groups

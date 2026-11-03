@@ -377,14 +377,15 @@ func hookStatus(ctx context.Context, stdout io.Writer, jsonOutput ...bool) error
 		return err
 	}
 	// The PreToolUse hook is global only, so read it from the global settings
-	// even under --project.
-	globalPath, err := claudeSettingsPath(ctx)
-	if err != nil {
-		return err
-	}
-	preTool, err := hookspkg.PreToolStatus(globalPath)
-	if err != nil {
-		return err
+	// even under --project. A global file that cannot be read makes it
+	// "unknown" instead of failing a status read of another file.
+	preTool, preToolErr := "unknown", error(nil)
+	if globalPath, gerr := claudeSettingsPath(ctx); gerr != nil {
+		preToolErr = gerr
+	} else if st, perr := hookspkg.PreToolStatus(globalPath); perr != nil {
+		preToolErr = perr
+	} else {
+		preTool = st
 	}
 	if jsonOut {
 		events := make([]string, 0, 2)
@@ -402,6 +403,10 @@ func hookStatus(ctx context.Context, stdout io.Writer, jsonOutput ...bool) error
 	}
 	fmt.Fprintf(stdout, "SessionStart: %s\n", start)
 	fmt.Fprintf(stdout, "UserPromptSubmit: %s\n", recall)
+	if preToolErr != nil {
+		fmt.Fprintf(stdout, "PreToolUse: unknown (%v)\n", preToolErr)
+		return nil
+	}
 	fmt.Fprintf(stdout, "PreToolUse: %s\n", preTool)
 	return nil
 }

@@ -17,6 +17,9 @@ type Action struct {
 	Command   string
 }
 
+// maxUnlessChecks caps the match positions Hit checks against unless.
+const maxUnlessChecks = 64
+
 // Matcher is a rule spec with its regexes compiled.
 type Matcher struct {
 	ID      string
@@ -73,7 +76,10 @@ func (m *Matcher) Hit(a Action) bool {
 	}
 	// unless stands in for Python's (?![^;&|\n]*X) at the match end: a match
 	// counts only when X is absent from the rest of the same simple command.
-	for _, loc := range m.match.FindAllStringIndex(text, -1) {
+	// Each check scans to the end of its simple command, so only the first
+	// maxUnlessChecks match positions are tried. Without the cap a long command
+	// with many matches costs O(n^2) and runs past the hook's budget.
+	for _, loc := range m.match.FindAllStringIndex(text, maxUnlessChecks) {
 		seg := text[loc[1]:]
 		if i := strings.IndexAny(seg, ";&|\n"); i >= 0 {
 			seg = seg[:i]

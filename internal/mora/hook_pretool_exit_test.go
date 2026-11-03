@@ -2,7 +2,9 @@ package mora
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,7 +27,8 @@ func preToolSubprocessEnv(home string, extra ...string) []string {
 		}
 		env = append(env, kv)
 	}
-	return append(append(env, "HOME="+home, "USERPROFILE="+home), extra...)
+	env = append(env, "HOME="+home, "USERPROFILE="+home, "MORA_TEST_SUBPROCESS=1", "MORA_PRETOOL_WORKER=1")
+	return append(env, extra...)
 }
 
 type preToolExit struct {
@@ -52,25 +55,43 @@ func runPreToolProcess(t *testing.T, name string, args []string, env []string, s
 	return res
 }
 
-// TestHookPreToolExitCodes builds the real binary and proves the fail-open
-// contract at the process and shell level.
+// TestPreToolSubprocessWorker is the hook process for TestHookPreToolExitCodes.
+// The parent re-execs this test binary instead of building cmd/mora. With
+// MORA_PRETOOL_WORKER_PANIC set, the worker's load panics.
+func TestPreToolSubprocessWorker(t *testing.T) {
+	if os.Getenv("MORA_PRETOOL_WORKER") == "" {
+		t.Skip("not the subprocess worker")
+	}
+	if os.Getenv("MORA_PRETOOL_WORKER_PANIC") == "1" {
+		hookPreToolLoad = func(string) (rules.ActiveSet, bool, error) {
+			panic("mora test: pre-tool-use worker panic")
+		}
+	}
+	// Same exit handling as cmd/mora's main.
+	if err := Run(context.Background(), []string{"hook", "pre-tool-use"}, os.Stdout, os.Stderr, os.Stdin); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+// TestHookPreToolExitCodes runs the hook as its own process and proves the
+// fail-open contract at the process and shell level.
 func TestHookPreToolExitCodes(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the installed command is a POSIX sh line")
 	}
-	if testing.Short() {
-		t.Skip("builds the mora binary")
-	}
-	goBin, err := exec.LookPath("go")
+	self, err := os.Executable()
 	if err != nil {
-		t.Skip("go toolchain not on PATH")
+		t.Fatal(err)
 	}
 	dir := t.TempDir()
+	// bin stands in for the installed mora binary: a script that re-execs this
+	// test binary as the worker. Its args are ignored.
 	bin := filepath.Join(dir, "mora")
-	build := exec.Command(goBin, "build", "-o", bin, "./cmd/mora")
-	build.Dir = filepath.Join("..", "..")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
+	script := "#!/bin/sh\nexec '" + strings.ReplaceAll(self, "'", `'\''`) + "' -test.run=^TestPreToolSubprocessWorker$ -test.timeout=60s\n"
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
 	}
 	golden, err := os.ReadFile(filepath.Join("testdata", "hooks", "pretool_warn.golden"))
 	if err != nil {
@@ -99,7 +120,7 @@ func TestHookPreToolExitCodes(t *testing.T) {
 		}
 	})
 	subRun(t, "worker panic is recovered", func(t *testing.T) {
-		env := preToolSubprocessEnv(home, "MORA_TEST=1", "MORA_TEST_PRETOOL_PANIC=1")
+		env := preToolSubprocessEnv(home, "MORA_PRETOOL_WORKER_PANIC=1")
 		res := runPreToolProcess(t, bin, []string{"hook", "pre-tool-use"}, env, preToolInputS1)
 		if res.code != 0 || res.stderr != "" || res.stdout != "" {
 			t.Fatalf("got %+v", res)

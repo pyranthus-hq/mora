@@ -2,7 +2,9 @@ package rules
 
 import (
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 func mustMatcher(t *testing.T, id string, s Spec) *Matcher {
@@ -85,5 +87,20 @@ func TestMatchReturnsIDOrder(t *testing.T) {
 	}
 	if got := Match(nil, Action{Command: "ls"}); got == nil || len(got) != 0 {
 		t.Fatalf("Match(nil) = %#v, want empty non-nil", got)
+	}
+}
+
+// TestMatchUnlessLongCommand pins the cap on unless checks. Every match tail
+// below holds --no-verify, so without the cap each of the ~50k matches scans
+// the rest of the 200 KB command.
+func TestMatchUnlessLongCommand(t *testing.T) {
+	m := mustMatcher(t, "verify", Spec{Version: 1, Tool: "Bash", Match: `\bgit\b`, Unless: `--no-verify`})
+	cmd := "git commit" + strings.Repeat(" git", 50000) + " --no-verify"
+	start := time.Now()
+	if m.Hit(Action{Command: cmd}) {
+		t.Error("every tail holds --no-verify, want miss")
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("Hit took %v on a 200 KB command", d)
 	}
 }

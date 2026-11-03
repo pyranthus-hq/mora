@@ -209,6 +209,7 @@ var rulesAgentEnv = []string{
 	"CODEX_SANDBOX_NETWORK_DISABLED",
 	"CODEX_THREAD_ID",
 	"CODEX_CI",
+	"CODEX_MANAGED_BY_NPM",
 }
 
 // rulesAgentSession returns the first agent-session variable that is set, or
