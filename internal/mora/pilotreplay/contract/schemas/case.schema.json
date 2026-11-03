@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/pyranthus-hq/mora/schemas/pilotreplay/mora.pilotreplay.case.json",
+  "title": "mora.pilotreplay.case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "case_id",
+    "role",
+    "eligibility",
+    "cutoff",
+    "repository",
+    "harness",
+    "memory_snapshot",
+    "delivered_context",
+    "runner_package",
+    "oracle_package",
+    "controls",
+    "isolation_assumptions"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "case_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "role": {
+      "enum": [
+        "failure",
+        "valid_memory_control",
+        "no_relevant_memory_control"
+      ]
+    },
+    "eligibility": {
+      "type": "object"
+    },
+    "cutoff": {
+      "type": "object"
+    },
+    "repository": {
+      "type": "object"
+    },
+    "harness": {
+      "type": "object"
+    },
+    "memory_snapshot": {
+      "type": "object"
+    },
+    "delivered_context": {
+      "type": "object"
+    },
+    "runner_package": {
+      "type": "object"
+    },
+    "oracle_package": {
+      "type": "object"
+    },
+    "controls": {
+      "type": "object"
+    },
+    "isolation_assumptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "notes": {
+      "type": "string"
+    }
+  }
+}
