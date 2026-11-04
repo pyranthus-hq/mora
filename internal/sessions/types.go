@@ -22,11 +22,22 @@ type Call struct {
 	Command                                           string
 }
 
-// Denial is one Claude tool_result with a denial signal.
+// Kinds a reader sets itself, for signals with no toolDenialKind value.
+const (
+	KindUntypedRejection = "untyped-rejection" // older Bash rejection, known only from its text
+	// These name no command, so their Denial has no Tool. ToolUseID holds the
+	// turn or call id when there is one.
+	KindBetweenCalls       = "interrupted-between-calls"
+	KindCodexTurnInterrupt = "codex-turn-interrupt"
+	KindCodexPatchDeclined = "codex-patch-declined"
+)
+
+// Denial is one tool_result with a denial signal, or one of the events above.
+// Sending them here lets the Visitor drop copies and apply Since.
 type Denial struct {
 	SessionID, AgentID, ToolUseID, MessageID string
 	TS, FileFirst                            time.Time
-	Kind                                     string // toolDenialKind, or "interrupted" from the Bash flag
+	Kind                                     string // toolDenialKind, "interrupted" from the Bash flag, or a Kind above
 	Tool                                     string // joined from the tool_use in the same file
 	Subagent                                 bool
 	Shutdown                                 bool
@@ -55,8 +66,16 @@ type Visitor interface {
 	Denial(Denial)
 }
 
+// LockingVisitor is a Visitor that locks for itself, so Scan does not. Its slow
+// work can then run on every worker.
+type LockingVisitor interface {
+	Visitor
+	LocksItself()
+}
+
 // Stats holds counts only. Every field must stay an int, because add sums them
-// by position.
+// by position. The counts here are per line, so copies in forks and lines older
+// than Since are included.
 type Stats struct {
 	FilesRead               int `json:"files_read"`
 	FilesSkippedOld         int `json:"files_skipped_old"`

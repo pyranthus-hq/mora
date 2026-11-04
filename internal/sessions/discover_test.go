@@ -232,6 +232,73 @@ func TestClaudeSymlinksAreNotFollowed(t *testing.T) {
 	}
 }
 
+// A symlink under Home must not take the scan out of Home, by any route.
+func TestSymlinkOutOfHomeIsNotRead(t *testing.T) {
+	cases := []struct {
+		name string
+		link string // relative to Home, and it points at the outside folder
+		env  string
+	}{
+		{"CLAUDE_CONFIG_DIR", "link", "CLAUDE_CONFIG_DIR"},
+		{"CODEX_HOME", "link", "CODEX_HOME"},
+		{"ORCA_USER_DATA_PATH", "link", "ORCA_USER_DATA_PATH"},
+		{"claude folder", ".claude", ""},
+		{"codex folder", ".codex", ""},
+		{"orca folder", ".config/orca", ""},
+		{"account home", ".config/orca/codex-accounts/acct/home", ""},
+		{"runtime home", ".config/orca/codex-runtime-home/home", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			home, outside := t.TempDir(), t.TempDir()
+			claude := bash("t1", "ls")
+			codex := codexMetaLine + customExec("c1", `tools.exec_command({cmd: "ls"})`)
+			writeFile(t, filepath.Join(outside, "projects", "p", "s1.jsonl"), claude)
+			writeFile(t, filepath.Join(outside, "sessions", "rollout-a.jsonl"), codex)
+			writeFile(t, filepath.Join(outside, "codex-runtime-home", "home", "sessions", "rollout-b.jsonl"), codex)
+			link := filepath.Join(home, filepath.FromSlash(c.link))
+			mkdirs(t, filepath.Dir(link))
+			symlink(t, outside, link)
+			env := map[string]string{}
+			if c.env != "" {
+				env[c.env] = link
+			}
+			rec := &recorder{}
+			st, err := Scan(t.Context(), Options{Home: home, Getenv: envOf(env)}, rec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rec.calls) != 0 || st.FilesRead != 0 || st.SymlinksSkipped == 0 {
+				t.Fatalf("calls=%d stats=%+v", len(rec.calls), st)
+			}
+		})
+	}
+}
+
+// A link that stays inside Home is how a home can be moved, so it still reads.
+func TestSymlinkInsideHomeIsRead(t *testing.T) {
+	home := t.TempDir()
+	real := filepath.Join(home, "elsewhere", "codex")
+	writeFile(t, filepath.Join(real, "sessions", "rollout-a.jsonl"), codexMetaLine+customExec("c1", `tools.exec_command({cmd: "ls"})`))
+	symlink(t, real, filepath.Join(home, ".codex"))
+	rec, st := scanHome(t, home)
+	if len(rec.calls) != 1 || st.SymlinksSkipped != 0 {
+		t.Fatalf("calls=%d stats=%+v", len(rec.calls), st)
+	}
+}
+
+// Home itself can be a link, as /home often is. Its transcripts are inside it.
+func TestLinkedHomeIsRead(t *testing.T) {
+	real, parent := t.TempDir(), t.TempDir()
+	writeFile(t, claudeFile(real, "s1.jsonl"), bash("t1", "ls"))
+	home := filepath.Join(parent, "home")
+	symlink(t, real, home)
+	rec, st := scanHome(t, home)
+	if len(rec.calls) != 1 || st.SymlinksSkipped != 0 {
+		t.Fatalf("calls=%d stats=%+v", len(rec.calls), st)
+	}
+}
+
 func TestSinceSkipsOldFiles(t *testing.T) {
 	home := t.TempDir()
 	old := writeFile(t, claudeFile(home, "old.jsonl"), bash("t1", "ls"))

@@ -830,8 +830,10 @@ mora check --json
 
 The output is safe to paste. It holds counts, dates and fixed table text only:
 no command, argument, path, prompt, host name or session id. By default it
-reads every transcript on disk. It opens only the transcript files, never
-follows a symlink and uses no network.
+reads every transcript on disk. It opens only the transcript files and uses no
+network. It never follows a symlink to a transcript file or folder. A link such
+as `~/.codex` is followed only when it stays inside your home folder. Anything
+skipped shows up as `Symlinks skipped`.
 
 A correction here means one of two things that Claude Code records in a typed
 field: you said no at a permission prompt, or you pressed Esc while a tool ran.
@@ -854,6 +856,11 @@ rejection. A fork or a resume of the same conversation does not count, and
 neither does a session that was already running. A later call counts whether
 it ran, was rejected again or was blocked, because the number is about what
 the agent tried.
+
+With `--since`, Mora still looks at older records in the files it opens, to see
+when a session began and which commands were already rejected. It does not open
+a file last written before the cut, so a rejection in such a file is unseen and
+its command can land in the baseline.
 
 The baseline asks the same question about commands nobody rejected or
 interrupted. A rate close to the baseline means the correction changed nothing

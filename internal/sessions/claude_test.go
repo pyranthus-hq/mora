@@ -225,8 +225,13 @@ func TestUntypedRejections(t *testing.T) {
 			home := t.TempDir()
 			writeFile(t, claudeFile(home, "s1.jsonl"), tc.body)
 			rec, st := scanHome(t, home)
-			if st.UntypedRejections != tc.want || len(rec.denials) != 0 {
+			if st.UntypedRejections != tc.want || len(rec.denials) != tc.want {
 				t.Fatalf("denials=%d stats=%+v", len(rec.denials), st)
+			}
+			for _, d := range rec.denials {
+				if d.Kind != KindUntypedRejection || d.Tool != "Bash" || d.ToolUseID != "t1" {
+					t.Fatalf("denial %+v", d)
+				}
 			}
 		})
 	}

@@ -28,6 +28,8 @@ func TestClassify(t *testing.T) {
 		{"auto mode blocked", sessions.Denial{Kind: "automode-blocked"}, "", BlockedByAutoMode},
 		{"auto mode unavailable", sessions.Denial{Kind: "automode-unavailable"}, "", BlockedByAutoMode},
 		{"auto mode parse error", sessions.Denial{Kind: "automode-parsing-error"}, "", BlockedByAutoMode},
+		{"no typed field", sessions.Denial{Kind: sessions.KindUntypedRejection}, "", UntypedRejections},
+		{"between tool calls", sessions.Denial{Kind: sessions.KindBetweenCalls}, "", InterruptedBetweenCalls},
 		{"unknown", sessions.Denial{Kind: "future-kind"}, "", UnknownDenialKinds},
 		{"empty", sessions.Denial{}, "", UnknownDenialKinds},
 	}
@@ -39,9 +41,11 @@ func TestClassify(t *testing.T) {
 	}
 }
 
-func TestStatsRowsReachNotCounted(t *testing.T) {
-	r := NewCorpus(zeroTime).Report(sessions.Stats{InterruptedBetweenCalls: 2, UntypedRejections: 3})
-	if r.NotCounted.InterruptedBetweenCalls != 2 || r.NotCounted.UntypedRejections != 3 {
-		t.Errorf("NotCounted = %+v", r.NotCounted)
+// The per-line counts in Stats include copies and old lines, so the report must
+// not use them.
+func TestRawStatsDoNotReachNotCounted(t *testing.T) {
+	r := NewCorpus(zeroTime).Report(sessions.Stats{InterruptedBetweenCalls: 2, UntypedRejections: 3, CodexTurnInterrupts: 4, CodexPatchesDeclined: 5})
+	if r.NotCounted != (NotCounted{}) || r.Read.Stats != (sessions.Stats{}) {
+		t.Errorf("NotCounted = %+v, Read = %+v", r.NotCounted, r.Read)
 	}
 }

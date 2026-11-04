@@ -419,6 +419,9 @@ func TestCheckBadFlags(t *testing.T) {
 		{[]string{"check", "--since", "nope"}, errCodeUsageUnknownValue},
 		{[]string{"check", "--since", "0d"}, errCodeUsageUnknownValue},
 		{[]string{"check", "--since", "-1d"}, errCodeUsageUnknownValue},
+		{[]string{"check", "--since", ""}, errCodeUsageUnknownValue},
+		{[]string{"check", "--since="}, errCodeUsageUnknownValue},
+		{[]string{"check", "--since", "0001-01-01"}, errCodeUsageUnknownValue},
 		{[]string{"check", "--since", "999999999d"}, errCodeUsageUnknownValue},
 		{[]string{"check", "extra"}, errCodeUsageUnknownValue},
 		{[]string{"check", "--bogus"}, errCodeUsageUnknownFlag},
@@ -449,7 +452,7 @@ func TestParseSince(t *testing.T) {
 			t.Errorf("%s: got %v, %v", c.value, got, err)
 		}
 	}
-	for _, bad := range []string{"", "d", "h", "5", "5w", "5.5d", "2026-13-01", "2026-11", "9999999999h"} {
+	for _, bad := range []string{"", "d", "h", "5", "5w", "5.5d", "2026-13-01", "2026-11", "9999999999h", "0001-01-01"} {
 		if _, err := parseSince(bad, now); err == nil {
 			t.Errorf("%q should be refused", bad)
 		}
@@ -476,6 +479,75 @@ func TestCheckUnreadableFile(t *testing.T) {
 	}
 	if stderr != "" || strings.Contains(stdout, "sess-a") || strings.Contains(stdout, "fake-work") {
 		t.Errorf("a path leaked: stderr = %q", stderr)
+	}
+}
+
+// Only the home folder matters to check, and a config error can hold a path or
+// a value. So none of these may stop the scan or reach stderr.
+func TestCheckBrokenConfig(t *testing.T) {
+	cases := map[string]func(t *testing.T, path string){
+		"bad value": func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte(`mcp_write_policy = "`+checkCanary+`"`+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"a folder": func(t *testing.T, path string) {
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"unreadable": func(t *testing.T, path string) {
+			if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+				t.Skip("file modes do not stop this user from reading")
+			}
+			if err := os.WriteFile(path, nil, 0); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, plant := range cases {
+		t.Run(name, func(t *testing.T) {
+			withTempHome(t)
+			copyCheckFixture(t, "claude")
+			cfg := mustConfig(t)
+			if err := os.MkdirAll(cfg.ConfigDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			plant(t, filepath.Join(cfg.ConfigDir, "config.toml"))
+			stdout, stderr, err := runSplit(t, "check")
+			if err != nil {
+				t.Fatalf("err = %v", err)
+			}
+			if stderr != "" || !strings.Contains(stdout, "  Files read: 6\n") {
+				t.Errorf("stderr = %q, stdout:\n%s", stderr, stdout)
+			}
+			assertNoCanary(t, "stdout", stdout)
+			assertNoCanary(t, "stderr", stderr)
+			for _, s := range []string{cfg.ConfigDir, cfg.HomeDir(), "config.toml"} {
+				if strings.Contains(stdout, s) {
+					t.Errorf("stdout holds %q", s)
+				}
+			}
+		})
+	}
+}
+
+// Links are not followed, but that must not read as "nothing here".
+func TestCheckSymlinkedRootIsNotEmptyHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need a privilege on Windows")
+	}
+	withTempHome(t)
+	home := mustConfig(t).HomeDir()
+	if err := os.Mkdir(filepath.Join(home, ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(home, ".claude", "projects")); err != nil {
+		t.Fatal(err)
+	}
+	out := run(t, "check")
+	if strings.Contains(out, "No Claude Code or Codex transcripts found.") || !strings.Contains(out, "  Symlinks skipped: 1\n") {
+		t.Errorf("output:\n%s", out)
 	}
 }
 

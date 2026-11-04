@@ -10,12 +10,14 @@ const (
 
 // Reasons a denial is not a correction. Each is its JSON name in not_counted.
 const (
-	CancelledSiblings     = "cancelled_siblings"
-	BlockedByRule         = "blocked_by_rule"
-	BlockedByAutoMode     = "blocked_by_auto_mode"
-	InterruptedInSubagent = "interrupted_in_subagent"
-	InterruptedNotHuman   = "interrupted_not_human"
-	UnknownDenialKinds    = "unknown_denial_kinds"
+	CancelledSiblings       = "cancelled_siblings"
+	BlockedByRule           = "blocked_by_rule"
+	BlockedByAutoMode       = "blocked_by_auto_mode"
+	InterruptedInSubagent   = "interrupted_in_subagent"
+	InterruptedNotHuman     = "interrupted_not_human"
+	InterruptedBetweenCalls = "interrupted_between_calls"
+	UntypedRejections       = "untyped_rejections"
+	UnknownDenialKinds      = "unknown_denial_kinds"
 )
 
 // Classify is section 3.7 of the spec as a pure function, for the rows that
@@ -39,6 +41,10 @@ func Classify(d sessions.Denial) (kind, notCounted string) {
 		return "", BlockedByRule
 	case "automode-blocked", "automode-unavailable", "automode-parsing-error":
 		return "", BlockedByAutoMode
+	case sessions.KindUntypedRejection:
+		return "", UntypedRejections
+	case sessions.KindBetweenCalls:
+		return "", InterruptedBetweenCalls
 	}
 	return "", UnknownDenialKinds
 }

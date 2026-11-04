@@ -125,18 +125,20 @@ func claudeRoots(o Options, st *Stats) []string {
 		}
 		keep = append(keep, root)
 	}
-	return uniqueDirs(keep)
+	return uniqueDirs(o, st, keep)
 }
 
-// envUnderHome returns an environment path only when it lies inside Home, so a
-// temp HOME can never reach a real transcript through an inherited variable.
+// under reports whether path is root or lies inside it. Both must be clean.
+func under(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// envUnderHome returns an environment path only when its text lies inside Home.
+// uniqueDirs then checks where it really leads.
 func envUnderHome(o Options, key string) string {
 	v := o.getenv(key)
-	if v == "" || !filepath.IsAbs(v) {
-		return ""
-	}
-	rel, err := filepath.Rel(filepath.Clean(o.Home), filepath.Clean(v))
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if v == "" || !filepath.IsAbs(v) || !under(filepath.Clean(o.Home), filepath.Clean(v)) {
 		return ""
 	}
 	return v
@@ -173,24 +175,35 @@ func codexHomes(o Options, st *Stats) []string {
 			}
 		}
 	}
-	return uniqueDirs(homes)
+	return uniqueDirs(o, st, homes)
 }
 
-// uniqueDirs keeps the directories that exist, once each by resolved path.
-func uniqueDirs(dirs []string) []string {
+// uniqueDirs keeps the directories that exist, once each by resolved path. A
+// path that a symlink takes out of Home is dropped and counted, so a temp HOME
+// can never reach a real transcript. A link that stays inside Home is kept.
+func uniqueDirs(o Options, st *Stats, dirs []string) []string {
+	home := filepath.Clean(o.Home)
+	if resolved, err := filepath.EvalSymlinks(home); err == nil {
+		home = resolved
+	}
 	var out []string
 	seen := map[string]bool{}
 	for _, dir := range dirs {
 		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 			continue
 		}
-		key := filepath.Clean(dir)
-		if resolved, err := filepath.EvalSymlinks(key); err == nil {
-			key = resolved
+		key, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			continue
 		}
-		if !seen[key] {
-			seen[key] = true
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if under(home, key) {
 			out = append(out, filepath.Clean(dir))
+		} else {
+			st.SymlinksSkipped++
 		}
 	}
 	return out

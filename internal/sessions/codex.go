@@ -47,6 +47,8 @@ type codexItem struct {
 type codexEvent struct {
 	Type   string          `json:"type"`
 	Status json.RawMessage `json:"status"`
+	TurnID json.RawMessage `json:"turn_id"`
+	CallID json.RawMessage `json:"call_id"`
 }
 
 // codexReader holds the state of one file.
@@ -122,10 +124,23 @@ func (r *codexReader) event(l *codexLine) error {
 	switch {
 	case e.Type == "turn_aborted":
 		r.st.CodexTurnInterrupts++
+		r.emitEvent(l, KindCodexTurnInterrupt, e.TurnID)
 	case e.Type == "patch_apply_end" && string(e.Status) == `"declined"`:
 		r.st.CodexPatchesDeclined++
+		r.emitEvent(l, KindCodexPatchDeclined, e.CallID)
 	}
 	return nil
+}
+
+// emitEvent sends an event that names no command, so the Visitor can drop its
+// copies. id is raw JSON, used only to match copies.
+func (r *codexReader) emitEvent(l *codexLine, kind string, id json.RawMessage) {
+	ts, err := parseTS(l.Timestamp)
+	if err != nil {
+		r.st.BadTimestamps++
+		return
+	}
+	r.v.Denial(Denial{SessionID: r.sessionID(), ToolUseID: string(id), TS: ts, FileFirst: r.first, Kind: kind})
 }
 
 func (r *codexReader) item(l *codexLine) error {

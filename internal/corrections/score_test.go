@@ -189,7 +189,7 @@ func TestCopyKeepsLowestOrigin(t *testing.T) {
 		c := NewCorpus(zeroTime)
 		c.Call(order[0])
 		c.Call(order[1])
-		held := c.calls[callRef{sessions.HarnessClaude, "t1"}]
+		held := c.calls[newCallID(sessions.HarnessClaude, "t1")]
 		if got := c.refs[held.session].id; got != "b" {
 			t.Errorf("kept session %q, want b", got)
 		}
@@ -420,5 +420,192 @@ func TestSinceKeepsLinksFromOldCalls(t *testing.T) {
 	}
 	if r.Read.CopiedCalls != 0 {
 		t.Errorf("CopiedCalls = %d, want 0 for calls outside the window", r.Read.CopiedCalls)
+	}
+}
+
+// A session already running at the correction is not later, even when --since
+// cuts off the calls that show it was running.
+func TestParallelSessionCutBySinceIsNotLater(t *testing.T) {
+	c := NewCorpus(hour(2))
+	c.Call(bash("p", "t0", "ls", hour(0)))
+	c.Call(bash("z", "t1", "git push --force origin main", hour(3)))
+	c.Denial(rejected("z", "t1", hour(3)))
+	c.Call(bash("p", "t2", "git push --force origin main", hour(4)))
+	r := c.Report(sessions.Stats{})
+	if r.Repeat.Eligible != 0 || r.Repeat.SameCommand != 0 || r.Repeat.Rate != nil || len(r.Top) != 0 {
+		t.Errorf("Repeat = %+v, Top = %+v", r.Repeat, r.Top)
+	}
+}
+
+// A session that starts after since still counts as later.
+func TestSinceKeepsSessionsThatStartInside(t *testing.T) {
+	c := NewCorpus(hour(2))
+	c.Call(bash("a", "t1", "npm publish", hour(3)))
+	c.Denial(rejected("a", "t1", hour(3)))
+	c.Call(bash("b", "t2", "npm publish", hour(4)))
+	if r := c.Report(sessions.Stats{}); r.Repeat.Eligible != 1 || r.Repeat.SameCommand != 1 {
+		t.Errorf("Repeat = %+v", r.Repeat)
+	}
+}
+
+// A command rejected before since was still rejected, so it is not baseline.
+func TestBaselineExcludesCorrectionsBeforeSince(t *testing.T) {
+	c := NewCorpus(hour(2))
+	c.Call(bash("a", "t1", "make release", hour(0)))
+	c.Denial(rejected("a", "t1", hour(1)))
+	c.Call(bash("u", "t2", "make release", hour(3)))
+	c.Call(bash("v", "t3", "make release", hour(4)))
+	r := c.Report(sessions.Stats{})
+	if r.Repeat.BaselinePairs != 0 || r.Repeat.BaselineRate != nil || r.Corrections.BashRejected != 0 || r.Repeat.Scored != 0 {
+		t.Errorf("Report = %+v", r)
+	}
+}
+
+// A rejection just inside the window is scored, though its call came just before.
+func TestDenialInsideSinceScoresAnOldCall(t *testing.T) {
+	c := NewCorpus(hour(2))
+	c.Call(bash("a", "t1", "make deploy", hour(1)))
+	c.Denial(rejected("a", "t1", hour(3)))
+	c.Call(bash("b", "t2", "make deploy", hour(4)))
+	c.Call(bash("d", "t3", "make deploy", hour(5)))
+	r := c.Report(sessions.Stats{})
+	if r.Corrections.BashRejected != 1 || r.Repeat.Scored != 1 || r.Repeat.Eligible != 1 || r.Repeat.SameCommand != 1 {
+		t.Errorf("Report = %+v", r)
+	}
+	if r.Repeat.BaselinePairs != 0 {
+		t.Errorf("a rejected command reached the baseline: %+v", r.Repeat)
+	}
+}
+
+// The count must not depend on which copy arrives first, even when since falls
+// between two copies that carry different timestamps.
+func TestCopiedCallsIgnoreOrder(t *testing.T) {
+	a, b := bash("a", "t1", "git status", hour(0)), bash("b", "t1", "git status", hour(4))
+	c, d := bash("a", "t2", "git status", hour(3)), bash("b", "t2", "git status", hour(4))
+	for _, order := range [][]sessions.Call{{a, b, c, d}, {b, a, d, c}, {b, c, a, d}} {
+		corpus := NewCorpus(hour(2))
+		for _, call := range order {
+			corpus.Call(call)
+		}
+		if got := corpus.Report(sessions.Stats{}).Read.CopiedCalls; got != 1 {
+			t.Errorf("CopiedCalls = %d, want 1 for the pair whose kept copy is inside the window", got)
+		}
+	}
+}
+
+func event(session, kind, id string, at time.Time) sessions.Denial {
+	return sessions.Denial{SessionID: session, ToolUseID: id, TS: at, FileFirst: at, Kind: kind}
+}
+
+func TestCopiedEventsCountOnce(t *testing.T) {
+	c := NewCorpus(zeroTime)
+	for _, s := range []string{"a", "fork-1", "fork-2"} {
+		c.Denial(event(s, sessions.KindBetweenCalls, "", hour(0)))
+		c.Denial(event(s, sessions.KindCodexTurnInterrupt, "turn-1", hour(1)))
+		c.Denial(event(s, sessions.KindCodexPatchDeclined, "call-1", hour(1)))
+		u := event(s, sessions.KindUntypedRejection, "t1", hour(1))
+		u.Tool = "Bash"
+		c.Denial(u)
+	}
+	// Another interrupt at another time is another event.
+	c.Denial(event("a", sessions.KindBetweenCalls, "", hour(2)))
+	r := c.Report(sessions.Stats{})
+	if r.NotCounted.InterruptedBetweenCalls != 2 || r.NotCounted.UntypedRejections != 1 {
+		t.Errorf("NotCounted = %+v", r.NotCounted)
+	}
+	if r.Read.InterruptedBetweenCalls != 2 || r.Read.UntypedRejections != 1 || r.Read.CodexTurnInterrupts != 1 || r.Read.CodexPatchesDeclined != 1 {
+		t.Errorf("Read = %+v", r.Read)
+	}
+	if r.Corrections != (Counts{}) || r.Repeat.Scored != 0 {
+		t.Errorf("an event became a correction: %+v", r)
+	}
+}
+
+func TestSinceDropsOldEvents(t *testing.T) {
+	c := NewCorpus(hour(2))
+	for _, kind := range []string{sessions.KindBetweenCalls, sessions.KindCodexTurnInterrupt, sessions.KindCodexPatchDeclined, sessions.KindUntypedRejection} {
+		c.Denial(event("a", kind, kind, hour(1)))
+	}
+	r := c.Report(sessions.Stats{})
+	if r.NotCounted != (NotCounted{}) || r.Read.Stats != (sessions.Stats{}) {
+		t.Errorf("NotCounted = %+v, Read = %+v", r.NotCounted, r.Read)
+	}
+}
+
+func writeTranscript(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func scanInto(t *testing.T, home string, c *Corpus) sessions.Stats {
+	t.Helper()
+	st, err := sessions.Scan(t.Context(), sessions.Options{Home: home, Getenv: func(string) string { return "" }}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+// Port of test_copied_bash_calls_keep_original_when_fork_path_sorts_first.
+func TestCopiedBashCallsKeepOriginalWhenForkPathSortsFirst(t *testing.T) {
+	home := t.TempDir()
+	later := "2026-01-01T00:01:00Z"
+	claudeCall := func(session string) string {
+		return `{"type":"assistant","timestamp":"` + later + `","sessionId":"` + session +
+			`","message":{"id":"m","content":[{"type":"tool_use","id":"shared-claude","name":"Bash","input":{"command":"echo fake"}}]}}` + "\n"
+	}
+	project := filepath.Join(home, ".claude", "projects", "-fake-work")
+	// The first line gives each file its first timestamp, with no type.
+	writeTranscript(t, filepath.Join(project, "a-fork.jsonl"), `{"timestamp":"2026-01-02T00:00:00Z"}`+"\n"+claudeCall("fork-session"))
+	writeTranscript(t, filepath.Join(project, "z-original.jsonl"), `{"timestamp":"2026-01-01T00:00:00Z"}`+"\n"+claudeCall("original-session"))
+	meta := func(id, ts string) string {
+		return `{"timestamp":"` + ts + `","type":"session_meta","payload":{"id":"` + id + `","timestamp":"` + ts + `"}}` + "\n"
+	}
+	shell := `{"timestamp":"` + later + `","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"shared-codex","arguments":"{\"cmd\":\"echo fake\"}"}}` + "\n"
+	rollouts := filepath.Join(home, ".codex", "sessions")
+	writeTranscript(t, filepath.Join(rollouts, "rollout-a-fork.jsonl"), meta("fork-thread", "2026-01-02T00:00:00Z")+shell)
+	writeTranscript(t, filepath.Join(rollouts, "rollout-z-original.jsonl"), meta("original-thread", "2026-01-01T00:00:00Z")+shell)
+	c := NewCorpus(zeroTime)
+	r := c.Report(scanInto(t, home, c))
+	if r.Read.CopiedCalls != 2 {
+		t.Errorf("CopiedCalls = %d", r.Read.CopiedCalls)
+	}
+	for harness, want := range map[string][2]string{
+		sessions.HarnessClaude: {"shared-claude", "original-session"},
+		sessions.HarnessCodex:  {"shared-codex", "original-thread"},
+	} {
+		held := c.calls[newCallID(harness, want[0])]
+		if got := c.refs[held.session].id; got != want[1] {
+			t.Errorf("%s kept session %q, want %q", harness, got, want[1])
+		}
+	}
+}
+
+// One marker and one untyped rejection, copied into two forks, through Scan.
+func TestForkedEventsCountOnceFromFiles(t *testing.T) {
+	home := t.TempDir()
+	lines := func(session string) string {
+		id := `"sessionId":"` + session + `"`
+		return `{"type":"assistant","timestamp":"2026-10-01T10:00:00.000Z",` + id + `,"message":{"id":"m1","content":[{"type":"tool_use","id":"u1","name":"Bash","input":{"command":"ls"}}]}}` + "\n" +
+			`{"type":"user","timestamp":"2026-10-01T10:00:01.000Z",` + id + `,"message":{"content":[{"type":"tool_result","content":"The user doesn't want to proceed with this tool use.","is_error":true,"tool_use_id":"u1"}]}}` + "\n" +
+			`{"type":"user","timestamp":"2026-10-01T10:00:02.000Z",` + id + `,"message":{"content":[{"type":"text","text":"[Request interrupted by user]"}]}}` + "\n"
+	}
+	for _, s := range []string{"one", "fork-a", "fork-b"} {
+		writeTranscript(t, filepath.Join(home, ".claude", "projects", "-fake-work", s+".jsonl"), lines(s))
+	}
+	c := NewCorpus(zeroTime)
+	r := c.Report(scanInto(t, home, c))
+	if r.NotCounted.InterruptedBetweenCalls != 1 || r.NotCounted.UntypedRejections != 1 || r.Read.CopiedCalls != 2 {
+		t.Errorf("NotCounted = %+v, CopiedCalls = %d", r.NotCounted, r.Read.CopiedCalls)
+	}
+	since := NewCorpus(time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC))
+	r = since.Report(scanInto(t, home, since))
+	if r.NotCounted != (NotCounted{}) {
+		t.Errorf("with since, NotCounted = %+v", r.NotCounted)
 	}
 }

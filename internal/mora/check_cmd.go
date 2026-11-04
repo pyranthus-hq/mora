@@ -35,14 +35,19 @@ func cmdCheck(ctx context.Context, args []string, stdout, _ io.Writer) error {
 		return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
 	}
 	var since time.Time
-	if *sinceFlag != "" {
-		var err error
-		if since, err = parseSince(*sinceFlag, time.Now()); err != nil {
-			return newMoraError(errCodeUsageUnknownValue, "usage", err, "%v", err)
+	var err error
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "since" {
+			since, err = parseSince(*sinceFlag, time.Now())
 		}
-	}
-	cfg, err := loadConfigFor(ctx)
+	})
 	if err != nil {
+		return newMoraError(errCodeUsageUnknownValue, "usage", err, "%v", err)
+	}
+	// Only the home folder matters here. The config keeps it on every error, and
+	// such an error can hold a path or a config value, so it is not passed on.
+	cfg, _ := loadConfigFor(ctx)
+	if err := hermeticityGuard(cfg); err != nil {
 		return err
 	}
 	corpus := corrections.NewCorpus(since)
@@ -62,7 +67,7 @@ func cmdCheck(ctx context.Context, args []string, stdout, _ io.Writer) error {
 // report dates are UTC.
 func parseSince(value string, now time.Time) (time.Time, error) {
 	usage := errors.New("--since wants <n>d, <n>h or YYYY-MM-DD, such as 30d, 24h or 2026-11-01")
-	if t, err := time.Parse("2006-01-02", value); err == nil {
+	if t, err := time.Parse(time.DateOnly, value); err == nil && !t.IsZero() {
 		return t, nil
 	}
 	hoursPerUnit := 0
@@ -85,7 +90,7 @@ func printCheck(w io.Writer, r corrections.Report) {
 	line := func(format string, args ...any) { fmt.Fprintf(w, format+"\n", args...) }
 	line("%s", checkHeader)
 	notes := r.Read
-	if notes.FilesRead+notes.EmptyFiles+notes.UnreadableFiles+notes.FilesSkippedOld == 0 {
+	if notes.FilesRead+notes.EmptyFiles+notes.UnreadableFiles+notes.FilesSkippedOld+notes.SymlinksSkipped == 0 {
 		line("No Claude Code or Codex transcripts found.")
 		return
 	}
@@ -139,6 +144,9 @@ func printCheck(w io.Writer, r corrections.Report) {
 	line("  Files read: %d", notes.FilesRead)
 	line("  Empty files: %d", notes.EmptyFiles)
 	line("  Unreadable files: %d", notes.UnreadableFiles)
+	if notes.SymlinksSkipped > 0 {
+		line("  Symlinks skipped: %d", notes.SymlinksSkipped)
+	}
 	line("  Unknown records skipped: %d", notes.UnknownRecords)
 	line("  Malformed lines skipped: %d", notes.MalformedLines)
 	line("  Partial last lines: %d", notes.PartialLastLines)

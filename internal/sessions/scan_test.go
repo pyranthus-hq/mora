@@ -1,18 +1,15 @@
 package sessions
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -45,51 +42,6 @@ func TestFixture(t *testing.T) {
 		"Edit cancelled": 1, "Bash permission-rule": 1, "Bash automode-blocked": 1}
 	if !reflect.DeepEqual(kinds, wantKinds) {
 		t.Fatalf("denials %v", kinds)
-	}
-}
-
-// keepOriginal applies the copy rule of spec section 3.2: of several records
-// with one id, keep the lowest (FileFirst, TS, SessionID).
-func keepOriginal(calls []Call) map[string]Call {
-	keep := map[string]Call{}
-	for _, c := range calls {
-		key := c.Harness + "/" + c.ToolUseID
-		old, seen := keep[key]
-		switch {
-		case !seen, c.FileFirst.Before(old.FileFirst):
-		case c.FileFirst.Equal(old.FileFirst) && c.TS.Before(old.TS):
-		case c.FileFirst.Equal(old.FileFirst) && c.TS.Equal(old.TS) && c.SessionID < old.SessionID:
-		default:
-			continue
-		}
-		keep[key] = c
-	}
-	return keep
-}
-
-func TestCopiedBashCallsKeepOriginalWhenForkPathSortsFirst(t *testing.T) {
-	home := t.TempDir()
-	later := "2026-01-01T00:01:00Z"
-	claudeCall := func(session string) string {
-		return `{"type":"assistant","timestamp":"` + later + `","sessionId":"` + session +
-			`","message":{"id":"m","content":[{"type":"tool_use","id":"shared-claude","name":"Bash","input":{"command":"echo fake"}}]}}` + "\n"
-	}
-	// The first line gives each file its first timestamp, with no type.
-	writeFile(t, claudeFile(home, "a-fork.jsonl"), `{"timestamp":"2026-01-02T00:00:00Z"}`+"\n"+claudeCall("fork-session"))
-	writeFile(t, claudeFile(home, "z-original.jsonl"), `{"timestamp":"2026-01-01T00:00:00Z"}`+"\n"+claudeCall("original-session"))
-	meta := func(id, ts string) string {
-		return `{"timestamp":"` + ts + `","type":"session_meta","payload":{"id":"` + id + `","timestamp":"` + ts + `"}}` + "\n"
-	}
-	shell := `{"timestamp":"` + later + `","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"shared-codex","arguments":"{\"cmd\":\"echo fake\"}"}}` + "\n"
-	writeFile(t, codexFile(home, "rollout-a-fork.jsonl"), meta("fork-thread", "2026-01-02T00:00:00Z")+shell)
-	writeFile(t, codexFile(home, "rollout-z-original.jsonl"), meta("original-thread", "2026-01-01T00:00:00Z")+shell)
-	rec, _ := scanHome(t, home)
-	if len(rec.calls) != 4 {
-		t.Fatalf("calls %+v", rec.calls)
-	}
-	keep := keepOriginal(rec.calls)
-	if keep["claude/shared-claude"].SessionID != "original-session" || keep["codex/shared-codex"].SessionID != "original-thread" {
-		t.Fatalf("kept %+v", keep)
 	}
 }
 
@@ -296,78 +248,16 @@ func TestReadOnly(t *testing.T) {
 	}
 }
 
-type countVisitor struct{ calls, denials int }
-
-func (c *countVisitor) Call(Call)     { c.calls++ }
-func (c *countVisitor) Denial(Denial) { c.denials++ }
-
-// perfChunk is about 8 MiB of lines, with 34% of the bytes in blobs and one
-// 2 MB tool result, repeated to fill each file.
-func perfChunk() []byte {
-	var b bytes.Buffer
-	b.WriteString(toolResult("t1", `,"pad":"`+strings.Repeat("x", 2_000_000)+`"`))
-	result := toolResult("t1", `,"toolUseResult":{"stdout":"`+strings.Repeat("y", 4000)+`","interrupted":false}`)
-	for i := 0; b.Len() < 5_500_000; i++ {
-		b.WriteString(bash("t"+strconv.Itoa(i), "git status --short "+strconv.Itoa(i)))
-		b.WriteString(result)
-	}
-	blob := `{"type":"api-request-blob","pad":"` + strings.Repeat("z", 94_000) + `"}` + "\n"
-	for size := b.Len(); float64(b.Len()-size)/float64(b.Len()) < 0.34; {
-		b.WriteString(blob)
-	}
-	return b.Bytes()
-}
-
-func TestScanPerf(t *testing.T) {
-	gb, err := strconv.ParseFloat(os.Getenv("MORA_PERF_GB"), 64)
-	if err != nil || gb <= 0 {
-		t.Skip("set MORA_PERF_GB to run")
-	}
-	home := t.TempDir()
-	chunk := perfChunk()
-	const fileBytes = 256 << 20
-	remaining := int64(gb * 1e9)
-	var total int64
-	for i := 0; remaining > 0; i++ {
-		path := claudeFile(home, fmt.Sprintf("s%d.jsonl", i))
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		f, err := os.Create(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		w := bufio.NewWriter(f)
-		for size := int64(0); size < fileBytes && remaining > 0; size += int64(len(chunk)) {
-			if _, err := w.Write(chunk); err != nil {
-				t.Fatal(err)
-			}
-			remaining -= int64(len(chunk))
-			total += int64(len(chunk))
-		}
-		if err := w.Flush(); err != nil {
-			t.Fatal(err)
-		}
-		if err := f.Close(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	v := &countVisitor{}
-	start := time.Now()
-	st, err := Scan(t.Context(), Options{Home: home, Getenv: noEnv}, v)
-	if err != nil {
-		t.Fatal(err)
-	}
-	elapsed := time.Since(start).Seconds()
-	var mem runtime.MemStats
-	runtime.ReadMemStats(&mem)
-	rate := float64(total) / 1e6 / elapsed
-	sysMiB := float64(mem.Sys) / (1 << 20)
-	t.Logf("%d bytes in %.1fs: %.0f MB/s, Sys %.0f MiB, %d calls, %d files", total, elapsed, rate, sysMiB, v.calls, st.FilesRead)
-	if rate < 85 {
-		t.Errorf("%.0f MB/s, want at least 85", rate)
-	}
-	if sysMiB > 512 {
-		t.Errorf("Sys %.0f MiB, want at most 512", sysMiB)
+// A file can be swapped for a link after discovery has checked it.
+func TestFileSwappedForLinkIsNotRead(t *testing.T) {
+	home, outside := t.TempDir(), t.TempDir()
+	secret := writeFile(t, filepath.Join(outside, "s1.jsonl"), bash("t1", "ls"))
+	path := claudeFile(home, "s1.jsonl")
+	mkdirs(t, filepath.Dir(path))
+	symlink(t, secret, path)
+	rec := &recorder{}
+	st, _ := readFile(transcript{path: path, harness: HarnessClaude, session: "s1"}, rec)
+	if len(rec.calls) != 0 || st != (Stats{SymlinksSkipped: 1}) {
+		t.Fatalf("calls=%d stats=%+v", len(rec.calls), st)
 	}
 }

@@ -169,7 +169,7 @@ func (r *claudeReader) record(raw []byte, l *claudeLine) {
 		case !assistant && b.Type == "tool_result":
 			r.toolResult(raw, l, b)
 		case !assistant && b.Type == "text" && bool(b.Text):
-			r.st.InterruptedBetweenCalls++
+			r.marker(l)
 		}
 	}
 }
@@ -200,15 +200,17 @@ func (r *claudeReader) toolUse(l *claudeLine, messageID string, b claudeBlock, i
 
 func (r *claudeReader) toolResult(raw []byte, l *claudeLine, b claudeBlock) {
 	ref, found := r.tools[b.ToolUseID]
+	delete(r.tools, b.ToolUseID) // a call has one result, so the map holds only calls in flight
 	kind := l.ToolDenialKind
 	if kind == "" && (ref.name == "Bash" || !found) && interruptedFlag(raw, l.ToolUseResult) {
 		kind = "interrupted"
 	}
 	if kind == "" {
-		if b.IsError && ref.name == "Bash" && bool(b.Content) {
-			r.st.UntypedRejections++
+		if !b.IsError || ref.name != "Bash" || !bool(b.Content) {
+			return
 		}
-		return
+		r.st.UntypedRejections++
+		kind = KindUntypedRejection
 	}
 	if !found {
 		r.st.DenialsWithoutCall++
@@ -226,6 +228,18 @@ func (r *claudeReader) toolResult(raw []byte, l *claudeLine, b claudeBlock) {
 		return
 	}
 	r.v.Denial(d)
+}
+
+// marker handles the text a harness writes for an interrupt between tool calls.
+// It has no tool id, so copies are matched on the timestamp they share.
+func (r *claudeReader) marker(l *claudeLine) {
+	r.st.InterruptedBetweenCalls++
+	ts, err := parseTS(l.Timestamp)
+	if err != nil {
+		r.st.BadTimestamps++
+		return
+	}
+	r.v.Denial(Denial{SessionID: r.sessionID(l), AgentID: r.agentID(l), TS: ts, FileFirst: r.first, Kind: KindBetweenCalls})
 }
 
 // interruptedFlag reports toolUseResult.interrupted. toolUseResult can also be

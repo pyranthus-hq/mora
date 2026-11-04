@@ -13,21 +13,28 @@ import (
 type lockedVisitor struct {
 	mu   sync.Mutex
 	v    Visitor
+	free bool // the Visitor locks for itself
 	only string
+}
+
+func (l *lockedVisitor) lock() func() {
+	if l.free {
+		return func() {}
+	}
+	l.mu.Lock()
+	return l.mu.Unlock
 }
 
 func (l *lockedVisitor) Call(c Call) {
 	if l.only == "" || c.SessionID == l.only {
-		l.mu.Lock()
-		defer l.mu.Unlock()
+		defer l.lock()()
 		l.v.Call(c)
 	}
 }
 
 func (l *lockedVisitor) Denial(d Denial) {
 	if l.only == "" || d.SessionID == l.only {
-		l.mu.Lock()
-		defer l.mu.Unlock()
+		defer l.lock()()
 		l.v.Denial(d)
 	}
 }
@@ -50,7 +57,8 @@ func Scan(ctx context.Context, o Options, v Visitor) (Stats, error) {
 	if workers <= 0 {
 		workers = min(runtime.GOMAXPROCS(0), 8)
 	}
-	visitor := &lockedVisitor{v: v, only: o.OnlySession}
+	_, free := v.(LockingVisitor)
+	visitor := &lockedVisitor{v: v, free: free, only: o.OnlySession}
 	jobs := make(chan transcript)
 	var mu sync.Mutex
 	claude, codex, agents := map[string]bool{}, map[string]bool{}, map[string]bool{}
@@ -97,6 +105,10 @@ func readFile(t transcript, v Visitor) (Stats, []string) {
 		return st, nil
 	}
 	defer f.Close()
+	if !stillRegular(f, t.path) {
+		st.SymlinksSkipped++
+		return st, nil
+	}
 	var r lineReader = newClaudeReader(t, &st, v)
 	if t.harness == HarnessCodex {
 		r = newCodexReader(t, &st, v)
@@ -107,4 +119,15 @@ func readFile(t transcript, v Visitor) (Stats, []string) {
 		st.FilesRead++
 	}
 	return st, r.finish()
+}
+
+// stillRegular repeats discovery's file check on the open file, so a file
+// swapped for a symlink after discovery is not read.
+func stillRegular(f *os.File, path string) bool {
+	opened, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	now, err := os.Lstat(path)
+	return err == nil && now.Mode().IsRegular() && os.SameFile(opened, now)
 }
