@@ -1,8 +1,8 @@
 # Mora — Architecture Spec
 
 Mora is a local-first memory CLI for any agent. One pure-Go binary ingests
-Gmail, Google Calendar, selected files, iMessage, WhatsApp, Apple Calendar, and GitHub
-issues into readable Markdown. It indexes the
+Gmail, Google Calendar, selected files, iMessage, WhatsApp, Apple Calendar, GitHub
+issues, and facts from a governed company memory service (Eywa) into readable Markdown. It indexes the
 Markdown in an embedded `modernc.org/sqlite` database. The index has FTS5,
 per-row vectors, and a derived person graph. Mora serves the data to any MCP
 agent through a stdio JSON-RPC server.
@@ -45,6 +45,7 @@ flowchart TD
         ACAL["Apple Calendar DB<br/>mode=ro, local file"]
         FILES["Selected local files"]
         GH["GitHub Issues API<br/>explicit repository allowlist"]
+        EY["Eywa agent MCP API<br/>user-configured endpoint"]
     end
 
     subgraph gpkg["internal/google"]
@@ -64,6 +65,7 @@ flowchart TD
     ACAL --> ING
     FILES --> ING
     GH --> ING
+    EY --> ING
     GLIVE --> ING
     ILIVE --> ING
     ING --> MAP
@@ -93,7 +95,7 @@ flowchart TD
     ipkg x==x|"HARD RULE: NEVER imports"| morapkg
 
     classDef hard stroke:#c00,stroke-width:2px;
-    class GM,CAL,IMSG,ACAL,FILES,GH providers;
+    class GM,CAL,IMSG,ACAL,FILES,GH,EY providers;
 ```
 
 **The HARD no-cycle rule:** `internal/google` and `internal/imessage` MUST NOT import `internal/mora` (`internal/google/types.go:2`, `internal/imessage/types.go:7`). The connectors return plain `MappedMemory`. Conversion to `mora`'s `Memory` happens only at the wiring boundary in `writeMappedMemory` (ingest.go). `internal/imessage` additionally imports neither `internal/google` nor any network package (`fda_test.go:41` enforces this), and `internal/memory` has no `net/http`/`net/rpc` import — zero-egress is structural at the seam, not just policy.
@@ -107,7 +109,7 @@ flowchart TD
 5. **Synthesize** — `think`, `digest`, and `context_memory` are deterministic, **model-free** (Mora holds no API key): `think` emits a `SynthesisPrompt` + gap analysis the caller's model runs; `digest`/`context_memory` assemble byte-stable briefs. See [synthesis: think/digest](./07-synthesis-think-digest.md).
 6. **Serve** — `serveMCP` (mcp.go) is a line-oriented stdio JSON-RPC 2.0 server exposing thirteen tools. Every `tools/call` return is wrapped in a spec `CallToolResult`. See [MCP server](./06-mcp-server.md). The same data is reachable from the CLI. See [CLI & UX](./08-cli-and-ux.md). Freshness is honest-snapshot, surfaced as a first-class output. See [sync & freshness](./11-sync-and-freshness.md).
 
-<!-- generated-contract: module=github.com/pyranthus-hq/mora mcp-tools=13 connectors=7 rrf-k=10 segment-k=10 -->
+<!-- generated-contract: module=github.com/pyranthus-hq/mora mcp-tools=13 connectors=8 rrf-k=10 segment-k=10 -->
 
 ## Package & responsibility map
 
@@ -171,6 +173,7 @@ flowchart TD
 | `internal/whatsapp` | `internal/memory`, `modernc.org/sqlite` (read-only DSN) | macOS WhatsApp connector: read-only `ChatStorage.sqlite`, one-memory-per-conversation, typed placeholders, inverted truncation, and the mandatory two-lane relevance gate metadata. **No network imports; never opens `Axolotl.sqlite`.** |
 | `internal/applecal` | `internal/memory`, `modernc.org/sqlite` (read-only DSN) | macOS Apple Calendar connector: read-only `Calendar.sqlitedb`, one-memory-per-event, Core Data timestamp conversion. |
 | `internal/githubissues` | `internal/memory`, stdlib HTTP | Read-only GitHub Issues connector over an explicit repository allowlist; emits stable issue memories and immutable local receipts. |
+| `internal/eywa` | `internal/memory`, `golang.org/x/text`, stdlib HTTP | Connector for a governed company memory service with an agent MCP API: OAuth2 client-credentials token, minimal streamable-HTTP MCP client, change-feed pull into read-only `eywa_fact/<version_id>` records (replaced versions marked, never deleted), and the lineage-carrying update builder for the opt-in push. Mora owns the secret lookup, consent, preview/confirm, and the state-dir push ledger. |
 | `internal/pdftext` | `github.com/ledongthuc/pdf` | Pure-Go, recover-wrapped, size/page/text-bounded local PDF text extraction; skips null/garbled pages and never performs OCR. Mora owns attachment governance, derived-memory construction/writes, and filesystem-ingest orchestration. |
 | `internal/notify` | standard library only | GOOS/environment-gated, AppleScript-escaped, byte-clean best-effort brief/urgent/health desktop notifications plus the local `osascript` runner seam. Mora decides when a persisted brief or health state authorizes a toast and retains CLI/scheduler orchestration. |
 | `internal/mora` | connector packages + extracted `internal/{appbundle,atomicio,config,doctor,genericutil,index,ingest,memory,memoryfile,mcp,registry,schedule,search,storage,tasks,usage}` + UI/update dependencies | Composition root: CLI dispatch, connector/source persistence and dispatch, filesystem ingestion, cross-subsystem rebuild/auto-heal and governance, derived graph/vector/synthesis policy, MCP/HTTP servers, rich doctor orchestration, scheduled pulse, eval harness, and self-update. |
@@ -189,7 +192,7 @@ These span subsystems. Each subsystem doc enforces its own. These are the rules 
 3. **Determinism before every tie-break.** The same rule extends to retrieval (every arm has a secondary sort by id. The fused sort tie-breaks on id. The gazetteer resolves ambiguous names by smallest id) and synthesis (gap rules and freshness keys sort inputs before emit. Staleness compares parsed RFC3339 instants, never lexical strings). See [retrieval & search](./02-retrieval-search.md), [synthesis](./07-synthesis-think-digest.md).
 4. **Byte-clean machine output.** ANSI styling never reaches `--json`, the MCP stdio path, or any pipe. `colorEnabled` gates every styled write; `isTTYWriter` uses `go-isatty` (NOT `os.ModeCharDevice`, which `/dev/null` would falsely pass — Codex caught this). The `--json` branch marshals with no styler at all. The same `renderDigest` string feeds both the MCP `digest` tool and the TTY `pulse --digest`. Styling is a removable TTY-only skin layered after. See [CLI & UX](./08-cli-and-ux.md).
 5. **Honest-snapshot sync — never swallow a sync error.** Sync is not live and not incremental: every run clears the checkpoint and re-pulls the full configured window. `Ingest` records `LastError` and **returns** it. Callers aggregate into "N source(s) failed to sync; data may be stale." *Why:* a silently-stale snapshot the agent trusts as current is a correctness failure — the agent cannot distinguish old data from new. Reserved cursor fields (`GmailHistory`/`CalSyncToken`) are dead-for-now. See [sync & freshness](./11-sync-and-freshness.md).
-6. **Explicit network boundary.** The corpus stays local by default. Connector and maintenance egress is limited to read-only Google APIs, read-only GitHub Issues API calls, GitHub releases, and an opt-in loopback-only Ollama embedder. User-invoked `mora sync git` can push the plaintext vault to a remote the user controls; `mora share` can publish age-encrypted authored memories to a user-controlled access-controlled git remote or S3/R2 bucket. Mora itself makes no model call, but a downstream cloud MCP client can send retrieved text to its own model provider; that action is controlled by the agent and its group policy. Usage logging is local JSONL and honors `DO_NOT_TRACK=1` and an `OFF` sentinel. This wording matches the canonical [README privacy boundary](../../README.md#privacy-boundary). See [distribution & ops](./10-distribution-and-ops.md), [sharing](./13-sharing.md), and [retrieval](./02-retrieval-search.md).
+6. **Explicit network boundary.** The corpus stays local by default. Connector and maintenance egress is limited to read-only Google APIs, read-only GitHub Issues API calls, the user-configured Eywa endpoint and token URL, GitHub releases, and an opt-in loopback-only Ollama embedder. User-invoked `mora sync git` can push the plaintext vault to a remote the user controls; `mora share` can publish age-encrypted authored memories to a user-controlled access-controlled git remote or S3/R2 bucket. `mora eywa push` (off by default, previewed and confirmed per run) can send one scope of authored memories to the user's company memory service, which governs whether each update is admitted. Mora itself makes no model call, but a downstream cloud MCP client can send retrieved text to its own model provider; that action is controlled by the agent and its group policy. Usage logging is local JSONL and honors `DO_NOT_TRACK=1` and an `OFF` sentinel. This wording matches the canonical [README privacy boundary](../../README.md#privacy-boundary). See [distribution & ops](./10-distribution-and-ops.md), [sharing](./13-sharing.md), and [retrieval](./02-retrieval-search.md).
 7. **Pure-Go, single static binary, CGO=0.** `modernc.org/sqlite` is the only SQL engine (`go.mod:12`); `CGO_ENABLED=0` on every build/release path. cgo is enabled **only** for `go test -race` (the race detector needs it). Never add a cgo SQLite driver. See [distribution & ops](./10-distribution-and-ops.md).
 8. **`StableID` is provider identity only, never content** (`<kind>/<providerID>`). Files are named via `SafeFilename` (`/ : space → _`), so any id→file lookup must match both `id+".md"` and `SafeFilename(id)+".md"`. *Why:* guarantees idempotent re-sync overwrites instead of duplicating. See [data model & storage](./01-data-model-and-storage.md).
 
@@ -220,6 +223,7 @@ These span subsystems. Each subsystem doc enforces its own. These are the rules 
 | [21 — Teach and human correction](./21-teach.md) | The local human-review plane: typed identity proposals, reversible commitment verdicts, authored-memory revision history, decision validity, consent-gated examples, and deterministic governance rebuilds. |
 | [22 — The Mora machine contract](./22-cli-contracts.md) | **The published contract for programs that call Mora**: the versioned JSON envelope and its one breaking shape change, the stdout/stderr split, the exit-code table, the error-code taxonomy, `--json` coverage and its declared exemptions, `mora capabilities` as the discovery entry point, and the backward-compatibility guarantee — each claim naming the test that enforces it. Consumer-facing; 08 holds the implementation. |
 | [23 — WhatsApp Connector](./23-connectors-whatsapp.md) | Read-only local `ChatStorage.sqlite` ingest with typed placeholders and a group-safe two-lane relevance gate: intelligence lane informs the brief, only owner-addressed obligations become tasks. |
+| [24 — Eywa connector](./24-connectors-eywa.md) | Pull governed company-memory facts through an agent MCP API into read-only cited records (change-feed cursor, replaced versions kept), and an opt-in, previewed push of authored memories as agent updates with lineage that the service may admit, review, or hold. |
 
 ## Glossary
 
