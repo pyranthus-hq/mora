@@ -827,6 +827,71 @@ arguments, other hooks may inject context, and previously read context remains
 in an agent's session. This installer supports Claude Code; Codex can use MCP
 but has no automatic Mora hook route.
 
+### Bash warning rules
+
+A rule warns a Claude Code agent when it runs a Bash command that matches a
+pattern. The hook never blocks a command. It is off until you add a rule,
+approve it in your own terminal and install the hook.
+
+```bash
+mora rules add --template compound-cd
+mora rules test compound-cd -- 'cd /tmp && ls'      # prints hit or miss
+mora rules approve compound-cd --mode warn --holdout
+mora hook install --pre-tool
+mora rules list
+```
+
+`rules add` writes `rules/<id>.md` in your vault. The rule stays inactive
+until you approve it. You can also write your own rule:
+
+```bash
+mora rules add --id no-sudo --match '^\s*sudo\b' --message "Do not use sudo here."
+```
+
+Patterns are Go RE2. Lookahead, lookbehind and backreferences are refused
+with a hint: put text that must be absent in `--unless`, which is checked
+against the rest of the same simple command, or remove it first with
+`--exclude`. Only the first 64 matches in a command are checked against
+`--unless`, so a very long command stays fast. `\b` and `\w` are ASCII only. Unicode spaces count as plain
+spaces.
+
+Approval happens only in your own terminal. `rules approve` and `rules off`
+refuse to run when stdin is not a terminal or when they run inside a Claude
+Code or Codex session (`CLAUDECODE`, `CODEX_SANDBOX`,
+`CODEX_SANDBOX_NETWORK_DISABLED`, `CODEX_THREAD_ID`, `CODEX_CI` or
+`CODEX_MANAGED_BY_NPM` is set).
+Codex settings that you export yourself, such as `CODEX_HOME`, do not count.
+They show the rule and ask you to type its id. An approval is bound to the
+rule's content hash and is stored per device in
+`~/.local/state/mora/rules/approvals.jsonl`, outside the vault. If the rule
+file changes later, `rules list` shows `changed since approval` and the next
+`mora rules compile` drops it until you approve it again. No MCP tool can add,
+approve or change a rule.
+
+This check stops an agent from turning on a rule by accident or in passing.
+It does not stop a determined process that runs as you: anything that can
+write to `~/.local/state/mora/rules` can change what warns.
+
+Modes:
+
+- `warn` sends the rule's message to the agent.
+- `shadow` logs matches but never sends anything.
+- `--holdout` sends the warning to only half of the sessions, picked by a hash
+  of the session id, so you can compare the warned and silent groups.
+
+`mora hook install --pre-tool` adds one `PreToolUse` entry for Bash to
+`~/.claude/settings.json`. `mora hook uninstall --pre-tool` removes only that
+entry, and `mora hook status` shows a `PreToolUse` line. The warning reaches
+the agent with the result of the command, not before the command runs, so it
+shapes the next call rather than stopping this one.
+
+The hook fails open: on any error, timeout or crash it prints nothing and the
+command goes ahead. Set `MORA_PRETOOL_OFF=1` to turn it off without
+uninstalling it. While a rule is active, each Bash call adds one line to
+`~/.local/state/mora/rules/hook.jsonl` with the time, session and tool call
+ids, the group, and which rules matched and warned. The log never contains
+the command text, the working folder, the prompt or the transcript path.
+
 ## Companion
 
 ### Read verbs for desktop and scripts

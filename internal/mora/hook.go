@@ -25,7 +25,7 @@ const (
 var (
 	hookNow            = time.Now
 	hookResolveBrief   = resolveBrief
-	hookSearchMemories = searchMemories
+	hookSearchMemories = hookRecallSearch
 	hookExecutable     = os.Executable
 )
 
@@ -53,24 +53,33 @@ type recallHookInput struct {
 
 func cmdHook(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	if len(args) == 0 {
-		return errors.New("usage: mora hook session-start|recall|install|uninstall|status")
+		return errors.New("usage: mora hook session-start|recall|pre-tool-use|install|uninstall|status")
 	}
 	switch args[0] {
 	case "session-start":
 		return hookSessionStart(ctx, stdout, stdin)
 	case "recall":
 		return hookRecall(ctx, args[1:], stdout, stdin)
+	case "pre-tool-use":
+		return hookPreToolUse(ctx, stdout, stdin)
 	case "install":
 		return hookInstall(ctx, args[1:], stdout)
 	case "uninstall":
 		fs := flag.NewFlagSet("hook uninstall", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 		project := fs.Bool("project", false, "remove hooks from the current project")
+		preTool := fs.Bool("pre-tool", false, "remove only the PreToolUse warning hook")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		if fs.NArg() != 0 {
 			return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+		}
+		if *preTool {
+			if *project {
+				return errors.New("usage: mora hook uninstall --pre-tool (the PreToolUse hook is global only)")
+			}
+			return hookUninstallPreTool(ctx, stdout)
 		}
 		return hookUninstall(ctx, stdout, *project)
 	case "status":
@@ -78,15 +87,23 @@ func cmdHook(ctx context.Context, args []string, stdout, stderr io.Writer, stdin
 		fs.SetOutput(io.Discard)
 		jsonOut := fs.Bool("json", false, "emit JSON")
 		project := fs.Bool("project", false, "inspect hooks in the current project")
+		preTool := fs.Bool("pre-tool", false, "show only the PreToolUse warning hook")
 		if parseErr := fs.Parse(args[1:]); parseErr != nil {
 			return newMoraError(errCodeUsageUnknownFlag, "usage", parseErr, "%v", parseErr)
 		}
 		if fs.NArg() != 0 {
 			return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
 		}
+		if *preTool && *project {
+			return newMoraError(errCodeUsageUnknownValue, "usage", nil, "--pre-tool cannot be combined with --project: the PreToolUse hook is global only")
+		}
+		if *preTool && !*jsonOut {
+			// --json always carries pre_tool_use, so only text mode narrows.
+			return hookStatusPreTool(ctx, stdout)
+		}
 		return hookStatus(ctx, stdout, *jsonOut, *project)
 	default:
-		return errors.New("usage: mora hook session-start|recall|install|uninstall|status")
+		return errors.New("usage: mora hook session-start|recall|pre-tool-use|install|uninstall|status")
 	}
 }
 
@@ -165,7 +182,7 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 			}
 			mems = kept
 		}
-		body = formatRecallContext(mems, opts.threshold, hookNow())
+		body = formatRecallContextFor(mems, prompt, opts.threshold, hookNow())
 	}
 	body = prependBannerLine(banner, body)
 	if body == "" {
@@ -181,6 +198,29 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 func skipRecallPrompt(prompt string) bool { return hookspkg.SkipRecallPrompt(prompt) }
 func formatRecallContext(mems []Memory, threshold float64, now time.Time) string {
 	return hookspkg.FormatRecallContext(mems, threshold, now)
+}
+func formatRecallContextFor(mems []Memory, query string, threshold float64, now time.Time) string {
+	return hookspkg.FormatRecallContextFor(mems, query, threshold, now)
+}
+
+// hookRecallSearch is searchMemories with the hook's score domain restored.
+// --threshold is a BM25 max cost, but once the Gmail/message segment arm
+// participates searchMemoriesObserved returns positive RRF scores, and every
+// one of them is above the default threshold of 0, so a prompt that matched
+// an email or chat body used to inject nothing. The fused rank order is kept;
+// each row's Score is put back to its parent-grain BM25 cost. A row admitted
+// only by the segment arm has no parent cost and gets 0, which the default
+// threshold keeps and a stricter (negative) threshold drops.
+func hookRecallSearch(ctx context.Context, cfg Config, query, scope string, limit int, filters ...searchFilters) ([]Memory, error) {
+	var obs searchMemoryObservation
+	mems, err := searchMemoriesObserved(ctx, cfg, query, scope, limit, &obs, filters...)
+	if err != nil || !obs.ScoreFused {
+		return mems, err
+	}
+	for i := range mems {
+		mems[i].Score = obs.BM25[mems[i].ID]
+	}
+	return mems, nil
 }
 func prependBannerLine(banner, body string) string { return hookspkg.PrependBanner(banner, body) }
 
@@ -236,8 +276,15 @@ func hookInstall(ctx context.Context, args []string, stdout io.Writer) error {
 	threshold := fs.Float64("threshold", hookRecallDefaultThreshold, "BM25 max-cost threshold")
 	project := fs.Bool("project", false, "install recall only in the current project")
 	scope := fs.String("scope", "", "project memory scope (requires --project)")
+	preTool := fs.Bool("pre-tool", false, "install only the PreToolUse warning hook")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *preTool {
+		if fs.NArg() != 0 || *project || *scope != "" {
+			return errors.New("usage: mora hook install --pre-tool (the PreToolUse hook is global only)")
+		}
+		return hookInstallPreTool(ctx, stdout)
 	}
 	if fs.NArg() != 0 || (*project && (!strings.HasPrefix(*scope, "project:") || memoryfile.ValidateWriteScope(*scope) != nil)) || (!*project && *scope != "") {
 		return errors.New("usage: mora hook install [--project --scope project:NAME] [--threshold NUMBER]")
@@ -310,9 +357,10 @@ type hookStatusHarness struct {
 }
 
 type hookStatusPayload struct {
-	Installed bool                `json:"installed"`
-	Path      string              `json:"path"`
-	Harnesses []hookStatusHarness `json:"harnesses"`
+	Installed  bool                `json:"installed"`
+	Path       string              `json:"path"`
+	Harnesses  []hookStatusHarness `json:"harnesses"`
+	PreToolUse string              `json:"pre_tool_use"`
 }
 
 func hookStatus(ctx context.Context, stdout io.Writer, jsonOutput ...bool) error {
@@ -328,6 +376,17 @@ func hookStatus(ctx context.Context, stdout io.Writer, jsonOutput ...bool) error
 	if err != nil {
 		return err
 	}
+	// The PreToolUse hook is global only, so read it from the global settings
+	// even under --project. A global file that cannot be read makes it
+	// "unknown" instead of failing a status read of another file.
+	preTool, preToolErr := "unknown", error(nil)
+	if globalPath, gerr := claudeSettingsPath(ctx); gerr != nil {
+		preToolErr = gerr
+	} else if st, perr := hookspkg.PreToolStatus(globalPath); perr != nil {
+		preToolErr = perr
+	} else {
+		preTool = st
+	}
 	if jsonOut {
 		events := make([]string, 0, 2)
 		if start == "installed" {
@@ -339,11 +398,63 @@ func hookStatus(ctx context.Context, stdout io.Writer, jsonOutput ...bool) error
 		harnesses := make([]hookStatusHarness, 0, 1)
 		harnesses = append(harnesses, hookStatusHarness{Name: "claude", Installed: len(events) > 0, Events: events})
 		return emitReceipt(stdout, "mora.hook.status", 1, hookStatusPayload{
-			Installed: len(events) > 0, Path: path, Harnesses: harnesses,
+			Installed: len(events) > 0, Path: path, Harnesses: harnesses, PreToolUse: preTool,
 		})
 	}
 	fmt.Fprintf(stdout, "SessionStart: %s\n", start)
 	fmt.Fprintf(stdout, "UserPromptSubmit: %s\n", recall)
+	if preToolErr != nil {
+		fmt.Fprintf(stdout, "PreToolUse: unknown (%v)\n", preToolErr)
+		return nil
+	}
+	fmt.Fprintf(stdout, "PreToolUse: %s\n", preTool)
+	return nil
+}
+
+// hookInstallPreTool adds or replaces only Mora's PreToolUse (Bash) entry in
+// the global Claude settings. The SessionStart and recall hooks are untouched.
+func hookInstallPreTool(ctx context.Context, stdout io.Writer) error {
+	exe, err := hookExecutable()
+	if err != nil {
+		return err
+	}
+	exe, err = filepath.Abs(exe)
+	if err != nil {
+		return err
+	}
+	path, err := claudeSettingsPath(ctx)
+	if err != nil {
+		return err
+	}
+	if err := hookspkg.InstallPreTool(path, exe); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, "installed mora Claude hook: PreToolUse (Bash)")
+	return nil
+}
+
+func hookStatusPreTool(ctx context.Context, stdout io.Writer) error {
+	path, err := claudeSettingsPath(ctx)
+	if err != nil {
+		return err
+	}
+	status, err := hookspkg.PreToolStatus(path)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "PreToolUse: %s\n", status)
+	return nil
+}
+
+func hookUninstallPreTool(ctx context.Context, stdout io.Writer) error {
+	path, err := claudeSettingsPath(ctx)
+	if err != nil {
+		return err
+	}
+	if err := hookspkg.UninstallSub(path, hookspkg.PreToolSub); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, "uninstalled mora Claude hook: PreToolUse")
 	return nil
 }
 

@@ -456,13 +456,24 @@
     },
     {
       "name": "claude hooks",
-      "paths": ["hook", "hook session-start", "hook recall", "hook install", "hook uninstall", "hook status"],
+      "paths": ["hook", "hook session-start", "hook recall", "hook pre-tool-use", "hook install", "hook uninstall", "hook status"],
       "evidence": {
-        "success": {"status": "platform_seam", "tests": ["TestCLIRegistryHookIOThroughRun", "TestHookInstallFreshSettings", "TestHookStatusReportsInstalledHooks", "TestHookUninstallRemovesOnlyMoraHooks"], "reason": "Hook I/O and settings mutations run through Run in a hermetic HOME; executable discovery is injected."},
-        "json": {"status": "test", "tests": ["TestCLIRegistryHookIOThroughRun"], "reason": "session-start and recall emit Claude hook JSON; lifecycle commands emit text."},
-        "state": {"status": "test", "tests": ["TestHookInstallMergesAndIsIdempotent", "TestHookUninstallRemovesOnlyMoraHooks"]},
-        "error": {"status": "test", "tests": ["TestHk_HookSessionStartInvalidJSON", "TestHk_HookRecallSearchError", "TestHk_HookInstallWriteError"]},
-        "refusal": {"status": "test", "tests": ["TestHookInstallMalformedHooksDoesNotOverwrite", "TestHookInstallUnparseableSettingsFailsClosed"]}
+        "success": {"status": "platform_seam", "tests": ["TestCLIRegistryHookIOThroughRun", "TestHookInstallFreshSettings", "TestHookStatusReportsInstalledHooks", "TestHookUninstallRemovesOnlyMoraHooks", "TestHookPreToolWarnedGroupPrintsGolden", "TestHookInstallPreToolThroughRun"], "reason": "Hook I/O and settings mutations run through Run in a hermetic HOME; executable discovery is injected."},
+        "json": {"status": "test", "tests": ["TestCLIRegistryHookIOThroughRun", "TestHookStatusPreToolJSON"], "reason": "session-start, recall and pre-tool-use emit Claude hook JSON; lifecycle commands emit text; status --json carries pre_tool_use."},
+        "state": {"status": "test", "tests": ["TestHookInstallMergesAndIsIdempotent", "TestHookUninstallRemovesOnlyMoraHooks", "TestHookPreToolSilentGroupLogsOnly", "TestHookUninstallPreToolKeepsOtherHooks"]},
+        "error": {"status": "test", "tests": ["TestHk_HookSessionStartInvalidJSON", "TestHk_HookRecallSearchError", "TestHk_HookInstallWriteError", "TestHk_PreToolFailOpen", "TestHookPreToolExitCodes"]},
+        "refusal": {"status": "test", "tests": ["TestHookInstallMalformedHooksDoesNotOverwrite", "TestHookInstallUnparseableSettingsFailsClosed", "TestHookInstallPreToolRejectsProject"]}
+      }
+    },
+    {
+      "name": "warning rules",
+      "paths": ["rules", "rules add", "rules test", "rules approve", "rules off", "rules list", "rules compile"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestRulesAddWritesFileAndRefusesDuplicate", "TestRulesApproveCompilesActive", "TestRulesTestHitAndMiss", "TestRulesOffRemovesFromActive"]},
+        "json": {"status": "test", "tests": ["TestRulesListJSON"], "reason": "list --json emits mora.rules.list; the other rules commands print text."},
+        "state": {"status": "test", "tests": ["TestRulesApproveCompilesActive", "TestRulesEditedFileShowsChangedAndCompileDrops", "TestRulesOffRemovesFromActive"]},
+        "error": {"status": "test", "tests": ["TestRulesAddRejectsPythonOnlySyntax", "TestRulesApproveWrongIDRefuses"]},
+        "refusal": {"status": "test", "tests": ["TestRulesApproveRefusesNonInteractive", "TestRulesApproveRefusesInsideAgentSession"]}
       }
     },
     {
