@@ -32,6 +32,10 @@
     "status": "parses"
   },
   {
+    "path": "check",
+    "status": "parses"
+  },
+  {
     "path": "companion",
     "status": "empty"
   },

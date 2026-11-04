@@ -816,6 +816,78 @@ uninstalling it. While a rule is active, each Bash call adds one line to
 ids, the group, and which rules matched and warned. The log never contains
 the command text, the working folder, the prompt or the transcript path.
 
+### Rejected or interrupted commands
+
+`mora check` counts the commands you rejected or interrupted, and tells you
+whether an agent tried them again in a later session. It reads your local
+Claude Code and Codex transcripts and writes nothing.
+
+```bash
+mora check
+mora check --since 30d       # also 24h or 2026-11-01
+mora check --json
+```
+
+The output is safe to paste. It holds counts, dates and fixed table text only:
+no command, argument, path, prompt, host name or session id. By default it
+reads every transcript on disk. It opens only the transcript files, never
+follows a symlink and uses no network.
+
+A correction here means one of two things that Claude Code records in a typed
+field: you said no at a permission prompt, or you pressed Esc while a tool ran.
+Mora never reads what you typed. These do not count, and each has its own line
+in the output:
+
+- a block from a rule, a hook or auto mode;
+- a sibling call that was cancelled when another call was interrupted;
+- an interrupt inside a subagent, because a parent or a task stop can end one;
+- an interrupt from a shutdown or just before a turn that a person did not start.
+
+Edit and other tools are counted but not scored, because rules cover Bash only.
+
+Two numbers answer "did it come back?". `same command` means the later command
+matches after names, numbers, hashes and free text are smoothed out, so
+`rm -rf /tmp/a/build` and `rm -rf build` match but `rm -rf dist` does not.
+`same shape` compares the short public name, such as `rm -rf`, so all three
+match. A later session is a different conversation that started after the
+rejection. A fork or a resume of the same conversation does not count, and
+neither does a session that was already running. A later call counts whether
+it ran, was rejected again or was blocked, because the number is about what
+the agent tried.
+
+The baseline asks the same question about commands nobody rejected or
+interrupted. A rate close to the baseline means the correction changed nothing
+that can be seen. Under 10 commands with a later session, Mora tells you to read
+the numbers as counts. With none, it prints no rate at all.
+
+Read these numbers with care:
+
+- A rejection does not always mean the command was wrong. The timing may have
+  been off, or you may have wanted another step first.
+- An interrupt can mean you ran out of patience with a slow command.
+- The later run may be exactly what you asked for. Mora cannot see that.
+- In auto or bypass mode you rarely see a prompt, so few commands can be
+  rejected at all. A small count comes from the mode. It does not show good
+  behavior.
+- Common commands come back anyway. Always read the rate beside the baseline.
+- `same command` merges different files that have the same name, and it misses
+  the same action on a different target. The `same shape` number shows that
+  second case.
+- One big session can dominate. In the data this was built on, one session held
+  1,113 of 1,587 calls.
+- Recent commands have no later session yet, so `With a later session` trails
+  `Commands rejected or interrupted`.
+- One rejection of parallel calls marks every call in the group. `User actions
+  behind these` shows how many separate agent messages were involved.
+- A program that answers permission prompts through the SDK looks the same as
+  a person.
+- Mora reads this machine's files only, so a repeat on another machine is
+  invisible. Claude Code also deletes old transcripts by default, after
+  `cleanupPeriodDays`.
+- Codex does not record a rejection in a form Mora can trust, so Codex prints
+  `no rejection signal`, not a zero. Codex can only repeat a command you
+  rejected in Claude Code.
+
 ## Companion
 
 ### Read verbs for desktop and scripts
