@@ -113,7 +113,11 @@ func readFile(t transcript, v Visitor) (Stats, []string) {
 	if t.harness == HarnessCodex {
 		r = newCodexReader(t, &st, v)
 	}
-	if err := eachLine(f, &st, r.line); err != nil {
+	read := eachLine
+	if t.compressed {
+		read = eachZstLine
+	}
+	if err := read(f, &st, r.line); err != nil {
 		st.UnreadableFiles++
 	} else {
 		st.FilesRead++

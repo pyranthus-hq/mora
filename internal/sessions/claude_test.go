@@ -1,6 +1,9 @@
 package sessions
 
 import (
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -297,5 +300,60 @@ func TestOnlyExactBashIsACall(t *testing.T) {
 	rec, _ := scanHome(t, home)
 	if len(rec.calls) != 1 || rec.calls[0].ToolUseID != "t4" {
 		t.Fatalf("calls %+v", rec.calls)
+	}
+}
+
+// TestRealRejectionForms reads records from a live Claude Code 2.1.318 session,
+// with ids and paths replaced. Cases 2 to 5 are No, No with a typed reason, Esc
+// while the command ran, and No for a subagent.
+func TestRealRejectionForms(t *testing.T) {
+	forms, err := os.ReadFile(filepath.Join("testdata", "real-forms.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls strings.Builder
+	for _, id := range []string{"toolu_FAKE0002", "toolu_FAKE0012", "toolu_FAKE0019", "toolu_FAKE0023", "toolu_FAKE0032"} {
+		calls.WriteString(bash(id, "echo invented"))
+	}
+	home := t.TempDir()
+	writeFile(t, claudeFile(home, "s1.jsonl"), calls.String()+string(forms))
+	rec, st := scanHome(t, home)
+	got := map[string]string{}
+	for _, d := range rec.denials {
+		got[d.ToolUseID] = d.Kind
+	}
+	want := map[string]string{"toolu_FAKE0012": "user-rejected", "toolu_FAKE0019": "user-rejected",
+		"toolu_FAKE0023": "interrupted", "toolu_FAKE0032": "user-rejected"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("denials %v, want %v", got, want)
+	}
+	if st.InterruptedBetweenCalls != 0 || st.UnknownRecords != 0 || st.MalformedLines != 0 {
+		t.Fatalf("stats %+v", st)
+	}
+}
+
+func TestToolMarkerSettlesOnlyItsPrompt(t *testing.T) {
+	rejected := func(id, promptID string) string {
+		return toolResult(id, `,"toolDenialKind":"user-rejected","promptId":"`+promptID+`"`)
+	}
+	marker := func(promptID, extra string) string {
+		return `{"type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]},"timestamp":"` + ts2 + `","sessionId":"s1","promptId":"` + promptID + `"` + extra + `}` + "\n"
+	}
+	home := t.TempDir()
+	writeFile(t, claudeFile(home, "s1.jsonl"), bash("a", "echo a")+bash("b", "echo b")+bash("c", "echo c")+
+		rejected("a", "p1")+rejected("b", "p2")+marker("p2", `,"interruptedMessageId":"m"`)+
+		marker("p3", `,"interruptedMessageId":"m"`)+rejected("c", "p3"))
+	rec, st := scanHome(t, home)
+	got := map[string]string{}
+	for _, d := range rec.denials {
+		if d.ToolUseID != "" {
+			got[d.ToolUseID] = d.Kind
+		}
+	}
+	if want := map[string]string{"a": "user-rejected", "b": "interrupted", "c": "user-rejected"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("denials %v, want %v", got, want)
+	}
+	if st.InterruptedBetweenCalls != 1 {
+		t.Fatalf("a marker with no rejection before it still counts, stats %+v", st)
 	}
 }

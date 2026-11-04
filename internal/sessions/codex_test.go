@@ -1,10 +1,13 @@
 package sessions
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 func customExec(callID, source string) string {
@@ -209,5 +212,34 @@ func TestCodexRejectedTextHasNoEffect(t *testing.T) {
 		if st != baseStats || len(rec.calls) != len(baseRec.calls) || len(rec.denials) != 0 {
 			t.Errorf("%s changed a count: %+v", text, st)
 		}
+	}
+}
+
+func TestCompressedRollouts(t *testing.T) {
+	pack := func(body string) string {
+		var b bytes.Buffer
+		w, err := zstd.NewWriter(&b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
+	body := codexMetaLine + codexResponse(`{"type":"function_call","name":"shell_command","call_id":"c1","arguments":"{\"command\":\"go test ./...\"}"}`)
+	home := t.TempDir()
+	writeFile(t, codexFile(home, "rollout-x.jsonl.zst"), pack(body))
+	writeFile(t, codexFile(home, "rollout-cut.jsonl.zst"), pack(body)[:9])
+	writeFile(t, codexFile(home, "notes.zst"), pack(body))
+	rec, st := scanHome(t, home)
+	if got := rec.commands(); !reflect.DeepEqual(got, []string{"go test ./..."}) {
+		t.Fatalf("commands %v", got)
+	}
+	if st.FilesRead != 1 || st.UnreadableFiles != 1 || st.CodexSessions != 1 {
+		t.Fatalf("stats %+v", st)
 	}
 }

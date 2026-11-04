@@ -6,9 +6,15 @@ import (
 	"errors"
 	"io"
 	"os"
+
+	"github.com/klauspost/compress/zstd"
 )
 
-const maxLine = 64 << 20
+const (
+	maxLine = 64 << 20
+	// maxZstdWindow bounds what one crafted file can make a worker allocate.
+	maxZstdWindow = 64 << 20
+)
 
 // eachLine calls fn for each complete line in the bytes f holds now. The size
 // is taken once, so a fast writer can never keep the read going. A last line
@@ -19,7 +25,26 @@ func eachLine(f *os.File, st *Stats, fn func(line []byte)) error {
 	if err != nil {
 		return err
 	}
-	r := bufio.NewReaderSize(io.LimitReader(f, info.Size()), 1<<20)
+	return scanLines(io.LimitReader(f, info.Size()), st, fn)
+}
+
+// eachZstLine is eachLine for a compressed rollout.
+func eachZstLine(f *os.File, st *Stats, fn func(line []byte)) error {
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	z, err := zstd.NewReader(io.LimitReader(f, info.Size()), zstd.WithDecoderConcurrency(1),
+		zstd.WithDecoderLowmem(true), zstd.WithDecoderMaxWindow(maxZstdWindow))
+	if err != nil {
+		return err
+	}
+	defer z.Close()
+	return scanLines(z, st, fn)
+}
+
+func scanLines(src io.Reader, st *Stats, fn func(line []byte)) error {
+	r := bufio.NewReaderSize(src, 1<<20)
 	var long []byte // holds a line that outgrew the reader's buffer
 	dropping := false
 	for {

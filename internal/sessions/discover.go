@@ -12,7 +12,7 @@ import (
 // above subagents for a subagent file.
 type transcript struct {
 	path, harness, session, agent string
-	subagent                      bool
+	subagent, compressed          bool
 }
 
 type discovery struct {
@@ -29,8 +29,8 @@ func discover(o Options, st *Stats) []transcript {
 		d.walk(root, func(path string, e fs.DirEntry) error { return d.claudeEntry(root, path, e) })
 	}
 	for _, home := range codexHomes(o, st) {
-		d.codexTree(filepath.Join(home, "sessions"), "rollout-*.jsonl")
-		d.codexTree(filepath.Join(home, "archived_sessions"), "*.jsonl")
+		d.codexTree(filepath.Join(home, "sessions"), "rollout-*.jsonl", "rollout-*.zst")
+		d.codexTree(filepath.Join(home, "archived_sessions"), "*.jsonl", "*.zst")
 	}
 	sort.Slice(d.files, func(i, j int) bool { return d.files[i].path < d.files[j].path })
 	return d.files
@@ -87,11 +87,13 @@ func (d *discovery) claudeEntry(root, path string, e fs.DirEntry) error {
 	return nil
 }
 
-func (d *discovery) codexTree(root, pattern string) {
+func (d *discovery) codexTree(root, plain, packed string) {
 	d.walk(root, func(path string, e fs.DirEntry) error {
-		if ok, _ := filepath.Match(pattern, e.Name()); ok && !e.IsDir() {
-			stem := strings.TrimSuffix(e.Name(), ".jsonl")
-			d.add(e, transcript{path: path, harness: HarnessCodex, session: stem})
+		ok, _ := filepath.Match(plain, e.Name())
+		compressed, _ := filepath.Match(packed, e.Name())
+		if (ok || compressed) && !e.IsDir() {
+			stem := strings.TrimSuffix(strings.TrimSuffix(e.Name(), ".zst"), ".jsonl")
+			d.add(e, transcript{path: path, harness: HarnessCodex, session: stem, compressed: compressed})
 		}
 		return nil
 	})

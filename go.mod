@@ -27,6 +27,7 @@ require (
 
 require (
 	github.com/Masterminds/semver/v3 v3.4.0
+	github.com/klauspost/compress v1.20.3
 	gopkg.in/yaml.v3 v3.0.1
 )
 

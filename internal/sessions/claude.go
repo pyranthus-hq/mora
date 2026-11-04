@@ -11,6 +11,7 @@ var (
 	blobPrefix      = []byte(`{"type":"api-request`)
 	interruptFlag   = []byte(`"interrupted":true`)
 	interruptMarker = []byte(`[Request interrupted by user`)
+	toolMarker      = []byte(`[Request interrupted by user for tool use]`)
 	rejectSentence  = []byte(`The user doesn't want to proceed with this tool use`)
 	toolUseWord     = []byte(`"tool_use"`)
 	toolResultWord  = []byte(`"tool_result"`)
@@ -32,7 +33,9 @@ type claudeLine struct {
 	SessionID             string          `json:"sessionId"`
 	AgentID               string          `json:"agentId"`
 	Timestamp             string          `json:"timestamp"`
+	PromptID              string          `json:"promptId"`
 	ToolDenialKind        string          `json:"toolDenialKind"`
+	InterruptedMessageID  string          `json:"interruptedMessageId"`
 	InterruptedByShutdown bool            `json:"interruptedByShutdown"`
 	TurnOrigin            string          `json:"turnOrigin"`
 	Origin                json.RawMessage `json:"origin"`
@@ -56,12 +59,26 @@ type claudeBlock struct {
 	Content   rejectionText   `json:"content"`
 }
 
-// interruptText and rejectionText each keep one bool from a block's text and
+// interruptText and rejectionText each keep one fact about a block's text and
 // drop the text itself, so prompts and tool output are never held.
-type interruptText bool
+type interruptText uint8
+
+const (
+	noInterrupt interruptText = iota
+	plainInterrupt
+	toolInterrupt
+)
 
 func (t *interruptText) UnmarshalJSON(raw []byte) error {
-	*t = interruptText(bytes.HasPrefix(bytes.TrimPrefix(raw, []byte(`"`)), interruptMarker))
+	text := bytes.TrimPrefix(raw, []byte(`"`))
+	switch {
+	case bytes.HasPrefix(text, toolMarker):
+		*t = toolInterrupt
+	case bytes.HasPrefix(text, interruptMarker):
+		*t = plainInterrupt
+	default:
+		*t = noInterrupt
+	}
 	return nil
 }
 
@@ -74,6 +91,12 @@ func (t *rejectionText) UnmarshalJSON(raw []byte) error {
 
 type toolRef struct{ name, messageID string }
 
+// heldRejection is a rejection waiting for the marker line that may follow it.
+type heldRejection struct {
+	promptID string
+	denial   Denial
+}
+
 // claudeReader holds the state of one file.
 type claudeReader struct {
 	t        transcript
@@ -83,6 +106,7 @@ type claudeReader struct {
 	first    time.Time
 	lineNo   int
 	held     []Denial // interrupts waiting for the next prompt's origin
+	rejected []heldRejection
 	sessions map[string]bool
 	decoded  bool
 }
@@ -168,8 +192,8 @@ func (r *claudeReader) record(raw []byte, l *claudeLine) {
 			r.toolUse(l, m.ID, b, i)
 		case !assistant && b.Type == "tool_result":
 			r.toolResult(raw, l, b)
-		case !assistant && b.Type == "text" && bool(b.Text):
-			r.marker(l)
+		case !assistant && b.Type == "text" && b.Text != noInterrupt:
+			r.marker(l, b.Text)
 		}
 	}
 }
@@ -223,16 +247,23 @@ func (r *claudeReader) toolResult(raw []byte, l *claudeLine, b claudeBlock) {
 	}
 	d := Denial{SessionID: r.sessionID(l), AgentID: r.agentID(l), ToolUseID: b.ToolUseID, MessageID: ref.messageID,
 		TS: ts, FileFirst: r.first, Kind: kind, Tool: ref.name, Subagent: r.t.subagent, Shutdown: l.InterruptedByShutdown}
-	if kind == "interrupted" {
+	switch {
+	case kind == "interrupted":
 		r.held = append(r.held, d)
-		return
+	case kind == "user-rejected" && l.PromptID != "":
+		r.rejected = append(r.rejected, heldRejection{l.PromptID, d})
+	default:
+		r.v.Denial(d)
 	}
-	r.v.Denial(d)
 }
 
 // marker handles the text a harness writes for an interrupt between tool calls.
-// It has no tool id, so copies are matched on the timestamp they share.
-func (r *claudeReader) marker(l *claudeLine) {
+// It has no tool id, so copies are matched on the timestamp they share. The tool
+// use form usually belongs to a rejection just written, and is not a new event.
+func (r *claudeReader) marker(l *claudeLine, text interruptText) {
+	if text == toolInterrupt && r.settleRejected(l.PromptID, l.InterruptedMessageID != "") {
+		return
+	}
 	r.st.InterruptedBetweenCalls++
 	ts, err := parseTS(l.Timestamp)
 	if err != nil {
@@ -240,6 +271,30 @@ func (r *claudeReader) marker(l *claudeLine) {
 		return
 	}
 	r.v.Denial(Denial{SessionID: r.sessionID(l), AgentID: r.agentID(l), TS: ts, FileFirst: r.first, Kind: KindBetweenCalls})
+}
+
+// settleRejected releases the rejections of one prompt. Pressing Esc while a
+// command runs writes the same record as answering No at the prompt. Only the
+// marker after it differs, by naming the interrupted message, so an Esc becomes
+// an interrupt here. It reports whether any rejection matched.
+func (r *claudeReader) settleRejected(promptID string, esc bool) bool {
+	found := false
+	kept := r.rejected[:0]
+	for _, h := range r.rejected {
+		switch {
+		case h.promptID != promptID:
+			kept = append(kept, h)
+			continue
+		case esc:
+			h.denial.Kind = "interrupted"
+			r.held = append(r.held, h.denial)
+		default:
+			r.v.Denial(h.denial)
+		}
+		found = true
+	}
+	r.rejected = kept
+	return found
 }
 
 // interruptedFlag reports toolUseResult.interrupted. toolUseResult can also be
@@ -283,6 +338,10 @@ func (r *claudeReader) flush(origin string) {
 
 // finish flushes what is held and returns the file's session ids.
 func (r *claudeReader) finish() []string {
+	for _, h := range r.rejected {
+		r.v.Denial(h.denial)
+	}
+	r.rejected = nil
 	r.flush("")
 	if r.decoded && len(r.sessions) == 0 {
 		return []string{r.t.session}

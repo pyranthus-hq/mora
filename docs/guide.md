@@ -893,6 +893,8 @@ Read these numbers with care:
   behind these` shows how many separate agent messages were involved.
 - A program that answers permission prompts through the SDK looks the same as
   a person.
+- A Claude Code session started from inside an agent's shell may save no
+  transcript, so Mora cannot see it.
 - Mora reads this machine's files only, so a repeat on another machine is
   invisible. Claude Code also deletes old transcripts by default, after
   `cleanupPeriodDays`.
