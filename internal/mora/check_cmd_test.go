@@ -563,7 +563,11 @@ func snapshotTree(t *testing.T, root string) map[string]string {
 		if err != nil {
 			return err
 		}
-		entry := fmt.Sprintf("%v %d %d", info.Mode(), info.Size(), info.ModTime().UnixNano())
+		modTime := info.ModTime().UnixNano()
+		if d.IsDir() && runtime.GOOS == "windows" {
+			modTime = 0 // NTFS updates a directory's time lazily, after its children appear
+		}
+		entry := fmt.Sprintf("%v %d %d", info.Mode(), info.Size(), modTime)
 		if info.Mode().IsRegular() && info.Mode().Perm()&0o400 != 0 {
 			body, err := os.ReadFile(path)
 			if err != nil {
