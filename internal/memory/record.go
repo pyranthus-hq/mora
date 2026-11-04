@@ -92,6 +92,7 @@ type Memory struct {
 	// row byte-identical (frozen interface #5).
 	Evidence *GmailSegmentEvidence `json:"evidence,omitempty"`
 	// Activity fields are read projections populated only for opt-in event reads.
+	EventSource   string         `json:"event_source,omitempty"`
 	EventAt       string         `json:"event_at,omitempty"`
 	Participation *Participation `json:"participation,omitempty"`
 	Automated     *NullableBool  `json:"automated,omitempty"`
