@@ -4,8 +4,7 @@
 
 # Mora
 
-**Search your mail, messages, calendars, files, and GitHub issues from one place
-on your computer.**
+**Mora makes the AI agents you use follow the corrections you have already given them.**
 
 [![CI](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml/badge.svg)](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/pyranthus-hq/mora?color=2fbf9a)](https://github.com/pyranthus-hq/mora/releases)
@@ -19,6 +18,33 @@ on your computer.**
 > Mora is alpha software. We use it every day, and its main paths have tests.
 > It has not been tested on many other people's real data. Read the cited source
 > before you act on a result. A failed or old sync can make the local copy stale.
+
+## Warn an agent when it repeats a mistake
+
+You correct your agent, and the next session makes the same mistake. Putting the
+rule in CLAUDE.md does not fix it: the agent has the rule and still breaks it.
+
+A Mora rule checks every Bash call in Claude Code. When a call matches a rule you
+approved, the agent gets your message with the result of that command and changes
+what it does next. Rules are plain files on your computer.
+
+After you [install Mora](#install):
+
+```bash
+mora rules add --id no-sudo --match '^\s*sudo\b' --message "Do not use sudo here."
+mora rules approve no-sudo --mode warn   # run this in your own terminal
+mora hook install --pre-tool
+```
+
+Today this is opt-in and covers Bash calls in Claude Code on one device. It warns
+and never blocks. Rules drafted from your corrections, a read-only `mora check`
+and the same warning in Codex are being built. See
+[Bash warning rules](docs/guide.md#bash-warning-rules).
+
+In a pre-registered test on the founder's machine, Oct 18 to 21, a prototype of
+this hook ran across 63 Claude Code sessions, split at random. 17% of shell
+commands repeated the mistake in warned sessions, and 65% in silent ones. That is
+one developer and one habit. Outside tests are next.
 
 ## What Mora does
 
@@ -239,7 +265,7 @@ use. Its writes follow the same [agent write policy](#agent-write-policy).
 This section covers only the MCP `write_memory` tool (and `delete_memory`). It
 does not affect `mora write`, connectors, tasks, or teach corrections.
 
-**Current default (v0.15.3 and `main`): `propose`.** An agent's `write_memory`
+**Current default (v0.15.3 and later): `propose`.** An agent's `write_memory`
 call does not reach your vault. Mora holds it in `~/.config/mora/mcp-proposals/`
 and tells the agent it is pending. It is saved only when you run
 `mora mcp proposals approve <id>`. Mora shows no pop-up or notice for pending
