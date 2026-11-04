@@ -68,6 +68,7 @@ var contractEnvelopeNonExecutable = map[string]string{
 	"integrations connect":    "mutates host client configuration and requires an absolute binary path",
 	"integrations disconnect": "mutates host client configuration",
 	"delete":                  "destructive memory mutation",
+	"undo":                    "destructive memory mutation",
 	"forget":                  "destructive governance mutation",
 	"unforget":                "governance mutation",
 	"disconnect google":       "revokes a real Google credential",
@@ -302,7 +303,7 @@ func contractSchemaNameCovered(literals map[string]bool, payload string) bool {
 // lookup key, never mutated on. Plan 01-10's phase-wide matrix should keep this
 // table as the class-closed assertion rather than re-testing three instances.
 var contractDashLedPositionalPaths = [][]string{
-	{"read"}, {"delete"},
+	{"read"}, {"delete"}, {"undo"},
 	{"tasks", "add"}, {"tasks", "done"},
 	{"loop", "begin"}, {"loop", "register"}, {"loop", "status"}, {"loop", "done"},
 	{"sources", "add"}, {"connectors", "enable"}, {"connectors", "disable"},

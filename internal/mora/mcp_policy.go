@@ -18,19 +18,10 @@ const (
 
 func parseMCPWritePolicy(raw string) (string, error) { return configstore.ParseMCPWritePolicy(raw) }
 
-// unsetMCPWritePolicy is what an install without an mcp_write_policy line
-// resolves to. In production it is always mcppkg.DefaultWritePolicy (propose).
-// It is a variable only so this package's TestMain can keep the many older
-// tests that exercise open-mode writes after a bare `mora init` on their old
-// behavior; write_policy_default_test.go restores the shipped value and pins it.
-var unsetMCPWritePolicy = mcppkg.DefaultWritePolicy
-
 // configMCPWritePolicy is the single resolver every MCP and companion write
-// path uses. An explicit value always wins; an unset value fails safe.
+// path uses. An explicit value always wins; an unset value resolves to
+// mcppkg.DefaultWritePolicy (open).
 func configMCPWritePolicy(c Config) string {
-	if c.MCPWritePolicy == "" {
-		return unsetMCPWritePolicy
-	}
 	return mcppkg.NormalizeWritePolicy(c.MCPWritePolicy)
 }
 

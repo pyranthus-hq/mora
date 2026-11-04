@@ -6,12 +6,13 @@ import (
 )
 
 func TestNormalizeWritePolicy(t *testing.T) {
-	// An unset policy must fail safe: it resolves to propose, never open.
-	if DefaultWritePolicy != WritePolicyPropose {
-		t.Fatalf("DefaultWritePolicy=%q, want propose", DefaultWritePolicy)
+	// An unset policy resolves to open: the owner's agents write directly,
+	// with an audit log and `mora undo`. propose and readonly are opt-ins.
+	if DefaultWritePolicy != WritePolicyOpen {
+		t.Fatalf("DefaultWritePolicy=%q, want open", DefaultWritePolicy)
 	}
-	if got := NormalizeWritePolicy(""); got != WritePolicyPropose {
-		t.Fatalf("empty=%q, want propose", got)
+	if got := NormalizeWritePolicy(""); got != WritePolicyOpen {
+		t.Fatalf("empty=%q, want open", got)
 	}
 	for _, p := range []string{WritePolicyOpen, WritePolicyPropose, WritePolicyReadonly, "future"} {
 		if got := NormalizeWritePolicy(p); got != p {

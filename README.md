@@ -351,16 +351,15 @@ mora config mcp-write-policy propose
 mora config mcp-write-policy readonly
 ```
 
-- `open` lets the connected agent write and delete.
+- `open` lets the connected agent write and delete. This is the default
+  whenever `config.toml` has no `mcp_write_policy` line. Each agent write is
+  logged in `<vault>/agent-writes.log`; `mora undo <memory-id>` removes one.
 - `propose` stores write proposals for local approval. It refuses deletes.
-  This is the default: it applies whenever `config.toml` has no
-  `mcp_write_policy` line, however Mora was started.
 - `readonly` refuses writes and deletes.
 
-A policy you set explicitly is always kept. Installs created before this
-default changed that never set a policy have no `mcp_write_policy` line, so
-after upgrading they also run in `propose`. To keep the old behavior, run
-`mora config mcp-write-policy open`. `mora config` shows the policy in force.
+A policy you set explicitly is always kept. v0.15.3 defaulted to `propose`;
+`mora doctor` reports any writes still waiting from it. `mora config` shows
+the policy in force.
 
 Review a pending write locally before deciding:
 

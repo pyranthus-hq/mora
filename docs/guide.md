@@ -570,18 +570,33 @@ mora config mcp-write-policy propose
 mora config mcp-write-policy readonly
 ```
 
-- `open` allows `write_memory` and `delete_memory`.
+- `open` allows `write_memory` and `delete_memory`. This is the default
+  whenever `config.toml` has no `mcp_write_policy` line, however Mora was
+  started (`mora init`, `mora setup`, or `mora mcp serve` on a machine that was
+  never initialized).
 - `propose` stores write proposals in the local config directory. It does not
-  add them to the vault before approval. It refuses deletes. This is the
-  default whenever `config.toml` has no `mcp_write_policy` line, however Mora
-  was started (`mora init`, `mora setup`, or `mora mcp serve` on a machine that
-  was never initialized).
+  add them to the vault before approval. It refuses deletes.
 - `readonly` refuses writes and deletes.
 
-An explicit policy is never changed. An install created before this default
-changed that never set a policy has no `mcp_write_policy` line, so after
-upgrading it runs in `propose` too. Run `mora config mcp-write-policy open` to
-go back to direct writes.
+An explicit policy is never changed. v0.15.3 resolved an unset policy to
+`propose`; later releases resolve it to `open` again. Writes still queued from
+v0.15.3 stay queued: `mora doctor` prints how many are pending, and
+`mora mcp proposals approve <id>` publishes one.
+
+Every agent write that reaches the vault (MCP stdio, the loopback HTTP
+`/call` route, companion captures, and approved proposals) appends one line to
+`<vault>/agent-writes.log`: timestamp, `write`, memory id, scope, source,
+caller (for example `mcp-stdio/claude-code` or `http`) and the title. The log
+holds no body text. To reverse one:
+
+```bash
+mora undo <memory-id>          # agent-written memories only
+mora undo --force <memory-id>  # any memory
+```
+
+`mora undo` uses the same delete path as `mora delete`, updates the index, and
+appends an `undo` line to the log. It refuses a memory an agent did not write
+unless you pass `--force`.
 
 Review staged writes locally:
 
