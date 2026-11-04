@@ -94,10 +94,13 @@ func appendLine(path string, line []byte) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
 		return err
 	}
-	_, err = f.Write(line)
-	return err
+	if _, err := f.Write(line); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
