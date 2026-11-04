@@ -16,8 +16,22 @@ import (
 	"github.com/pyranthus-hq/mora/internal/sessions"
 )
 
-// perfMark is replaced in each copy of the chunk, so ids stay unique.
-const perfMark = "@@@@@@@@"
+// perfMark and perfWordMark are replaced in each copy of the chunk, so ids and
+// commands stay unique.
+const (
+	perfMark     = "@@@@@@@@"
+	perfWordMark = "%%%%%%%%"
+)
+
+// perfWord writes n in the letters g to v. Digits and hex runs normalize away,
+// and then every call would share one Key and hide what grows with distinct Keys.
+func perfWord(n int) string {
+	b := []byte{'w'}
+	for ; n > 0; n /= 16 {
+		b = append(b, byte('g'+n%16))
+	}
+	return string(b)
+}
 
 // perfChunk is about 8 MiB of lines, with 34% of the bytes in blobs and one
 // 2 MB tool result, repeated to fill each file.
@@ -32,8 +46,9 @@ func perfChunk() []byte {
 	stdout := `,"toolUseResult":{"stdout":"` + strings.Repeat("y", 4000) + `","interrupted":false}`
 	for i := 0; b.Len() < 5_500_000; i++ {
 		id := "t" + perfMark + "-" + strconv.Itoa(i)
-		fmt.Fprintf(&b, `{"message":{"id":"m-%s","role":"assistant","content":[{"type":"tool_use","id":"%s","name":"Bash","input":{"command":"git status --short %d"}}]},"type":"assistant",%s}`+"\n",
-			id, id, i, stamp)
+		word := perfWordMark + perfWord(i)
+		fmt.Fprintf(&b, `{"message":{"id":"m-%s","role":"assistant","content":[{"type":"tool_use","id":"%s","name":"Bash","input":{"command":"git status %s | grep %s | sort -k %s | uniq %s | wc %s"}}]},"type":"assistant",%s}`+"\n",
+			id, id, word, word, word, word, word, stamp)
 		b.WriteString(result(id, stdout))
 	}
 	blob := `{"type":"api-request-blob","pad":"` + strings.Repeat("z", 94_000) + `"}` + "\n"
@@ -68,7 +83,8 @@ func TestScanPerf(t *testing.T) {
 		w := bufio.NewWriter(f)
 		for size := int64(0); size < fileBytes && remaining > 0; size += int64(len(chunk)) {
 			chunks++
-			if _, err := w.Write(bytes.ReplaceAll(chunk, []byte(perfMark), fmt.Appendf(nil, "%08d", chunks))); err != nil {
+			copied := bytes.ReplaceAll(chunk, []byte(perfMark), fmt.Appendf(nil, "%08d", chunks))
+			if _, err := w.Write(bytes.ReplaceAll(copied, []byte(perfWordMark), []byte(perfWord(chunks)))); err != nil {
 				t.Fatal(err)
 			}
 			remaining -= int64(len(chunk))

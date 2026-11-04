@@ -133,8 +133,12 @@ func (r *codexReader) event(l *codexLine) error {
 }
 
 // emitEvent sends an event that names no command, so the Visitor can drop its
-// copies. id is raw JSON, used only to match copies.
+// copies. id is raw JSON, used only to match copies. A null or empty id is no id,
+// or every such event would look like a copy of the first.
 func (r *codexReader) emitEvent(l *codexLine, kind string, id json.RawMessage) {
+	if s := string(id); s == "null" || s == `""` {
+		id = nil
+	}
 	ts, err := parseTS(l.Timestamp)
 	if err != nil {
 		r.st.BadTimestamps++

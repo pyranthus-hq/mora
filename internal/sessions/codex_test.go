@@ -36,6 +36,7 @@ func TestCodexDrift(t *testing.T) {
 		{"arguments not json", codexResponse(`{"type":"function_call","name":"shell","call_id":"c","arguments":"{oops"}`), with(func(s *Stats) { s.Lines, s.CodexCommandsUnreadable = 1, 1 })},
 		{"event with no timestamp", `{"type":"event_msg","payload":{"type":"turn_aborted"}}` + "\n", with(func(s *Stats) { s.Lines, s.CodexTurnInterrupts, s.BadTimestamps = 1, 1, 1 })},
 		{"event with a number id", `{"timestamp":"` + ts1 + `","type":"event_msg","payload":{"type":"turn_aborted","turn_id":7}}` + "\n", with(func(s *Stats) { s.Lines, s.CodexTurnInterrupts = 1, 1 })},
+		{"event with a null id", `{"timestamp":"` + ts1 + `","type":"event_msg","payload":{"type":"turn_aborted","turn_id":null}}` + "\n", with(func(s *Stats) { s.Lines, s.CodexTurnInterrupts = 1, 1 })},
 		{"bad timestamp", strings.ReplaceAll(customExec("c", `tools.exec_command({cmd: "ls"})`), "2026-10-03T12:00:05.000Z", "soon"), with(func(s *Stats) { s.Lines, s.BadTimestamps = 1, 1 })},
 		{"partial last line", codexMetaLine + `{"type":"resp`, with(func(s *Stats) { s.Lines, s.PartialLastLines = 1, 1 })},
 	}

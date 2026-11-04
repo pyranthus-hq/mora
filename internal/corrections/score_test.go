@@ -448,6 +448,48 @@ func TestSinceKeepsSessionsThatStartInside(t *testing.T) {
 	}
 }
 
+// Only a primary's Key is looked up, but a later call matches on any of its
+// simple commands. Here the rejected command is never the later call's primary.
+func TestRepeatMatchesASegmentThatIsNotPrimary(t *testing.T) {
+	calls := []sessions.Call{
+		bash("a", "t1", "make deploy", hour(0)),
+		bash("b", "t2", "make deploy; git push --force origin main", hour(1)),
+	}
+	r := report(calls, []sessions.Denial{rejected("a", "t1", hour(0))})
+	if r.Repeat.Eligible != 1 || r.Repeat.SameCommand != 1 || r.Repeat.SameShape != 1 {
+		t.Errorf("Repeat = %+v", r.Repeat)
+	}
+}
+
+// latest keeps two groups only, so check it against every start, in any order.
+func TestLatestMatchesEveryStart(t *testing.T) {
+	type start struct {
+		group int32
+		at    int64
+	}
+	for range 2000 {
+		starts := make([]start, rand.IntN(8))
+		for i := range starts {
+			starts[i] = start{rand.Int32N(4), rand.Int64N(5)}
+		}
+		l := noLatest
+		for _, s := range starts {
+			l.add(s.group, s.at)
+		}
+		for own := range int32(4) {
+			for at := range int64(6) {
+				want := false
+				for _, s := range starts {
+					want = want || (s.group != own && s.at > at)
+				}
+				if got := l.later(own, at); got != want {
+					t.Fatalf("later(%d, %d) = %v over %+v", own, at, got, starts)
+				}
+			}
+		}
+	}
+}
+
 // A command rejected before since was still rejected, so it is not baseline.
 func TestBaselineExcludesCorrectionsBeforeSince(t *testing.T) {
 	c := NewCorpus(hour(2))
@@ -518,6 +560,28 @@ func TestCopiedEventsCountOnce(t *testing.T) {
 	}
 	if r.Corrections != (Counts{}) || r.Repeat.Scored != 0 {
 		t.Errorf("an event became a correction: %+v", r)
+	}
+}
+
+// Codex can write a null id. Such events differ by time, and only a copy keeps
+// the same time. The key cannot hold the session, because a copy changes that.
+func TestCodexEventsWithNoIDFromFiles(t *testing.T) {
+	aborted := func(ts, id string) string {
+		return `{"timestamp":"` + ts + `","type":"event_msg","payload":{"type":"turn_aborted"` + id + `}}` + "\n"
+	}
+	declined := func(ts, id string) string {
+		return `{"timestamp":"` + ts + `","type":"event_msg","payload":{"type":"patch_apply_end","status":"declined"` + id + `}}` + "\n"
+	}
+	const a, b = "2026-10-01T10:00:00Z", "2026-10-01T11:00:00Z"
+	home := t.TempDir()
+	rollouts := filepath.Join(home, ".codex", "sessions")
+	writeTranscript(t, filepath.Join(rollouts, "rollout-a.jsonl"), aborted(a, `,"turn_id":null`)+declined(a, `,"call_id":null`))
+	writeTranscript(t, filepath.Join(rollouts, "rollout-b.jsonl"), aborted(b, `,"turn_id":null`)+declined(b, `,"call_id":""`))
+	writeTranscript(t, filepath.Join(rollouts, "rollout-fork.jsonl"), aborted(a, `,"turn_id":null`)+declined(a, `,"call_id":null`))
+	c := NewCorpus(zeroTime)
+	r := c.Report(scanInto(t, home, c))
+	if r.Read.CodexTurnInterrupts != 2 || r.Read.CodexPatchesDeclined != 2 {
+		t.Errorf("Read = %+v", r.Read)
 	}
 }
 
@@ -607,5 +671,47 @@ func TestForkedEventsCountOnceFromFiles(t *testing.T) {
 	r = since.Report(scanInto(t, home, since))
 	if r.NotCounted != (NotCounted{}) {
 		t.Errorf("with since, NotCounted = %+v", r.NotCounted)
+	}
+}
+
+// A resume starts with copies of its parent's calls, and only the copy rule can
+// tell them from its own. With --since the parent's file is skipped unopened, so
+// the copy stays, dates the resume's Start and hides its new work. This is the
+// limit the guide states. Rows alone cannot show it: a session that ran across
+// the cut looks the same, and that one must stay not later.
+func TestSinceSkippedParentHidesResumedWork(t *testing.T) {
+	home := t.TempDir()
+	project := filepath.Join(home, ".claude", "projects", "-fake-work")
+	line := func(session, id, command, ts string) string {
+		return `{"type":"assistant","timestamp":"` + ts + `","sessionId":"` + session + `","message":{"id":"m-` + id +
+			`","content":[{"type":"tool_use","id":"` + id + `","name":"Bash","input":{"command":"` + command + `"}}]}}` + "\n"
+	}
+	const old, rejectedAt, resumedAt = "2026-10-01T10:00:00Z", "2026-10-06T10:00:00Z", "2026-10-06T12:00:00Z"
+	parent := filepath.Join(project, "par.jsonl")
+	writeTranscript(t, parent, line("par", "o1", "ls", old))
+	writeTranscript(t, filepath.Join(project, "res.jsonl"), line("res", "o1", "ls", old)+line("res", "n1", "make deploy", resumedAt))
+	writeTranscript(t, filepath.Join(project, "c.jsonl"), line("c", "k1", "make deploy", rejectedAt)+
+		`{"type":"user","timestamp":"`+rejectedAt+`","sessionId":"c","toolDenialKind":"user-rejected","message":{"content":[{"type":"tool_result","is_error":true,"tool_use_id":"k1"}]}}`+"\n")
+	cut := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+	since := func() Repeat {
+		c := NewCorpus(cut)
+		st, err := sessions.Scan(t.Context(), sessions.Options{Home: home, Getenv: func(string) string { return "" }, Since: cut}, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c.Report(st).Repeat
+	}
+	whole := NewCorpus(zeroTime)
+	if r := whole.Report(scanInto(t, home, whole)).Repeat; r.Eligible != 1 || r.SameCommand != 1 {
+		t.Errorf("whole disk: Repeat = %+v", r)
+	}
+	if r := since(); r.Eligible != 1 || r.SameCommand != 1 {
+		t.Errorf("parent inside the window: Repeat = %+v", r)
+	}
+	if err := os.Chtimes(parent, cut.Add(-time.Hour), cut.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if r := since(); r.Eligible != 0 || r.SameCommand != 0 || r.Rate != nil {
+		t.Errorf("parent skipped as old: Repeat = %+v", r)
 	}
 }

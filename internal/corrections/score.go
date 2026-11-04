@@ -97,14 +97,15 @@ func newCallID(harness, id string) callID {
 	return callID(sum[:16])
 }
 
-// segment is what a row keeps of a simple command. Raw text is dropped.
+// segment is what a row keeps of a simple command, in 20 bytes with no pointer
+// because a call can hold several. Raw text is dropped. shape numbers c.shapes.
 type segment struct {
 	key   Key
-	shape string
+	shape int32
 }
 
 // row is one surviving call, in 32 bytes because there can be millions. Times
-// are Unix milliseconds. Its segments are lists[list : list+count].
+// are Unix milliseconds. Its segments are segs[list : list+count].
 type row struct {
 	ts, first int64
 	session   int32
@@ -121,24 +122,24 @@ type eventRef struct{ kind, id string }
 // Corpus collects Calls and Denials. It gives the same Report for any order.
 // Call and Denial may run at once, and Report runs after they end.
 type Corpus struct {
-	mu      sync.Mutex
-	since   time.Time
-	index   map[sessionRef]int32
-	refs    []sessionRef
-	parent  []int32 // union-find over linked sessions
-	calls   map[callID]row
-	segs    []segment // each distinct segment once
-	segIDs  map[segment]int32
-	lists   []int32 // numbers in segs, one run per row
-	denials map[string]sessions.Denial
-	events  map[eventRef]bool
+	mu       sync.Mutex
+	since    time.Time
+	index    map[sessionRef]int32
+	refs     []sessionRef
+	parent   []int32 // union-find over linked sessions
+	calls    map[callID]row
+	segs     []segment // one run per row
+	shapes   []string  // each shape once, with "" first
+	shapeIDs map[string]int32
+	denials  map[string]sessions.Denial
+	events   map[eventRef]bool
 }
 
 // NewCorpus reports nothing older than since. A zero since keeps everything.
 // Older records in the files Scan opens are still held: they say when a session
 // began and which commands were corrected.
 func NewCorpus(since time.Time) *Corpus {
-	return &Corpus{since: since, index: map[sessionRef]int32{}, calls: map[callID]row{}, segIDs: map[segment]int32{},
+	return &Corpus{since: since, index: map[sessionRef]int32{}, calls: map[callID]row{}, shapes: []string{""}, shapeIDs: map[string]int32{"": 0},
 		denials: map[string]sessions.Denial{}, events: map[eventRef]bool{}}
 }
 
@@ -194,19 +195,19 @@ func (c *Corpus) Call(call sessions.Call) {
 		}
 		r.copies = held.copies
 	}
-	r.primary, r.list, r.count = int8(p.Primary), int32(len(c.lists)), int8(len(p.Segments))
+	r.primary, r.list, r.count = int8(p.Primary), int32(len(c.segs)), int8(len(p.Segments))
 	for _, seg := range p.Segments {
-		c.lists = append(c.lists, c.intern(segment{seg.Key, seg.Shape}))
+		c.segs = append(c.segs, segment{seg.Key, c.shapeID(seg.Shape)})
 	}
 	c.calls[id] = r
 }
 
-func (c *Corpus) intern(seg segment) int32 {
-	n, ok := c.segIDs[seg]
+func (c *Corpus) shapeID(shape string) int32 {
+	n, ok := c.shapeIDs[shape]
 	if !ok {
-		n = int32(len(c.segs))
-		c.segIDs[seg] = n
-		c.segs = append(c.segs, seg)
+		n = int32(len(c.shapes))
+		c.shapeIDs[shape] = n
+		c.shapes = append(c.shapes, shape)
 	}
 	return n
 }
@@ -215,7 +216,7 @@ func (c *Corpus) primary(r row) (segment, bool) {
 	if r.primary < 0 {
 		return segment{}, false
 	}
-	return c.segs[c.lists[r.list+int32(r.primary)]], true
+	return c.segs[r.list+int32(r.primary)], true
 }
 
 // Denial dedupes like Call. A copied denial is not added to copied_calls, which
@@ -245,78 +246,90 @@ type lastStart struct {
 	at    int64
 }
 
+// latest holds the two newest linked groups among some sessions, newest first.
+// Section 3.9 of the spec only asks whether a group other than one's own started
+// after a time, and one of two groups is always another. So memory stays fixed
+// however many sessions hold a Key.
+type latest [2]lastStart
+
+var noLatest = latest{{-1, math.MinInt64}, {-1, math.MinInt64}}
+
+func (l *latest) add(group int32, at int64) {
+	switch {
+	case group == l[0].group:
+		l[0].at = max(l[0].at, at)
+	case at > l[0].at:
+		l[0], l[1] = lastStart{group, at}, l[0]
+	case group == l[1].group:
+		l[1].at = max(l[1].at, at)
+	case at > l[1].at:
+		l[1] = lastStart{group, at}
+	}
+}
+
+func (l latest) later(own int32, at int64) bool {
+	if l[0].group != own {
+		return l[0].at > at
+	}
+	return l[1].at > at
+}
+
 // timeline answers section 3.9 of the spec: which sessions count as later.
 type timeline struct {
 	c       *Corpus
-	start   []int64
-	byKey   map[Key]map[int32]bool
-	byShape map[string]map[int32]bool
-	newest  []lastStart // newest start of each linked group, newest first
-}
-
-func addSession[K comparable](m map[K]map[int32]bool, k K, s int32) {
-	if m[k] == nil {
-		m[k] = map[int32]bool{}
-	}
-	m[k][s] = true
+	all     latest
+	byKey   map[Key]latest
+	byShape map[int32]latest
 }
 
 func (c *Corpus) timeline() *timeline {
-	t := &timeline{c: c, start: slices.Repeat([]int64{math.MinInt64}, len(c.refs)),
-		byKey: map[Key]map[int32]bool{}, byShape: map[string]map[int32]bool{}}
+	t := &timeline{c: c, all: noLatest, byKey: map[Key]latest{}, byShape: map[int32]latest{}}
+	start := slices.Repeat([]int64{math.MinInt64}, len(c.refs))
 	for _, r := range c.calls {
-		if t.start[r.session] == math.MinInt64 || r.ts < t.start[r.session] {
-			t.start[r.session] = r.ts
+		if start[r.session] == math.MinInt64 || r.ts < start[r.session] {
+			start[r.session] = r.ts
 		}
+		if seg, named := c.primary(r); named {
+			t.byKey[seg.key] = noLatest // only a primary's Key is ever asked about
+		}
+	}
+	for s, at := range start {
+		if at != math.MinInt64 {
+			t.all.add(c.find(int32(s)), at)
+		}
+	}
+	for _, r := range c.calls {
 		if r.old {
 			continue // its session began before since, so it cannot be later
 		}
-		for _, n := range c.lists[r.list : r.list+int32(r.count)] {
-			seg := c.segs[n]
-			addSession(t.byKey, seg.key, r.session)
-			if seg.shape != "" {
-				addSession(t.byShape, seg.shape, r.session)
+		group, at := c.find(r.session), start[r.session]
+		for _, seg := range c.segs[r.list : r.list+int32(r.count)] {
+			if l, asked := t.byKey[seg.key]; asked {
+				l.add(group, at)
+				t.byKey[seg.key] = l
+			}
+			if seg.shape != 0 {
+				l, ok := t.byShape[seg.shape]
+				if !ok {
+					l = noLatest
+				}
+				l.add(group, at)
+				t.byShape[seg.shape] = l
 			}
 		}
 	}
-	groups := map[int32]int64{}
-	for s, at := range t.start {
-		if g := c.find(int32(s)); at != math.MinInt64 {
-			if newest, ok := groups[g]; !ok || at > newest {
-				groups[g] = at
-			}
-		}
-	}
-	for g, at := range groups {
-		t.newest = append(t.newest, lastStart{g, at})
-	}
-	slices.SortFunc(t.newest, func(a, b lastStart) int { return cmp.Compare(b.at, a.at) })
 	return t
-}
-
-// isLater holds when b is another conversation line that started after at.
-func (t *timeline) isLater(b, s int32, at int64) bool {
-	return t.c.find(b) != t.c.find(s) && t.start[b] > at
 }
 
 // hasLater reports whether any session is later than at, for session s.
 func (t *timeline) hasLater(s int32, at int64) bool {
-	own := t.c.find(s)
-	for _, n := range t.newest {
-		if n.group != own {
-			return n.at > at
-		}
-	}
-	return false
+	return t.all.later(t.c.find(s), at)
 }
 
-func (t *timeline) anyLater(among map[int32]bool, s int32, at int64) bool {
-	for b := range among {
-		if t.isLater(b, s, at) {
-			return true
-		}
-	}
-	return false
+// anyLater reports whether a session holding k is later than at, for session s.
+func anyLater[K comparable](t *timeline, among map[K]latest, k K, s int32, at int64) bool {
+	l, ok := among[k]
+	return ok && l.later(t.c.find(s), at)
 }
 
 type scoredRef struct {
@@ -327,7 +340,7 @@ type scoredRef struct {
 // scoredRow is section 3.8 of the spec: one per (session, Key of the primary).
 type scoredRow struct {
 	at    int64
-	shape string
+	shape int32
 }
 
 // span tracks the first and last timestamp seen.
@@ -442,7 +455,7 @@ func (c *Corpus) tally(when *span) (Counts, map[string]int, map[scoredRef]scored
 		}
 		ref := scoredRef{c.session(sessions.HarnessClaude, d.SessionID), seg.key}
 		at := d.TS.UnixMilli()
-		if held, ok := scored[ref]; !ok || at < held.at || (at == held.at && seg.shape < held.shape) {
+		if held, ok := scored[ref]; !ok || at < held.at || (at == held.at && c.shapes[seg.shape] < c.shapes[held.shape]) {
 			scored[ref] = scoredRow{at, seg.shape}
 		}
 	}
@@ -458,15 +471,15 @@ func (t *timeline) repeats(scored map[scoredRef]scoredRow) (Repeat, []Pattern) {
 			continue
 		}
 		rep.Eligible++
-		shape := cmp.Or(row.shape, OtherShape)
+		shape := cmp.Or(t.c.shapes[row.shape], OtherShape)
 		if patterns[shape] == nil {
 			patterns[shape] = &Pattern{Shape: shape}
 		}
-		if t.anyLater(t.byKey[ref.key], ref.session, row.at) {
+		if anyLater(t, t.byKey, ref.key, ref.session, row.at) {
 			rep.SameCommand++
 			patterns[shape].SameCommand++
 		}
-		if row.shape != "" && t.anyLater(t.byShape[row.shape], ref.session, row.at) {
+		if row.shape != 0 && anyLater(t, t.byShape, row.shape, ref.session, row.at) {
 			rep.SameShape++
 			patterns[shape].SameShape++
 		}
@@ -504,7 +517,7 @@ func (c *Corpus) baseline(t *timeline, corrected map[Key]bool, rep *Repeat) {
 			continue
 		}
 		rep.BaselinePairs++
-		if t.anyLater(t.byKey[ref.key], ref.session, at) {
+		if anyLater(t, t.byKey, ref.key, ref.session, at) {
 			rep.BaselineRepeated++
 		}
 	}

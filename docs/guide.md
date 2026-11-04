@@ -859,8 +859,13 @@ the agent tried.
 
 With `--since`, Mora still looks at older records in the files it opens, to see
 when a session began and which commands were already rejected. It does not open
-a file last written before the cut, so a rejection in such a file is unseen and
-its command can land in the baseline.
+a file last written before the cut, which has two effects. A rejection in such a
+file is unseen, so its command can land in the baseline. And a session resumed
+from such a file looks as if it began before the cut, because Mora cannot see
+that its first calls are copies. Its new work then does not count as later, so
+`--since` can show fewer repeats than a full run. Under `Sessions read`, the
+session counts cover the files Mora opened, while the call counts cover the
+window.
 
 The baseline asks the same question about commands nobody rejected or
 interrupted. A rate close to the baseline means the correction changed nothing

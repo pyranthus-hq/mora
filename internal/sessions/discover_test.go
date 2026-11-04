@@ -275,6 +275,33 @@ func TestSymlinkOutOfHomeIsNotRead(t *testing.T) {
 	}
 }
 
+// A linked codex-accounts is not listed at all when it leaves Home, so it counts
+// once and not once per account. One that stays inside Home still reads.
+func TestLinkedCodexAccounts(t *testing.T) {
+	codex := codexMetaLine + customExec("c1", `tools.exec_command({cmd: "ls"})`)
+	fill := func(accounts string) {
+		for _, id := range []string{"one", "two"} {
+			writeFile(t, filepath.Join(accounts, id, "home", "sessions", "rollout-"+id+".jsonl"), codex)
+		}
+	}
+	home, outside := t.TempDir(), t.TempDir()
+	fill(outside)
+	link := filepath.Join(home, ".config", "orca", "codex-accounts")
+	mkdirs(t, filepath.Dir(link))
+	symlink(t, outside, link)
+	if rec, st := scanHome(t, home); len(rec.calls) != 0 || st.SymlinksSkipped != 1 {
+		t.Fatalf("outside Home: calls=%d stats=%+v", len(rec.calls), st)
+	}
+	home = t.TempDir()
+	fill(filepath.Join(home, "moved"))
+	link = filepath.Join(home, ".config", "orca", "codex-accounts")
+	mkdirs(t, filepath.Dir(link))
+	symlink(t, filepath.Join(home, "moved"), link)
+	if rec, st := scanHome(t, home); st.FilesRead != 2 || st.SymlinksSkipped != 0 || len(rec.calls) != 2 {
+		t.Fatalf("inside Home: calls=%d stats=%+v", len(rec.calls), st)
+	}
+}
+
 // A link that stays inside Home is how a home can be moved, so it still reads.
 func TestSymlinkInsideHomeIsRead(t *testing.T) {
 	home := t.TempDir()

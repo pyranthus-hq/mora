@@ -163,6 +163,14 @@ func codexHomes(o Options, st *Stats) []string {
 		}
 		homes = append(homes, filepath.Join(base, "codex-runtime-home", "home"))
 		accounts := filepath.Join(base, "codex-accounts")
+		key, err := filepath.EvalSymlinks(accounts)
+		if err != nil {
+			continue
+		}
+		if !under(resolvedHome(o), key) {
+			st.SymlinksSkipped++
+			continue
+		}
 		entries, err := os.ReadDir(accounts)
 		if err != nil {
 			continue
@@ -178,14 +186,19 @@ func codexHomes(o Options, st *Stats) []string {
 	return uniqueDirs(o, st, homes)
 }
 
+// resolvedHome is Home with its own links resolved, to compare with real paths.
+func resolvedHome(o Options) string {
+	if resolved, err := filepath.EvalSymlinks(filepath.Clean(o.Home)); err == nil {
+		return resolved
+	}
+	return filepath.Clean(o.Home)
+}
+
 // uniqueDirs keeps the directories that exist, once each by resolved path. A
 // path that a symlink takes out of Home is dropped and counted, so a temp HOME
 // can never reach a real transcript. A link that stays inside Home is kept.
 func uniqueDirs(o Options, st *Stats, dirs []string) []string {
-	home := filepath.Clean(o.Home)
-	if resolved, err := filepath.EvalSymlinks(home); err == nil {
-		home = resolved
-	}
+	home := resolvedHome(o)
 	var out []string
 	seen := map[string]bool{}
 	for _, dir := range dirs {
