@@ -3,6 +3,7 @@ package mora
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	configstore "github.com/pyranthus-hq/mora/internal/config"
@@ -57,6 +58,10 @@ func TestMain(m *testing.M) {
 	// shipped value and tests the real default end to end.
 	shippedUnsetMCPWritePolicy = unsetMCPWritePolicy
 	unsetMCPWritePolicy = mcpWritePolicyOpen
+	// The PreToolUse hook prints nothing once its 1.5 s budget runs out. A
+	// stalled race runner must not turn that into a flaky golden test, so the
+	// budget is a minute here. TestHk_PreToolBudgetSlowLoad sets its own.
+	hookPreToolBudget = time.Minute
 	if os.Getenv("MORA_TEST_REAL_FSYNC") != "1" {
 		atomicio.MarkerSyncFn = func(*os.File) error { return nil }
 		atomicio.SyncDirFn = func(string) error { return nil }

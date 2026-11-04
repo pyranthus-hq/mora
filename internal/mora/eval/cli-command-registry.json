@@ -309,6 +309,13 @@
       "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
+      "path": "rules",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
       "path": "loop",
       "kind": "verb",
       "platform": "all",
@@ -871,6 +878,13 @@
       "reason": "Claude Code owns this stdout: the command emits Claude Code's hookSpecificOutput envelope, not a Mora payload, and injects nothing at all on its silent paths"
     },
     {
+      "path": "hook pre-tool-use",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "Claude Code owns this stdout: the command emits Claude Code's hookSpecificOutput envelope, not a Mora payload, prints nothing on its silent paths, and always exits 0"
+    },
+    {
       "path": "hook install",
       "kind": "subcommand",
       "platform": "native-seam",
@@ -890,6 +904,48 @@
       "platform": "native-seam",
       "json_contract": "result",
       "payload": "mora.hook.status"
+    },
+    {
+      "path": "rules add",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "writes one vault rule file and prints a text confirmation; the rule stays inactive until approved"
+    },
+    {
+      "path": "rules test",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "prints hit or miss as text for one command and never logs"
+    },
+    {
+      "path": "rules approve",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "interactive approval at a person's own terminal; non-interactive and agent-session callers are refused"
+    },
+    {
+      "path": "rules off",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "interactive approval at a person's own terminal; non-interactive and agent-session callers are refused"
+    },
+    {
+      "path": "rules list",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.rules.list"
+    },
+    {
+      "path": "rules compile",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "state rebuild with a text confirmation; it can only drop rules, never add one"
     },
     {
       "path": "loop begin",

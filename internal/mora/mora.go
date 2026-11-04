@@ -177,6 +177,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdIntegrations(ctx, args[1:], stdout)
 	case "hook":
 		return cmdHook(ctx, args[1:], stdout, stderr, stdin)
+	case "rules":
+		return cmdRules(ctx, args[1:], stdout, stderr, stdin)
 	case "loop":
 		return cmdLoop(ctx, args[1:], stdout, stderr)
 	case "upgrade":
@@ -305,6 +307,13 @@ USAGE:
   mora companion revoke <id>       # end one device's access
   mora companion serve             # the narrow loopback listener a paired phone reads (Today/context/health only)
   mora hook install|uninstall|status
+  mora hook install --pre-tool     # opt in to Bash warnings from approved rules (see mora rules)
+  mora rules add --template compound-cd
+  mora rules approve <id> --mode warn|shadow [--holdout]   # in your own terminal only
+  mora rules test <id> -- <command>
+  mora rules list [--json]
+  mora rules off <id>
+  mora rules compile
   mora upgrade                     # manually self-update to the latest release
   mora upgrade --check             # check + cache published stable release availability
   mora upgrade --policy auto|notify|off

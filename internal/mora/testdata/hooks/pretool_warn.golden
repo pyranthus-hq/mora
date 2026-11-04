@@ -1,0 +1,1 @@
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"Use one command per Bash call. Set the working folder through the tool instead of chaining cd."}}
