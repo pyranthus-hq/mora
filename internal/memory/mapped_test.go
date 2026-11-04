@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestMapItemBasics(t *testing.T) {
@@ -206,4 +207,35 @@ func assertMappedMemoryShape(t *testing.T, m MappedMemory) {
 	_ = m.Tags
 	_ = m.Attachments
 	_ = m.Meta
+}
+
+// TestMapItemTruncationNeverSplitsARune checks every byte offset inside 2-, 3-
+// and 4-byte runes: the kept head backs off to the rune start, stays valid
+// UTF-8, and never exceeds the budget.
+func TestMapItemTruncationNeverSplitsARune(t *testing.T) {
+	for _, r := range []string{"é", "€", "😀"} {
+		body := "ab" + strings.Repeat(r, 50)
+		for budget := 3; budget < len(body); budget++ {
+			m := MapItem(Item{Kind: kindGmailThread, ProviderID: "utf8", Body: body}, "personal", budget)
+			if !utf8.ValidString(m.Body) {
+				t.Fatalf("rune %q budget %d: kept %d bytes that are not valid UTF-8", r, budget, len(m.Body))
+			}
+			if len(m.Body) > budget || budget-len(m.Body) >= len(r) {
+				t.Fatalf("rune %q budget %d: kept %d bytes", r, budget, len(m.Body))
+			}
+			if !m.Truncated || m.IngestedSize != len(m.Body) || !strings.HasPrefix(body, m.Body) {
+				t.Fatalf("rune %q budget %d: truncated=%v ingested=%d", r, budget, m.Truncated, m.IngestedSize)
+			}
+		}
+	}
+}
+
+// TestMapItemTruncationKeepsPlainByteCutForInvalidUTF8 keeps the old byte cut
+// when the input is not UTF-8 near the budget, instead of backing off further.
+func TestMapItemTruncationKeepsPlainByteCutForInvalidUTF8(t *testing.T) {
+	body := "ab" + strings.Repeat("\x80", 20)
+	m := MapItem(Item{Kind: kindGmailThread, ProviderID: "bad", Body: body}, "personal", 10)
+	if len(m.Body) != 10 {
+		t.Fatalf("kept %d bytes, want 10", len(m.Body))
+	}
 }

@@ -281,6 +281,7 @@ var contractMatrixDashLedIgnored = map[string]string{
 	// a benefit Mora does not own. Deliberately untouched.
 	"hook session-start": "emits Claude Code's foreign hook envelope; its argument contract is not ours",
 	"hook recall":        "emits Claude Code's foreign hook envelope; its argument contract is not ours",
+	"hook pre-tool-use":  "emits Claude Code's foreign hook envelope and must always exit 0, so it ignores every argument",
 
 	// These four MUTATE configuration while ignoring a mistyped flag, so they are
 	// the most interesting entries on the list. Recorded for the phase checkpoint
