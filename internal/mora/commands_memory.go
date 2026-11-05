@@ -24,6 +24,7 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	text := fs.String("text", "", "text")
 	tags := fs.String("tags", "", "comma-separated tags")
 	source := fs.String("source", "manual", "source")
+	agentFlag := fs.String("agent", memory.AgentCLI, "self-reported label of the writing agent (a-z, 0-9, . _ -)")
 	target := fs.String("target", "", "target memory id")
 	dispositionValue := fs.String("disposition", "", "not-context|keep|done|outdated")
 	asOf := fs.String("as-of", "", "decision validity instant (RFC3339)")
@@ -66,6 +67,13 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		}
 		*mtype = "correction"
 	}
+	agent, err := memory.NormalizeAgent(*agentFlag)
+	if err != nil {
+		return newMoraError(errCodeUsageUnknownValue, "usage", err, "%v", err)
+	}
+	if agent == "" {
+		agent = memory.AgentCLI
+	}
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
@@ -73,7 +81,7 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	if *scope == "" {
 		*scope = "global"
 	}
-	m := Memory{Scope: *scope, Type: *mtype, Title: *title, Tags: genericutil.SplitCSV(*tags), Source: *source, CreatedAt: time.Now().Format(time.RFC3339), Text: *text}
+	m := Memory{Scope: *scope, Type: *mtype, Title: *title, Tags: genericutil.SplitCSV(*tags), Source: *source, Agent: agent, CreatedAt: time.Now().Format(time.RFC3339), Text: *text}
 	if *target != "" {
 		m.Meta = map[string]any{"target": *target}
 		if *dispositionValue != "" {

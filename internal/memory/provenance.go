@@ -137,15 +137,19 @@ func isFilesystemDocument(m Memory) bool {
 // WithProvenance returns a copy of the record with the derived kind attached,
 // overwriting anything that was there. Read surfaces call this; nothing writes
 // the result back to disk.
+//
+// It also fills the read-time signature: an authored memory with no agent line
+// reads as AgentUnknown rather than looking unsigned by omission.
 func WithProvenance(m Memory) Memory {
 	m.Provenance = DeriveProvenance(m)
+	m.Agent = DisplayAgent(m)
 	return m
 }
 
 // WithProvenanceAll is WithProvenance over a slice, in place.
 func WithProvenanceAll(mems []Memory) []Memory {
 	for i := range mems {
-		mems[i].Provenance = DeriveProvenance(mems[i])
+		mems[i] = WithProvenance(mems[i])
 	}
 	return mems
 }

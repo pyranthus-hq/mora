@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
+	"github.com/pyranthus-hq/mora/internal/memory"
 	"io"
 	"os"
 	"sort"
@@ -286,12 +287,15 @@ func teachMemory(ctx context.Context, args []string, stdout io.Writer) error {
 				return errors.New("correct and supersede require --title and --text")
 			}
 			replacement = Memory{
-				Scope:     original.Scope,
-				Type:      original.Type,
-				Title:     *title,
-				Text:      *text,
-				Tags:      append([]string(nil), original.Tags...),
-				Source:    original.Source,
+				Scope:  original.Scope,
+				Type:   original.Type,
+				Title:  *title,
+				Text:   *text,
+				Tags:   append([]string(nil), original.Tags...),
+				Source: original.Source,
+				// The replacement is a CLI correction, not the original
+				// writer's claim, so it carries the cli label.
+				Agent:     memory.AgentCLI,
 				CreatedAt: nowRFC3339(),
 			}
 			if *scope != "" {

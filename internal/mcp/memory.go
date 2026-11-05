@@ -13,7 +13,7 @@ type DecisionBuilder func(createdAt, asOf, durability, flipConditions, reviewBy 
 
 // MemoryFromArgs validates write_memory arguments and constructs the canonical pre-publish record.
 func MemoryFromArgs(args map[string]any, now time.Time, decision DecisionBuilder) (memory.Memory, error) {
-	for _, key := range []string{"target", "disposition"} {
+	for _, key := range []string{"target", "disposition", "agent"} {
 		if raw, exists := args[key]; exists {
 			if _, ok := raw.(string); !ok {
 				return memory.Memory{}, errors.New(key + " must be a string")
@@ -42,6 +42,15 @@ func MemoryFromArgs(args map[string]any, now time.Time, decision DecisionBuilder
 	if m.Scope == "" {
 		m.Scope = "global"
 	}
+	// The signature arrives either from the caller (an explicit agent argument,
+	// e.g. a named bot) or, when absent, from the MCP session's clientInfo.name,
+	// which the server injects before policy dispatch so a staged proposal
+	// replays with the same signature on approval. Empty stays unsigned.
+	agent, err := memory.NormalizeAgent(StringArg(args, "agent", ""))
+	if err != nil {
+		return memory.Memory{}, err
+	}
+	m.Agent = agent
 	if err := memoryfile.ValidateWriteScope(m.Scope); err != nil {
 		return memory.Memory{}, err
 	}

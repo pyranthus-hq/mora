@@ -110,6 +110,23 @@ Two other id shapes exist on disk:
 - **Manual memories** (`mora write`, MCP `write_memory`) get `newID()` (`memfile.go`, function `newID`): `mem_<local-timestamp>_<8 hex>` — the timestamp is `time.Now().Format("20060102_150405")`, **local time, not UTC** (only the provider `created_at` is UTC) — filed under `memories/<scope-as-path>/<id>.md` via `memoryPath` (function `memoryPath`, which turns scope `a:b` and `/` into path separators). The 8 hex are 4 `crypto/rand` bytes. Because the timestamp is only second-granular, an id collision between two concurrent writers is possible, which is why manual memories publish create-exclusively (see `createMemory` above) instead of trusting the id to be unique. `newID` also handles a `crypto/rand` failure explicitly — it falls back to `math/rand/v2` entropy (emitting one non-fatal `warn:` line to stderr, never failing the write) rather than an all-zero suffix (which would collide every time within a second and stall the re-mint retry). The id is a uniqueness token, not a secret.
 - **Filesystem source files** get `src_<ContentHash(name:relpath)>` (`ingest.go`) using the **mora-local** `ContentHash` (`memfile.go`, a small FNV — distinct from the provider `ContentHash` in `ids.go`). This is the only place the FNV hash is used for an id.
 
+## Agent label (`agent`)
+
+Every authored write records a self-reported label of who wrote it in one optional frontmatter scalar, `agent:` (JSON `agent`), a lowercase label of `a-z 0-9 . _ -` up to 64 characters (`memory.NormalizeAgent`, `internal/memory/agent.go`). Writers set it as follows:
+
+| Write path | `agent` |
+|---|---|
+| MCP `write_memory` | the explicit `agent` argument (blank counts as absent), else the client's `initialize` `clientInfo.name` mapped to a short label (`claude-code`, `codex-mcp-client` -> `codex`, `cursor-vscode` -> `cursor`, `claude-ai` -> `claude-desktop`; any other name is sanitized), else none |
+| `mora write` | `--agent`, default `cli` |
+| `mora teach` correct / supersede replacement | `cli` (the original keeps its own signature, so `teach undo` restores it unchanged) |
+| retention compaction | `mora` |
+| loopback HTTP `/write` and `/call` | the body's `agent`, else `http` |
+| Companion | `companion` |
+
+The labels `cli`, `mora`, `http`, `companion` and `unknown` are reserved for Mora's own writers. An MCP or loopback caller that names one, by argument or by client name, is refused (argument) or ignored (client name), so `(by cli)` at the approval step never comes from an agent. A stored value that is not a valid label (a hand edit, an unclosed quote) is ignored with a warning and reads as `unknown`; it never makes the memory file unreadable.
+
+In `propose` mode the label is stored in the proposal's arguments and approval replays it, so the published memory carries the proposing client's label, and `mora mcp proposals list` shows it. Read, list and search output show the label. An authored memory with no `agent:` line (every memory written before the field existed) reads as `unknown`. That label is derived at read time and never written back. Connector and filesystem records carry no label, and a record with a connector id never reads as `unknown`. The value is self-reported by the client and is not authenticated.
+
 ## Content-hash idempotency & `created_at` preservation
 
 `MapItem` (`mapped.go:93-154`) computes `ContentHash` over `(it.Title, it.Body, canonicalMeta)` — using the **original, untruncated** `it.Body` (`mapped.go:143`), not the byte-budgeted body it persists — but folds Meta in **only when non-empty** (`contentHashWithMeta`, `mapped.go:36-41`), so pre-Meta legacy files keep their exact two-part hash and aren't spuriously rewritten on the next sync. A new participant or recovered address therefore *does* change the hash and trigger a rewrite. Cosmetic Meta-absence does not.

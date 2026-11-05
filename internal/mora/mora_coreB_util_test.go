@@ -289,7 +289,10 @@ func TestCoreB_UtilEmitMemory(t *testing.T) {
 	if err := emit(&buf, m, false); err != nil {
 		t.Fatal(err)
 	}
-	if got := buf.String(); got != "mem_1\tpersonal\tHello World\n" {
+	// An authored memory with no signature (written before signatures) reads
+	// as unknown; the signature is a trailing column so existing columns keep
+	// their positions.
+	if got := buf.String(); got != "mem_1\tpersonal\tHello World\tby unknown\n" {
 		t.Fatalf("single Memory line = %q", got)
 	}
 }
@@ -298,12 +301,13 @@ func TestCoreB_UtilEmitMemorySlice(t *testing.T) {
 	var buf bytes.Buffer
 	ms := []Memory{
 		{ID: "mem_a", Scope: "global", Title: "First"},
-		{ID: "mem_b", Scope: "project:x", Title: "Second"},
+		{ID: "mem_b", Scope: "project:x", Title: "Second", Agent: "codex"},
+		{ID: "gmail_thread/c", Scope: "global", Title: "Third", Provider: "gmail"},
 	}
 	if err := emit(&buf, ms, false); err != nil {
 		t.Fatal(err)
 	}
-	want := "mem_a\tglobal\tFirst\nmem_b\tproject:x\tSecond\n"
+	want := "mem_a\tglobal\tFirst\tby unknown\nmem_b\tproject:x\tSecond\tby codex\ngmail_thread/c\tglobal\tThird\n"
 	if got := buf.String(); got != want {
 		t.Fatalf("[]Memory output = %q, want %q", got, want)
 	}

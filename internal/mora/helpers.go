@@ -19,10 +19,10 @@ func emit(w io.Writer, v any, jsonOut bool) error {
 	sty := newStyler(w, jsonOut)
 	switch x := v.(type) {
 	case Memory:
-		fmt.Fprintf(w, "%s\t%s\t%s\n", sty.dim(x.ID), sty.dim(x.Scope), ownedTitle(x))
+		fmt.Fprintf(w, "%s\t%s\t%s%s\n", sty.dim(x.ID), sty.dim(x.Scope), ownedTitle(x), signedBy(sty, x))
 	case []Memory:
 		for _, m := range x {
-			fmt.Fprintf(w, "%s\t%s\t%s\n", sty.dim(m.ID), sty.dim(m.Scope), ownedTitle(m))
+			fmt.Fprintf(w, "%s\t%s\t%s%s\n", sty.dim(m.ID), sty.dim(m.Scope), ownedTitle(m), signedBy(sty, m))
 		}
 	case []catalogRow:
 		for _, r := range x {

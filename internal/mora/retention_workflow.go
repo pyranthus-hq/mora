@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/memory"
 	"io"
 	"os"
 	"path/filepath"
@@ -504,7 +505,7 @@ func executeRetentionReport(ctx context.Context, cfg Config, reportID string, no
 			receipt.ChangedIDs = append(receipt.ChangedIDs, candidate.ID)
 		case "compact":
 			compactID := retentionCompactID(report.ReportID, candidate.ID)
-			compact := Memory{ID: compactID, Scope: m.Scope, Type: "durable", Title: "Retained: " + m.Title, Text: strings.TrimSpace(decision.Summary), Source: "retention:" + report.ReportID, CreatedAt: stamp, ContentHash: ContentHash(decision.Summary), Meta: map[string]any{"retention_source_ids": []string{candidate.ID}, "retention_manifest_id": manifestID}}
+			compact := Memory{ID: compactID, Scope: m.Scope, Type: "durable", Title: "Retained: " + m.Title, Text: strings.TrimSpace(decision.Summary), Source: "retention:" + report.ReportID, Agent: memory.AgentMora, CreatedAt: stamp, ContentHash: ContentHash(decision.Summary), Meta: map[string]any{"retention_source_ids": []string{candidate.ID}, "retention_manifest_id": manifestID}}
 			if err := writeMemory(cfg, compact); err != nil {
 				return retentionExecutionReceipt{}, err
 			}
