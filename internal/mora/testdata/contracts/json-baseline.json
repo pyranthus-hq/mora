@@ -100,6 +100,10 @@
     "status": "static_only"
   },
   {
+    "path": "connect eywa",
+    "status": "static_only"
+  },
+  {
     "path": "connect filesystem",
     "status": "empty"
   },
@@ -162,6 +166,22 @@
   {
     "path": "entities",
     "status": "parses"
+  },
+  {
+    "path": "eywa",
+    "status": "empty"
+  },
+  {
+    "path": "eywa preview",
+    "status": "empty"
+  },
+  {
+    "path": "eywa push",
+    "status": "static_only"
+  },
+  {
+    "path": "eywa status",
+    "status": "static_only"
   },
   {
     "path": "forget",
@@ -501,6 +521,10 @@
   },
   {
     "path": "sync applecalendar",
+    "status": "static_only"
+  },
+  {
+    "path": "sync eywa",
     "status": "static_only"
   },
   {
