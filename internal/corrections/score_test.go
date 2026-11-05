@@ -81,7 +81,7 @@ func checkFixtureReport(t *testing.T, r Report) {
 		t.Errorf("Corrections = %+v", r.Corrections)
 	}
 	repeat := Repeat{Scored: 5, Eligible: 4, SameCommand: 2, SameShape: 3, Rate: ptr(0.5), ShapeRate: ptr(0.75),
-		BaselinePairs: 9, BaselineRepeated: 4, BaselineRate: ptr(0.4444)}
+		BaselinePairs: 9, BaselineRepeated: 4, BaselineRate: ptr(0.4444), BaselineShape: 4, BaselineShapeRate: ptr(0.4444)}
 	if !reflect.DeepEqual(r.Repeat, repeat) {
 		got, _ := json.Marshal(r.Repeat)
 		t.Errorf("Repeat = %s", got)
@@ -302,7 +302,7 @@ func TestNoRateWithoutData(t *testing.T) {
 	if r.Repeat.Scored != 1 || r.Repeat.Eligible != 0 {
 		t.Fatalf("Repeat = %+v", r.Repeat)
 	}
-	if r.Repeat.Rate != nil || r.Repeat.ShapeRate != nil || r.Repeat.BaselineRate != nil {
+	if r.Repeat.Rate != nil || r.Repeat.ShapeRate != nil || r.Repeat.BaselineRate != nil || r.Repeat.BaselineShapeRate != nil {
 		t.Errorf("rates must be nil: %+v", r.Repeat)
 	}
 	empty := NewCorpus(zeroTime).Report(sessions.Stats{})
@@ -319,7 +319,7 @@ func TestNoRateWithoutData(t *testing.T) {
 	if err := json.Unmarshal(b, &doc); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"rate", "shape_rate", "baseline_rate"} {
+	for _, name := range []string{"rate", "shape_rate", "baseline_rate", "baseline_shape_rate"} {
 		if v, ok := doc.Repeat[name]; !ok || v != nil {
 			t.Errorf("%s = %v, want JSON null", name, v)
 		}
@@ -387,6 +387,24 @@ func TestBaselineExcludesCorrectedKeys(t *testing.T) {
 	r := report(calls, []sessions.Denial{rejected("a", "t1", hour(1))})
 	if r.Repeat.BaselinePairs != 1 || r.Repeat.BaselineRepeated != 1 {
 		t.Errorf("Repeat = %+v", r.Repeat)
+	}
+}
+
+// A shape rate needs a shape baseline: most shapes recur whether or not anyone
+// rejected them. A command with no shape never counts.
+func TestBaselineShapeCountsOtherCommandsOfTheShape(t *testing.T) {
+	calls := []sessions.Call{
+		bash("a", "t1", "rm -rf build", hour(0)),
+		bash("a", "t2", "mytool x", hour(0)),
+		bash("b", "t3", "rm -rf dist", hour(3)),
+		bash("b", "t4", "mytool y", hour(3)),
+	}
+	r := report(calls, nil).Repeat
+	if r.BaselinePairs != 2 || r.BaselineRepeated != 0 || r.BaselineShape != 1 {
+		t.Errorf("Repeat = %+v", r)
+	}
+	if r.BaselineShapeRate == nil || *r.BaselineShapeRate != 0.5 {
+		t.Errorf("BaselineShapeRate = %v", r.BaselineShapeRate)
 	}
 }
 
