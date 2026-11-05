@@ -1219,6 +1219,14 @@
     {
       "json_contract": "result",
       "kind": "verb",
+      "path": "check",
+      "payload": "mora.check",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
       "path": "config",
       "payload": "mora.config",
       "platform": "all",
@@ -1648,6 +1656,10 @@
     },
     {
       "name": "mora.capabilities",
+      "version": 1
+    },
+    {
+      "name": "mora.check",
       "version": 1
     },
     {

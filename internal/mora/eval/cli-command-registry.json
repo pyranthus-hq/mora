@@ -309,6 +309,13 @@
       "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
+      "path": "check",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.check"
+    },
+    {
       "path": "rules",
       "kind": "verb",
       "platform": "all",

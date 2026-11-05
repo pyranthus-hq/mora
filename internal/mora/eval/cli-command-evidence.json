@@ -466,6 +466,17 @@
       }
     },
     {
+      "name": "agent corrections",
+      "paths": ["check"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCheckGolden", "TestCheckEmptyHome"]},
+        "json": {"status": "test", "tests": ["TestCheckJSON"]},
+        "state": {"status": "test", "tests": ["TestCheckWritesNothing"], "reason": "check is read-only, so the test proves that no file changes."},
+        "error": {"status": "test", "tests": ["TestCheckBadFlags", "TestCheckUnreadableFile"]},
+        "refusal": {"status": "test", "tests": ["TestCheckCanary"], "reason": "check refuses to print raw text: the canary must not reach stdout or stderr."}
+      }
+    },
+    {
       "name": "durable loops",
       "paths": ["loop", "loop begin", "loop heartbeat", "loop done", "loop status", "loop register", "loop list"],
       "evidence": {

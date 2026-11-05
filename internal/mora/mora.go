@@ -179,6 +179,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdHook(ctx, args[1:], stdout, stderr, stdin)
 	case "rules":
 		return cmdRules(ctx, args[1:], stdout, stderr, stdin)
+	case "check":
+		return cmdCheck(ctx, args[1:], stdout, stderr)
 	case "loop":
 		return cmdLoop(ctx, args[1:], stdout, stderr)
 	case "upgrade":
@@ -314,6 +316,7 @@ USAGE:
   mora rules list [--json]
   mora rules off <id>
   mora rules compile
+  mora check [--since 30d] [--json]   # read-only count of rejected or interrupted commands
   mora upgrade                     # manually self-update to the latest release
   mora upgrade --check             # check + cache published stable release availability
   mora upgrade --policy auto|notify|off
