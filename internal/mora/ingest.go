@@ -172,7 +172,7 @@ func runEnabledSourceBackfill(ctx context.Context, cfg Config, stdout io.Writer,
 	output := io.Writer(&synchronizedWriter{w: stdout})
 	outcomes := runSourcePlan(ctx, plans, sourceRunOptions{Run: func(runCtx context.Context, plan sourceRunPlan) sourceRunOutcome {
 		result, runErr := ingestSourceFn(runCtx, cfg, plan.Source, output)
-		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Err: runErr}
+		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Skipped: result.Skipped, Err: runErr}
 	}})
 	for i, outcome := range outcomes {
 		if outcome.Err != nil && !outcome.Cancelled && report != nil {
@@ -302,7 +302,7 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 		result, runErr := ingestSourceFn(runCtx, cfg, plan.Source, progress)
 		outcome := sourceRunOutcome{
 			Key: plan.Key, Items: result.Materialized, Examined: result.Examined,
-			Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Err: runErr,
+			Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Skipped: result.Skipped, Err: runErr,
 		}
 		if path := syncStatusPathFor(cfg, plan.Source); path != "" {
 			if status, statusErr := memory.LoadStatus(path); statusErr == nil && status != nil {
@@ -1138,7 +1138,7 @@ func cmdReingest(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	}
 	outcomes := runSourcePlan(ctx, plans, sourceRunOptions{Run: func(runCtx context.Context, plan sourceRunPlan) sourceRunOutcome {
 		result, runErr := ingestSourceFn(runCtx, cfg, plan.Source, progress)
-		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Err: runErr}
+		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Skipped: result.Skipped, Err: runErr}
 	}})
 	total := sourceOutcomesMaterialized(outcomes)
 	for _, outcome := range outcomes {
@@ -1193,6 +1193,8 @@ type sourceIngestResult struct {
 	Missing      int
 	Stages       memory.IngestStages
 	Incremental  bool
+	// Skipped: another live process holds this source's lease, nothing ran.
+	Skipped bool
 }
 
 func sourceIngestResultFromMemory(result memory.IngestResult) sourceIngestResult {
@@ -1213,6 +1215,27 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 	// attemptStart is captured before ANY step that can fail, so every failure at
 	// this chokepoint — activity bookkeeping included — stamps the same attempt.
 	attemptStart := time.Now()
+	// One sync per source: a live holder means skip, before any activity record
+	// or status is written. The lease is released on every exit path below.
+	sourceKey := ingestOperationSourceKey(s)
+	// Same-key siblings in this process wait here rather than share the lease.
+	releaseLease, leaseErr := ingestpkg.AcquireLease(ctx, cfg, sourceKey, ingestLeaseSeams())
+	if leaseErr != nil {
+		var held *ingestpkg.LeaseHeldError
+		if errors.As(leaseErr, &held) {
+			warnf(out, "%s sync skipped: %v", sourceKey, held)
+			return sourceIngestResult{Skipped: true}, nil
+		}
+		if ctx.Err() != nil {
+			return result, ctx.Err()
+		}
+		// Continuing without the slot would let journal init re-enter a sibling's
+		// same-PID lease, so a lease error stops this source.
+		err := classifyConnectorError(fmt.Errorf("taking %s sync lease: %w", sourceKey, leaseErr))
+		stampSyncAttemptFailure(cfg, s, err, attemptStart, out)
+		return result, err
+	}
+	defer releaseLease()
 	// The activity receipt and matching journal header are both durable before
 	// dispatch can publish a vault file. Even a zero-item run gets a header, so
 	// its success can be closed only by the covering committed rebuild.
@@ -1240,7 +1263,6 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		}, code, cfg.OperationClock())
 		return errors.Join(cause, finishErr)
 	}
-	sourceKey := ingestOperationSourceKey(s)
 	// Every publish below journals under this run's key (writeMappedMemoryDetailed
 	// reads it back), so the lease taken here is the only one the run owns and the
 	// deferred release below actually retires it.
@@ -1248,9 +1270,6 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 	if err := ingestpkg.EnsureJournalHeader(cfg, sourceKey, ingestPublishSeams()); err != nil {
 		return result, finishFailed("journal_start_failed", err)
 	}
-	// Release only this source's lease. Concurrent in-process ingests share a PID;
-	// releasing every lease here would abandon the still-running sibling.
-	defer ingestpkg.ReleaseLeaseOwnedHere(cfg, sourceKey, ingestLeaseSeams())
 
 	progress := startOperationProgress(cfg, h, "ingesting")
 	if err := progress.Update("ingesting", operationCounts{}); err != nil {
@@ -1651,7 +1670,7 @@ func ingestGoogleDetailed(ctx context.Context, cfg Config, s Source, kind google
 	}
 
 	res, ingErr := memory.Ingest(memory.IngestParams{
-		Context: ctx, Fetcher: fetcher, Kind: kind, Window: win, Scope: s.Scope, BodyBudget: 16 * 1024,
+		Context: ctx, Fetcher: fetcher, Kind: kind, Window: win, Scope: s.Scope, BodyBudget: connectorBodyBudget,
 		Status: st, WriteResult: write, Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 	})
 	prog.done()
@@ -1679,6 +1698,14 @@ func googleTokenPath(cfg Config) string { return googleTokenPathFor(cfg, "") }
 func whatsAppStatusPath(cfg Config, name string) string {
 	return filepath.Join(cfg.StateDir, "sync", "whatsapp-"+name+".json")
 }
+
+// connectorBodyBudget is the byte budget for one Gmail thread, WhatsApp or
+// iMessage conversation, or Apple Calendar event body at ingest. Gmail and
+// Apple Calendar keep the head (memory.MapItem); WhatsApp and iMessage keep the
+// newest messages. A cut Gmail thread is marked Truncated and gets no
+// message-grain segments, so the budget is set to keep long threads whole.
+// GitHub issues use their own 64 KiB budget in ingestGitHubDetailed.
+const connectorBodyBudget = 64 * 1024
 
 const defaultWhatsAppLookbackDays = 90
 
@@ -1720,7 +1747,10 @@ func ingestWhatsAppDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	defer fetcher.Close()
 
 	statusPath := whatsAppStatusPath(cfg, s.Name)
-	st, _ := memory.LoadStatus(statusPath)
+	st, err := loadSyncStatus(statusPath)
+	if err != nil {
+		return sourceIngestResult{}, err
+	}
 	st.Source = s.Name
 	win := windowForWhatsApp(s)
 
@@ -1749,7 +1779,7 @@ func ingestWhatsAppDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ctx, Fetcher: fetcher, Kind: whatsapp.KindConversation, Window: win, Scope: s.Scope,
-		BodyBudget: 16 * 1024, Status: st, WriteResult: write,
+		BodyBudget: connectorBodyBudget, Status: st, WriteResult: write,
 		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 		Map:        whatsapp.MapConversationFn(),
 	})
@@ -1844,7 +1874,10 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	resolver, _ := imessage.NewResolver(addressBookRoot(cfg))
 
 	statusPath := imessageStatusPath(cfg, s.Name)
-	st, _ := memory.LoadStatus(statusPath)
+	st, err := loadSyncStatus(statusPath)
+	if err != nil {
+		return sourceIngestResult{}, err
+	}
 	st.Source = s.Name
 	win := windowForIMessage(s)
 
@@ -1896,7 +1929,7 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	}
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ingestCtx, Fetcher: fetcher, Kind: imessage.KindIMessageChat, Window: win, Scope: s.Scope,
-		BodyBudget: 16 * 1024, Status: st, WriteResult: write,
+		BodyBudget: connectorBodyBudget, Status: st, WriteResult: write,
 		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 		Map:        mapFn,
 	})
@@ -1960,7 +1993,10 @@ func ingestAppleCalDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	defer fetcher.Close()
 
 	statusPath := appleCalStatusPath(cfg, s.Name)
-	st, _ := memory.LoadStatus(statusPath)
+	st, err := loadSyncStatus(statusPath)
+	if err != nil {
+		return sourceIngestResult{}, err
+	}
 	st.Source = s.Name
 	prog := newProgress(out, s.Name, "events")
 	write := func(mm memory.MappedMemory) (bool, error) {
@@ -1975,7 +2011,7 @@ func ingestAppleCalDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	}
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ctx, Fetcher: fetcher, Kind: applecal.KindAppleCalEvent, Window: windowForAppleCal(s, time.Now()),
-		Scope: s.Scope, BodyBudget: 16 * 1024, Status: st, WriteResult: write,
+		Scope: s.Scope, BodyBudget: connectorBodyBudget, Status: st, WriteResult: write,
 		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 	})
 	prog.done()
@@ -2002,7 +2038,10 @@ func ingestGitHubDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		return sourceIngestResult{}, err
 	}
 	statusPath := syncStatusPathFor(cfg, s)
-	st, _ := memory.LoadStatus(statusPath)
+	st, err := loadSyncStatus(statusPath)
+	if err != nil {
+		return sourceIngestResult{}, err
+	}
 	st.Source = s.Name
 	prog := newProgress(out, s.Name, "issues")
 	write := func(mm memory.MappedMemory) (bool, error) {
@@ -2393,8 +2432,10 @@ func backfillEnabledAppleCalendar(ctx context.Context, cfg Config, stdout io.Wri
 var testHookFSPreWrite func(id string)
 
 type filesystemManifestEntry struct {
-	Size    int64 `json:"size"`
-	ModTime int64 `json:"mod_time_unix_nano"`
+	Size          int64 `json:"size"`
+	ModTime       int64 `json:"mod_time_unix_nano"`
+	TargetSize    int64 `json:"target_size,omitempty"`
+	TargetModTime int64 `json:"target_mod_time_unix_nano,omitempty"`
 }
 
 func filesystemManifestPath(cfg Config, source string) string {
@@ -2483,6 +2524,17 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 			return fmt.Errorf("stat filesystem source %q file %q: %w", s.Name, path, infoErr)
 		}
 		entry := filesystemManifestEntry{Size: info.Size(), ModTime: info.ModTime().UnixNano()}
+		if d.Type()&os.ModeSymlink != 0 {
+			target, err := os.Stat(path)
+			if err != nil {
+				return fmt.Errorf("reading filesystem source %q symlink target %q metadata: %w", s.Name, path, err)
+			}
+			if !target.Mode().IsRegular() {
+				return fmt.Errorf("filesystem source %q symlink target %q is not a regular file", s.Name, path)
+			}
+			// Staging links stay unchanged when Claude edits the memory they point to.
+			entry.TargetSize, entry.TargetModTime = target.Size(), target.ModTime().UnixNano()
+		}
 		if prior, ok := priorManifest[rel]; ok && prior == entry {
 			nextManifest[rel] = entry
 			result.Examined++
@@ -2710,4 +2762,15 @@ func extractDocxText(path string) (string, error) {
 		}
 	}
 	return strings.TrimSpace(b.String()), nil
+}
+
+// loadSyncStatus refuses a corrupt status file instead of handing back nil:
+// four connectors dereferenced that nil and the panic took sibling sources in
+// the same run down with them (audit V8).
+func loadSyncStatus(path string) (*memory.SyncStatus, error) {
+	st, err := memory.LoadStatus(path)
+	if err != nil {
+		return nil, fmt.Errorf("sync status %s is unreadable (%w); fix or delete it to start this source over", path, err)
+	}
+	return st, nil
 }

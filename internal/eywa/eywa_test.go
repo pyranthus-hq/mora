@@ -166,7 +166,9 @@ func TestPullPerRecordFailureIsSurfaced(t *testing.T) {
 	fetcher := NewFetcher(f.client(t), nil, func() time.Time { return fixedNow })
 	st := &memory.SyncStatus{}
 	got, err := ingestAll(t, fetcher, st)
-	if err == nil || !strings.Contains(err.Error(), "1 item(s) failed") {
+	// The ingest loop no longer counts drops in the error text; the record count
+	// and LastError below pin that exactly one record was dropped.
+	if err == nil || !strings.Contains(err.Error(), "failed to write and were dropped") {
 		t.Fatalf("err = %v, want one dropped record surfaced", err)
 	}
 	if !strings.Contains(st.LastError, "fct_gone") || len(got) != 1 {

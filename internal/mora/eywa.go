@@ -977,7 +977,7 @@ func describeEywaStatus(status string) string {
 
 func printEywaRows(w io.Writer, rows []eywaPushRow) {
 	for _, r := range rows {
-		line := fmt.Sprintf("  %s → %s: %s", r.MemoryID, orNone(r.WriteID), describeEywaStatus(r.Status))
+		line := fmt.Sprintf("  %s → %s: %s", r.MemoryID, eywaWriteIDOrNone(r.WriteID), describeEywaStatus(r.Status))
 		if r.Reason != "" {
 			line += " (" + r.Reason + ")"
 		}
@@ -988,7 +988,7 @@ func printEywaRows(w io.Writer, rows []eywaPushRow) {
 	}
 }
 
-func orNone(s string) string {
+func eywaWriteIDOrNone(s string) string {
 	if s == "" {
 		return "(no write)"
 	}

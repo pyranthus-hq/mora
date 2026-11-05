@@ -179,6 +179,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdIntegrations(ctx, args[1:], stdout)
 	case "hook":
 		return cmdHook(ctx, args[1:], stdout, stderr, stdin)
+	case "rules":
+		return cmdRules(ctx, args[1:], stdout, stderr, stdin)
+	case "check":
+		return cmdCheck(ctx, args[1:], stdout, stderr)
 	case "loop":
 		return cmdLoop(ctx, args[1:], stdout, stderr)
 	case "upgrade":
@@ -303,7 +307,8 @@ USAGE:
   mora usage off|on
   mora disconnect google
   mora mcp serve
-  mora mcp proposals list          # inspect writes staged by propose-mode MCP clients
+  mora mcp proposals list          # list writes staged by propose-mode MCP clients
+  mora mcp proposals show <id>     # inspect full staged content before approving
   mora serve http                  # loopback HTTP for sandboxed AI browsers (Aside); token in ~/.config/mora/http.json
   mora serve http install          # run it as an auto-restarting background service (launchd/systemd); also: uninstall|status
   mora companion pair              # pair a phone: prints a QR-able payload with a one-time code
@@ -311,6 +316,14 @@ USAGE:
   mora companion revoke <id>       # end one device's access
   mora companion serve             # the narrow loopback listener a paired phone reads (Today/context/health only)
   mora hook install|uninstall|status
+  mora hook install --pre-tool     # opt in to Bash warnings from approved rules (see mora rules)
+  mora rules add --template compound-cd
+  mora rules approve <id> --mode warn|shadow [--holdout]   # in your own terminal only
+  mora rules test <id> -- <command>
+  mora rules list [--json]
+  mora rules off <id>
+  mora rules compile
+  mora check [--since 30d] [--json]   # read-only count of rejected or interrupted commands
   mora upgrade                     # manually self-update to the latest release
   mora upgrade --check             # check + cache published stable release availability
   mora upgrade --policy auto|notify|off
@@ -854,7 +867,10 @@ func createMemory(ctx context.Context, cfg Config, m Memory, opts ...createOptio
 		if err != nil {
 			return Memory{}, pendingOp{}, err
 		}
-		path := memoryPath(cfg, m)
+		path, err := memoryPath(cfg, m)
+		if err != nil {
+			return Memory{}, pendingOp{}, err
+		}
 		op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindWrite, Path: path})
 		if merr != nil {
 			// errIndexUnmarkable: abort BEFORE a single vault byte changes, so a

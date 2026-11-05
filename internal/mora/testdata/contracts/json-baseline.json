@@ -32,6 +32,10 @@
     "status": "parses"
   },
   {
+    "path": "check",
+    "status": "parses"
+  },
+  {
     "path": "companion",
     "status": "empty"
   },
@@ -204,6 +208,10 @@
     "status": "static_only"
   },
   {
+    "path": "hook pre-tool-use",
+    "status": "empty"
+  },
+  {
     "path": "hook recall",
     "status": "empty"
   },
@@ -362,6 +370,34 @@
   {
     "path": "retention verify",
     "status": "parses"
+  },
+  {
+    "path": "rules",
+    "status": "empty"
+  },
+  {
+    "path": "rules add",
+    "status": "flag_error"
+  },
+  {
+    "path": "rules approve",
+    "status": "flag_error"
+  },
+  {
+    "path": "rules compile",
+    "status": "flag_error"
+  },
+  {
+    "path": "rules list",
+    "status": "parses"
+  },
+  {
+    "path": "rules off",
+    "status": "flag_error"
+  },
+  {
+    "path": "rules test",
+    "status": "empty"
   },
   {
     "path": "schedule",

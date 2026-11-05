@@ -669,9 +669,48 @@ Review staged writes locally:
 
 ```bash
 mora mcp proposals list
+mora mcp proposals show <proposal-id>
 mora mcp proposals approve <proposal-id>
 mora mcp proposals reject <proposal-id>
 ```
+
+`mora mcp proposals show <proposal-id> [--json]` is a local, read-only inspection.
+Both forms print an indented `mora.mcp.proposals` v1 JSON receipt with an
+`inspection` object: pending ID/time, the full staged `arguments`, and the
+`effective_scope`, `effective_type`, and `effective_source` the writer derives.
+In particular, an omitted or empty scope is shown as `global`. Inspection does
+not approve, reject, execute, or publish the proposal, and does not build an index
+or change the config, state, data, or vault files. The content is untrusted data.
+Terminal control characters are JSON-escaped and remain data when decoded.
+
+Credential-like fields and common token, authorization, HTTP URL userinfo,
+private-key, and labelled-assignment patterns are masked. This is finite pattern
+matching, not proof that the remaining text has no secrets. A masked result sets
+`redacted: true` and includes a notice to reject rather than approve that view.
+The stored candidate still contains its original values; reject it and ask for a
+new proposal without credentials. There is no unredacted display option.
+
+Missing, malformed, mismatched-ID, invalid-write, or invalid-timestamp proposals
+are refused without printing stored contents. Inspection also refuses symlinked
+proposal directories/files, nonregular files, and files over 32 MiB. It does not
+change the pending queue on either success or refusal. This local read adds no
+authorization boundary or approval authority.
+
+Proposal decisions are serialized across processes and retained privately under
+`<StateDir>/mcp-proposal-decisions/`, outside the vault. A durable decision claim
+records the intended memory ID before publication. Concurrent approve/reject
+commands and later retries return a conflict; deleting or retracting the memory
+does not reset that proposal. Successful commands keep the existing receipt shape.
+
+If a process stops after claiming a decision, the outcome may be unresolved.
+`show` and `list` label any remaining pending file with the recorded decision
+status and memory ID. Do not approve it again or remove its decision record:
+reconcile that ID and the vault manually before recovery. There is no automatic
+retry or recovery command for an interrupted decision. These guarantees require
+all deciding processes to use this version and the same retained state directory;
+older binaries and manually deleted state can bypass them.
+
+
 
 ### Loopback HTTP
 
@@ -683,7 +722,8 @@ mora serve http
 ```
 
 The server binds only to `127.0.0.1:7777`. It creates a bearer token in
-`<config_dir>/http.json` with file mode `0600`. Data routes need the token. Mora
+`<config_dir>/http.json` with file mode `0600`. Every route, including the landing page at `/`, needs
+the token except `/healthz`. Mora
 checks the Host header, sends no CORS allow header, and leaves `delete_memory`
 out of the generic `/call` allowlist.
 
@@ -692,6 +732,26 @@ Print the token without starting the server:
 ```bash
 mora serve http --print-token
 ```
+
+On the first start after upgrading from a build that exposed the unauthenticated
+landing page, Mora replaces the old token once. `token_version: 2` in
+`<config_dir>/http.json` records the migration; new installs write it immediately.
+The same migration runs with `--print-token`. Old token banner lines in
+`<state_dir>/serve-http.out.log` are scrubbed in place, preserving other log lines.
+The scrub runs only on the rotating start; if it fails, Mora prints a warning and
+startup continues, leaving banner lines containing only the revoked token.
+Companion/browser clients using
+the shared HTTP token must re-pair or fetch the new token with
+`mora serve http --print-token`. Startup output never includes the token.
+
+Any already-running `mora serve http` process or installed HTTP service must be
+restarted for rotation to take effect, including rotation by `--print-token`;
+until then it still accepts the old token and rejects the new one.
+On macOS, run `mora serve http install` again to stop and start the daemon.
+On Linux, run `systemctl --user restart mora-serve-http.service` (`install` only
+writes the unit). On Windows or for a manually started server, stop the running
+process and start `mora serve http` again. There is no `mora serve http restart`
+subcommand.
 
 Choose another loopback port with `--port` or `MORA_PORT`. To keep the server
 running as a user service:
@@ -728,6 +788,201 @@ mora hook uninstall
 
 `mora hook status --json` emits the `mora.hook.status` v1 receipt. Its
 `harnesses` field is always an array, including when no hook is installed.
+
+For one project's corrections, run from its root directory:
+
+```bash
+mora hook install --project --scope project:my-app
+mora hook status --project --json
+mora write --scope project:my-app --type decision --title "Use pnpm" \
+  --text "Always use pnpm to install dependencies in this project."
+```
+
+Project installation writes only `.claude/settings.local.json`. It installs
+`UserPromptSubmit` recall for that exact memory scope and omits `SessionStart`,
+whose brief is global. It binds the installation directory explicitly instead
+of guessing a scope from a folder name. The hook checks Claude's `cwd` on every
+prompt: the root and its subdirectories are allowed; missing, relative,
+unresolvable, or outside paths inject nothing. Symlinks are resolved before
+checking containment. Use a different scope name for each project.
+
+This first project installer supports the default Claude configuration directory
+and regular settings files. Project install, status, and uninstall reject a
+nonempty `CLAUDE_CONFIG_DIR`, linked worktrees (or other `.git` files), and
+symlinked `.git` or Claude settings entries. Inside a Git repository, run project
+commands from the main checkout root: Claude may use the root local settings file
+even when started below it. No alternate or main-checkout settings are changed
+on refusal. See the [Claude settings location rules](https://code.claude.com/docs/en/settings#where-claude-code-keeps-the-local-file-in-a-git-repository).
+
+The installer refuses if it finds managed global Mora hooks; remove those with
+`mora hook uninstall` first. It also refuses managed hooks in the project's
+`.claude/settings.json`, or existing local managed hooks outside
+`UserPromptSubmit` recall. Multiple managed local recall entries are refused
+without writing; remove duplicates explicitly before retrying. Other settings
+and hooks are preserved. From the same project root, remove the local
+Mora hook with `mora hook uninstall --project`.
+
+The binding is a directory subtree, not a repository identity: nested
+repositories inside it are included. Moving or renaming the installed root stops
+new recall until you reinstall there. Global hooks added after project setup can
+reintroduce broad context; this installer does not monitor future settings edits.
+
+The plain `mora hook install` remains global and reads across scopes. Project
+hooks filter automatic recall only: MCP reads still use their existing scope
+arguments, other hooks may inject context, and previously read context remains
+in an agent's session. This installer supports Claude Code; Codex can use MCP
+but has no automatic Mora hook route.
+
+### Bash warning rules
+
+A rule warns a Claude Code agent when it runs a Bash command that matches a
+pattern. The hook never blocks a command. It is off until you add a rule,
+approve it in your own terminal and install the hook.
+
+```bash
+mora rules add --template compound-cd
+mora rules test compound-cd -- 'cd /tmp && ls'      # prints hit or miss
+mora rules approve compound-cd --mode warn --holdout
+mora hook install --pre-tool
+mora rules list
+```
+
+`rules add` writes `rules/<id>.md` in your vault. The rule stays inactive
+until you approve it. You can also write your own rule:
+
+```bash
+mora rules add --id no-sudo --match '^\s*sudo\b' --message "Do not use sudo here."
+```
+
+Patterns are Go RE2. Lookahead, lookbehind and backreferences are refused
+with a hint: put text that must be absent in `--unless`, which is checked
+against the rest of the same simple command, or remove it first with
+`--exclude`. Only the first 64 matches in a command are checked against
+`--unless`, so a very long command stays fast. `\b` and `\w` are ASCII only. Unicode spaces count as plain
+spaces.
+
+Approval happens only in your own terminal. `rules approve` and `rules off`
+refuse to run when stdin is not a terminal or when they run inside a Claude
+Code or Codex session (`CLAUDECODE`, `CODEX_SANDBOX`,
+`CODEX_SANDBOX_NETWORK_DISABLED`, `CODEX_THREAD_ID`, `CODEX_CI` or
+`CODEX_MANAGED_BY_NPM` is set).
+Codex settings that you export yourself, such as `CODEX_HOME`, do not count.
+They show the rule and ask you to type its id. An approval is bound to the
+rule's content hash and is stored per device in
+`~/.local/state/mora/rules/approvals.jsonl`, outside the vault. If the rule
+file changes later, `rules list` shows `changed since approval` and the next
+`mora rules compile` drops it until you approve it again. No MCP tool can add,
+approve or change a rule.
+
+This check stops an agent from turning on a rule by accident or in passing.
+It does not stop a determined process that runs as you: anything that can
+write to `~/.local/state/mora/rules` can change what warns.
+
+Modes:
+
+- `warn` sends the rule's message to the agent.
+- `shadow` logs matches but never sends anything.
+- `--holdout` sends the warning to only half of the sessions, picked by a hash
+  of the session id, so you can compare the warned and silent groups.
+
+`mora hook install --pre-tool` adds one `PreToolUse` entry for Bash to
+`~/.claude/settings.json`. `mora hook uninstall --pre-tool` removes only that
+entry, and `mora hook status` shows a `PreToolUse` line. The warning reaches
+the agent with the result of the command, not before the command runs, so it
+shapes the next call rather than stopping this one.
+
+The hook fails open: on any error, timeout or crash it prints nothing and the
+command goes ahead. Set `MORA_PRETOOL_OFF=1` to turn it off without
+uninstalling it. While a rule is active, each Bash call adds one line to
+`~/.local/state/mora/rules/hook.jsonl` with the time, session and tool call
+ids, the group, and which rules matched and warned. The log never contains
+the command text, the working folder, the prompt or the transcript path.
+
+### Rejected or interrupted commands
+
+`mora check` counts the commands you rejected or interrupted, and tells you
+whether an agent tried them again in a later session. It reads your local
+Claude Code and Codex transcripts and writes nothing.
+
+```bash
+mora check
+mora check --since 30d       # also 24h or 2026-11-01
+mora check --json
+```
+
+The output is safe to paste. It holds counts, dates and fixed table text only:
+no command, argument, path, prompt, host name or session id. By default it
+reads every transcript on disk. It opens only the transcript files and uses no
+network. It never follows a symlink to a transcript file or folder. A link such
+as `~/.codex` is followed only when it stays inside your home folder. Anything
+skipped shows up as `Symlinks skipped`.
+
+A correction here means one of two things that Claude Code records in a typed
+field: you said no at a permission prompt, or you pressed Esc while a tool ran.
+Mora never reads what you typed. These do not count, and each has its own line
+in the output:
+
+- a block from a rule, a hook or auto mode;
+- a sibling call that was cancelled when another call was interrupted;
+- an interrupt inside a subagent, because a parent or a task stop can end one;
+- an interrupt from a shutdown or just before a turn that a person did not start.
+
+Edit and other tools are counted but not scored, because rules cover Bash only.
+
+Two numbers answer "did it come back?". `same command` means the later command
+matches after names, numbers, hashes and free text are smoothed out, so
+`rm -rf /tmp/a/build` and `rm -rf build` match but `rm -rf dist` does not.
+`same shape` compares the short public name, such as `rm -rf`, so all three
+match. A later session is a different conversation that started after the
+rejection. A fork or a resume of the same conversation does not count, and
+neither does a session that was already running. A later call counts whether
+it ran, was rejected again or was blocked, because the number is about what
+the agent tried.
+
+With `--since`, Mora still looks at older records in the files it opens, to see
+when a session began and which commands were already rejected. It does not open
+a file last written before the cut, which has two effects. A rejection in such a
+file is unseen, so its command can land in the baseline. And a session resumed
+from such a file looks as if it began before the cut, because Mora cannot see
+that its first calls are copies. Its new work then does not count as later, so
+`--since` can show fewer repeats than a full run. Under `Sessions read`, the
+session counts cover the files Mora opened, while the call counts cover the
+window.
+
+The baseline asks the same question about commands nobody rejected or
+interrupted. A rate close to the baseline means the correction changed nothing
+that can be seen. Under 10 commands with a later session, Mora tells you to read
+the numbers as counts. With none, it prints no rate at all.
+
+Read these numbers with care:
+
+- A rejection does not always mean the command was wrong. The timing may have
+  been off, or you may have wanted another step first.
+- An interrupt can mean you ran out of patience with a slow command.
+- The later run may be exactly what you asked for. Mora cannot see that.
+- In auto or bypass mode you rarely see a prompt, so few commands can be
+  rejected at all. A small count comes from the mode. It does not show good
+  behavior.
+- Common commands come back anyway. Always read the rate beside the baseline.
+- `same command` merges different files that have the same name, and it misses
+  the same action on a different target. The `same shape` number shows that
+  second case.
+- One big session can dominate. In the data this was built on, one session held
+  1,113 of 1,587 calls.
+- Recent commands have no later session yet, so `With a later session` trails
+  `Commands rejected or interrupted`.
+- One rejection of parallel calls marks every call in the group. `User actions
+  behind these` shows how many separate agent messages were involved.
+- A program that answers permission prompts through the SDK looks the same as
+  a person.
+- A Claude Code session started from inside an agent's shell may save no
+  transcript, so Mora cannot see it.
+- Mora reads this machine's files only, so a repeat on another machine is
+  invisible. Claude Code also deletes old transcripts by default, after
+  `cleanupPeriodDays`.
+- Codex does not record a rejection in a form Mora can trust, so Codex prints
+  `no rejection signal`, not a zero. Codex can only repeat a command you
+  rejected in Claude Code.
 
 ## Companion
 
@@ -975,6 +1230,17 @@ mora teach undo <ledger-id>
 Identity matches are proposals until you confirm them. Connector source files
 stay unchanged. Memory revision commands apply only to memories that you wrote.
 
+Concurrent correction, supersession, and retraction commands for the same current
+memory have one winner. Losing commands return a conflict before creating a
+replacement. Re-read the current revision before deciding again. Undo checks for
+active descendants under the same governance lease, so undo the newest revision
+first. Rebuild runs after releasing that lease; if rebuilding fails, the committed
+decision and replacement remain with dirty markers for recovery. A failed ledger
+append removes its own replacement; cleanup failures explicitly name the leftover.
+This does not make the memory file and ledger a single crash-atomic transaction,
+and does not repair historical forks created by older versions.
+
+
 `mora teach identity confirm --json` and `mora teach identity reject --json`
 emit the `mora.teach.identity.confirm` and `mora.teach.identity.reject` v1
 receipts with the decided pair, the ledger entry id, the corroborating evidence,
@@ -1021,6 +1287,26 @@ mora retention execute <report-id> --yes --json
 mora retention verify --json
 mora retention recover <manifest-id> --yes --json
 ```
+
+`retention verify` compares `vault_count` with the current, non-tombstoned Teach
+projection in the index. Retained superseded, retracted, and undone replacement
+files are counted separately in `historical_count`. All listed files are still
+parsed; unreadable or invalid documents make verification unhealthy and appear
+as vault-relative `invalid_memory_paths`. History excluded from ordinary search
+is not an index omission. This checks retained files, not proof that historical
+files deleted outside Mora still exist. Unhealthy checks retain the existing CLI
+contract: exit 1 with diagnostics on stderr, including with `--json`; only healthy
+checks emit a versioned JSON receipt on stdout.
+
+Retention execution refuses a report that would leave no current, non-tombstoned
+memory. This preflight happens before recovery-key, manifest, ledger, or vault
+writes. Keep a current memory or compact a candidate into a current survivor;
+historical files and tombstones do not count. The normal empty-index and vault
+identity guards stay enabled. Run execution against an unchanged vault: preflight
+is not a transaction against concurrent edits or Teach decisions, and other
+mid-execution failures can still require recovery. Intentional emptying through
+retention is not supported by this policy.
+
 
 Execution refuses incomplete decisions, changed files, or a target set that no
 longer matches the reviewed report. Before mutation it writes an AES-GCM
@@ -1197,6 +1483,13 @@ mora schedule uninstall <job-name>
 mora hook uninstall
 mora serve http uninstall
 ```
+
+### macOS and Linux script (`uninstall.sh`)
+
+The script first runs `mora hook uninstall`, `mora serve http uninstall`, and
+`mora schedule uninstall` for each installed job. It then deletes your login
+tokens, sharing keys, and `http.json`, and removes the binary. It keeps the
+vault, config, data, and state; add `--purge` to delete those too.
 
 ### Windows
 

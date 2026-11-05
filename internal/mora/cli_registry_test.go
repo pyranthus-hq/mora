@@ -177,6 +177,7 @@ func TestCLIRegistryMatchesProductionDispatch(t *testing.T) {
 		{"mcp", "cmdMCP", []string{"args[0]"}},
 		{"serve", "cmdServe", []string{"args[0]"}},
 		{"hook", "cmdHook", []string{"args[0]"}},
+		{"rules", "cmdRules", []string{"args[0]"}},
 		{"loop", "cmdLoop", []string{"sub"}},
 	} {
 		assertDispatchSet(t, registry, funcs, family.prefix, family.function, family.discriminants...)
@@ -711,6 +712,17 @@ func TestCLIRegistryHookIOThroughRun(t *testing.T) {
 		got := decodeHookOutput(t, out.String())
 		if !strings.Contains(got.HookSpecificOutput.AdditionalContext, "eelpout recall token alpha") {
 			t.Fatalf("recall omitted seeded memory: %q", got.HookSpecificOutput.AdditionalContext)
+		}
+	})
+	subRun(t, "pre-tool-use", func(t *testing.T) {
+		seedPreToolActive(t, nil)
+		var out bytes.Buffer
+		if err := Run(testCtx(t), []string{"hook", "pre-tool-use"}, &out, &out, strings.NewReader(preToolInputS1)); err != nil {
+			t.Fatal(err)
+		}
+		got := decodeHookOutput(t, out.String())
+		if got.HookSpecificOutput.HookEventName != "PreToolUse" || got.HookSpecificOutput.AdditionalContext == "" {
+			t.Fatalf("pre-tool-use output = %q", out.String())
 		}
 	})
 }

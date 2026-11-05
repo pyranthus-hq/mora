@@ -224,13 +224,39 @@ func ClearCovered(cfg config.Config, listingStartedAt time.Time, files, parsed [
 	}
 	var clearErr error
 	for _, op := range ops {
-		if ShouldClear(op, listingStartedAt, filesSet, parsedSet) {
+		if ShouldClear(op, listingStartedAt, filesSet, parsedSet) || foreignToVault(cfg, op) {
 			if err := unmark(cfg, op.OpID); err != nil {
 				clearErr = errors.Join(clearErr, fmt.Errorf("retiring pending operation: %w", err))
 			}
 		}
 	}
 	return clearErr
+}
+
+// foreignToVault reports a write or delete marker whose path lies outside this
+// vault. No rebuild ever lists such a path, so without this rule the marker pins
+// the index dirty forever (seen live: a run with MORA_VAULT on a temp vault but
+// state_dir on the real one). Containment is decided by file identity on every
+// existing ancestor, so symlinked or case-variant spellings of the vault, and a
+// parent directory a concurrent writer has not created yet, all stay ours.
+func foreignToVault(cfg config.Config, op PendingOp) bool {
+	if (op.Kind != KindWrite && op.Kind != KindDelete) || op.Path == "" || cfg.VaultDir == "" {
+		return false
+	}
+	vault, err := os.Stat(cfg.VaultDir)
+	if err != nil {
+		return false // cannot identify our own vault: fail closed, keep the marker
+	}
+	for dir := filepath.Dir(CleanVaultPath(op.Path)); ; dir = filepath.Dir(dir) {
+		if fi, err := os.Stat(dir); err == nil && os.SameFile(fi, vault) {
+			return false
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return false // unreadable ancestor: cannot prove foreign
+		}
+		if parent := filepath.Dir(dir); parent == dir {
+			return true
+		}
+	}
 }
 
 func SuppressPendingDeletes(cfg config.Config, mems []memory.Memory) []memory.Memory {

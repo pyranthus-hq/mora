@@ -43,11 +43,11 @@ func parseMemoryBytes(path string, b []byte) (Memory, error) {
 	}
 	return m, nil
 }
-func memoriesRoot(cfg Config) string              { return memfile.MemoriesRoot(cfg) }
-func sourcesRoot(cfg Config) string               { return memfile.SourcesRoot(cfg) }
-func memoryPath(cfg Config, m Memory) string      { return memfile.Path(cfg, m) }
-func osSafeBase(id string) string                 { return memfile.OSSafeBase(id) }
-func allMemoryFiles(cfg Config) ([]string, error) { return memfile.All(cfg) }
+func memoriesRoot(cfg Config) string                  { return memfile.MemoriesRoot(cfg) }
+func sourcesRoot(cfg Config) string                   { return memfile.SourcesRoot(cfg) }
+func memoryPath(cfg Config, m Memory) (string, error) { return memfile.Path(cfg, m) }
+func osSafeBase(id string) string                     { return memfile.OSSafeBase(id) }
+func allMemoryFiles(cfg Config) ([]string, error)     { return memfile.All(cfg) }
 
 // writeMemory renders m and atomicWrites it to its memoryPath at the memory's
 // EXISTING id. It is the non-exclusive writer: it overwrites (last-writer-wins),
@@ -60,7 +60,11 @@ func writeMemory(cfg Config, m Memory) error {
 	if err != nil {
 		return err
 	}
-	return atomicio.Write(memoryPath(cfg, m), body, 0o644)
+	path, err := memoryPath(cfg, m)
+	if err != nil {
+		return err
+	}
+	return atomicio.Write(path, body, 0o644)
 }
 func findMemoryRaw(cfg Config, id string) (Memory, error) {
 	files, err := allMemoryFiles(cfg)
