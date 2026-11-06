@@ -104,6 +104,9 @@ type mcpProposalsPayload struct {
 	Inspection *mcpProposalInspection `json:"inspection,omitempty"`
 }
 
+// approveDrainLimit bounds how long approve waits for the rebuild it started.
+var approveDrainLimit = 2 * time.Minute
+
 func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
@@ -166,21 +169,38 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 		}
 		return showMCPWriteProposal(cfg, args[1], stdout)
 	}
-	if len(args) == 2 && args[0] == "approve" {
-		if err := refuseDashLedPositional("mcp proposals approve", "proposal id", args[1]); err != nil {
-			return err
+	if len(args) >= 2 && args[0] == "approve" {
+		ids := args[1:]
+		for _, id := range ids {
+			if err := refuseDashLedPositional("mcp proposals approve", "proposal id", id); err != nil {
+				return err
+			}
 		}
-		memoryID, err := decideMCPWriteProposal(ctx, cfg, args[1], "approve")
-		if err != nil {
-			return err
+		// approve starts background rebuilds and then exits, which would kill them and
+		// leave a dead receipt. Drain once after the last id, also on failure returns.
+		defer func() {
+			if !waitForAuthoredReconciles(approveDrainLimit) {
+				fmt.Fprintln(stderr, "warning: the memory is saved, but the index rebuild is unfinished; run `mora index rebuild`")
+			}
+		}()
+		rows := make([]mcpProposalRow, 0, len(ids))
+		for _, id := range ids {
+			memoryID, err := decideMCPWriteProposal(ctx, cfg, id, "approve")
+			if err != nil {
+				return err
+			}
+			rows = append(rows, mcpProposalRow{ID: id, MemoryID: memoryID})
+			if !jsonOut {
+				fmt.Fprintf(stdout, "Approved %s as memory %s.\n", id, memoryID)
+			}
 		}
-
 		if jsonOut {
-			return emitReceipt(stdout, "mora.mcp.proposals", 1, mcpProposalsPayload{
-				Proposals: []mcpProposalRow{{ID: args[1]}}, Decision: "approve", MemoryID: memoryID,
-			})
+			payload := mcpProposalsPayload{Proposals: rows, Decision: "approve"}
+			if len(rows) == 1 {
+				payload.MemoryID = rows[0].MemoryID
+			}
+			return emitReceipt(stdout, "mora.mcp.proposals", 1, payload)
 		}
-		fmt.Fprintf(stdout, "Approved %s as memory %s.\n", args[1], memoryID)
 		return nil
 	}
 	if len(args) == 2 && args[0] == "reject" {
@@ -199,5 +219,5 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 		fmt.Fprintf(stdout, "Rejected %s.\n", args[1])
 		return nil
 	}
-	return errors.New("usage: mora mcp proposals <list|show ID|approve ID|reject ID>")
+	return errors.New("usage: mora mcp proposals <list|show ID|approve ID [ID...]|reject ID>")
 }
