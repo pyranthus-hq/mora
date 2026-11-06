@@ -114,6 +114,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdGraph(ctx, args[1:], stdout, stderr)
 	case "delete":
 		return cmdDelete(ctx, args[1:], stdout, stderr)
+	case "undo":
+		return cmdUndo(ctx, args[1:], stdout, stderr)
+	case "confirm":
+		return cmdConfirm(ctx, args[1:], stdout, stderr)
 	case "forget":
 		return cmdForget(ctx, args[1:], stdout, stderr)
 	case "retention":
@@ -181,6 +185,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdHook(ctx, args[1:], stdout, stderr, stdin)
 	case "rules":
 		return cmdRules(ctx, args[1:], stdout, stderr, stdin)
+	case "check":
+		return cmdCheck(ctx, args[1:], stdout, stderr)
 	case "loop":
 		return cmdLoop(ctx, args[1:], stdout, stderr)
 	case "upgrade":
@@ -247,6 +253,8 @@ USAGE:
   mora read <id> --json
   mora list --scope project:acme --json
   mora delete <id> --yes
+  mora confirm <memory-id> | --list   # keep a tentative agent write (confirm --list shows them)
+  mora undo <memory-id> [--force]  # remove an agent-written memory; refuses others without --force (log: <vault>/agent-writes.log)
   mora context --scope project:acme --query "auth" --budget 6000 --json
   mora think "what did Sam decide about the launch" --json   # cited evidence + gap analysis
   mora brief --event-id <id>       # cited unfinished-business brief for one calendar event
@@ -280,7 +288,7 @@ USAGE:
   mora schedule install doctor-pulse   # daily 09:00 freshness alarm (after the 08:00 brief)
   mora config context large        # context profile: small | default | large (budget + snippet density)
   mora config mmr on               # diversity-aware rerank of hybrid results (needs embedder=ollama)
-  mora config mcp-write-policy propose   # open | propose | readonly for MCP mutations
+  mora config mcp-write-policy propose   # tentative | open | propose | readonly for MCP mutations
   mora connectors list|enable <type>|disable <type>
   mora connect google              # sign in with Google in your browser, then backfill Gmail + Calendar (last 90 days)
   mora connect google --since-days 365   # widen the gmail backfill window
@@ -302,6 +310,7 @@ USAGE:
   mora mcp serve
   mora mcp proposals list          # list writes staged by propose-mode MCP clients
   mora mcp proposals show <id>     # inspect full staged content before approving
+  mora mcp proposals approve <id>  # publish a staged write to the vault
   mora serve http                  # loopback HTTP for sandboxed AI browsers (Aside); token in ~/.config/mora/http.json
   mora serve http install          # run it as an auto-restarting background service (launchd/systemd); also: uninstall|status
   mora companion pair              # pair a phone: prints a QR-able payload with a one-time code
@@ -316,6 +325,7 @@ USAGE:
   mora rules list [--json]
   mora rules off <id>
   mora rules compile
+  mora check [--since 30d] [--json]   # read-only count of rejected or interrupted commands
   mora upgrade                     # manually self-update to the latest release
   mora upgrade --check             # check + cache published stable release availability
   mora upgrade --policy auto|notify|off
@@ -850,6 +860,10 @@ func createMemory(ctx context.Context, cfg Config, m Memory, opts ...createOptio
 	for _, opt := range opts {
 		opt(&options)
 	}
+	if options.tentative {
+		m.Tags = append(m.Tags, memory.TentativeTag)
+		m.Trust = memory.TrustTentative
+	}
 	for attempt := 0; attempt < maxCreateAttempts; attempt++ {
 		m.ID = newIDFn()
 		if options.explicitID != "" {
@@ -892,7 +906,10 @@ func createMemory(ctx context.Context, cfg Config, m Memory, opts ...createOptio
 
 // createOptions carries the optional settings of a governed create. The zero
 // value is what every pre-existing caller gets.
-type createOptions struct{ explicitID string }
+type createOptions struct {
+	explicitID string
+	tentative  bool
+}
 
 // createOption adjusts one governed create.
 type createOption func(*createOptions)
@@ -907,6 +924,12 @@ type createOption func(*createOptions)
 // link wins, and everybody else is told the memory already exists.
 func withExplicitMemoryID(id string) createOption {
 	return func(o *createOptions) { o.explicitID = id }
+}
+
+// withTentative saves the memory as tentative. Only the server sets this; no
+// write_memory argument reaches it.
+func withTentative() createOption {
+	return func(o *createOptions) { o.tentative = true }
 }
 
 // errMemoryAlreadyExists reports that a create with a PINNED id found the vault

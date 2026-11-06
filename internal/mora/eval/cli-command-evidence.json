@@ -103,6 +103,28 @@
       }
     },
     {
+      "name": "memory undo",
+      "paths": ["undo"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestUndoRemovesAgentMemoryAndLogs"]},
+        "json": {"status": "test", "tests": ["TestUndoJSONReceipt"]},
+        "state": {"status": "test", "tests": ["TestUndoRemovesAgentMemoryAndLogs"]},
+        "error": {"status": "test", "tests": ["TestUndoRemovesAgentMemoryAndLogs"]},
+        "refusal": {"status": "test", "tests": ["TestUndoRefusesNonAgentMemoryWithoutForce"]}
+      }
+    },
+    {
+      "name": "memory confirm",
+      "paths": ["confirm"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestTentativeStaysOutOfAuthoritativeSurfacesUntilConfirmed"]},
+        "json": {"status": "test", "tests": ["TestConfirmJSONReceipt"]},
+        "state": {"status": "test", "tests": ["TestTentativeStaysOutOfAuthoritativeSurfacesUntilConfirmed"]},
+        "error": {"status": "test", "tests": ["TestTentativeStaysOutOfAuthoritativeSurfacesUntilConfirmed"]},
+        "refusal": {"status": "test", "tests": ["TestTentativeStaysOutOfAuthoritativeSurfacesUntilConfirmed"]}
+      }
+    },
+    {
       "name": "entities",
       "paths": ["entities"],
       "evidence": {
@@ -474,6 +496,17 @@
         "state": {"status": "test", "tests": ["TestRulesApproveCompilesActive", "TestRulesEditedFileShowsChangedAndCompileDrops", "TestRulesOffRemovesFromActive"]},
         "error": {"status": "test", "tests": ["TestRulesAddRejectsPythonOnlySyntax", "TestRulesApproveWrongIDRefuses"]},
         "refusal": {"status": "test", "tests": ["TestRulesApproveRefusesNonInteractive", "TestRulesApproveRefusesInsideAgentSession"]}
+      }
+    },
+    {
+      "name": "agent corrections",
+      "paths": ["check"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCheckGolden", "TestCheckEmptyHome"]},
+        "json": {"status": "test", "tests": ["TestCheckJSON"]},
+        "state": {"status": "test", "tests": ["TestCheckWritesNothing"], "reason": "check is read-only, so the test proves that no file changes."},
+        "error": {"status": "test", "tests": ["TestCheckBadFlags", "TestCheckUnreadableFile"]},
+        "refusal": {"status": "test", "tests": ["TestCheckCanary"], "reason": "check refuses to print raw text: the canary must not reach stdout or stderr."}
       }
     },
     {

@@ -86,9 +86,14 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 		if profiled {
 			proposedBy = profile.Name
 		}
-		inv.value, inv.err = stageMCPWriteProposalBy(cfg, args, proposedBy)
+		inv.value, inv.err = stageMCPWriteProposalHeld(cfg, args, proposedBy, nil)
 		policyHandled = true
 		proposed = true
+	case mcppkg.ActionTentative:
+		// Only unprofiled clients reach this: a profile's write is open,
+		// propose or readonly (agentProfile.validate).
+		inv.value, inv.err = mcpWriteTentative(traced, cfg, args)
+		policyHandled = true
 	}
 	if !policyHandled {
 		inv.value, inv.err = def.Handler(traced, cfg, args)

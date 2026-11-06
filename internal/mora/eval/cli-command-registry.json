@@ -99,6 +99,20 @@
       "payload": "mora.delete"
     },
     {
+      "path": "undo",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.undo"
+    },
+    {
+      "path": "confirm",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.confirm"
+    },
+    {
       "path": "forget",
       "kind": "verb",
       "platform": "all",
@@ -314,6 +328,13 @@
       "platform": "all",
       "json_contract": "exempt",
       "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "path": "check",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.check"
     },
     {
       "path": "rules",

@@ -674,7 +674,7 @@ func (w *companionWriter) verifyPublication(cfg Config, c companion.Capture, id 
 // fact and lets it decide.
 func (w *companionWriter) integrityFailure(cfg Config, id companion.CaptureIdentity) companion.WriteOutcome {
 	return companion.WriteOutcome{
-		Policy: companion.WritePolicy(configMCPWritePolicy(cfg)),
+		Policy: companionWritePolicy(cfg),
 		State:  companion.ReceiptRejected,
 		Reason: companion.ReasonInternal,
 		IntegrityDetail: fmt.Sprintf("the vault holds a memory at %s that is not this capture (device %s)",
@@ -757,7 +757,7 @@ func (w *companionWriter) Publish(ctx context.Context, c companion.Capture, id c
 			Reason: companion.ReasonPolicy,
 		}, nil
 	}
-	policy := configMCPWritePolicy(cfg)
+	policy := string(companionWritePolicy(cfg))
 	out := companion.WriteOutcome{Policy: companion.WritePolicy(policy)}
 
 	// The usage trace and the invocation below are the SAME ones invokeMCPTool
@@ -805,7 +805,7 @@ func (w *companionWriter) Publish(ctx context.Context, c companion.Capture, id c
 			}
 			return companion.WriteOutcome{}, claimErr
 		}
-		value, writeErr = mcpWriteMemoryWith(traced, cfg, args, withExplicitMemoryID(id.MemoryID))
+		value, writeErr = mcpWriteMemoryWith(withAgentCaller(traced, "companion"), cfg, args, withExplicitMemoryID(id.MemoryID))
 	}
 	// Some handlers, mutations included, have no tool-specific structural counts.
 	// They still get one content-free event and an honest envelope size — the
@@ -1313,8 +1313,15 @@ func companionIndexState(state string) companion.HealthState {
 	return companion.HealthUnhealthy
 }
 
+// companionWritePolicy keeps the phone protocol on its three published values:
+// a capture under the tentative policy goes to the proposal queue, because a
+// phone receipt has no way to say "saved but unconfirmed".
 func companionWritePolicy(cfg Config) companion.WritePolicy {
-	return companion.WritePolicy(configMCPWritePolicy(cfg))
+	policy := configMCPWritePolicy(cfg)
+	if policy == mcppkg.WritePolicyTentative {
+		policy = mcpWritePolicyPropose
+	}
+	return companion.WritePolicy(policy)
 }
 
 // companionMemoryCount counts indexed memories WITHOUT the auto-heal paths.

@@ -565,23 +565,59 @@ command, error code, or schema that the binary does not have.
 Choose how much authority the agent gets:
 
 ```bash
+mora config mcp-write-policy tentative
 mora config mcp-write-policy open
 mora config mcp-write-policy propose
 mora config mcp-write-policy readonly
 ```
 
-- `open` allows `write_memory` and `delete_memory`.
+- `tentative` is the default whenever `config.toml` has no `mcp_write_policy`
+  line, however Mora was started (`mora init`, `mora setup`, or `mora mcp serve`
+  on a machine that was never initialized). A low-risk write saves at once with
+  the tag `mora-tentative`. Low risk means type `insight` or `fact`, a
+  `project:*` scope, and no secret, money, sensitive or agent-aimed text. Any
+  other write goes to the proposal queue, and the result has `held_because`. It
+  refuses deletes. Phone captures go to the queue.
+- `open` allows `write_memory` and `delete_memory`. You must choose it.
 - `propose` stores write proposals in the local config directory. It does not
-  add them to the vault before approval. It refuses deletes. This is the
-  default whenever `config.toml` has no `mcp_write_policy` line, however Mora
-  was started (`mora init`, `mora setup`, or `mora mcp serve` on a machine that
-  was never initialized).
+  add them to the vault before approval. It refuses deletes.
 - `readonly` refuses writes and deletes.
 
-An explicit policy is never changed. An install created before this default
-changed that never set a policy has no `mcp_write_policy` line, so after
-upgrading it runs in `propose` too. Run `mora config mcp-write-policy open` to
-go back to direct writes.
+An explicit policy is never changed. v0.15.3 resolved an unset policy to
+`propose`. v0.15.2 and earlier resolved it to `open`. Writes still queued from
+v0.15.3 stay queued: `mora doctor` prints how many are pending, and
+`mora mcp proposals approve <id>` publishes one.
+
+A tentative memory shows in search, read, list and context with a
+`"trust":"tentative"` label. It does not reach the recall hook, the digest, the
+brief, commitments or share. List them and keep one like this:
+
+```bash
+mora confirm --list            # tentative memories
+mora confirm <memory-id>       # remove the tag; the memory becomes normal
+```
+
+`mora confirm` has no MCP tool, and it logs a `confirm` line. Both commands
+accept `--json`.
+
+The hold filter is coarse. It does not stop a false claim written in plain
+words. An agent with a shell can run `mora confirm` or
+`mora mcp proposals approve`, so tentative is a review aid, not a sandbox.
+
+Every agent write that reaches the vault (MCP stdio, the loopback HTTP
+`/call` route, companion captures, and approved proposals) appends one line to
+`<vault>/agent-writes.log`: timestamp, `write`, memory id, scope, source,
+caller (for example `mcp-stdio/claude-code` or `http`) and the title. The log
+holds no body text. To reverse one:
+
+```bash
+mora undo <memory-id>          # agent-written memories only
+mora undo --force <memory-id>  # any memory
+```
+
+`mora undo` uses the same delete path as `mora delete`, updates the index, and
+appends an `undo` line to the log. It refuses a memory an agent did not write
+unless you pass `--force`.
 
 Review staged writes locally:
 
@@ -640,7 +676,7 @@ enforces the limits at its tool gate, not in the agent's prompt:
   copied files). It is off by default, so the agent sees only memories that you
   or your agents wrote.
 - `--write`: `propose` (the default), `readonly`, or `open`. This replaces the
-  vault-wide policy for this agent only.
+  vault-wide policy for this agent only. A profile cannot use `tentative`.
 - `--tools`: the tools the agent can call. The default is `search_memory`,
   `read_memory`, `list_memory`, and `write_memory`. Mora can filter the results
   of these four record by record. Any other tool, `delete_memory` included,
@@ -891,6 +927,92 @@ uninstalling it. While a rule is active, each Bash call adds one line to
 `~/.local/state/mora/rules/hook.jsonl` with the time, session and tool call
 ids, the group, and which rules matched and warned. The log never contains
 the command text, the working folder, the prompt or the transcript path.
+
+### Rejected or interrupted commands
+
+`mora check` counts the commands you rejected or interrupted, and tells you
+whether an agent tried them again in a later session. It reads your local
+Claude Code and Codex transcripts and writes nothing.
+
+```bash
+mora check
+mora check --since 30d       # also 24h or 2026-11-01
+mora check --json
+```
+
+The output is safe to paste. It holds counts, dates and fixed table text only:
+no command, argument, path, prompt, host name or session id. By default it
+reads every transcript on disk. It opens only the transcript files and uses no
+network. It never follows a symlink to a transcript file or folder. A link such
+as `~/.codex` is followed only when it stays inside your home folder. Anything
+skipped shows up as `Symlinks skipped`.
+
+A correction here means one of two things that Claude Code records in a typed
+field: you said no at a permission prompt, or you pressed Esc while a tool ran.
+Mora never reads what you typed. These do not count, and each has its own line
+in the output:
+
+- a block from a rule, a hook or auto mode;
+- a sibling call that was cancelled when another call was interrupted;
+- an interrupt inside a subagent, because a parent or a task stop can end one;
+- an interrupt from a shutdown or just before a turn that a person did not start.
+
+Edit and other tools are counted but not scored, because rules cover Bash only.
+
+Two numbers answer "did it come back?". `same command` means the later command
+matches after names, numbers, hashes and free text are smoothed out, so
+`rm -rf /tmp/a/build` and `rm -rf build` match but `rm -rf dist` does not.
+`same shape` compares the short public name, such as `rm -rf`, so all three
+match. A later session is a different conversation that started after the
+rejection. A fork or a resume of the same conversation does not count, and
+neither does a session that was already running. A later call counts whether
+it ran, was rejected again or was blocked, because the number is about what
+the agent tried.
+
+With `--since`, Mora still looks at older records in the files it opens, to see
+when a session began and which commands were already rejected. It does not open
+a file last written before the cut, which has two effects. A rejection in such a
+file is unseen, so its command can land in the baseline. And a session resumed
+from such a file looks as if it began before the cut, because Mora cannot see
+that its first calls are copies. Its new work then does not count as later, so
+`--since` can show fewer repeats than a full run. Under `Sessions read`, the
+session counts cover the files Mora opened, while the call counts cover the
+window.
+
+The baseline asks the same question about commands nobody rejected or
+interrupted. A rate close to the baseline means the correction changed nothing
+that can be seen. Under 10 commands with a later session, Mora tells you to read
+the numbers as counts. With none, it prints no rate at all.
+
+Read these numbers with care:
+
+- A rejection does not always mean the command was wrong. The timing may have
+  been off, or you may have wanted another step first.
+- An interrupt can mean you ran out of patience with a slow command.
+- The later run may be exactly what you asked for. Mora cannot see that.
+- In auto or bypass mode you rarely see a prompt, so few commands can be
+  rejected at all. A small count comes from the mode. It does not show good
+  behavior.
+- Common commands come back anyway. Always read the rate beside the baseline.
+- `same command` merges different files that have the same name, and it misses
+  the same action on a different target. The `same shape` number shows that
+  second case.
+- One big session can dominate. In the data this was built on, one session held
+  1,113 of 1,587 calls.
+- Recent commands have no later session yet, so `With a later session` trails
+  `Commands rejected or interrupted`.
+- One rejection of parallel calls marks every call in the group. `User actions
+  behind these` shows how many separate agent messages were involved.
+- A program that answers permission prompts through the SDK looks the same as
+  a person.
+- A Claude Code session started from inside an agent's shell may save no
+  transcript, so Mora cannot see it.
+- Mora reads this machine's files only, so a repeat on another machine is
+  invisible. Claude Code also deletes old transcripts by default, after
+  `cleanupPeriodDays`.
+- Codex does not record a rejection in a form Mora can trust, so Codex prints
+  `no rejection signal`, not a zero. Codex can only repeat a command you
+  rejected in Claude Code.
 
 ## Companion
 

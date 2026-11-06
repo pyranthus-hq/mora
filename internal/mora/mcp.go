@@ -120,7 +120,16 @@ func watchParent(stderr io.Writer) func() {
 
 func serveMCP(ctx context.Context, stdout io.Writer, stdin io.Reader) error {
 	defer watchParent(os.Stderr)()
-	err := mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, handleMCP)
+	// The audit log names the client that wrote, from initialize's clientInfo.
+	caller := "mcp-stdio"
+	err := mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, func(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
+		if req.Method == "initialize" {
+			if name := mcpClientName(req.Params); name != "" {
+				caller = "mcp-stdio/" + name
+			}
+		}
+		return handleMCP(withAgentCaller(ctx, caller), req)
+	})
 	// The client is gone, but a rebuild it triggered may be mid-flight; exiting
 	// now would kill it and leave a stalled receipt. Bounded so a stuck rebuild
 	// cannot turn this into a zombie server.
@@ -322,6 +331,13 @@ func mcpWriteMemoryWith(ctx context.Context, cfg Config, args map[string]any, op
 			return map[string]any{"memory": m, "already_published": true, "health": compactHealthOf(cfg, now)}, nil
 		}
 		return nil, err
+	}
+	// Audit: every agent write that reaches the vault leaves one line in
+	// agent-writes.log, so it can be reviewed and reversed with `mora undo`.
+	// The memory is already durable; a failed append warns, never fails the
+	// write (a retry would mint a duplicate).
+	if lerr := appendAgentWriteLog(cfg, now, "write", m, agentCallerFrom(ctx)); lerr != nil {
+		fmt.Fprintf(os.Stderr, "warn: memory %s saved, but %s could not be appended: %v\n", m.ID, agentWriteLogName, lerr)
 	}
 	m = decorateDecision(m, now)
 	// The vault write succeeded (vault is truth; the index is a derived

@@ -60,6 +60,10 @@
     "status": "parses"
   },
   {
+    "path": "check",
+    "status": "parses"
+  },
+  {
     "path": "companion",
     "status": "empty"
   },
@@ -118,6 +122,10 @@
   {
     "path": "config mmr",
     "status": "empty"
+  },
+  {
+    "path": "confirm",
+    "status": "static_only"
   },
   {
     "path": "connect",
@@ -642,6 +650,10 @@
   {
     "path": "think",
     "status": "empty"
+  },
+  {
+    "path": "undo",
+    "status": "static_only"
   },
   {
     "path": "unforget",

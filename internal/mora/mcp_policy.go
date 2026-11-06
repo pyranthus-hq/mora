@@ -16,17 +16,18 @@ const (
 	mcpWritePolicyReadonly = mcppkg.WritePolicyReadonly
 )
 
-func parseMCPWritePolicy(raw string) (string, error) { return configstore.ParseMCPWritePolicy(raw) }
-
 // unsetMCPWritePolicy is what an install without an mcp_write_policy line
-// resolves to. In production it is always mcppkg.DefaultWritePolicy (propose).
-// It is a variable only so this package's TestMain can keep the many older
-// tests that exercise open-mode writes after a bare `mora init` on their old
-// behavior; write_policy_default_test.go restores the shipped value and pins it.
+// resolves to. In production it is always mcppkg.DefaultWritePolicy. It is a
+// variable only so this package's TestMain can keep the many older tests that
+// exercise open-mode writes after a bare `mora init` on their old behavior;
+// write_policy_default_test.go restores the shipped value and pins it.
 var unsetMCPWritePolicy = mcppkg.DefaultWritePolicy
 
+func parseMCPWritePolicy(raw string) (string, error) { return configstore.ParseMCPWritePolicy(raw) }
+
 // configMCPWritePolicy is the single resolver every MCP and companion write
-// path uses. An explicit value always wins; an unset value fails safe.
+// path uses. An explicit value always wins; an unset value resolves to
+// mcppkg.DefaultWritePolicy (tentative).
 func configMCPWritePolicy(c Config) string {
 	if c.MCPWritePolicy == "" {
 		return unsetMCPWritePolicy
@@ -43,13 +44,27 @@ func readMCPWriteProposal(cfg Config, id string) (mcpWriteProposal, string, erro
 func listMCPWriteProposals(cfg Config) ([]mcpWriteProposal, error) { return mcppkg.ListProposals(cfg) }
 
 func stageMCPWriteProposal(cfg Config, args map[string]any) (any, error) {
-	return stageMCPWriteProposalBy(cfg, args, "")
+	return stageMCPWriteProposalHeld(cfg, args, "", nil)
 }
 
-// stageMCPWriteProposalBy stages a propose-mode write and records which agent
-// profile proposed it ("" for an unprofiled client), so the owner reviewing
-// the queue sees who is asking.
-func stageMCPWriteProposalBy(cfg Config, args map[string]any, proposedBy string) (any, error) {
+// mcpWriteTentative is write_memory under the tentative policy. A write that
+// passes tentativeHoldReasons saves at once; any other goes to the same queue
+// propose uses, and the result names why.
+func mcpWriteTentative(ctx context.Context, cfg Config, args map[string]any) (any, error) {
+	m, err := mcpMemoryFromArgs(args, mcpWriteClock())
+	if err != nil {
+		return nil, err
+	}
+	if reasons := tentativeHoldReasons(m); len(reasons) > 0 {
+		return stageMCPWriteProposalHeld(cfg, args, "", reasons)
+	}
+	return mcpWriteMemoryWith(ctx, cfg, args, withTentative())
+}
+
+// stageMCPWriteProposalHeld stages a write. proposedBy names the agent profile
+// ("" for an unprofiled client), so the owner reviewing the queue sees who is
+// asking; heldBecause says why a tentative write did not save at once.
+func stageMCPWriteProposalHeld(cfg Config, args map[string]any, proposedBy string, heldBecause []string) (any, error) {
 	now := mcpWriteClock()
 	m, err := mcpMemoryFromArgs(args, now)
 	if err != nil {
@@ -62,11 +77,15 @@ func stageMCPWriteProposalBy(cfg Config, args map[string]any, proposedBy string)
 	if _, err := mcppkg.SaveProposal(cfg, proposal); err != nil {
 		return nil, err
 	}
-	return map[string]any{
+	result := map[string]any{
 		"proposal": map[string]any{"id": proposal.ID, "status": "pending", "proposed_at": proposal.ProposedAt},
 		"message":  fmt.Sprintf("not written to the vault; inspect with `mora mcp proposals show %s` before approving with `mora mcp proposals approve %s`", proposal.ID, proposal.ID),
 		"health":   compactHealthOf(cfg, now),
-	}, nil
+	}
+	if len(heldBecause) > 0 {
+		result["held_because"] = heldBecause
+	}
+	return result, nil
 }
 
 // mcpProposalRow is one pending propose-mode write, projected for machines.
