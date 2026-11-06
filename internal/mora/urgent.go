@@ -67,8 +67,12 @@ func urgentText(m Memory) (title, body string) {
 		if n > 1 {
 			title = ""
 		}
-		parts := strings.Split(text, "\n\n---\n\n")
-		text = parts[len(parts)-1]
+		// A message block starts with its From line, so a --- inside a body is
+		// not a boundary. See the join in internal/google/gmail.go.
+		const boundary = "\n\n---\n\n"
+		if i := strings.LastIndex(text, boundary+"From: "); i >= 0 {
+			text = text[i+len(boundary):]
+		}
 	}
 	return title, evidencetext.SenderAuthoredBody(urgencypkg.StripFromLine(text))
 }

@@ -407,3 +407,27 @@ func TestFreshDeadlineStillUrgent(t *testing.T) {
 		t.Fatalf("snippet %q lost the ask", s)
 	}
 }
+
+// A --- inside a body is not a message boundary. Splitting on it lost a real
+// deadline, and let a forwarded one through by dropping the forward marker.
+func TestBodySeparatorIsNotAMessageBoundary(t *testing.T) {
+	real := "From: bob@example.com\n\nPlease confirm by tomorrow.\n\n---\n\nThanks"
+	if ok, _ := isUrgent(f14Thread(f14Now, "bob@example.com", "Plans", real, time.Hour, [][]string{nil}, nil), f14Now); !ok {
+		t.Fatal("deadline above a --- line in the body was lost")
+	}
+	forwarded := "From: bob@example.com\n\n---------- Forwarded message ----------\nOld request:\n\n---\n\nPlease confirm by tomorrow"
+	if ok, p := isUrgent(f14Thread(f14Now, "bob@example.com", "Plans", forwarded, time.Hour, [][]string{nil}, nil), f14Now); ok {
+		t.Fatalf("forwarded deadline made mail urgent (%q)", p)
+	}
+}
+
+func TestStarredPureForwardKeepsASnippet(t *testing.T) {
+	text := "From: bob@example.com\n\n---------- Forwarded message ----------\nSee the attached plan."
+	m := f14Thread(f14Now, "bob@example.com", "Plans", text, time.Hour, [][]string{nil}, []string{"STARRED"})
+	if ok, _ := isUrgent(m, f14Now); !ok {
+		t.Fatal("starred mail must stay urgent")
+	}
+	if item := urgentItemFor(Config{}, m, "gmail", "", ""); item.Snippet == "" {
+		t.Fatal("starred pure forward rendered an empty snippet")
+	}
+}

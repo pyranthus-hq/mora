@@ -1081,6 +1081,9 @@ type urgentEntry struct {
 // snippet carries the ask, not a sign-off.
 func urgentItemFor(cfg Config, m Memory, key, change, phrase string) DigestItem {
 	_, body := urgentText(m) // snippet must not centre on quoted or older text
+	if body == "" {
+		body = m.Text // a starred pure forward has no authored text of its own
+	}
 	return DigestItem{
 		ID:        m.ID,
 		Title:     m.Title,
