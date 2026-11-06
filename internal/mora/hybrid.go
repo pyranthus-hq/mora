@@ -137,7 +137,7 @@ func defaultSearchForMCPFiltered(ctx context.Context, cfg Config, query, scope s
 	out.SemanticPath = embErr == nil && embedderIsSemantic(emb)
 	if out.SemanticPath {
 		out.ScoreFused = true
-		local, out.Trace, err = hybridSearchTrace(ctx, cfg, query, scope, limit, 0, filters...)
+		local, out.Trace, err = hybridSearchTraceWithEmbedder(ctx, cfg, query, scope, limit, 0, emb, filters...)
 	} else {
 		var observed searchMemoryObservation
 		local, err = searchMemoriesObserved(ctx, cfg, query, scope, limit, &observed, filters...)
@@ -183,6 +183,14 @@ func defaultSearch(ctx context.Context, cfg Config, query, scope string, limit i
 // passes) records the production arms themselves — one query per arm, zero extra
 // work on the production hot path.
 func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, limit, tracePool int, filters ...searchFilters) ([]Memory, retrievalTrace, error) {
+	return hybridSearchTraceWithEmbedder(ctx, cfg, query, scope, limit, tracePool, nil, filters...)
+}
+
+// hybridSearchTraceWithEmbedder reuses the router's resolved model when available.
+// Direct hybrid callers pass nil and resolve once, only when vectors exist.
+// Keeping the instance request-local avoids a second serial daemon probe and
+// prevents routing and retrieval from observing different model digests.
+func hybridSearchTraceWithEmbedder(ctx context.Context, cfg Config, query, scope string, limit, tracePool int, resolved Embedder, filters ...searchFilters) ([]Memory, retrievalTrace, error) {
 	f := oneFilter(filters)
 	var tr retrievalTrace
 	if _, err := os.Stat(dbPath(cfg)); err != nil {
@@ -215,6 +223,7 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 		emb              Embedder
 		vecIDs, graphIDs []string
 		useVec           bool
+		queryVector      []float32
 	)
 	if vecOK {
 		// ONE embedder per search: the production and deep-trace vector arms MUST
@@ -225,7 +234,10 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 		// HEALTH-12 read path: an unreachable configured embedder makes this err;
 		// leave emb nil and useVec false so the vector arm is simply skipped (FTS +
 		// graph still answer) rather than hard-failing. Never substitute static here.
-		resolved, embErr := chooseEmbedderFor(cfg)
+		var embErr error
+		if resolved == nil {
+			resolved, embErr = chooseEmbedderFor(cfg)
+		}
 		// The vector arm only EARNS a place in the fusion when the embedder is
 		// SEMANTIC. Under the static-hash floor the stored vectors are deterministic
 		// noise; fusing a noise arm via RRF rewards cross-arm coincidence and DEMOTES
@@ -238,7 +250,10 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 			useVec = embedderIsSemantic(emb)
 		}
 		if useVec {
-			if vecIDs, err = vectorSearchIDs(ctx, db, emb, query, scope, pool, f); err != nil {
+			if queryVector, err = emb.Embed(query); err != nil {
+				return nil, tr, err
+			}
+			if vecIDs, err = vectorSearchIDsForVector(ctx, db, emb.ModelID(), queryVector, scope, pool, f); err != nil {
 				return nil, tr, err
 			}
 		}
@@ -264,7 +279,7 @@ func hybridSearchTrace(ctx context.Context, cfg Config, query, scope string, lim
 		}
 		if vecOK {
 			if useVec {
-				if tr.Vec, err = vectorSearchIDs(ctx, db, emb, query, scope, tracePool, f); err != nil {
+				if tr.Vec, err = vectorSearchIDsForVector(ctx, db, emb.ModelID(), queryVector, scope, tracePool, f); err != nil {
 					return nil, tr, err
 				}
 			}
@@ -411,13 +426,19 @@ func ftsSearchIDs(ctx context.Context, db *sql.DB, query, scope string, pool int
 // computation for each row: a filtered-out row never earns a cosine score and
 // so can never occupy a pool slot or influence ranking.
 func vectorSearchIDs(ctx context.Context, db *sql.DB, emb Embedder, query, scope string, pool int, filters ...searchFilters) ([]string, error) {
-	f := oneFilter(filters)
 	qv, err := emb.Embed(query)
 	if err != nil {
 		return nil, err
 	}
+	return vectorSearchIDsForVector(ctx, db, emb.ModelID(), qv, scope, pool, filters...)
+}
+
+// vectorSearchIDsForVector lets production and deep attribution share a single
+// query embedding. The deeper SQL pool still runs separately and is never fused.
+func vectorSearchIDsForVector(ctx context.Context, db *sql.DB, model string, qv []float32, scope string, pool int, filters ...searchFilters) ([]string, error) {
+	f := oneFilter(filters)
 	q := `SELECT v.memory_id, v.vec FROM mem_vectors v JOIN memories m ON m.id = v.memory_id WHERE v.model = ?`
-	args := []any{emb.ModelID()}
+	args := []any{model}
 	if scope != "" {
 		q += ` AND m.scope = ?`
 		args = append(args, scope)
