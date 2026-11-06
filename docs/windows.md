@@ -81,6 +81,7 @@ The scheduled job names are:
 - `lint-weekly`
 - `ingest-hourly`
 - `git-daily`
+- `share-sync` (every 15 minutes)
 
 `uninstall.ps1` removes all scheduled tasks under `\Mora\`.
 

@@ -26,6 +26,40 @@ var commands = map[string]string{
 	"pulse-daily": "schedule run pulse-daily", "index-hourly": "index rebuild",
 	"backup-daily": "backup", "lint-weekly": "lint", "ingest-hourly": "ingest run --all",
 	"git-daily": "sync git", "update-daily": "upgrade --scheduled-check", "doctor-pulse": "doctor --pulse",
+	"share-sync": "share sync",
+}
+
+// systemdJobs are the jobs that install a real systemd --user timer on Linux.
+// Every other job still prints a cron line there (its documented behaviour).
+var systemdJobs = map[string]bool{"share-sync": true}
+
+// HasSystemdTimer reports whether job installs a systemd --user timer on Linux.
+func HasSystemdTimer(job string) bool { return systemdJobs[job] }
+
+// jobEnv is the environment a scheduled job carries. OS schedulers do NOT
+// inherit the user's shell environment, so any exported var the job depends on
+// must be snapshotted at install time (these are PATHS, not secrets):
+//   - MORA_GOOGLE_CREDENTIALS: without it a BYO-creds setup silently hits the
+//     embedded DEV_PLACEHOLDER client on every scheduled Google sync while
+//     terminal syncs keep working — the vault goes stale with no visible error.
+//   - MORA_CONFIG_DIR: without it a re-rooted (scratch/isolated) install's job
+//     runs against the DEFAULT vault — syncing/advancing the wrong installation.
+//   - MORA_VAULT: the runtime vault override (wins over config.toml, issue
+//     #66); without it the job silently reverts to config.toml's vault.
+//
+// share-sync also sets GIT_TERMINAL_PROMPT=0: a missing git credential must fail
+// that share's line fast instead of hanging the job on a prompt nobody sees.
+func jobEnv(job string) [][2]string {
+	var env [][2]string
+	for _, k := range []string{"MORA_GOOGLE_CREDENTIALS", "MORA_CONFIG_DIR", "MORA_VAULT"} {
+		if v := os.Getenv(k); v != "" {
+			env = append(env, [2]string{k, v})
+		}
+	}
+	if job == "share-sync" {
+		env = append(env, [2]string{"GIT_TERMINAL_PROMPT", "0"})
+	}
+	return env
 }
 
 // Seams contains the process/platform dependencies owned by the composition root.
@@ -71,25 +105,10 @@ func PlistFor(cfg config.Config, job string) (string, bool) {
 	if RunAtLoad(job) {
 		runAtLoad = "<key>RunAtLoad</key><true/>\n"
 	}
-	// launchd jobs do NOT inherit the user's shell environment, so any exported
-	// var the job depends on must be snapshotted into the plist at install time
-	// (these are PATHS, not secrets):
-	//   - MORA_GOOGLE_CREDENTIALS: without it a BYO-creds setup silently hits the
-	//     embedded DEV_PLACEHOLDER client on every scheduled Google sync while
-	//     terminal syncs keep working — the vault goes stale with no visible error.
-	//   - MORA_CONFIG_DIR: without it a re-rooted (scratch/isolated) install's job
-	//     runs against the DEFAULT vault — syncing/advancing the wrong installation.
-	//   - MORA_VAULT: the runtime vault override (wins over config.toml, issue
-	//     #66); without it the job silently reverts to config.toml's vault.
+	// launchd jobs do NOT inherit the user's shell environment; see jobEnv.
 	var envVars []string
-	if creds := os.Getenv("MORA_GOOGLE_CREDENTIALS"); creds != "" {
-		envVars = append(envVars, "<key>MORA_GOOGLE_CREDENTIALS</key><string>"+PlistEscape(creds)+"</string>")
-	}
-	if cfgDir := os.Getenv("MORA_CONFIG_DIR"); cfgDir != "" {
-		envVars = append(envVars, "<key>MORA_CONFIG_DIR</key><string>"+PlistEscape(cfgDir)+"</string>")
-	}
-	if vault := os.Getenv("MORA_VAULT"); vault != "" {
-		envVars = append(envVars, "<key>MORA_VAULT</key><string>"+PlistEscape(vault)+"</string>")
+	for _, kv := range jobEnv(job) {
+		envVars = append(envVars, "<key>"+kv[0]+"</key><string>"+PlistEscape(kv[1])+"</string>")
 	}
 	envBlock := ""
 	if len(envVars) > 0 {
@@ -168,6 +187,9 @@ func Install(stdout io.Writer, cfg config.Config, job string, seams Seams) error
 		success(stdout, "installed + loaded launchd job %s (schedule active — no re-login needed)", label)
 		return nil
 	}
+	if HasSystemdTimer(job) {
+		return installSystemdTimer(stdout, cfg, job)
+	}
 	// Linux / WSL2: launchd unavailable. cron also won't inherit the shell env,
 	// so a re-rooted install must carry MORA_CONFIG_DIR on the cron line or the
 	// job runs against the default vault (mirrors the launchd EnvironmentVariables
@@ -209,6 +231,11 @@ func List(stdout io.Writer, cfg config.Config, seams Seams) error {
 		}
 		return nil
 	}
+	for _, job := range sortedSystemdJobs() {
+		if SystemdTimerInstalled(cfg, job) {
+			fmt.Fprintln(stdout, SystemdUnitName(job)+".timer")
+		}
+	}
 	fmt.Fprintln(stdout, "cron listing not implemented")
 	return nil
 }
@@ -240,6 +267,9 @@ func Uninstall(stdout io.Writer, cfg config.Config, job string, seams Seams) err
 		}
 		success(stdout, "uninstalled launchd job %s", label)
 		return nil
+	}
+	if HasSystemdTimer(job) {
+		return uninstallSystemdTimer(stdout, cfg, job)
 	}
 	fmt.Fprintln(stdout, "Linux: remove the cron line or systemd user timer you installed for this job.")
 	return nil
@@ -296,6 +326,8 @@ func WindowsScheduleCadenceArgs(job string) []string {
 	switch job {
 	case "index-hourly", "ingest-hourly":
 		return []string{"/SC", "HOURLY", "/MO", "1"}
+	case "share-sync":
+		return []string{"/SC", "MINUTE", "/MO", "15"}
 	case "lint-weekly":
 		return []string{"/SC", "WEEKLY", "/D", "SUN", "/ST", "09:00"}
 	case "pulse-daily":
@@ -327,6 +359,8 @@ func LaunchdSchedule(job string) string {
 	switch job {
 	case "index-hourly", "ingest-hourly":
 		return "<key>StartInterval</key><integer>3600</integer>"
+	case "share-sync":
+		return "<key>StartInterval</key><integer>900</integer>"
 	case "pulse-daily":
 		return "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>"
 	case "doctor-pulse":
