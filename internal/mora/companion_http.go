@@ -376,6 +376,7 @@ func (k *companionReader) searchContext(ctx context.Context, req companion.Conte
 	if err != nil {
 		return nil, nil, err
 	}
+	mems = withoutTentative(mems)
 	// BasicGaps is the pure half of the think gap analysis: staleness, evidence
 	// density, coverage holes. Search gets the honest floor rather than nothing,
 	// because a bundle with no gaps array is a claim that nothing is missing.

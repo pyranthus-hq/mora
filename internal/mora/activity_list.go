@@ -92,6 +92,7 @@ func listActivityMemories(cfg Config, scope string, limit int, filter searchFilt
 		readLimit = 0
 	}
 	rows, err := listMemories(cfg, scope, readLimit, filter)
+	rows = withoutTentative(rows)
 	if err != nil || hours == 0 {
 		return rows, err
 	}

@@ -144,6 +144,7 @@ func entityDetailGraph(ctx context.Context, cfg Config, w io.Writer, entities []
 	if err != nil {
 		return err
 	}
+	refs = withoutTentative(refs)
 	if jsonOut {
 		return emit(w, map[string]any{"name": match.Name, "kind": match.Kind, "count": match.Count, "found": true, "memories": refs}, true)
 	}
