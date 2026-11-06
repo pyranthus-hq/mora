@@ -244,19 +244,16 @@ func buildDigest(cfg Config, now time.Time, opts briefOpts) (Digest, error) {
 	if err != nil {
 		return Digest{}, err
 	}
-	if gated {
-		commitmentsByMemory = dailyCommitmentInventory(commitmentsByMemory, now)
-		byInstance = filterDigestInstancesByCommitments(byInstance, commitmentsByMemory)
-	}
+	commitmentsByMemory, closedCommitment := applyCommitmentRanking(commitmentsByMemory, gated, memSal, now)
 	var d Digest
 	if opts.sinceHours > 0 {
-		d, err = buildWindowDigest(cfg, now, opts.sinceHours, perSourceCap, byInstance, memSal, opts.source)
+		d, err = buildWindowDigest(cfg, now, opts.sinceHours, perSourceCap, byInstance, memSal, opts.source, closedCommitment)
 	} else {
 		// buildDigest NEVER commits the watermark — it is the pure build (used by every
 		// preview/read surface). The scheduled --advance transaction lives in advanceBrief,
 		// which reruns the delta build to capture the per-instance commit plans and
 		// commits ONLY over what survives the Markdown budget (issue #62 defect 1).
-		d, _, err = buildDeltaDigest(cfg, now, opts, perSourceCap, byInstance, memSal)
+		d, _, err = buildDeltaDigest(cfg, now, opts, perSourceCap, byInstance, memSal, closedCommitment)
 	}
 	if err != nil {
 		return Digest{}, err
@@ -318,27 +315,64 @@ func dailyCommitmentInventory(inventory map[string][]Commitment, at time.Time) m
 	return out
 }
 
-// filterDigestInstancesByCommitments applies the typed inventory as the eligibility
-// gate before urgency, recurrence collapse, ranking, and caps. Filtering after
-// assembly would let non-obligation artifacts consume a scarce slot and suppress a
-// real commitment.
-func filterDigestInstancesByCommitments(byInstance map[string][]Memory, inventory map[string][]Commitment) map[string][]Memory {
-	out := make(map[string][]Memory, len(byInstance))
-	for key, memories := range byInstance {
-		for _, m := range memories {
-			eligible := false
-			for _, commitment := range inventory[m.ID] {
-				if commitmentSurfaceEligible(commitment) {
-					eligible = true
-					break
-				}
-			}
-			if eligible {
-				out[key] = append(out[key], m)
+// commitmentSalienceBoost lifts any artifact with an open commitment above every
+// commitment-free artifact in its section. Salience is in micros (0..1,000,000),
+// so this 2^40 constant always dominates it.
+const commitmentSalienceBoost = int64(1) << 40
+
+// boostCommittedSalience ranks artifacts that carry an open, canonical commitment
+// first instead of dropping every other artifact. The inventory used to be an
+// eligibility gate; with the extractor's precision near 3 of 7 that gate hid a
+// human's plain mail and texts while letting extractor false positives through
+// (F14, 2026-10-28: 81 of 81 items dropped). Ranking keeps obligations on top
+// and lets the low-signal collapse handle receipts and newsletters.
+func boostCommittedSalience(memSal map[string]int64, inventory map[string][]Commitment) {
+	for memoryID, commitments := range inventory {
+		for _, commitment := range commitments {
+			if commitmentSurfaceEligible(commitment) {
+				memSal[memoryID] += commitmentSalienceBoost
+				break
 			}
 		}
 	}
-	return out
+}
+
+// whatsAppLaneNone reports a WhatsApp memory the relevance classifier marked
+// "none": it never renders a line (the delta path counts it, the window path skips it).
+func whatsAppLaneNone(m Memory) bool {
+	if m.Provider != "whatsapp" || m.Meta == nil {
+		return false
+	}
+	lane, _ := m.Meta["relevance_lane"].(string)
+	return lane == "none"
+}
+
+// applyCommitmentRanking is the one step buildDigest (preview) and advanceBrief
+// (commit) share, so the two can never rank differently. From the RAW inventory it
+// collects the memories whose commitments are all closed or duplicate (they stay out
+// of Urgent only; one iMessage chat is one memory, so dropping them would hide a
+// whole conversation). It then narrows to the daily window and boosts salience.
+// Not gated (no index): the inventory passes through and no memory is marked closed.
+func applyCommitmentRanking(inventory map[string][]Commitment, gated bool, memSal map[string]int64, now time.Time) (map[string][]Commitment, map[string]bool) {
+	if !gated {
+		return inventory, nil
+	}
+	closed := map[string]bool{}
+	for memoryID, commitments := range inventory {
+		if len(commitments) == 0 {
+			continue
+		}
+		closed[memoryID] = true
+		for _, c := range commitments {
+			if commitmentSurfaceEligible(c) {
+				delete(closed, memoryID)
+				break
+			}
+		}
+	}
+	daily := dailyCommitmentInventory(inventory, now)
+	boostCommittedSalience(memSal, daily)
+	return daily, closed
 }
 
 // digestCommitmentFor chooses the typed lane represented by an artifact-grain item.
@@ -633,7 +667,7 @@ func memoryIsServiceOnly(m Memory) bool {
 // Emails section is instead handled structurally by the fair per-source budget floor
 // (budgetSourceFloor), which needs no fragile subscription classifier.
 func isLowSignalItem(m Memory, change string, now time.Time) bool {
-	if memoryIsServiceOnly(m) {
+	if memoryIsServiceOnly(m) || isBulkMail(m) {
 		return true
 	}
 	if m.Type == "event" && change == "updated" && itemOccurredAt(m).Before(now) {
@@ -648,7 +682,7 @@ func isLowSignalItem(m Memory, change string, now time.Time) bool {
 // occurred_at is load-bearing for rewritten connector records: created_at is
 // deliberately preserved from first ingest, so a long-lived Gmail/iMessage
 // thread can otherwise look stale after receiving a new message.
-func buildWindowDigest(cfg Config, now time.Time, sinceHours, perSourceCap int, byInstance map[string][]Memory, memSal map[string]int64, sourceFilter string) (Digest, error) {
+func buildWindowDigest(cfg Config, now time.Time, sinceHours, perSourceCap int, byInstance map[string][]Memory, memSal map[string]int64, sourceFilter string, closedCommitment map[string]bool) (Digest, error) {
 	window := time.Duration(sinceHours) * time.Hour
 	cutoff := now.Add(-window)
 	forward := now.Add(window)
@@ -679,9 +713,13 @@ func buildWindowDigest(cfg Config, now time.Time, sinceHours, perSourceCap int, 
 			} else if ts.Before(cutoff) || ts.After(now) {
 				continue
 			}
+			if whatsAppLaneNone(m) {
+				continue
+			}
 			// Urgent items lead the brief on the cross-source shelf here too (issue #62),
 			// so the empty-delta window fallback never buries a recent deadline email.
-			if ok, phrase := isUrgent(m, now); ok {
+			// A memory whose commitments are all closed stays a plain section item.
+			if ok, phrase := isUrgent(m, now); ok && !closedCommitment[m.ID] {
 				urgentAll = append(urgentAll, urgentEntry{
 					item:       urgentItemFor(cfg, m, key, "", phrase),
 					occurredAt: itemOccurredAt(m),
@@ -745,7 +783,7 @@ type briefCommitPlan struct {
 // behavioral heart of Phase 12. It is PURE: it builds the Digest and returns a
 // per-instance commit plan for each enumerated connector, but NEVER locks, persists,
 // or advances the watermark (that is advanceBrief's job — issue #62 defect 1).
-func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap int, byInstance map[string][]Memory, memSal map[string]int64) (Digest, []briefCommitPlan, error) {
+func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap int, byInstance map[string][]Memory, memSal map[string]int64, closedCommitment map[string]bool) (Digest, []briefCommitPlan, error) {
 	// The enumeration set for the three-state labels is the ENABLED+INGESTING
 	// connectors (M-2) — not providers-found-in-memories (which would hide a
 	// broken/all-deleted source) and not the sync/ dir. A connector enumerated
@@ -782,7 +820,7 @@ func buildDeltaDigest(cfg Config, now time.Time, opts briefOpts, perSourceCap in
 		snap := loadBriefSnapshot(cfg, key)
 		delta := classify(snap, mems, now)
 
-		items, urgent, lineMembers, countOnly, moreCount := deltaSectionItems(cfg, delta, mems, now, key, perSourceCap, memSal)
+		items, urgent, lineMembers, countOnly, moreCount := deltaSectionItems(cfg, delta, mems, now, key, perSourceCap, memSal, closedCommitment)
 		urgentAll = append(urgentAll, urgent...)
 
 		// hasDelta counts the shelf too: an instance whose only new item was promoted to
@@ -888,11 +926,8 @@ func advanceBrief(cfg Config, now time.Time, opts briefOpts, budgetChars int, br
 	if err != nil {
 		return Digest{}, "", err
 	}
-	if gated {
-		commitmentsByMemory = dailyCommitmentInventory(commitmentsByMemory, now)
-		byInstance = filterDigestInstancesByCommitments(byInstance, commitmentsByMemory)
-	}
-	d, plans, err := buildDeltaDigest(cfg, now, opts, perSourceCap, byInstance, memSal)
+	commitmentsByMemory, closedCommitment := applyCommitmentRanking(commitmentsByMemory, gated, memSal, now)
+	d, plans, err := buildDeltaDigest(cfg, now, opts, perSourceCap, byInstance, memSal, closedCommitment)
 	if err != nil {
 		return Digest{}, "", err
 	}
@@ -959,7 +994,7 @@ func advanceBrief(cfg Config, now time.Time, opts briefOpts, budgetChars int, br
 // cap. advanceBrief advances the watermark over a line's members iff that line
 // survives the Markdown budget (issue #62 defect 1); a shelf line is budget-protected
 // and therefore always survives.
-func deltaSectionItems(cfg Config, delta briefDelta, mems []Memory, now time.Time, key string, cap int, memSal map[string]int64) (items []DigestItem, urgent []urgentEntry, lineMembers map[string][]string, countOnlyIDs []string, moreCount int) {
+func deltaSectionItems(cfg Config, delta briefDelta, mems []Memory, now time.Time, key string, cap int, memSal map[string]int64, closedCommitment map[string]bool) (items []DigestItem, urgent []urgentEntry, lineMembers map[string][]string, countOnlyIDs []string, moreCount int) {
 	isCalendar := connectorUpcoming(key)
 
 	// candidateMem yields (memory, change, include) for each item this instance would
@@ -994,13 +1029,11 @@ func deltaSectionItems(cfg Config, delta briefDelta, mems []Memory, now time.Tim
 	// low-signal collapse as before.
 	var tis []tsItem
 	for _, c := range cands {
-		if c.m.Provider == "whatsapp" && c.m.Meta != nil {
-			if lane, _ := c.m.Meta["relevance_lane"].(string); lane == "none" {
-				countOnlyIDs = append(countOnlyIDs, c.m.ID)
-				continue
-			}
+		if whatsAppLaneNone(c.m) {
+			countOnlyIDs = append(countOnlyIDs, c.m.ID)
+			continue
 		}
-		if ok, phrase := isUrgent(c.m, now); ok {
+		if ok, phrase := isUrgent(c.m, now); ok && !closedCommitment[c.m.ID] {
 			urgent = append(urgent, urgentEntry{
 				item:       urgentItemFor(cfg, c.m, key, c.change, phrase),
 				occurredAt: itemOccurredAt(c.m),
@@ -1047,12 +1080,16 @@ type urgentEntry struct {
 // deadline-anchored snippet (defect 4) instead of the blind tail clip, so the visible
 // snippet carries the ask, not a sign-off.
 func urgentItemFor(cfg Config, m Memory, key, change, phrase string) DigestItem {
+	_, body := urgentText(m) // snippet must not centre on quoted or older text
+	if body == "" {
+		body = m.Text // a starred pure forward has no authored text of its own
+	}
 	return DigestItem{
 		ID:        m.ID,
 		Title:     m.Title,
 		Source:    key,
 		CreatedAt: m.CreatedAt,
-		Snippet:   urgentSnippet(m.Text, digestSnippetChars(cfg), phrase),
+		Snippet:   urgentSnippet(body, digestSnippetChars(cfg), phrase),
 		Change:    change,
 	}
 }
