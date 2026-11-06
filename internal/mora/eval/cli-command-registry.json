@@ -99,6 +99,20 @@
       "payload": "mora.delete"
     },
     {
+      "path": "undo",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.undo"
+    },
+    {
+      "path": "confirm",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.confirm"
+    },
+    {
       "path": "forget",
       "kind": "verb",
       "platform": "all",

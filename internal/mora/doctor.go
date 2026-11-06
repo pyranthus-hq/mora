@@ -58,6 +58,10 @@ type doctorReport struct {
 	Repairable    bool                 `json:"repairable"`
 	RepairPlan    []doctorRepairAction `json:"repair_plan"`
 	Verification  []doctorVerification `json:"verification"`
+	// PendingMCPProposals counts propose-mode writes still waiting for
+	// `mora mcp proposals approve` (for example, left over from v0.15.3, whose
+	// default staged every agent write). Additive; omitted when zero.
+	PendingMCPProposals int `json:"pending_mcp_proposals,omitempty"`
 }
 
 type doctorObservation struct {
@@ -488,6 +492,8 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		}
 	}
 
+	pendingProposals, _ := pendingMCPProposalCount(cfg)
+
 	gitSync := false
 	if _, err := os.Stat(filepath.Join(cfg.VaultDir, ".git")); err == nil {
 		gitSync = true
@@ -526,6 +532,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			Producers: prodHealth,
 			Observed:  observed, Diagnosis: diagnoses,
 			Repairable: hasSafeDoctorRepair(repairPlan), RepairPlan: repairPlan, Verification: verification,
+			PendingMCPProposals: pendingProposals,
 		}
 		if rec, present, _ := readBlockRecord(cfg); present {
 			rep.RebuildBlock = &rec
@@ -601,6 +608,9 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	// surface "last authed / how long ago" per connected account so the user can
 	// tell at a glance when they last signed in.
 	printGoogleAuthRecency(cfg, stdout, now)
+	if pendingProposals > 0 {
+		fmt.Fprintf(stdout, "%s %d agent write(s) pending in the MCP proposal queue — review with `mora mcp proposals list`, approve with `mora mcp proposals approve <id>`\n", sty.warn("warn"), pendingProposals)
+	}
 	// iMessage readiness prints in a dedicated ORDERED block so the Full Disk
 	// Access guidance reads top-to-bottom (Surface 3).
 	printIMessageReadiness(cfg, stdout, false)

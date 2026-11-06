@@ -496,7 +496,7 @@ func digestInputs(cfg Config, now time.Time, opts briefOpts) (perSourceCap int, 
 		if m.DeletedAt != "" {
 			continue // M-4: tombstone — mirror graph.go's skip.
 		}
-		if !governance.memoryVisible(m.ID) {
+		if !governance.memoryVisible(m.ID) || memory.IsTentative(m) {
 			continue
 		}
 		m = decorateDecision(m, now)
