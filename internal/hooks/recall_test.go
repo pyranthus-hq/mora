@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"fmt"
 	"github.com/pyranthus-hq/mora/internal/memory"
 	"strings"
 	"testing"
@@ -167,5 +168,57 @@ func TestRecallLineForKeepsHeadWithoutBodyMatch(t *testing.T) {
 	}
 	if got, want := RecallLineFor(m, "", now), RecallLine(m, now); got != want {
 		t.Fatalf("empty query must equal RecallLine:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestSteppedInLine(t *testing.T) {
+	for n, want := range map[int]string{
+		-1: "",
+		0:  "",
+		1:  "Mora stepped in · 1 lesson",
+		2:  "Mora stepped in · 2 lessons",
+		3:  "Mora stepped in · 3 lessons",
+	} {
+		if got := SteppedInLine(n); got != want {
+			t.Fatalf("SteppedInLine(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+func TestFormatRecallContextCountMatchesRenderedLines(t *testing.T) {
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	mems := []Memory{
+		{ID: "a", Title: "First lesson", Text: "Run the tests from the repo root.", Score: -3},
+		{ID: "b", Title: "Too weak", Text: "Above the threshold, so it is skipped.", Score: 1},
+		{ID: "c", Title: "Second lesson", Text: "Use migrate deploy on staging.", Score: -2},
+	}
+	body, n := FormatRecallContextCount(mems, "", 0, now)
+	if n != 2 {
+		t.Fatalf("count = %d, want 2:\n%s", n, body)
+	}
+	if body != FormatRecallContextFor(mems, "", 0, now) {
+		t.Fatal("FormatRecallContextCount must render the same body as FormatRecallContextFor")
+	}
+	if got := strings.Count(body, "\n- "); got != n {
+		t.Fatalf("rendered %d lines, count says %d:\n%s", got, n, body)
+	}
+	if _, n := FormatRecallContextCount(nil, "", 0, now); n != 0 {
+		t.Fatalf("empty input count = %d, want 0", n)
+	}
+}
+
+func TestFormatRecallContextCountStopsAtRecallLimit(t *testing.T) {
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	var mems []Memory
+	for i := 0; i < RecallLimit+2; i++ {
+		mems = append(mems, Memory{ID: fmt.Sprintf("m%d", i), Title: "Lesson", Text: "Run the tests from the repo root.", Score: -1})
+	}
+	mems = append(mems[:1], append([]Memory{{ID: "blank", Score: -1}}, mems[1:]...)...)
+	body, n := FormatRecallContextCount(mems, "", 0, now)
+	if n != RecallLimit {
+		t.Fatalf("count = %d, want the cap %d:\n%s", n, RecallLimit, body)
+	}
+	if got := strings.Count(body, "\n- "); got != n {
+		t.Fatalf("rendered %d lines, count says %d", got, n)
 	}
 }
