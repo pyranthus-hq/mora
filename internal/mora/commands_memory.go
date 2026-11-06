@@ -390,26 +390,9 @@ func cmdDelete(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if err != nil {
 		return err
 	}
-	// Mark the delete BEFORE removing the file (A5 row 4): a rebuild that fails
-	// after the file is gone would otherwise keep SERVING the deleted content
-	// (Finding 4 — a data-safety P0). While the op is pending its memory_id is
-	// suppressed on every read path (B4), so fail-closed here is an actual
-	// guarantee, not just a banner.
-	op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindDelete, Path: m.Path, MemoryID: m.ID})
-	if merr != nil {
-		return merr
-	}
-	if err := os.Remove(m.Path); err != nil {
-		_ = unmarkIndexDirty(cfg, op.OpID) // the file never went away
-		return err
-	}
-	reconcile, err := reflectDeleteInIndex(ctx, cfg, m.ID)
+	reconcile, err := deleteMemoryFile(ctx, cfg, m)
 	if err != nil {
-		// The op REMAINS -> the index reads dirty AND B4 suppresses the deleted id.
-		// A partial delete stays a LOUD error with no receipt, mirroring the MCP
-		// delete_memory asymmetry: serving deleted content warrants the error,
-		// and the retry is harmless. Do not soften this into a receipt.
-		return fmt.Errorf("memory %s deleted, but the search index could not be updated: %w — run `mora index rebuild`", m.ID, err)
+		return err
 	}
 	var rerr error
 	if *jsonOut {
@@ -428,6 +411,34 @@ func cmdDelete(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		}
 	}
 	return rerr
+}
+
+// deleteMemoryFile removes one memory from the vault and the index. It is the
+// shared core of `mora delete` and `mora undo`; reconcile reports whether the
+// caller should run reconcileAuthoredWrites after emitting its receipt.
+func deleteMemoryFile(ctx context.Context, cfg Config, m Memory) (reconcile bool, err error) {
+	// Mark the delete BEFORE removing the file (A5 row 4): a rebuild that fails
+	// after the file is gone would otherwise keep SERVING the deleted content
+	// (Finding 4 — a data-safety P0). While the op is pending its memory_id is
+	// suppressed on every read path (B4), so fail-closed here is an actual
+	// guarantee, not just a banner.
+	op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindDelete, Path: m.Path, MemoryID: m.ID})
+	if merr != nil {
+		return false, merr
+	}
+	if err := os.Remove(m.Path); err != nil {
+		_ = unmarkIndexDirty(cfg, op.OpID) // the file never went away
+		return false, err
+	}
+	reconcile, err = reflectDeleteInIndex(ctx, cfg, m.ID)
+	if err != nil {
+		// The op REMAINS -> the index reads dirty AND B4 suppresses the deleted id.
+		// A partial delete stays a LOUD error with no receipt, mirroring the MCP
+		// delete_memory asymmetry: serving deleted content warrants the error,
+		// and the retry is harmless. Do not soften this into a receipt.
+		return false, fmt.Errorf("memory %s deleted, but the search index could not be updated: %w — run `mora index rebuild`", m.ID, err)
+	}
+	return reconcile, nil
 }
 
 type deleteReceipt struct {

@@ -161,6 +161,9 @@ func missingCorrectionWarning(block contextBlock) string {
 // It never calls a record true, and it says outright that repeating an agent's
 // note adds nothing to the evidence behind it.
 func provenanceLine(m memory.Memory) string {
+	if memory.IsTentative(m) {
+		return "Provenance: tentative agent note" + sourceSuffix(m) + "; nobody has confirmed it. Treat it as a lead."
+	}
 	switch memory.DeriveProvenance(m) {
 	case memory.ProvenanceEvidence:
 		return "Provenance: evidence from " + evidenceOrigin(m) + "."
