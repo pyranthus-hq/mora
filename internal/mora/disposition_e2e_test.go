@@ -104,6 +104,7 @@ func TestDispositionMCPProposalAuthorityAndApprovalRevalidation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			stubRulesTerminal(t, "")
 			var out bytes.Buffer
 			err = cmdMCP(testCtx(t), []string{"proposals", "approve", id}, &out, &out, strings.NewReader(""))
 			if deleted {

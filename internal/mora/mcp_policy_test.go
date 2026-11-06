@@ -112,6 +112,7 @@ func TestMCPWritePolicyProposeStagesThenOwnerApproves(t *testing.T) {
 		t.Fatalf("propose policy wrote to vault before approval: %v", files)
 	}
 
+	stubRulesTerminal(t, "")
 	var out bytes.Buffer
 	if err := cmdMCP(testCtx(t), []string{"proposals", "approve", id}, &out, &out, strings.NewReader("")); err != nil {
 		t.Fatalf("approve proposal: %v", err)

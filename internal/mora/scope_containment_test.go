@@ -123,8 +123,9 @@ func TestApprovalRevalidatesStoredScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := scopeVaultTree(t, cfg.VaultDir)
+	stubRulesTerminal(t, "")
 	var out bytes.Buffer
-	err := cmdMCPProposals(testCtx(t), []string{"approve", p.ID}, &out, &out)
+	err := cmdMCPProposals(testCtx(t), []string{"approve", p.ID}, &out, &out, strings.NewReader(""))
 	if err == nil || !strings.Contains(err.Error(), "invalid write scope") {
 		t.Fatalf("approval: %v", err)
 	}
@@ -324,8 +325,9 @@ func TestBlankWriteScopeDefaultsToGlobal(t *testing.T) {
 					if err != nil || len(proposals) != 1 {
 						t.Fatalf("proposals: %+v, %v", proposals, err)
 					}
+					stubRulesTerminal(t, "")
 					var out bytes.Buffer
-					if err := cmdMCPProposals(testCtx(t), []string{"approve", proposals[0].ID}, &out, &out); err != nil {
+					if err := cmdMCPProposals(testCtx(t), []string{"approve", proposals[0].ID}, &out, &out, strings.NewReader("")); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -355,16 +357,17 @@ func TestProposalListSkipsInvalidScope(t *testing.T) {
 			args = append(args, "--json")
 		}
 		var out, warnings bytes.Buffer
-		if err := cmdMCPProposals(testCtx(t), args, &out, &warnings); err != nil {
+		if err := cmdMCPProposals(testCtx(t), args, &out, &warnings, strings.NewReader("")); err != nil {
 			t.Fatal(err)
 		}
 		if !strings.Contains(out.String(), "p_valid") || strings.Contains(out.String(), "p_invalid") || !strings.Contains(warnings.String(), "skipping invalid proposal p_invalid") {
 			t.Fatalf("list: %s; warnings: %s", &out, &warnings)
 		}
 	}
+	stubRulesTerminal(t, "")
 	before := scopeVaultTree(t, lookupTestEnv(t).home)
 	var out bytes.Buffer
-	if err := cmdMCPProposals(testCtx(t), []string{"approve", "p_invalid"}, &out, &out); err == nil || !strings.Contains(err.Error(), "invalid write scope") {
+	if err := cmdMCPProposals(testCtx(t), []string{"approve", "p_invalid"}, &out, &out, strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "invalid write scope") {
 		t.Fatalf("approve: %v", err)
 	}
 	if !sameTree(before, scopeVaultTree(t, lookupTestEnv(t).home)) {
