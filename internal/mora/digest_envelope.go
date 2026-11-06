@@ -34,6 +34,9 @@ type DigestEnvelope struct {
 	Health           compactHealth     `json:"health"`
 	EmptyExplanation string            `json:"empty_explanation,omitempty"`
 	SynthesisPrompt  string            `json:"synthesis_prompt"`
+	// SharedCorpora is set only by the brief tool, only when subscribed shares
+	// exist (see sharedCorporaPointerFor); digest never sets it.
+	SharedCorpora *sharedCorporaPointer `json:"shared_corpora,omitempty"`
 }
 
 // digestSynthesisPrompt builds the instruction the calling agent's model runs to
