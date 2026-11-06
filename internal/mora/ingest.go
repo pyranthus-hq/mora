@@ -1323,7 +1323,7 @@ func retireUnpublishedIngestJournal(cfg Config, sourceKey, runID string) error {
 	if ingestpkg.JournalRunID(ingestpkg.JournalPath(cfg, sourceKey), validOperationToken) != runID {
 		return nil
 	}
-	_, err := ingestpkg.CompactJournal(cfg, sourceKey, map[string]bool{}, ingestRecoverySeams())
+	_, err := ingestpkg.CompactJournal(cfg, sourceKey, map[string]bool{}, nil, ingestRecoverySeams())
 	return err
 }
 

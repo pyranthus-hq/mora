@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	configstore "github.com/pyranthus-hq/mora/internal/config"
+	indexstore "github.com/pyranthus-hq/mora/internal/index"
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	"github.com/pyranthus-hq/mora/internal/memory"
 	"github.com/pyranthus-hq/mora/internal/registry"
@@ -875,7 +876,7 @@ func createMemory(ctx context.Context, cfg Config, m Memory, opts ...createOptio
 		if err != nil {
 			return Memory{}, pendingOp{}, err
 		}
-		op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindWrite, Path: path})
+		op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindWrite, Path: path, ContentSHA256: indexstore.ContentSHA256(body)})
 		if merr != nil {
 			// errIndexUnmarkable: abort BEFORE a single vault byte changes, so a
 			// client retry cannot mint a duplicate (mcp.go's isError asymmetry).

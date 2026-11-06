@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
+	indexstore "github.com/pyranthus-hq/mora/internal/index"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
@@ -123,7 +124,7 @@ func cmdConfirm(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if m, err = parseMemoryBytes(m.Path, body); err != nil {
 		return err
 	}
-	op, err := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindWrite, Path: m.Path})
+	op, err := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindWrite, Path: m.Path, ContentSHA256: indexstore.ContentSHA256(body)})
 	if err != nil {
 		return err
 	}

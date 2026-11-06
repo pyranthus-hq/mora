@@ -115,7 +115,7 @@ func cmdForget(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 	ops := make([]pendingOp, 0, len(matches))
 	for _, m := range matches {
-		op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindDelete, Path: m.Path, MemoryID: m.ID})
+		op, merr := markIndexDirty(ctx, cfg, deleteOp(m))
 		if merr != nil {
 			for _, prior := range ops {
 				_ = unmarkIndexDirty(cfg, prior.OpID)

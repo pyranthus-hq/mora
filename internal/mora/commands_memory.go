@@ -422,7 +422,7 @@ func deleteMemoryFile(ctx context.Context, cfg Config, m Memory) (reconcile bool
 	// (Finding 4 — a data-safety P0). While the op is pending its memory_id is
 	// suppressed on every read path (B4), so fail-closed here is an actual
 	// guarantee, not just a banner.
-	op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindDelete, Path: m.Path, MemoryID: m.ID})
+	op, merr := markIndexDirty(ctx, cfg, deleteOp(m))
 	if merr != nil {
 		return false, merr
 	}

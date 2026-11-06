@@ -23,6 +23,9 @@ type pendingOp = indexstore.PendingOp
 var removePendingOpFile = os.Remove
 var testHookPostMarkerWrite func()
 
+// testHookRebuildCommitted runs between a rebuild's commit and its marker cleanup.
+var testHookRebuildCommitted func(Config)
+
 func pendingOpPath(cfg Config, opID string) string { return indexstore.PendingPath(cfg, opID) }
 func cleanVaultPath(path string) string            { return indexstore.CleanVaultPath(path) }
 func markIndexDirty(ctx context.Context, cfg Config, op pendingOp) (pendingOp, error) {
@@ -71,8 +74,18 @@ func removePendingMarker(path string) error {
 }
 
 func listPendingOps(cfg Config) ([]pendingOp, error) { return indexstore.ListPending(cfg) }
-func clearCoveredPendingOps(cfg Config, started time.Time, files, parsed []string) error {
-	return indexstore.ClearCovered(cfg, started, files, parsed, unmarkIndexDirty)
+func clearCoveredPendingOps(cfg Config, ops []pendingOp, c indexstore.Coverage) error {
+	return indexstore.ClearCovered(cfg, ops, c, unmarkIndexDirty)
+}
+
+// deleteOp builds the marker for removing m. An unreadable file gets no hash, so
+// the marker falls back to the hashless rule.
+func deleteOp(m Memory) pendingOp {
+	op := pendingOp{Kind: opKindDelete, Path: m.Path, MemoryID: m.ID}
+	if b, err := os.ReadFile(m.Path); err == nil {
+		op.ContentSHA256 = indexstore.ContentSHA256(b)
+	}
+	return op
 }
 func suppressPendingDeletes(cfg Config, mems []Memory) []Memory {
 	return indexstore.SuppressPendingDeletes(cfg, mems)
