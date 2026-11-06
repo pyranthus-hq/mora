@@ -667,7 +667,7 @@ func memoryIsServiceOnly(m Memory) bool {
 // Emails section is instead handled structurally by the fair per-source budget floor
 // (budgetSourceFloor), which needs no fragile subscription classifier.
 func isLowSignalItem(m Memory, change string, now time.Time) bool {
-	if memoryIsServiceOnly(m) {
+	if memoryIsServiceOnly(m) || isBulkMail(m) {
 		return true
 	}
 	if m.Type == "event" && change == "updated" && itemOccurredAt(m).Before(now) {
@@ -1080,12 +1080,13 @@ type urgentEntry struct {
 // deadline-anchored snippet (defect 4) instead of the blind tail clip, so the visible
 // snippet carries the ask, not a sign-off.
 func urgentItemFor(cfg Config, m Memory, key, change, phrase string) DigestItem {
+	_, body := urgentText(m) // snippet must not centre on quoted or older text
 	return DigestItem{
 		ID:        m.ID,
 		Title:     m.Title,
 		Source:    key,
 		CreatedAt: m.CreatedAt,
-		Snippet:   urgentSnippet(m.Text, digestSnippetChars(cfg), phrase),
+		Snippet:   urgentSnippet(body, digestSnippetChars(cfg), phrase),
 		Change:    change,
 	}
 }

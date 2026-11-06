@@ -191,16 +191,6 @@ func examDailyCLIPredictions(t *testing.T, output string) []exam.Prediction {
 		})
 		artifactPrediction = len(out) - 1
 	}
-	// Plain items share the brief but carry no obligation row, so they are not
-	// scored. A real commitment that lost its typing keeps its CommitmentID or
-	// direction only if the row survives, so it still counts as a miss.
-	kept := out[:0]
-	for _, p := range out {
-		if p.Direction != exam.Unknown || p.CommitmentID != "" {
-			kept = append(kept, p)
-		}
-	}
-	out = kept
 	if len(out) == 0 {
 		t.Fatalf("daily CLI emitted no cited items:\n%s", output)
 	}
@@ -230,7 +220,7 @@ func predictionIDs(preds []exam.Prediction) []string {
 
 func scoreExamSurface(t *testing.T, ledger exam.Ledger, preds []exam.Prediction, surface string) exam.Scorecard {
 	t.Helper()
-	sc, err := exam.Score(ledger, preds, surface)
+	sc, err := exam.Score(ledger, examDropCheckedPlain(ledger, preds), surface)
 	if err != nil {
 		t.Fatal(err)
 	}

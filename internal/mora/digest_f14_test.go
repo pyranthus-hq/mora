@@ -3,6 +3,7 @@ package mora
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -320,5 +321,89 @@ func TestBriefTwentyTextsFiftyNineMails(t *testing.T) {
 	}
 	if sec := digestSections(d)["gmail"]; sec.MoreCount != 49 {
 		t.Fatalf("gmail MoreCount = %d, want 49", sec.MoreCount)
+	}
+}
+
+// f14Thread builds an in-memory gmail thread. rows are per-message automation
+// headers; labels may be nil.
+func f14Thread(now time.Time, from, title, text string, ago time.Duration, rows [][]string, labels []string) Memory {
+	at := now.Add(-ago).Format(time.RFC3339)
+	var msgs []map[string]any
+	for i, h := range rows {
+		row := map[string]any{"message_ref": fmt.Sprintf("t#%d", i), "sender": from}
+		if len(h) > 0 {
+			row["automation_headers"] = h
+		}
+		msgs = append(msgs, row)
+	}
+	meta := map[string]any{"from": []string{from}, "to": []string{"me@example.com"}, "occurred_at": at}
+	if msgs != nil {
+		meta["messages"] = msgs
+	}
+	if labels != nil {
+		meta["labels"] = labels
+	}
+	return Memory{ID: "t", Type: "email", Title: title, Text: text, Provider: "gmail", CreatedAt: at, Meta: meta}
+}
+
+var f14Now = time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
+
+func TestBulkMailIsLowSignal(t *testing.T) {
+	bulk := f14Thread(f14Now, "shop@poshmark.com", "Deals", "From: shop@poshmark.com\n\nBig sale", time.Hour, [][]string{{"list-unsubscribe"}}, nil)
+	if !isLowSignalItem(bulk, "", f14Now) {
+		t.Fatal("bulk mail must be low signal")
+	}
+	human := f14Thread(f14Now, "bob@example.com", "Lunch", "From: bob@example.com\n\nhi", time.Hour, [][]string{nil}, nil)
+	if isLowSignalItem(human, "", f14Now) {
+		t.Fatal("human mail must not be low signal")
+	}
+	mixed := f14Thread(f14Now, "shop@poshmark.com", "Deals", "From: shop@poshmark.com\n\nSale\n\n---\n\nFrom: bob@example.com\n\nre", time.Hour, [][]string{{"list-unsubscribe"}, nil}, nil)
+	if isBulkMail(mixed) || isLowSignalItem(mixed, "", f14Now) {
+		t.Fatal("thread with a human reply is not bulk")
+	}
+}
+
+func TestBulkMailNotUrgent(t *testing.T) {
+	body := "From: shop@poshmark.com\n\nPlease confirm by Friday"
+	bulk := f14Thread(f14Now, "shop@poshmark.com", "Sale", body, time.Hour, [][]string{{"list-unsubscribe"}}, nil)
+	if ok, _ := isUrgent(bulk, f14Now); ok {
+		t.Fatal("bulk deadline mail must not be urgent")
+	}
+	starred := f14Thread(f14Now, "shop@poshmark.com", "Sale", body, time.Hour, [][]string{{"list-unsubscribe"}}, []string{"STARRED"})
+	if ok, _ := isUrgent(starred, f14Now); !ok {
+		t.Fatal("starred bulk mail stays urgent")
+	}
+}
+
+func TestQuotedDeadlineNotUrgent(t *testing.T) {
+	text := "From: bob@example.com\n\nFYI, archive copy.\n\nOn Mon, Sam wrote:\n> Please send the worksheet by tomorrow."
+	m := f14Thread(f14Now, "bob@example.com", "Archive", text, time.Hour, [][]string{nil}, nil)
+	if ok, p := isUrgent(m, f14Now); ok {
+		t.Fatalf("quoted deadline made mail urgent (%q)", p)
+	}
+	// no per-message structure: quotes are still stripped.
+	delete(m.Meta, "messages")
+	if ok, _ := isUrgent(m, f14Now); ok {
+		t.Fatal("quoted deadline urgent without message rows")
+	}
+}
+
+func TestOldRequestNewReplyNotUrgent(t *testing.T) {
+	text := "From: sam@example.com\n\nPlease send the worksheet by tomorrow.\n\n---\n\nFrom: bob@example.com\n\nThanks, sounds good."
+	m := f14Thread(f14Now, "bob@example.com", "Please send the worksheet by tomorrow", text, time.Hour, [][]string{nil, nil}, nil)
+	if ok, p := isUrgent(m, f14Now); ok {
+		t.Fatalf("old request refreshed by unrelated reply is urgent (%q)", p)
+	}
+}
+
+func TestFreshDeadlineStillUrgent(t *testing.T) {
+	text := "From: sam@example.com\n\nHello.\n\n---\n\nFrom: bob@example.com\n\nPlease confirm by Friday."
+	m := f14Thread(f14Now, "bob@example.com", "Plan", text, time.Hour, [][]string{nil, nil}, nil)
+	ok, p := isUrgent(m, f14Now)
+	if !ok {
+		t.Fatal("fresh deadline must stay urgent")
+	}
+	if s := urgentItemFor(Config{}, m, "gmail", "", p).Snippet; !strings.Contains(s, "confirm by Friday") {
+		t.Fatalf("snippet %q lost the ask", s)
 	}
 }
