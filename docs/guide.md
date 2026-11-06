@@ -592,6 +592,21 @@ mora mcp proposals approve <proposal-id>
 mora mcp proposals reject <proposal-id>
 ```
 
+Run `approve` and `reject` in your own terminal. They use the same check as
+`mora rules approve`: they refuse to run when stdin is not a terminal or when
+they run inside a Claude Code or Codex session (`CLAUDECODE`, `CODEX_SANDBOX`,
+`CODEX_SANDBOX_NETWORK_DISABLED`, `CODEX_THREAD_ID`, `CODEX_CI` or
+`CODEX_MANAGED_BY_NPM` is set). A refused command changes nothing. If an agent
+tries to run `approve`, it gets this refusal, and the proposal stays pending.
+`list` and `show` run anywhere, so an agent can read a proposal but cannot
+decide it.
+
+This check stops an agent from approving its own write by accident or in
+passing. It does not stop a determined process that runs as you: such a process
+can remove these variables and open a terminal of its own, run
+`mora config mcp-write-policy open` or `mora write`, or change the config, state
+and vault files directly.
+
 `mora mcp proposals show <proposal-id> [--json]` is a local, read-only inspection.
 Both forms print an indented `mora.mcp.proposals` v1 JSON receipt with an
 `inspection` object: pending ID/time, the full staged `arguments`, and the

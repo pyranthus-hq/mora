@@ -268,8 +268,9 @@ does not affect `mora write`, connectors, tasks, or teach corrections.
 **Current default (v0.15.3 and later): `propose`.** An agent's `write_memory`
 call does not reach your vault. Mora holds it in `~/.config/mora/mcp-proposals/`
 and tells the agent it is pending. It is saved only when you run
-`mora mcp proposals approve <id>`. Mora shows no pop-up or notice for pending
-writes; run `mora mcp proposals list` to see them.
+`mora mcp proposals approve <id>` in your own terminal; the command refuses to
+run from an agent session or a non-interactive shell. Mora shows no pop-up or
+notice for pending writes; run `mora mcp proposals list` to see them.
 
 **v0.15.2 and earlier: `open`.** Agent writes were saved at once.
 

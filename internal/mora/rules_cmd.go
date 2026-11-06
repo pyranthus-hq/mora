@@ -225,11 +225,17 @@ func rulesAgentSession() string {
 
 // rulesRequireTerminal refuses unless a person is at their own terminal.
 func rulesRequireTerminal(stdin io.Reader) error {
+	return requireOwnTerminal(stdin, rulesRefusal, rulesAgentRefusal)
+}
+
+// requireOwnTerminal is the check behind every command that only a person may
+// run. agentRefusal takes the name of the variable that marked the shell.
+func requireOwnTerminal(stdin io.Reader, refusal, agentRefusal string) error {
 	if key := rulesAgentSession(); key != "" {
-		return fmt.Errorf(rulesAgentRefusal, key)
+		return fmt.Errorf(agentRefusal, key)
 	}
 	if !rulesInteractive(stdin) {
-		return errors.New(rulesRefusal)
+		return errors.New(refusal)
 	}
 	return nil
 }

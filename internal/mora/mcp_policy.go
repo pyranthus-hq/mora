@@ -34,6 +34,14 @@ func configMCPWritePolicy(c Config) string {
 	return mcppkg.NormalizeWritePolicy(c.MCPWritePolicy)
 }
 
+// mcpProposalRefusal is printed when approve or reject runs where an agent
+// could have typed it. Only a person at their own terminal may decide a
+// proposal. This stops an agent from approving its own staged write in passing.
+const mcpProposalRefusal = "refusing to decide an MCP write proposal from a non-interactive shell or from inside an agent session. Run this in your own terminal."
+
+// mcpProposalAgentRefusal names the variable that marked the shell as an agent's.
+const mcpProposalAgentRefusal = "refusing to decide an MCP write proposal from inside an agent session (%s is set). Run this in your own terminal."
+
 type mcpWriteProposal = mcppkg.Proposal
 
 func mcpProposalDir(cfg Config) string { return mcppkg.ProposalDir(cfg) }
@@ -81,7 +89,7 @@ type mcpProposalsPayload struct {
 	Inspection *mcpProposalInspection `json:"inspection,omitempty"`
 }
 
-func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
@@ -147,6 +155,9 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 		if err := refuseDashLedPositional("mcp proposals approve", "proposal id", args[1]); err != nil {
 			return err
 		}
+		if err := requireOwnTerminal(stdin, mcpProposalRefusal, mcpProposalAgentRefusal); err != nil {
+			return err
+		}
 		memoryID, err := decideMCPWriteProposal(ctx, cfg, args[1], "approve")
 		if err != nil {
 			return err
@@ -162,6 +173,9 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 	if len(args) == 2 && args[0] == "reject" {
 		if err := refuseDashLedPositional("mcp proposals reject", "proposal id", args[1]); err != nil {
+			return err
+		}
+		if err := requireOwnTerminal(stdin, mcpProposalRefusal, mcpProposalAgentRefusal); err != nil {
 			return err
 		}
 		if _, err := decideMCPWriteProposal(ctx, cfg, args[1], "reject"); err != nil {

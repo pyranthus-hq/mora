@@ -27,6 +27,7 @@ func TestMCPProposalConcurrentApprovalsPublishOnce(t *testing.T) {
 		return time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)
 	}
 	t.Cleanup(func() { mcpWriteClock = oldClock })
+	stubRulesTerminal(t, "")
 	ctx := testCtx(t)
 	start := make(chan struct{})
 	results := make(chan error, 8)
