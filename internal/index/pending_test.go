@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -122,6 +123,9 @@ func TestShouldClearMatrix(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "write unreadable" && runtime.GOOS == "windows" {
+				t.Skip("a path under a file reads as missing on Windows, so this fixture cannot make a read error")
+			}
 			if got := ShouldClear(tc.op, c); got != tc.want {
 				t.Errorf("ShouldClear(%+v)=%v want %v", tc.op, got, tc.want)
 			}

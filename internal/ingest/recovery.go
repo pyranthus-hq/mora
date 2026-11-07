@@ -51,6 +51,9 @@ func SnapshotJournals(cfg config.Config, seams RecoverySeams) (map[string]os.Fil
 		if err != nil {
 			return nil, err
 		}
+		// Windows reads the file id lazily, at the first compare. Pin it now, or a
+		// journal replaced after this point would compare equal to itself.
+		os.SameFile(info, info)
 		snapshot[e.Name()] = info
 	}
 	return snapshot, nil
