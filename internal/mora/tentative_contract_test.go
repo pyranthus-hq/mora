@@ -3,6 +3,8 @@ package mora
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -34,28 +36,40 @@ var tentativeToolClass = map[string]string{
 	"calendar_events": surfaceHides,
 }
 
-// echo is the query or name the caller sent: a surface may repeat it back.
+// echo is an entity name the caller sent: a hides surface may repeat it back.
+// It is removed from hides surfaces only. A labels surface is never scrubbed,
+// and its queries use words that are not the canary.
 func checkSurface(t *testing.T, name, class, out, echo string) {
 	t.Helper()
 	low := strings.ToLower(out)
-	if echo != "" {
-		low = strings.ReplaceAll(low, strings.ToLower(echo), "")
-	}
-	has := strings.Contains(low, tentativeCanry)
 	switch class {
 	case surfaceHides:
-		if has {
+		if echo != "" {
+			low = strings.ReplaceAll(low, strings.ToLower(echo), "")
+		}
+		if strings.Contains(low, tentativeCanry) {
 			t.Errorf("%s leaks the tentative canary:\n%s", name, out)
 		}
 	case surfaceLabels:
-		if has && !strings.Contains(low, "tentative") {
-			t.Errorf("%s shows the canary without a tentative label:\n%s", name, out)
+		// Every canary occurrence needs "tentative" within a short window.
+		for from := 0; ; {
+			i := strings.Index(low[from:], tentativeCanry)
+			if i < 0 {
+				break
+			}
+			i += from
+			lo, hi := max(0, i-300), min(len(low), i+300)
+			if !strings.Contains(low[lo:hi], "tentative") {
+				t.Errorf("%s shows the canary without a tentative label beside it:\n%s", name, out)
+				break
+			}
+			from = i + len(tentativeCanry)
 		}
 	}
 }
 
 func argEcho(a map[string]any) string {
-	for _, k := range []string{"query", "name"} {
+	for _, k := range []string{"name"} {
 		if v, ok := a[k].(string); ok {
 			return v
 		}
@@ -81,9 +95,9 @@ func TestTentativeSurfaceContract(t *testing.T) {
 	}
 	args := map[string]map[string]any{
 		"read_memory":     {"id": id},
-		"search_memory":   {"query": tentativeCanry},
+		"search_memory":   {"query": "Zorbleton deploy pipeline"},
 		"list_memory":     {},
-		"context_memory":  {"query": tentativeCanry},
+		"context_memory":  {"query": "Zorbleton deploy pipeline"},
 		"think":           {"query": "Zorbleton deploy pipeline"},
 		"list_entities":   {},
 		"get_entity":      {"name": tentativeCanry + "tag"},
@@ -110,14 +124,14 @@ func TestTentativeSurfaceContract(t *testing.T) {
 	for _, mode := range []companion.ContextMode{companion.ModeThink, companion.ModeSearch, companion.ModeMeetingPrep} {
 		req := companion.NewContextRequest()
 		req.Mode = mode
-		req.Query = "Zorbleton deploy pipeline " + tentativeCanry + "tag"
+		req.Query = "Zorbleton deploy pipeline"
 		bundle, err := reader.Context(testCtx(t), req)
 		if err != nil {
 			t.Logf("companion %s errored (counts as no leak): %v", mode, err)
 			continue
 		}
 		b, _ := json.Marshal(bundle)
-		checkSurface(t, "companion "+string(mode), surfaceHides, string(b), req.Query)
+		checkSurface(t, "companion "+string(mode), surfaceHides, string(b), "")
 	}
 
 	// CLI read commands.
@@ -136,6 +150,87 @@ func TestTentativeSurfaceContract(t *testing.T) {
 		if err := Run(testCtx(t), c.args, &out, &out, strings.NewReader("")); err != nil {
 			t.Logf("cli %s errored (counts as no leak): %v", name, err)
 		}
-		checkSurface(t, "cli "+name, c.class, out.String(), c.args[len(c.args)-1])
+		echo := ""
+		if name == "entity" {
+			echo = c.args[len(c.args)-1]
+		}
+		checkSurface(t, "cli "+name, c.class, out.String(), echo)
+	}
+}
+
+// CLI `context --json` receipts name the memory without its body, so each one
+// carries the trust itself. A small budget can drop the labelled blob and keep
+// the receipts.
+func TestTentativeContextReceiptsCarryTrust(t *testing.T) {
+	useShippedWritePolicyDefault(t)
+	withTempHome(t)
+	run(t, "init")
+	id := tentativeMemoryID(t, tentativeServe(t, map[string]any{
+		"title": "Canary " + tentativeCanry, "text": "Zorbleton owns the deploy pipeline.", "type": "fact", "scope": "project:demo",
+	}))
+	run(t, "index", "rebuild")
+	for _, args := range [][]string{
+		{"context", "--json", "--budget", "200", "Zorbleton deploy pipeline"},
+		{"context", "--json", "--budget", "200"},
+	} {
+		out := run(t, args...)
+		var res struct {
+			Items []struct{ ID, Trust string } `json:"items"`
+		}
+		if err := json.Unmarshal([]byte(out), &res); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+		found := false
+		for _, it := range res.Items {
+			if it.ID == id {
+				found = true
+				if it.Trust != "tentative" {
+					t.Errorf("%v: receipt for %s has trust %q", args, id, it.Trust)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%v: no receipt for the tentative note:\n%s", args, out)
+		}
+	}
+}
+
+// Filtering must come before the limit: newer tentative notes may not push a
+// confirmed memory out of the default list.
+func TestTentativeDoesNotCrowdOutListMemory(t *testing.T) {
+	useShippedWritePolicyDefault(t)
+	withTempHome(t)
+	run(t, "init")
+	run(t, "write", "--scope", "project:demo", "--type", "fact", "--title", "Confirmed baseline", "--text", "Confirmed note.")
+	cfg := mustConfig(t)
+	rows, err := listMemories(cfg, "project:demo", 0)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("baseline rows = %v, %v", rows, err)
+	}
+	// Age the confirmed note so the drafts below are certainly newer.
+	path := mustFindPath(t, cfg, rows[0].ID)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aged := regexp.MustCompile(`(?m)^created_at: .*$`).ReplaceAllString(string(raw), "created_at: 2001-01-01T00:00:00Z")
+	if aged == string(raw) {
+		t.Fatalf("no created_at line to age:\n%s", raw)
+	}
+	if err := os.WriteFile(path, []byte(aged), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		tentativeMemoryID(t, tentativeServe(t, map[string]any{
+			"title": "Draft " + strings.Repeat("x", i+1), "text": "agent draft", "type": "fact", "scope": "project:demo",
+		}))
+	}
+	res, err := mcpToolHandlers["list_memory"](testCtx(t), cfg, map[string]any{"limit": float64(2)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(res)
+	if !strings.Contains(string(b), "Confirmed baseline") {
+		t.Fatalf("list_memory limit 2 lost the confirmed memory behind tentative ones:\n%s", b)
 	}
 }
