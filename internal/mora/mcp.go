@@ -75,6 +75,8 @@ func watchParent(stderr io.Writer) func() {
 			case <-t.C:
 				if getppid() != orig {
 					fmt.Fprintln(stderr, "mora mcp serve: client process exited; shutting down")
+					// Exiting mid-rebuild would leave a dead receipt; bounded like serveMCP's drain.
+					waitForAuthoredReconciles(5 * time.Minute)
 					exitFn(0)
 					return
 				}
