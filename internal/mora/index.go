@@ -525,7 +525,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	if err := progress.Update("graph", operationCounts{Items: count, Files: len(files)}); err != nil {
 		return count, err
 	}
-	if err := writeGraph(ctx, tx, cfg, parsed); err != nil {
+	if err := writeGraph(ctx, tx, cfg, withoutTentative(parsed)); err != nil {
 		return count, err
 	}
 
