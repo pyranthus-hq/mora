@@ -107,6 +107,12 @@ type mcpProposalsPayload struct {
 // approveDrainLimit bounds how long approve waits for the rebuild it started.
 var approveDrainLimit = 2 * time.Minute
 
+func drainReconcileOrWarn(stderr io.Writer) {
+	if !waitForAuthoredReconciles(approveDrainLimit) {
+		fmt.Fprintln(stderr, "warning: the memory is saved, but the index rebuild is unfinished; run `mora index rebuild`")
+	}
+}
+
 func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
@@ -178,11 +184,7 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 		}
 		// approve starts background rebuilds and then exits, which would kill them and
 		// leave a dead receipt. Drain once after the last id, also on failure returns.
-		defer func() {
-			if !waitForAuthoredReconciles(approveDrainLimit) {
-				fmt.Fprintln(stderr, "warning: the memory is saved, but the index rebuild is unfinished; run `mora index rebuild`")
-			}
-		}()
+		defer drainReconcileOrWarn(stderr)
 		rows := make([]mcpProposalRow, 0, len(ids))
 		var failure error
 		for _, id := range ids {
@@ -216,6 +218,34 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 		}
 		return failure
 	}
+	if len(args) >= 2 && args[0] == "recover" {
+		retry, closeIt := false, false
+		for _, a := range args[2:] {
+			switch a {
+			case "--retry":
+				retry = true
+			case "--close":
+				closeIt = true
+			default:
+				return fmt.Errorf("usage: mora mcp proposals recover ID [--retry|--close]; unknown argument %q", a)
+			}
+		}
+		if err := refuseDashLedPositional("mcp proposals recover", "proposal id", args[1]); err != nil {
+			return err
+		}
+		defer drainReconcileOrWarn(stderr)
+		text := stdout
+		if jsonOut {
+			text = io.Discard
+		}
+		status, memoryID, err := recoverMCPWriteProposal(cfg, args[1], retry, closeIt, text)
+		if err != nil || !jsonOut {
+			return err
+		}
+		return emitReceipt(stdout, "mora.mcp.proposals", 1, mcpProposalsPayload{
+			Proposals: []mcpProposalRow{{ID: args[1], Status: status, MemoryID: memoryID}}, Decision: "recover", MemoryID: memoryID,
+		})
+	}
 	if len(args) == 2 && args[0] == "reject" {
 		if err := refuseDashLedPositional("mcp proposals reject", "proposal id", args[1]); err != nil {
 			return err
@@ -232,5 +262,5 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 		fmt.Fprintf(stdout, "Rejected %s.\n", args[1])
 		return nil
 	}
-	return errors.New("usage: mora mcp proposals <list|show ID|approve ID [ID...]|reject ID>")
+	return errors.New("usage: mora mcp proposals <list|show ID|approve ID [ID...]|reject ID|recover ID [--retry|--close]>")
 }
