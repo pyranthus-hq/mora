@@ -65,6 +65,9 @@ type PendingOp struct {
 // rebuild already retired: a rename of a missing file fails instead.
 const ftsCommittedSuffix = ".fts.json"
 
+// readPendingFile is a seam so a test can land a rename inside ListPending.
+var readPendingFile = os.ReadFile
+
 func PendingDir(cfg config.Config) string { return filepath.Join(cfg.StateDir, "pending") }
 
 func PendingPath(cfg config.Config, opID string) string {
@@ -126,7 +129,13 @@ func ListPending(cfg config.Config) ([]PendingOp, error) {
 		if ftsCommitted {
 			id = strings.TrimSuffix(e.Name(), ftsCommittedSuffix)
 		}
-		b, rerr := os.ReadFile(filepath.Join(PendingDir(cfg), e.Name()))
+		b, rerr := readPendingFile(filepath.Join(PendingDir(cfg), e.Name()))
+		if errors.Is(rerr, os.ErrNotExist) && !ftsCommitted {
+			// Renamed to its second form after ReadDir. Skipping it here would drop
+			// a delete's suppression. The rename only ever runs this way.
+			ftsCommitted = true
+			b, rerr = readPendingFile(filepath.Join(PendingDir(cfg), id+ftsCommittedSuffix))
+		}
 		if errors.Is(rerr, os.ErrNotExist) {
 			continue // a concurrent committed writer retired it after ReadDir
 		}
@@ -239,8 +248,8 @@ func deleteCovered(op PendingOp, c Coverage) (clear, abandoned bool) {
 	if !parsed {
 		return false, false
 	}
-	if op.Unlinked && got != op.ContentSHA256 {
-		return true, false // a connector re-ingested it after the unlink
+	if op.Unlinked {
+		return true, false // the delete finished, so this file came back after it
 	}
 	if !dead {
 		return false, false

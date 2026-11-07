@@ -245,6 +245,40 @@ func TestLiveDeleteKeepsMarkerUntilUnlinked(t *testing.T) {
 	}
 }
 
+// The unlink is recorded, then identical bytes come back. A live owner must not
+// hide the restored memory until that process exits.
+func TestRestoredFileAfterUnlinkRetires(t *testing.T) {
+	cfg := gate2Vault(t)
+	ctx := testCtx(t)
+	m := gate2Write(t, cfg, coreBIdxmem("", "global", "insight", "Restored", "restoredbody"))
+	raw, err := os.ReadFile(m.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := markIndexDirty(ctx, cfg, deleteOp(m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(m.Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := markFTSCommitted(cfg, op); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(m.Path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if hasOp(t, cfg, op.OpID) {
+		t.Fatal("a restored file stayed suppressed behind a live owner's marker")
+	}
+	if res := gate2Search(t, cfg, "restoredbody"); len(res) != 1 {
+		t.Fatalf("the restored memory is not searchable: %+v", res)
+	}
+}
+
 // Dead owner, file never removed, committed parse and disk both equal the marker:
 // the delete never happened, so the marker retires and the memory returns.
 func TestAbandonedDeleteRetires(t *testing.T) {

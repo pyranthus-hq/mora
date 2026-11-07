@@ -104,7 +104,7 @@ func TestShouldClearMatrix(t *testing.T) {
 		{"delete no owner", PendingOp{Kind: KindDelete, Path: "/missing", ContentSHA256: h}, false},
 		{"delete unlinked gone from listing", PendingOp{Kind: KindDelete, Path: "/missing", ContentSHA256: h, OwnerPID: alive, Unlinked: true}, true},
 		{"delete unlinked parsed hash differs", PendingOp{Kind: KindDelete, Path: "/parsed", ContentSHA256: other, OwnerPID: alive, Unlinked: true}, true},
-		{"delete unlinked parsed hash equal", PendingOp{Kind: KindDelete, Path: "/parsed", ContentSHA256: h, OwnerPID: alive, Unlinked: true}, false},
+		{"delete unlinked restored identical bytes", PendingOp{Kind: KindDelete, Path: "/parsed", ContentSHA256: h, OwnerPID: alive, Unlinked: true}, true},
 		{"delete unlinked listed not parsed", PendingOp{Kind: KindDelete, Path: "/present", ContentSHA256: h, OwnerPID: alive, Unlinked: true}, false},
 		{"delete dead gone from listing", PendingOp{Kind: KindDelete, Path: "/missing", ContentSHA256: h, OwnerPID: dead}, true},
 		{"delete dead listed not parsed", PendingOp{Kind: KindDelete, Path: "/present", ContentSHA256: h, OwnerPID: dead}, false},
@@ -147,13 +147,64 @@ func TestAbandonedDeleteIsReported(t *testing.T) {
 	ops := []PendingOp{
 		{OpID: "abandoned", Kind: KindDelete, Path: path, ContentSHA256: h, OwnerPID: 9},
 		{OpID: "gone", Kind: KindDelete, Path: "/missing", ContentSHA256: h, OwnerPID: 9},
+		{OpID: "restored", Kind: KindDelete, Path: path, ContentSHA256: h, OwnerPID: 9, Unlinked: true},
 	}
 	var removed []string
 	if err := ClearCovered(cfg, ops, c, func(_ config.Config, id string) error { removed = append(removed, id); return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if len(removed) != 2 || len(reported) != 1 || reported[0] != "abandoned" {
+	if len(removed) != 3 || len(reported) != 1 || reported[0] != "abandoned" {
 		t.Fatalf("removed=%v reported=%v", removed, reported)
+	}
+}
+
+// The unlink rename can land between ReadDir and ReadFile. Skipping the marker
+// there drops suppression while SQLite still holds the deleted row.
+func TestListPendingFollowsRenameDuringRead(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	if err := os.MkdirAll(PendingDir(cfg), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(PendingPath(cfg, "d"), []byte(`{"op_id":"d","kind":"delete","path":"/a","memory_id":"m"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	renamed := false
+	readPendingFile = func(path string) ([]byte, error) {
+		if !renamed {
+			renamed = true
+			if err := MarkFTSCommitted(cfg, "d", os.Rename); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return os.ReadFile(path)
+	}
+	t.Cleanup(func() { readPendingFile = os.ReadFile })
+	if !PendingDeleteIDs(cfg)["m"] {
+		t.Fatal("a marker renamed during the read stopped suppressing its memory")
+	}
+	readPendingFile = os.ReadFile
+	ops, err := ListPending(cfg)
+	if err != nil || len(ops) != 1 || !ops[0].Unlinked {
+		t.Fatalf("ops=%+v err=%v", ops, err)
+	}
+}
+
+// A marker retired between ReadDir and ReadFile is gone in both forms: skip it.
+func TestListPendingSkipsRetiredDuringRead(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	if err := os.MkdirAll(PendingDir(cfg), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(PendingPath(cfg, "d"), []byte(`{"op_id":"d","kind":"delete"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	readPendingFile = func(path string) ([]byte, error) {
+		_ = os.Remove(PendingPath(cfg, "d"))
+		return os.ReadFile(path)
+	}
+	t.Cleanup(func() { readPendingFile = os.ReadFile })
+	if ops, err := ListPending(cfg); err != nil || len(ops) != 0 {
+		t.Fatalf("ops=%+v err=%v", ops, err)
 	}
 }
 

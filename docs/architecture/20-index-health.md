@@ -77,9 +77,9 @@ A write marker stores `content_sha256`, the hash of the exact bytes it publishes
 | `delete` | unlink not recorded and owner alive | keep | A live deleter can still remove what this rebuild indexed. |
 | `delete` | path gone from the listing | clear | The rebuild cannot have indexed it. |
 | `delete` | listed but not parsed | keep | The file state is unproven. |
-| `delete` | unlink recorded, parsed hash differs | clear | A connector re-ingested the memory after the unlink, so B4 must not hide a live memory. |
-| `delete` | owner dead, parsed hash differs, disk equals parsed | clear | Same, once the disk shows the owner did not remove those bytes. |
-| `delete` | owner dead, parsed, disk and marker hashes all equal | clear and warn | The delete was abandoned, so the memory comes back. Owner death is read before the disk. |
+| `delete` | unlink recorded, parsed | clear | The delete finished, so this file came back after it, whatever its bytes. B4 must not hide a live memory. |
+| `delete` | unlink not recorded, owner dead, parsed hash differs, disk equals parsed | clear | Same, once the disk shows the owner did not remove those bytes. |
+| `delete` | unlink not recorded, owner dead, parsed, disk and marker hashes all equal | clear and warn | The delete was abandoned, so the memory comes back. Owner death is read before the disk. |
 | `delete` | anything else | keep | |
 | `rebuild` | `marked_at ≤ listing_started_at` | clear | Any rebuild that listed after the op was marked covers it — **not** only its own `op_id`, or a SIGKILLed rebuild's op is unrecoverable forever. |
 | corrupt | | clear | A committed rebuild may reap it. |
