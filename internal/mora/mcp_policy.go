@@ -234,7 +234,17 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 			return err
 		}
 		defer drainReconcileOrWarn(stderr)
-		return recoverMCPWriteProposal(cfg, args[1], retry, closeIt, stdout)
+		text := stdout
+		if jsonOut {
+			text = io.Discard
+		}
+		status, memoryID, err := recoverMCPWriteProposal(cfg, args[1], retry, closeIt, text)
+		if err != nil || !jsonOut {
+			return err
+		}
+		return emitReceipt(stdout, "mora.mcp.proposals", 1, mcpProposalsPayload{
+			Proposals: []mcpProposalRow{{ID: args[1], Status: status, MemoryID: memoryID}}, Decision: "recover", MemoryID: memoryID,
+		})
 	}
 	if len(args) == 2 && args[0] == "reject" {
 		if err := refuseDashLedPositional("mcp proposals reject", "proposal id", args[1]); err != nil {

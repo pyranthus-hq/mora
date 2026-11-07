@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -26,8 +27,9 @@ func TestProposalRecoverMatrix(t *testing.T) {
 		name     string
 		action   string // decision action; "" means no decision
 		status   string
-		noFile   bool   // proposal file absent
-		vault    string // "", "match", "differs"
+		noFile   bool           // proposal file absent
+		vault    string         // "", "match", "differs", "differs-source", "differs-meta", "corrupt"
+		pargs    map[string]any // extra proposal arguments
 		args     []string
 		want     want
 		reconcil bool
@@ -38,6 +40,11 @@ func TestProposalRecoverMatrix(t *testing.T) {
 		{name: "attempted reject", action: "reject", status: "attempted", want: want{status: "rejected"}},
 		{name: "attempted approve, vault matches", action: "approve", status: "attempted", vault: "match", want: want{status: "approved", vaultFile: true}, reconcil: true},
 		{name: "attempted approve, vault differs", action: "approve", status: "attempted", vault: "differs", want: want{err: "collision", proposal: true, status: "attempted", vaultFile: true}},
+		{name: "match, decision type", action: "approve", status: "attempted", vault: "match", pargs: map[string]any{"type": "decision", "durability": "durable", "flip_conditions": "a;b"}, want: want{status: "approved", vaultFile: true}, reconcil: true},
+		{name: "match, correction meta", action: "approve", status: "attempted", vault: "match", pargs: map[string]any{"type": "correction", "target": "mem_x", "disposition": "keep"}, want: want{status: "approved", vaultFile: true}, reconcil: true},
+		{name: "vault differs in source", action: "approve", status: "attempted", vault: "differs-source", want: want{err: "collision", proposal: true, status: "attempted", vaultFile: true}},
+		{name: "vault differs in meta", action: "approve", status: "attempted", vault: "differs-meta", pargs: map[string]any{"type": "correction", "target": "mem_x", "disposition": "keep"}, want: want{err: "collision", proposal: true, status: "attempted", vaultFile: true}},
+		{name: "corrupt vault file blocks retry", action: "approve", status: "attempted", vault: "corrupt", args: []string{"--retry"}, want: want{err: "cannot tell", proposal: true, status: "attempted", vaultFile: false}},
 		{name: "attempted approve, no vault file", action: "approve", status: "attempted", want: want{err: "choose --retry", proposal: true, status: "attempted"}},
 		{name: "attempted approve, no vault file, retry", action: "approve", status: "attempted", args: []string{"--retry"}, want: want{proposal: true}},
 		{name: "attempted approve, no vault file, close", action: "approve", status: "attempted", args: []string{"--close"}, want: want{status: "rejected"}},
@@ -52,15 +59,36 @@ func TestProposalRecoverMatrix(t *testing.T) {
 			id := "p_recover"
 			p := mcpWriteProposal{ID: id, ProposedAt: time.Now().Format(time.RFC3339),
 				Arguments: map[string]any{"scope": "project:t", "type": "note", "title": "Recover me", "text": "original body"}}
+			for k, v := range r.pargs {
+				p.Arguments[k] = v
+			}
 			if _, err := mcppkg.SaveProposal(cfg, p); err != nil {
 				t.Fatal(err)
 			}
 			if r.vault != "" {
-				text := "original body"
-				if r.vault == "differs" {
-					text = "someone else's body"
+				m, err := mcpMemoryFromArgs(p.Arguments, time.Now())
+				if err != nil {
+					t.Fatal(err)
 				}
-				if _, _, err := createMemory(testCtx(t), cfg, Memory{Scope: "project:t", Type: "note", Title: "Recover me", Text: text}, withExplicitMemoryID(memID)); err != nil {
+				switch r.vault {
+				case "differs":
+					m.Text = "someone else's body"
+				case "differs-source":
+					m.Source = "other"
+				case "differs-meta":
+					m.Meta = map[string]any{"target": "mem_y", "disposition": "retract"}
+				}
+				if r.vault == "corrupt" {
+					m.ID = memID
+					path, err := memoryPath(cfg, m)
+					if err != nil {
+						t.Fatal(err)
+					}
+					_ = os.MkdirAll(filepath.Dir(path), 0o755)
+					if err := os.WriteFile(path, []byte("---\nnot: [valid\n"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				} else if _, _, err := createMemory(testCtx(t), cfg, m, withExplicitMemoryID(memID)); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -121,4 +149,27 @@ func mustProposalPath(t *testing.T, cfg Config, id string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestProposalRecoverJSONReceipt(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	p := mcpWriteProposal{ID: "p_recoverjson", ProposedAt: time.Now().Format(time.RFC3339),
+		Arguments: map[string]any{"scope": "project:t", "title": "T", "text": "b"}}
+	if _, err := mcppkg.SaveProposal(cfg, p); err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal(p.Arguments)
+	d := &mcpProposalDecision{Version: 1, ProposalID: p.ID, Action: "reject", Status: "attempted",
+		ArgumentsSHA256: fmt.Sprintf("%x", sha256.Sum256(args)), AttemptedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := writeMCPProposalDecision(cfg, d); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if err := cmdMCPProposals(testCtx(t), []string{"recover", p.ID, "--json"}, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	var rec mcpProposalsPayload
+	if err := json.Unmarshal(out.Bytes(), &rec); err != nil || rec.Decision != "recover" || len(rec.Proposals) != 1 || rec.Proposals[0].Status != "rejected" {
+		t.Fatalf("receipt = %s (%v)", out.String(), err)
+	}
 }
