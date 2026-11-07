@@ -309,6 +309,7 @@ USAGE:
   mora mcp proposals list          # list writes staged by propose-mode MCP clients
   mora mcp proposals show <id>     # inspect full staged content before approving
   mora mcp proposals approve <id>...  # publish staged writes (one rebuild per call)
+  mora mcp proposals recover <id>  # finish a decision a crash left half done (--retry | --close if asked)
   mora serve http                  # loopback HTTP for sandboxed AI browsers (Aside); token in ~/.config/mora/http.json
   mora serve http install          # run it as an auto-restarting background service (launchd/systemd); also: uninstall|status
   mora companion pair              # pair a phone: prints a QR-able payload with a one-time code

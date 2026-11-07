@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -177,4 +178,118 @@ func decideMCPWriteProposal(ctx context.Context, cfg Config, id, action string) 
 		return nil
 	})
 	return memoryID, err
+}
+
+// recoverMCPWriteProposal finishes a decision that a crash left half done. It runs
+// under the same guard as approve and reject, prints what it found and what it
+// did, and never publishes a memory twice. The one case it cannot decide alone is
+// an attempted approval with no vault file: the audit log cannot prove the memory
+// never published, so the owner picks --retry or --close.
+func recoverMCPWriteProposal(cfg Config, id string, retry, closeIt bool, stdout io.Writer) error {
+	path, err := mcppkg.ProposalPath(cfg, id)
+	if err != nil {
+		return err
+	}
+	if retry && closeIt {
+		return errors.New("choose --retry or --close, not both")
+	}
+	return leasefile.WithGuard(mcpProposalDecisionPath(cfg, id), func() error {
+		d, err := readMCPProposalDecision(cfg, id)
+		if err != nil {
+			return err
+		}
+		if d == nil {
+			return fmt.Errorf("nothing to recover: proposal %s has no decision record", id)
+		}
+		_, statErr := os.Lstat(path)
+		hasFile := statErr == nil
+		finish := func(status string) error {
+			if hasFile {
+				if err := removeDecidedMCPProposal(path); err != nil {
+					return fmt.Errorf("proposal %s is %s, but pending file cleanup failed: %w", id, status, err)
+				}
+			}
+			fmt.Fprintf(stdout, "Recovered %s: decision is %s; pending file removed.\n", id, status)
+			return nil
+		}
+		unsafeFlag := func() error {
+			if retry || closeIt {
+				return errors.New("--retry and --close only apply to an attempted approval with no vault file")
+			}
+			return nil
+		}
+		noVault := d.Action == "approve" && d.Status == "attempted"
+		var found Memory
+		var findErr error
+		if noVault {
+			found, findErr = findMemoryRaw(cfg, d.MemoryID)
+			noVault = findErr != nil
+		}
+		if !noVault {
+			if err := unsafeFlag(); err != nil {
+				return err
+			}
+		}
+		switch {
+		case d.Status != "attempted":
+			fmt.Fprintf(stdout, "Found: %s decision is %s.\n", d.Action, d.Status)
+			return finish(d.Status)
+		case d.Action == "reject":
+			fmt.Fprintln(stdout, "Found: attempted reject, nothing published.")
+			d.Status = "rejected"
+			if err := writeMCPProposalDecision(cfg, d); err != nil {
+				return err
+			}
+			return finish("rejected")
+		case !noVault:
+			fmt.Fprintf(stdout, "Found: attempted approve; memory %s is in the vault.\n", d.MemoryID)
+			if !hasFile {
+				return fmt.Errorf("cannot check memory %s against the proposal: the pending file is gone; inspect the memory by hand", d.MemoryID)
+			}
+			p, _, err := readMCPWriteProposal(cfg, id)
+			if err != nil {
+				return err
+			}
+			args, err := json.Marshal(p.Arguments)
+			if err != nil {
+				return err
+			}
+			want, err := mcpMemoryFromArgs(p.Arguments, mcpWriteClock())
+			if err != nil {
+				return err
+			}
+			if fmt.Sprintf("%x", sha256.Sum256(args)) != d.ArgumentsSHA256 ||
+				found.Scope != want.Scope || found.Type != want.Type || found.Title != want.Title ||
+				strings.TrimSpace(found.Text) != strings.TrimSpace(want.Text) {
+				return fmt.Errorf("collision: memory %s in the vault differs from proposal %s; refusing to mark it approved", d.MemoryID, id)
+			}
+			d.Status = "approved"
+			if err := writeMCPProposalDecision(cfg, d); err != nil {
+				return err
+			}
+			scheduleAuthoredReconciliation(cfg)
+			return finish("approved")
+		}
+		// Attempted approve, no vault file.
+		hint := "the audit log has no write line for it"
+		if logged, lerr := agentWriteLogged(cfg, d.MemoryID); lerr == nil && logged {
+			hint = "the audit log shows it was published and later removed"
+		}
+		fmt.Fprintf(stdout, "Found: attempted approve; memory %s is not in the vault (%s). A missing log line proves nothing.\n", d.MemoryID, hint)
+		switch {
+		case retry:
+			if err := os.Remove(mcpProposalDecisionPath(cfg, id)); err != nil {
+				return err
+			}
+			fmt.Fprintf(stdout, "Recovered %s: decision file removed; the proposal is pending again.\n", id)
+			return nil
+		case closeIt:
+			d.Action, d.Status, d.MemoryID = "reject", "rejected", ""
+			if err := writeMCPProposalDecision(cfg, d); err != nil {
+				return err
+			}
+			return finish("rejected")
+		}
+		return errors.New("choose --retry (approve again later) or --close (keep the memory absent)")
+	})
 }
