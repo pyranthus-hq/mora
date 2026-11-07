@@ -20,7 +20,7 @@ import (
 	"github.com/pyranthus-hq/mora/internal/rules"
 )
 
-const rulesUsage = "usage: mora rules add|test|approve|off|list|compile"
+const rulesUsage = "usage: mora rules add|test|approve|off|list|compile|grant|verify|import"
 
 // rulesRefusal is printed when approve or off runs where an agent could have
 // typed it. Only a person at their own terminal may change what warns.
@@ -60,6 +60,12 @@ func cmdRules(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		return rulesList(ctx, args[1:], stdout)
 	case "compile":
 		return rulesCompile(ctx, args[1:], stdout)
+	case "grant":
+		return rulesGrant(ctx, args[1:], stdout, stdin)
+	case "verify":
+		return rulesVerify(ctx, args[1:], stdout)
+	case "import":
+		return rulesImport(ctx, args[1:], stdout, stdin)
 	default:
 		return fmt.Errorf("unknown rules command %q; %s", args[0], rulesUsage)
 	}

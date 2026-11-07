@@ -796,6 +796,56 @@ This check stops an agent from turning on a rule by accident or in passing.
 It does not stop a determined process that runs as you: anything that can
 write to `~/.local/state/mora/rules` can change what warns.
 
+#### Sign a rule for another machine
+
+A grant is a signed record that moves one rule from you to a wider scope, such
+as a devbox, a team or a software factory. It says who approved the rule, with
+which key, from which machine, and when it expires. Mora signs with
+`ssh-keygen`, so OpenSSH 8.2 or later must be installed.
+
+```bash
+mora rules grant no-sudo --to factory:aeth-forge --as you@example.com --key ~/.ssh/id_ed25519
+```
+
+The rule must be active on this machine, and this command has the same terminal
+check as `rules approve`. It shows the rule and asks you to type its id. The
+grant lands in `grants/` in your vault as a `.json` file and a `.sig` file.
+It expires after 30 days. `--days` sets another length, up to 365.
+
+The verifier needs a file that names the keys it trusts:
+
+```text
+you@example.com namespaces="mora-rule-grant" ssh-ed25519 AAAA...
+```
+
+Copy both grant files to the other machine, then:
+
+```bash
+mora rules verify no-sudo-1a2b3c4d.json --signers ./allowed_signers --scope factory:aeth-forge
+mora rules import no-sudo-1a2b3c4d.json --signers ./allowed_signers --scope factory:aeth-forge
+```
+
+The default signers file is `/etc/mora/allowed_signers`. When root owns that
+file and every folder above it, and neither group nor others can write to them,
+`rules import` needs no terminal. Otherwise it has the same terminal check as
+`rules approve`, because an agent running as you could add its own key to the
+file. On Windows, `rules import` always needs a terminal.
+
+An imported rule ends when its grant expires. `rules list` shows `expired`, and
+the hook stops warning at that moment. An import refuses a grant it has already
+used, and any grant older than the newest one it took for that rule, so an old
+grant cannot turn a rule back on after `rules off`.
+
+What a grant proves:
+
+- The signature proves that someone with the key signed these exact bytes.
+- The verifier's signers file decides whose key that is.
+- A hardware key or a key behind Touch ID proves that a person was present.
+  A touch does not prove they read the rule, so read it on screen first. Mora
+  cannot tell which kind of key signed.
+- `machine` and `--agent` are what the signing tool reported. They are not
+  proven.
+
 Modes:
 
 - `warn` sends the rule's message to the agent.

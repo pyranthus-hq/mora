@@ -139,6 +139,22 @@
     {
       "json_contract": "exempt",
       "kind": "subcommand",
+      "path": "rules grant",
+      "payload": "",
+      "platform": "all",
+      "reason": "writes a signed grant file and prints its paths; the file is the machine-readable result"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "rules import",
+      "payload": "",
+      "platform": "all",
+      "reason": "state change with a text confirmation, as rules approve"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
       "path": "rules off",
       "payload": "",
       "platform": "all",
@@ -151,6 +167,14 @@
       "payload": "",
       "platform": "all",
       "reason": "prints hit or miss as text for one command and never logs"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "rules verify",
+      "payload": "",
+      "platform": "all",
+      "reason": "text check with an exit code; a factory reads the grant file and calls ssh-keygen itself"
     },
     {
       "json_contract": "exempt",

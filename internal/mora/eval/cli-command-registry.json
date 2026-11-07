@@ -955,6 +955,27 @@
       "reason": "state rebuild with a text confirmation; it can only drop rules, never add one"
     },
     {
+      "path": "rules grant",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "writes a signed grant file and prints its paths; the file is the machine-readable result"
+    },
+    {
+      "path": "rules verify",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "text check with an exit code; a factory reads the grant file and calls ssh-keygen itself"
+    },
+    {
+      "path": "rules import",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "state change with a text confirmation, as rules approve"
+    },
+    {
       "path": "loop begin",
       "kind": "subcommand",
       "platform": "all",

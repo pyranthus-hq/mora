@@ -18,6 +18,7 @@ const (
 	StateInactive = "inactive"
 	StateChanged  = "changed since approval"
 	StateMissing  = "missing file"
+	StateExpired  = "expired"
 )
 
 // Approval is one approvals.jsonl row. The file lives in the state dir, so it
@@ -31,6 +32,18 @@ type Approval struct {
 	Mode     string `json:"mode"`
 	Holdout  bool   `json:"holdout"`
 	Via      string `json:"via"`
+	Approver string `json:"approver,omitempty"` // the signer, for an approval that came from a grant
+	Expires  string `json:"expires,omitempty"`  // RFC 3339; a grant's approval ends with the grant
+}
+
+// expiredAt reports whether an RFC 3339 expiry has passed. An empty value never
+// expires, and a value that does not parse counts as expired.
+func expiredAt(expires string, now time.Time) bool {
+	if expires == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, expires)
+	return err != nil || !now.Before(t)
 }
 
 // ValidateMode accepts off, shadow and warn. block is refused for now.
@@ -113,6 +126,9 @@ func Check(vaultDir string, a Approval) (Rule, string) {
 	if Hash(r) != a.RuleHash {
 		return r, StateChanged
 	}
+	if expiredAt(a.Expires, time.Now()) {
+		return r, StateExpired
+	}
 	return r, StateActive
 }
 
@@ -137,7 +153,7 @@ func Compile(vaultDir, stateDir string) (ActiveSet, error) {
 			continue
 		}
 		set.Rules = append(set.Rules, ActiveRule{
-			ID: r.ID, Hash: a.RuleHash, Mode: a.Mode, Holdout: a.Holdout,
+			ID: r.ID, Hash: a.RuleHash, Mode: a.Mode, Holdout: a.Holdout, Expires: a.Expires,
 			Tool: r.Spec.Tool, Match: r.Spec.Match, Exclude: r.Spec.Exclude,
 			Unless: r.Spec.Unless, Context: r.Spec.Context, Message: r.Message,
 		})
