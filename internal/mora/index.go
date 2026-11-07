@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -319,6 +320,16 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	if err := progress.Update("listing", operationCounts{}); err != nil {
 		return 0, err
 	}
+	// Snapshot the markers and journals first: only what exists before listing can
+	// be covered by it, and cleanup below may retire nothing else.
+	pendingSnapshot, err := listPendingOps(cfg)
+	if err != nil {
+		return 0, err
+	}
+	journalSnapshot, err := ingestpkg.SnapshotJournals(cfg, ingestRecoverySeams())
+	if err != nil {
+		return 0, err
+	}
 	listingStartedAt := indexClock()
 	files, err := listRebuildFiles(cfg)
 	if err != nil {
@@ -462,6 +473,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	// the parse uses (parseMemoryBytes) — zero extra I/O. An unreadable file is
 	// skipped here and counts toward `unparseable` (listed − parsed) below.
 	var manifestLines []string
+	parsedSHA256 := make(map[string]string, len(files))
 	if err := progress.Update("parsing", operationCounts{Files: len(files)}); err != nil {
 		return 0, err
 	}
@@ -470,12 +482,14 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		if rerr != nil {
 			continue
 		}
-		manifestLines = append(manifestLines, manifestLine(cfg, path, sha256.Sum256(b)))
+		sum := sha256.Sum256(b)
+		manifestLines = append(manifestLines, manifestLine(cfg, path, sum))
 		m, err := parseMemoryBytes(path, b)
 		if err != nil {
 			continue
 		}
 		parsedCount++
+		parsedSHA256[cleanVaultPath(path)] = hex.EncodeToString(sum[:])
 		// Teach keeps superseded/retracted authored Markdown as auditable evidence
 		// while excluding it from the current index, graph, vectors, and
 		// commitments. Undo changes only the ledger; the next rebuild restores it.
@@ -519,13 +533,13 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	}
 
 	// Materialize the entity graph from the just-indexed memories, in the SAME
-	// transaction — a graph failure rolls back the whole index too (atomic). cfg
-	// carries the vault dir so the graph can apply the governance ledger's confirmed
-	// cross-channel merges (a corrupt ledger fails the rebuild loud, never silently).
+	// transaction — a graph failure rolls back the whole index too (atomic). The
+	// graph applies the confirmed cross-channel merges from the same governance
+	// snapshot the parse loop used, so one rebuild cannot see two ledgers.
 	if err := progress.Update("graph", operationCounts{Items: count, Files: len(files)}); err != nil {
 		return count, err
 	}
-	if err := writeGraph(ctx, tx, cfg, withoutTentative(parsed)); err != nil {
+	if err := writeGraph(ctx, tx, governance, withoutTentative(parsed)); err != nil {
 		return count, err
 	}
 
@@ -550,7 +564,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	}
 	stampNow := indexClock().UTC()
 	commitmentGeneration := commitmentGenerationOf(manifestLines, cfg, stampNow)
-	if err := writeCommitments(ctx, tx, commitmentGeneration, parsed, cfg, stampNow); err != nil {
+	if err := writeCommitments(ctx, tx, commitmentGeneration, parsed, cfg, stampNow, governance); err != nil {
 		return count, err
 	}
 
@@ -635,6 +649,9 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		return count, err
 	}
 	committed = true
+	if testHookRebuildCommitted != nil {
+		testHookRebuildCommitted(cfg)
+	}
 	// A full rebuild reinserts the entire index into the WAL in one transaction, so
 	// the -wal file is now ~db-sized. Fold it back into index.db and reset the -wal
 	// to keep it from staying huge between the periodic auto-checkpoints. Best-effort:
@@ -650,10 +667,11 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	if err := progress.Update("retiring_markers", operationCounts{Items: count, Files: len(files)}); err != nil {
 		return count, err
 	}
-	if err := clearCoveredPendingOps(cfg, listingStartedAt, files, memoryPaths(parsed)); err != nil {
+	coverage := indexstore.Coverage{ListingStartedAt: listingStartedAt, Files: cleanPathSet(files), Parsed: cleanPathSet(memoryPaths(parsed)), ParsedSHA256: parsedSHA256, OwnerAlive: processAlive, Abandoned: warnAbandonedDelete}
+	if err := clearCoveredPendingOps(cfg, pendingSnapshot, coverage); err != nil {
 		return count, fmt.Errorf("index committed but pending-marker retirement failed: %w", err)
 	}
-	recovery, recoveryErr := ingestpkg.RecoverJournals(cfg, files, ingestRecoverySeams())
+	recovery, recoveryErr := ingestpkg.RecoverJournals(cfg, files, journalSnapshot, ingestRecoverySeams())
 	var completionErr error
 	for _, runID := range recovery.RetiredRunIDs {
 		if err := completeOperationAfterCoverage(cfg, runID, cfg.OperationClock()); err != nil {
@@ -694,11 +712,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 // inserts the entity + edge rows on the given transaction. Empty bi-temporal
 // timestamps persist as SQL NULL. Statements are prepared once and reused — a
 // real vault is ~10^5 edges, so per-row SQL re-parsing dominated the rebuild.
-func writeGraph(ctx context.Context, tx *sql.Tx, cfg Config, mems []Memory) error {
-	g, err := loadGovernance(cfg)
-	if err != nil {
-		return err
-	}
+func writeGraph(ctx context.Context, tx *sql.Tx, g governance, mems []Memory) error {
 	confirmed, _ := g.mergeDecisions()
 	merges := make([]graphpkg.ConfirmedMerge, len(confirmed))
 	for i, m := range confirmed {
