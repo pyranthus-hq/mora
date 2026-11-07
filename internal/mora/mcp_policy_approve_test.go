@@ -3,6 +3,7 @@ package mora
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -59,7 +60,7 @@ func blockedApprove(t *testing.T, ids func(Config) []string, limit time.Duration
 	return
 }
 
-func TestApproveDrainsReconcile(t *testing.T) {
+func TestApproveBatchDrainsOnce(t *testing.T) {
 	done, release, _, cfg := blockedApprove(t, func(cfg Config) []string { return saveApproveProposals(t, cfg, 2) }, time.Minute)
 	select {
 	case err := <-done:
@@ -95,5 +96,31 @@ func TestApproveWarnsOnDrainTimeout(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "rebuild is unfinished") {
 		t.Fatalf("no timeout warning: %q", stderr.String())
+	}
+}
+
+func TestApproveBatchFailureKeepsReceiptAndRetries(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	ids := saveApproveProposals(t, cfg, 2) // p_approve0, p_approve1
+	var out, errOut bytes.Buffer
+	err := cmdMCPProposals(testCtx(t), []string{"approve", "--json", ids[0], "p_missing", ids[1]}, &out, &errOut)
+	if err == nil {
+		t.Fatal("batch with a missing id succeeded")
+	}
+	var rec mcpProposalsPayload
+	if jerr := json.Unmarshal(out.Bytes(), &rec); jerr != nil {
+		t.Fatalf("no JSON receipt for a failed batch: %v\n%s", jerr, out.String())
+	}
+	rows := rec.Proposals
+	if len(rows) != 2 || rows[0].ID != ids[0] || rows[0].Status != "approved" || rows[0].MemoryID == "" || rows[1].ID != "p_missing" || rows[1].Status != "failed" {
+		t.Fatalf("rows = %+v", rows)
+	}
+	// Retry: the approved id is done, the rest continue.
+	out.Reset()
+	if err := cmdMCPProposals(testCtx(t), []string{"approve", ids[0], ids[1]}, &out, &errOut); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if !strings.Contains(out.String(), "Already approved "+ids[0]) || !strings.Contains(out.String(), "Approved "+ids[1]) {
+		t.Fatalf("retry output: %s", out.String())
 	}
 }

@@ -184,24 +184,37 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 			}
 		}()
 		rows := make([]mcpProposalRow, 0, len(ids))
+		var failure error
 		for _, id := range ids {
+			// A retried batch treats an id that already finished as done.
+			if d, derr := readMCPProposalDecision(cfg, id); derr == nil && d != nil && d.Action == "approve" && d.Status == "approved" {
+				rows = append(rows, mcpProposalRow{ID: id, Status: "approved", MemoryID: d.MemoryID})
+				if !jsonOut {
+					fmt.Fprintf(stdout, "Already approved %s as memory %s.\n", id, d.MemoryID)
+				}
+				continue
+			}
 			memoryID, err := decideMCPWriteProposal(ctx, cfg, id, "approve")
 			if err != nil {
-				return err
+				rows = append(rows, mcpProposalRow{ID: id, Status: "failed"})
+				failure = err
+				break
 			}
-			rows = append(rows, mcpProposalRow{ID: id, MemoryID: memoryID})
+			rows = append(rows, mcpProposalRow{ID: id, Status: "approved", MemoryID: memoryID})
 			if !jsonOut {
 				fmt.Fprintf(stdout, "Approved %s as memory %s.\n", id, memoryID)
 			}
 		}
 		if jsonOut {
 			payload := mcpProposalsPayload{Proposals: rows, Decision: "approve"}
-			if len(rows) == 1 {
+			if len(rows) == 1 && failure == nil {
 				payload.MemoryID = rows[0].MemoryID
 			}
-			return emitReceipt(stdout, "mora.mcp.proposals", 1, payload)
+			if err := emitReceipt(stdout, "mora.mcp.proposals", 1, payload); err != nil {
+				return err
+			}
 		}
-		return nil
+		return failure
 	}
 	if len(args) == 2 && args[0] == "reject" {
 		if err := refuseDashLedPositional("mcp proposals reject", "proposal id", args[1]); err != nil {

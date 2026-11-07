@@ -313,7 +313,7 @@ Review a pending write locally before deciding:
 mora mcp proposals list
 mora mcp proposals show <proposal-id>
 # After reviewing the full content and scope, explicitly choose:
-mora mcp proposals approve <proposal-id>
+mora mcp proposals approve <proposal-id> [<proposal-id>...]
 # or: mora mcp proposals reject <proposal-id>
 ```
 
