@@ -430,6 +430,7 @@ func deleteMemoryFile(ctx context.Context, cfg Config, m Memory) (reconcile bool
 		_ = unmarkIndexDirty(cfg, op.OpID) // the file never went away
 		return false, err
 	}
+	markDeleteUnlinked(cfg, op)
 	reconcile, err = reflectDeleteInIndex(ctx, cfg, m.ID)
 	if err != nil {
 		// The op REMAINS -> the index reads dirty AND B4 suppresses the deleted id.

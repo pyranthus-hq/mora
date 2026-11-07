@@ -326,7 +326,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	if err != nil {
 		return 0, err
 	}
-	journalSnapshot, err := ingestpkg.SnapshotJournals(cfg)
+	journalSnapshot, err := ingestpkg.SnapshotJournals(cfg, ingestRecoverySeams())
 	if err != nil {
 		return 0, err
 	}
@@ -564,7 +564,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	}
 	stampNow := indexClock().UTC()
 	commitmentGeneration := commitmentGenerationOf(manifestLines, cfg, stampNow)
-	if err := writeCommitments(ctx, tx, commitmentGeneration, parsed, cfg, stampNow); err != nil {
+	if err := writeCommitments(ctx, tx, commitmentGeneration, parsed, cfg, stampNow, governance); err != nil {
 		return count, err
 	}
 
@@ -667,7 +667,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	if err := progress.Update("retiring_markers", operationCounts{Items: count, Files: len(files)}); err != nil {
 		return count, err
 	}
-	coverage := indexstore.Coverage{ListingStartedAt: listingStartedAt, Files: cleanPathSet(files), Parsed: cleanPathSet(memoryPaths(parsed)), ParsedSHA256: parsedSHA256, OwnerAlive: processAlive}
+	coverage := indexstore.Coverage{ListingStartedAt: listingStartedAt, Files: cleanPathSet(files), Parsed: cleanPathSet(memoryPaths(parsed)), ParsedSHA256: parsedSHA256, OwnerAlive: processAlive, Abandoned: warnAbandonedDelete}
 	if err := clearCoveredPendingOps(cfg, pendingSnapshot, coverage); err != nil {
 		return count, fmt.Errorf("index committed but pending-marker retirement failed: %w", err)
 	}

@@ -147,6 +147,7 @@ func cmdForget(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			_ = unmarkIndexDirty(cfg, ops[i].OpID)
 			return err
 		}
+		markDeleteUnlinked(cfg, ops[i])
 		removed++
 	}
 	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {

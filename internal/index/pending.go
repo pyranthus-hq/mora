@@ -54,6 +54,10 @@ type PendingOp struct {
 	// The marker still pins the graph, vector and commitment projections until a
 	// covering full rebuild retires it.
 	FTSCommitted bool `json:"-"`
+	// Unlinked is derived the same way, for a delete marker: the deleter finished
+	// removing the file. Older binaries already list and retire that file name,
+	// which a new suffix would strand.
+	Unlinked bool `json:"-"`
 }
 
 // ftsCommittedSuffix names a write marker whose FTS row has committed. The
@@ -133,9 +137,10 @@ func ListPending(cfg config.Config) ([]PendingOp, error) {
 		if json.Unmarshal(b, &op) != nil || op.OpID == "" {
 			op = PendingOp{OpID: id} // corrupt: fail closed, no valid kind/path
 		}
-		// Only a write marker has an FTS-committed form. Any other kind under
+		// Only write and delete markers have a second form. Any other kind under
 		// that name is not a state Mora writes, so it stays dirty.
 		op.FTSCommitted = ftsCommitted && op.Kind == KindWrite && op.OpID == id
+		op.Unlinked = ftsCommitted && op.Kind == KindDelete && op.OpID == id
 		ops = append(ops, op)
 	}
 	return ops, nil
@@ -165,6 +170,7 @@ type Coverage struct {
 	Parsed           map[string]bool   // parsed and visible: the rule for hashless markers
 	ParsedSHA256     map[string]string // every parsed path, governance-hidden ones too
 	OwnerAlive       func(int) bool
+	Abandoned        func(PendingOp) // told when a retired delete brings its memory back
 }
 
 // ContentSHA256 is the hash a marker stores and a rebuild compares.
@@ -176,42 +182,76 @@ func ContentSHA256(b []byte) string {
 // ShouldClear decides one marker from the rebuild's snapshot. No rule uses age
 // alone: a paused writer and an unparseable file both look old.
 func ShouldClear(op PendingOp, c Coverage) bool {
+	clear, _ := decide(op, c)
+	return clear
+}
+
+// decide also reports a clear that abandons a delete, so its memory comes back.
+func decide(op PendingOp, c Coverage) (clear, abandoned bool) {
 	switch op.Kind {
 	case KindRebuild:
 		// (a) any rebuild that LISTED after this op was marked covers it — NOT
 		// only its own op_id, or a SIGKILLed rebuild's op is unclearable forever.
 		t, perr := time.Parse(time.RFC3339, op.MarkedAt)
 		if perr != nil {
-			return true // an unparseable rebuild stamp is garbage; reap it
+			return true, false // an unparseable rebuild stamp is garbage; reap it
 		}
-		return !t.After(c.ListingStartedAt)
+		return !t.After(c.ListingStartedAt), false
 	case KindWrite:
 		if op.ContentSHA256 == "" {
 			// (b) parsed, NOT listed: a truncated/hand-mangled file is listed yet
 			// not indexed, and must stay dirty.
-			return op.Path != "" && c.Parsed[op.Path]
+			return op.Path != "" && c.Parsed[op.Path], false
 		}
-		return writeCovered(op, c)
+		return writeCovered(op, c), false
 	case KindDelete:
 		if op.ContentSHA256 == "" {
 			// (c) gone OR re-ingested (a connector rewrote the memory onto its own
 			// stable path, so it legitimately reappears in parsed).
-			return op.Path != "" && (!c.Files[op.Path] || c.Parsed[op.Path])
+			return op.Path != "" && (!c.Files[op.Path] || c.Parsed[op.Path]), false
 		}
-		if op.Path == "" {
-			return false
-		}
-		if !c.Files[op.Path] {
-			return true
-		}
-		// Equal bytes mean the rebuild indexed the very file being deleted.
-		got, parsed := c.ParsedSHA256[op.Path]
-		return parsed && got != op.ContentSHA256
+		return deleteCovered(op, c)
 	default:
 		// Corrupt/unknown op: fail-closed while present, but a committed rebuild
 		// is allowed to reap it so a permanent red banner never becomes wallpaper.
-		return true
+		return true, false
 	}
+}
+
+// deleteCovered applies only after the unlink finished or the owner died. A live
+// deleter can still remove whatever this rebuild indexed, and only the marker
+// would then suppress it. op.Unlinked comes from the snapshot, so that unlink
+// came before listing.
+func deleteCovered(op PendingOp, c Coverage) (clear, abandoned bool) {
+	if op.Path == "" {
+		return false, false
+	}
+	// Read the owner before the disk: a process seen dead can remove nothing
+	// after the read below, so that read is final.
+	dead := op.OwnerPID > 0 && !c.OwnerAlive(op.OwnerPID)
+	if !op.Unlinked && !dead {
+		return false, false
+	}
+	if !c.Files[op.Path] {
+		return true, false
+	}
+	got, parsed := c.ParsedSHA256[op.Path]
+	if !parsed {
+		return false, false
+	}
+	if op.Unlinked && got != op.ContentSHA256 {
+		return true, false // a connector re-ingested it after the unlink
+	}
+	if !dead {
+		return false, false
+	}
+	// The owner may have removed the file after this rebuild parsed it, so the
+	// indexed bytes count only while they are still the bytes on disk.
+	b, err := os.ReadFile(op.Path)
+	if err != nil || ContentSHA256(b) != got {
+		return false, false
+	}
+	return true, got == op.ContentSHA256
 }
 
 func writeCovered(op PendingOp, c Coverage) bool {
@@ -286,9 +326,12 @@ func MarkDirty(ctx context.Context, cfg config.Config, op PendingOp, seams MarkS
 func ClearCovered(cfg config.Config, ops []PendingOp, c Coverage, unmark func(config.Config, string) error) error {
 	var clearErr error
 	for _, op := range ops {
-		if ShouldClear(op, c) || foreignToVault(cfg, op) {
+		clear, abandoned := decide(op, c)
+		if clear || foreignToVault(cfg, op) {
 			if err := unmark(cfg, op.OpID); err != nil {
 				clearErr = errors.Join(clearErr, fmt.Errorf("retiring pending operation: %w", err))
+			} else if abandoned && c.Abandoned != nil {
+				c.Abandoned(op)
 			}
 		}
 	}

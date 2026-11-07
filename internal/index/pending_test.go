@@ -62,11 +62,19 @@ func TestShouldClearMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 	h, other := ContentSHA256([]byte("published")), ContentSHA256([]byte("other"))
+	seed := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	reingested, abandoned, stale := seed("re.md", "other"), seed("ab.md", "published"), seed("st.md", "other")
 	c := Coverage{
 		ListingStartedAt: at,
-		Files:            map[string]bool{"/parsed": true, "/present": true, onDisk: true},
+		Files:            map[string]bool{"/parsed": true, "/present": true, onDisk: true, reingested: true, abandoned: true, stale: true},
 		Parsed:           map[string]bool{"/parsed": true},
-		ParsedSHA256:     map[string]string{"/parsed": h, onDisk: other},
+		ParsedSHA256:     map[string]string{"/parsed": h, onDisk: other, reingested: other, abandoned: h, stale: h},
 		OwnerAlive:       func(pid int) bool { return pid == 1 },
 	}
 	const alive, dead = 1, 2
@@ -90,11 +98,23 @@ func TestShouldClearMatrix(t *testing.T) {
 		{"delete no hash gone", PendingOp{Kind: KindDelete, Path: "/missing"}, true},
 		{"delete no hash parsed", PendingOp{Kind: KindDelete, Path: "/parsed"}, true},
 		{"delete no hash not parsed", PendingOp{Kind: KindDelete, Path: "/present"}, false},
-		{"delete gone from listing", PendingOp{Kind: KindDelete, Path: "/missing", ContentSHA256: h}, true},
-		{"delete parsed hash differs", PendingOp{Kind: KindDelete, Path: "/parsed", ContentSHA256: other}, true},
-		{"delete parsed hash equal", PendingOp{Kind: KindDelete, Path: "/parsed", ContentSHA256: h}, false},
-		{"delete listed not parsed", PendingOp{Kind: KindDelete, Path: "/present", ContentSHA256: h}, false},
-		{"delete hash no path", PendingOp{Kind: KindDelete, ContentSHA256: h}, false},
+		{"delete live owner gone from listing", PendingOp{Kind: KindDelete, Path: "/missing", ContentSHA256: h, OwnerPID: alive}, false},
+		{"delete live owner parsed hash differs", PendingOp{Kind: KindDelete, Path: "/parsed", ContentSHA256: other, OwnerPID: alive}, false},
+		{"delete live owner parsed hash equal", PendingOp{Kind: KindDelete, Path: "/parsed", ContentSHA256: h, OwnerPID: alive}, false},
+		{"delete no owner", PendingOp{Kind: KindDelete, Path: "/missing", ContentSHA256: h}, false},
+		{"delete unlinked gone from listing", PendingOp{Kind: KindDelete, Path: "/missing", ContentSHA256: h, OwnerPID: alive, Unlinked: true}, true},
+		{"delete unlinked parsed hash differs", PendingOp{Kind: KindDelete, Path: "/parsed", ContentSHA256: other, OwnerPID: alive, Unlinked: true}, true},
+		{"delete unlinked parsed hash equal", PendingOp{Kind: KindDelete, Path: "/parsed", ContentSHA256: h, OwnerPID: alive, Unlinked: true}, false},
+		{"delete unlinked listed not parsed", PendingOp{Kind: KindDelete, Path: "/present", ContentSHA256: h, OwnerPID: alive, Unlinked: true}, false},
+		{"delete dead gone from listing", PendingOp{Kind: KindDelete, Path: "/missing", ContentSHA256: h, OwnerPID: dead}, true},
+		{"delete dead listed not parsed", PendingOp{Kind: KindDelete, Path: "/present", ContentSHA256: h, OwnerPID: dead}, false},
+		{"delete dead differs disk equals parsed", PendingOp{Kind: KindDelete, Path: reingested, ContentSHA256: h, OwnerPID: dead}, true},
+		{"delete dead differs file removed after parse", PendingOp{Kind: KindDelete, Path: "/parsed", ContentSHA256: other, OwnerPID: dead}, false},
+		{"delete dead differs disk moved on", PendingOp{Kind: KindDelete, Path: onDisk, ContentSHA256: h, OwnerPID: dead}, false},
+		{"delete dead all three match", PendingOp{Kind: KindDelete, Path: abandoned, ContentSHA256: h, OwnerPID: dead}, true},
+		{"delete dead match but file gone", PendingOp{Kind: KindDelete, Path: "/parsed", ContentSHA256: h, OwnerPID: dead}, false},
+		{"delete dead match but disk differs", PendingOp{Kind: KindDelete, Path: stale, ContentSHA256: h, OwnerPID: dead}, false},
+		{"delete hash no path", PendingOp{Kind: KindDelete, ContentSHA256: h, OwnerPID: dead}, false},
 		{"rebuild before listing", PendingOp{Kind: KindRebuild, MarkedAt: at.Add(-time.Second).Format(time.RFC3339)}, true},
 		{"rebuild at listing", PendingOp{Kind: KindRebuild, MarkedAt: at.Format(time.RFC3339)}, true},
 		{"rebuild after listing", PendingOp{Kind: KindRebuild, MarkedAt: at.Add(time.Second).Format(time.RFC3339)}, false},
@@ -106,6 +126,54 @@ func TestShouldClearMatrix(t *testing.T) {
 				t.Errorf("ShouldClear(%+v)=%v want %v", tc.op, got, tc.want)
 			}
 		})
+	}
+}
+
+// Only the all-three-match retirement brings a memory back, so only it is reported.
+func TestAbandonedDeleteIsReported(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	path := filepath.Join(t.TempDir(), "m.md")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := ContentSHA256([]byte("x"))
+	var reported []string
+	c := Coverage{
+		Files:        map[string]bool{path: true},
+		ParsedSHA256: map[string]string{path: h},
+		OwnerAlive:   func(int) bool { return false },
+		Abandoned:    func(op PendingOp) { reported = append(reported, op.OpID) },
+	}
+	ops := []PendingOp{
+		{OpID: "abandoned", Kind: KindDelete, Path: path, ContentSHA256: h, OwnerPID: 9},
+		{OpID: "gone", Kind: KindDelete, Path: "/missing", ContentSHA256: h, OwnerPID: 9},
+	}
+	var removed []string
+	if err := ClearCovered(cfg, ops, c, func(_ config.Config, id string) error { removed = append(removed, id); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 2 || len(reported) != 1 || reported[0] != "abandoned" {
+		t.Fatalf("removed=%v reported=%v", removed, reported)
+	}
+}
+
+func TestDeleteMarkerSecondFormReadsUnlinked(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	if err := os.MkdirAll(PendingDir(cfg), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(PendingPath(cfg, "d"), []byte(`{"op_id":"d","kind":"delete","path":"/a","memory_id":"m"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkFTSCommitted(cfg, "d", os.Rename); err != nil {
+		t.Fatal(err)
+	}
+	ops, err := ListPending(cfg)
+	if err != nil || len(ops) != 1 || !ops[0].Unlinked || ops[0].FTSCommitted {
+		t.Fatalf("ops=%+v err=%v", ops, err)
+	}
+	if !PendingDeleteIDs(cfg)["m"] {
+		t.Fatal("an unlinked delete marker must keep suppressing its memory")
 	}
 }
 

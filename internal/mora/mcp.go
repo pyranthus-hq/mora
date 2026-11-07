@@ -944,6 +944,7 @@ func mcpDeleteMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 		_ = unmarkIndexDirty(cfg, op.OpID)
 		return nil, err
 	}
+	markDeleteUnlinked(cfg, op)
 	// A failed index update after a delete is worse than after a write: search
 	// keeps SERVING the deleted content as if it still existed. Delete is the
 	// privacy path, so the failure stays a LOUD error and the pending-delete

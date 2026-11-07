@@ -3,6 +3,7 @@ package mora
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"time"
 
@@ -51,6 +52,21 @@ func unmarkIndexDirty(cfg Config, opID string) error {
 // commitments still lag), but health reads it as refreshing, not dirty.
 func markFTSCommitted(cfg Config, op pendingOp) error {
 	return indexstore.MarkFTSCommitted(cfg, op.OpID, renamePendingOpFile)
+}
+
+// markDeleteUnlinked records that a delete removed its file, which lets a rebuild
+// retire the marker. On failure the marker waits for its owner to die: that is
+// the safe direction, and a delete that stuck must not report an error for it.
+func markDeleteUnlinked(cfg Config, op pendingOp) {
+	if err := markFTSCommitted(cfg, op); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: could not record the removal of %s: %v\n", op.MemoryID, err)
+	}
+}
+
+// warnAbandonedDelete says out loud that a memory came back: its deleter died
+// before removing the file, so the delete never happened.
+func warnAbandonedDelete(op pendingOp) {
+	fmt.Fprintf(os.Stderr, "warn: delete of memory %s was abandoned by dead process %d and its file is unchanged; the memory is back in search. Delete it again if you still want it gone (%s)\n", op.MemoryID, op.OwnerPID, op.Path)
 }
 
 var renamePendingOpFile = atomicio.RenameReplaceWithRetry

@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"github.com/pyranthus-hq/mora/internal/config"
@@ -34,7 +35,7 @@ func writeJournal(t *testing.T, cfg config.Config, key, body string) {
 }
 func snapshot(t *testing.T, cfg config.Config) map[string]os.FileInfo {
 	t.Helper()
-	s, err := SnapshotJournals(cfg)
+	s, err := SnapshotJournals(cfg, recoverySeams(false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,6 +103,59 @@ func TestJournalOutsideSnapshotStays(t *testing.T) {
 			t.Fatalf("journal retired: %v", err)
 		}
 	})
+}
+
+// A connector appends while compaction is between its read and its remove.
+func TestCompactionKeepsConcurrentAppend(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	file := filepath.Join(t.TempDir(), "m.md")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeJournal(t, cfg, "gmail", "run r_abc 2026-01-01T00:00:00Z\n"+file+"\n")
+	seen := snapshot(t, cfg)
+	seams := recoverySeams(false)
+	appended := make(chan struct{})
+	seams.LeaseHeld = func(config.Config, string) bool {
+		go func() {
+			RecordPublishedPath(cfg, "gmail", file, testPublishSeams())
+			close(appended)
+		}()
+		select {
+		case <-appended: // no guard: the line landed inside compaction's window
+		case <-time.After(200 * time.Millisecond):
+		}
+		return false
+	}
+	if _, err := RecoverJournals(cfg, []string{file}, seen, seams); err != nil {
+		t.Fatal(err)
+	}
+	<-appended
+	if _, n, present := ScanJournal(JournalPath(cfg, "gmail")); !present || n != 1 {
+		t.Fatalf("journal present=%v lines=%d, want the concurrent line kept", present, n)
+	}
+}
+
+// An ingest still running at the snapshot can publish at any moment, so its
+// journal waits for a rebuild that starts after the run ended.
+func TestJournalDeferredWhileIngestActive(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	file := filepath.Join(t.TempDir(), "m.md")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := "run r_abc 2026-01-01T00:00:00Z\n" + file + "\n"
+	writeJournal(t, cfg, "gmail", body)
+	seen, err := SnapshotJournals(cfg, recoverySeams(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := RecoverJournals(cfg, []string{file}, seen, recoverySeams(false)); err != nil || len(got.RetiredRunIDs) != 0 {
+		t.Fatalf("recovery=(%+v,%v)", got, err)
+	}
+	if b, err := os.ReadFile(JournalPath(cfg, "gmail")); err != nil || string(b) != body {
+		t.Fatalf("journal=%q err=%v, want it untouched", b, err)
+	}
 }
 
 func TestRecoverRetiresCoveredJournalAndRun(t *testing.T) {

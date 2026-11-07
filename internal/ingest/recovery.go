@@ -10,6 +10,7 @@ import (
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"github.com/pyranthus-hq/mora/internal/config"
+	"github.com/pyranthus-hq/mora/internal/leasefile"
 )
 
 // RecoverySeams supplies consistency helpers owned by adjacent index/composition boundaries.
@@ -27,8 +28,10 @@ type Recovery struct {
 
 // SnapshotJournals records each journal's identity and size just before a
 // rebuild lists the vault. A line is written after its file is published, so a
-// line inside that size proves the listing saw the publish.
-func SnapshotJournals(cfg config.Config) (map[string]os.FileInfo, error) {
+// line inside that size proves the listing saw the publish. A source with a live
+// ingest is left out: it can publish at any moment, so its journal waits for a
+// rebuild that starts after the run ended.
+func SnapshotJournals(cfg config.Config, seams RecoverySeams) (map[string]os.FileInfo, error) {
 	entries, err := os.ReadDir(JournalRoot(cfg))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -38,7 +41,7 @@ func SnapshotJournals(cfg config.Config) (map[string]os.FileInfo, error) {
 	}
 	snapshot := map[string]os.FileInfo{}
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() || seams.LeaseHeld(cfg, e.Name()) {
 			continue
 		}
 		info, err := os.Stat(JournalPath(cfg, e.Name()))
@@ -83,8 +86,19 @@ func RecoverJournals(cfg config.Config, files []string, snapshot map[string]os.F
 }
 
 // CompactJournal retires the lines of one journal. seen bounds them to a rebuild's
-// snapshot; a nil seen means the whole file.
-func CompactJournal(cfg config.Config, sourceKey string, listed map[string]bool, seen os.FileInfo, seams RecoverySeams) (string, error) {
+// snapshot; a nil seen means the whole file. The guard covers the read through the
+// replace or remove, and every creator and appender takes it, so a line cannot land
+// between the bytes read here and the journal written back.
+func CompactJournal(cfg config.Config, sourceKey string, listed map[string]bool, seen os.FileInfo, seams RecoverySeams) (retired string, err error) {
+	err = leasefile.WithGuard(JournalPath(cfg, sourceKey), func() error {
+		var cerr error
+		retired, cerr = compactJournal(cfg, sourceKey, listed, seen, seams)
+		return cerr
+	})
+	return retired, err
+}
+
+func compactJournal(cfg config.Config, sourceKey string, listed map[string]bool, seen os.FileInfo, seams RecoverySeams) (string, error) {
 	path := JournalPath(cfg, sourceKey)
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {

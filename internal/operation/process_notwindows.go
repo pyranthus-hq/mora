@@ -3,6 +3,7 @@
 package operation
 
 import (
+	"errors"
 	"os"
 	"syscall"
 )
@@ -12,7 +13,8 @@ import (
 // ingest names a dead pid, so the next rebuild reclaims it instead of pinning the
 // index dirty forever. Signal 0 performs the kernel's existence/permission check
 // without delivering a signal. A same-user live process returns nil; a gone process
-// returns ESRCH. Mirrors the syncDir build-tag split the package already ships.
+// returns ESRCH. EPERM means the process exists but belongs to someone else, which
+// reads as alive: a wrong "dead" can retire a live owner's marker. Mirrors the syncDir build-tag split the package already ships.
 func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -21,5 +23,6 @@ func processAlive(pid int) bool {
 	if err != nil {
 		return false
 	}
-	return p.Signal(syscall.Signal(0)) == nil
+	err = p.Signal(syscall.Signal(0))
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
