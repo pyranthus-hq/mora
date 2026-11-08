@@ -11,7 +11,11 @@ if [ -z "$COLLECTOR" ] || [ ! -x "$COLLECTOR" ]; then
 fi
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
-go run ./cmd/genicns docs/assets/mora-eye.svg "$APP_DIR/Contents/Resources/Mora.icns"
+ICON_WORK=$(mktemp -d "$TMPDIR/mora-icon.XXXXXX")
+trap 'rm -rf "$ICON_WORK"' EXIT
+swiftc apps/mora-menubar/Sources/MenuBarIcon.swift apps/mora-menubar/Tools/BuildIcon.swift -o "$ICON_WORK/build-icon"
+"$ICON_WORK/build-icon" "$ICON_WORK/Mora.iconset"
+iconutil -c icns "$ICON_WORK/Mora.iconset" -o "$APP_DIR/Contents/Resources/Mora.icns"
 swiftc -O -target arm64-apple-macos13.0 -framework SwiftUI -framework AppKit \
   apps/mora-menubar/Sources/StatusData.swift apps/mora-menubar/Sources/MenuBarIcon.swift apps/mora-menubar/Sources/MoraStatusApp.swift \
   -o "$APP_DIR/Contents/MacOS/Mora Status"

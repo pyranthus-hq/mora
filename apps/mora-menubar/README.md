@@ -4,15 +4,17 @@ Standalone native macOS 13+ menu bar companion. It probes through the bundled
 `mora-tentacles` collector and displays connection reachability separately from
 each sync channel's reported state. It never changes sync state.
 
-The menu bar uses a compact monochrome eye, with Mora named in its tooltip.
-Failed or overdue checks add a dot within the same 20×18pt icon; full status appears inside the panel. The panel and app icon retain the pixel-eye mascot. The build reuses the
-existing Go icon generator and `docs/assets/mora-eye.svg` for all app branding.
+The menu bar, panel, and app icon share a monochrome eye-and-tentacles mark.
+Its native 20×18pt menu image keeps a fixed footprint, including its attention dot.
+The 320pt panel opens with one compact row per device. Select a row to expand
+channel receipts and explanations; only one device expands at a time. Details
+retains the full collector output. Connectivity and check status remain separate.
 
 ## Build
 
 From the repository root, build after the collector is available:
 
-Requires the Go toolchain and macOS Swift command-line tools.
+Requires macOS Swift command-line tools and iconutil. The bundle icon is rendered from the same vector drawing as the menu mark.
 
 ```sh
 ./apps/mora-menubar/build.sh ./path/to/mora-tentacles

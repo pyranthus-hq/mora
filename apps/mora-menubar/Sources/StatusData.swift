@@ -24,7 +24,9 @@ struct StatusSnapshot: Decodable {
         return result
     }
 
-    var aggregate: ChannelState {
+    var aggregate: ChannelState { Self.aggregate(devices: devices) }
+
+    static func aggregate(devices: [DeviceStatus]) -> ChannelState {
         let channels = devices.flatMap(\.channels)
         guard !devices.isEmpty, !channels.isEmpty else { return .unknown }
         if channels.contains(where: { $0.state == .failed }) { return .failed }
@@ -37,6 +39,7 @@ struct StatusSnapshot: Decodable {
 }
 
 struct DeviceStatus: Decodable, Identifiable {
+    var state: ChannelState { StatusSnapshot.aggregate(devices: [self]) }
     let id: String
     let name: String
     let connection: ConnectionState
@@ -73,6 +76,15 @@ enum ConnectionState: String, Decodable {
 
 enum ChannelState: String, Decodable {
     case healthy, failed, stale, unknown, running
+    var summary: String {
+        switch self {
+        case .healthy: "Checks passed"
+        case .failed: "Needs attention"
+        case .stale: "Sync overdue"
+        case .unknown: "Checks incomplete"
+        case .running: "In progress"
+        }
+    }
     var label: String {
         switch self {
         case .healthy: "Healthy"

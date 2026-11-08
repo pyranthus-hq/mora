@@ -24,3 +24,8 @@ let disconnected = try StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T
 check(disconnected.aggregate == .unknown, "offline peer cannot make the overall state healthy")
 
 print("StatusData checks passed")
+
+check(disconnected.devices[0].state == .unknown, "offline device cannot have a healthy summary")
+check(fixture(channelState: "stale").devices[0].state == .stale, "collapsed device preserves overdue sync")
+check(fixture(channelState: "failed").devices[0].state == .failed, "collapsed device preserves failed sync")
+check(fixture(channelState: "unknown").devices[0].state == .unknown, "missing receipts stay incomplete")

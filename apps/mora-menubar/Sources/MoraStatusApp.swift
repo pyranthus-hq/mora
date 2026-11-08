@@ -28,11 +28,11 @@ struct MoraStatusApp: App {
 
 private struct MoraMark: View {
     let size: CGFloat
-    private static let icon = NSImage(named: "Mora") ?? NSImage(systemSymbolName: "eye", accessibilityDescription: "Mora")!
+    private static let icon = MenuBarIcon.normal
 
     var body: some View {
-        Image(nsImage: Self.icon).renderingMode(.original)
-            .resizable().interpolation(.none).scaledToFit()
+        Image(nsImage: Self.icon).renderingMode(.template)
+            .resizable().scaledToFit()
             .frame(width: size, height: size)
             .accessibilityHidden(true)
     }
@@ -43,9 +43,11 @@ final class PreviewWindowDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard CommandLine.arguments.contains("--preview") else { return }
         let view = StatusPanel(model: StatusModel(preview: true), isPreview: true)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 660), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 300), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Mora Status Preview · fixture data"
-        window.contentView = NSHostingView(rootView: view)
+        let hosting = NSHostingView(rootView: view)
+        window.contentView = hosting
+        window.setContentSize(hosting.fittingSize)
         window.center()
         window.makeKeyAndOrderFront(nil)
         self.window = window
@@ -68,7 +70,7 @@ final class StatusModel: ObservableObject {
         self.preview = preview
         collector = Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("mora-tentacles")
         if preview {
-            snapshot = try? StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"id":"mac","name":"This Mac (sample)","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked.","last_success":"2026-11-08T07:45:00Z"},{"name":"Personal archive","state":"stale","detail":"Fixture data — displayed to demonstrate a stale channel.","last_success":"2026-11-07T07:45:00Z"}]}]}"#.utf8))
+            snapshot = try? StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"id":"mac","name":"This Mac","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked.","last_success":"2026-11-08T07:45:00Z"},{"name":"Personal archive","state":"stale","detail":"Fixture data — displayed to demonstrate a stale channel.","last_success":"2026-11-07T07:45:00Z"}]},{"id":"devbox","name":"Devbox","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked."}]},{"id":"windows","name":"Windows (WSL)","connection":"connected","channels":[{"name":"Windows → Mac","state":"unknown","detail":"Fixture data — return path not configured."}]}]}"#.utf8))
             lastUpdated = Date()
             detailText = "PREVIEW FIXTURE — no collector was run and no sync was checked."
             return
@@ -139,134 +141,148 @@ struct StatusPanel: View {
     @ObservedObject var model: StatusModel
     var isPreview = false
     @State private var showDetails = false
+    @State private var expandedDevice: String?
 
     private var headline: String {
-        if model.isRefreshing && model.snapshot == nil { return "Checking" }
-        if model.error != nil && model.snapshot == nil { return "Unavailable" }
-        if model.error != nil { return "Showing previous result" }
-        guard let state = model.snapshot?.aggregate else { return "Unavailable" }
-        switch state {
-        case .healthy: return "Recent checks passed"
-        case .failed: return "Needs attention"
-        case .stale: return "Sync overdue"
-        case .unknown: return "Checks incomplete"
-        case .running: return "Sync in progress"
-        }
+        if model.isRefreshing && model.snapshot == nil { return "Checking…" }
+        if model.error != nil { return model.snapshot == nil ? "Unavailable" : "Previous result" }
+        return model.snapshot?.aggregate.summary ?? "Checking…"
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 15) {
+        VStack(alignment: .leading, spacing: 12) {
             if isPreview {
-                Label("PREVIEW · fixture data", systemImage: "eye")
-                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(.purple)
+                Text("PREVIEW · fixture data").font(.system(size: 10)).foregroundStyle(.secondary)
             }
-            HStack(alignment: .center) {
-                MoraMark(size: 38)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Mora").font(.system(size: 19, weight: .semibold))
-                    Label(headline, systemImage: headlineSymbol)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(headlineColor)
+            HStack(spacing: 9) {
+                MoraMark(size: 26)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Mora").font(.system(size: 15, weight: .semibold))
+                    Text(headline).font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button { Task { await model.refresh() } } label: {
-                    Image(systemName: model.isRefreshing ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
+                    Image(systemName: "arrow.clockwise").font(.system(size: 12))
                 }
-                .buttonStyle(.borderless)
-                .disabled(model.isRefreshing)
-                .help("Refresh now")
+                .buttonStyle(.borderless).disabled(model.isRefreshing)
+                .accessibilityLabel("Refresh status").help("Refresh status")
             }
 
             if let error = model.error {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 11)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                Text(error).font(.system(size: 11)).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if let snapshot = model.snapshot {
                 ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                ForEach(snapshot.devices) { device in
-                    deviceRow(device)
-                    if device.id != snapshot.devices.last?.id { Divider() }
-                }
-                }
-                }.frame(height: 470)
-                if let lastUpdated = model.lastUpdated {
-                    Text("Updated \(lastUpdated.formatted(.relative(presentation: .named)))")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                }
+                    VStack(spacing: 0) {
+                        ForEach(snapshot.devices) { device in
+                            deviceRow(device)
+                            if device.id != snapshot.devices.last?.id { Divider() }
+                        }
+                    }
+                }.frame(height: listHeight(snapshot.devices))
             } else if model.error == nil {
-                HStack { ProgressView().controlSize(.small); Text("Checking tentacles…").foregroundStyle(.secondary) }
-                    .font(.system(size: 12)).padding(.vertical, 12)
-            } else {
-                Text("No status data is available yet.").font(.system(size: 12)).foregroundStyle(.secondary)
+                ProgressView().controlSize(.small).padding(.vertical, 8)
             }
 
             Divider()
-            HStack {
-                Button("Open details") { showDetails = true }.buttonStyle(.link).font(.system(size: 11))
+            HStack(spacing: 12) {
+                if let lastUpdated = model.lastUpdated {
+                    HStack(spacing: 3) {
+                        Text("Checked")
+                        Text(lastUpdated, style: .relative)
+                        Text("ago")
+                    }.foregroundStyle(.secondary).accessibilityElement(children: .combine)
+                }
                 Spacer()
-                Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.borderless).font(.system(size: 11))
-            }
+                Button("Details") { showDetails = true }.buttonStyle(.borderless)
+                Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.borderless)
+            }.font(.system(size: 10))
         }
-        .padding(16)
-        .frame(width: 400)
+        .padding(14)
+        .frame(width: 320)
+        .fixedSize(horizontal: false, vertical: true)
         .sheet(isPresented: $showDetails) {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Collector details").font(.headline)
                 ScrollView { Text(model.detailText).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading) }
+                    .frame(maxWidth: .infinity, alignment: .topLeading) }
                 HStack { Spacer(); Button("Done") { showDetails = false }.keyboardShortcut(.defaultAction) }
             }.padding(16).frame(width: 500, height: 330)
         }
     }
 
-    @ViewBuilder private func deviceRow(_ device: DeviceStatus) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 7) {
-                Image(systemName: device.connection == .connected ? "laptopcomputer" : "laptopcomputer.and.arrow.down")
-                    .foregroundStyle(device.connection == .connected ? Color.secondary : Color.orange)
-                Text(device.name).font(.system(size: 13, weight: .semibold))
-                Spacer()
-                Text(device.connection.rawValue.capitalized).font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            if let detail = device.detail, !detail.isEmpty {
-                Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            if device.channels.isEmpty {
-                Label("No channel data", systemImage: ChannelState.unknown.symbol)
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            ForEach(device.channels) { channel in
-                HStack(alignment: .top, spacing: 7) {
-                    Image(systemName: channel.state.symbol).foregroundStyle(color(for: channel.state)).frame(width: 14)
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack {
-                            Text(channel.name).font(.system(size: 11, weight: .medium))
-                            Spacer()
-                            Text(channel.state.label).font(.system(size: 11)).foregroundStyle(color(for: channel.state))
-                        }
-                        if let detail = channel.detail, !detail.isEmpty {
-                            Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        }
-                        if let last = channel.lastSuccess {
-                            Text("Last success \(last.formatted(.relative(presentation: .named)))")
-                                .font(.system(size: 11)).foregroundStyle(.secondary)
-                        }
+    private func deviceRow(_ device: DeviceStatus) -> some View {
+        let expanded = expandedDevice == device.id
+        return VStack(alignment: .leading, spacing: 0) {
+            Button {
+                expandedDevice = expanded ? nil : device.id
+            } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: device.state.symbol)
+                        .foregroundStyle(color(for: device.state)).frame(width: 14)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(device.name).font(.system(size: 12, weight: .medium))
+                        Text(device.state.summary).font(.system(size: 10)).foregroundStyle(.secondary)
                     }
-                }.padding(.leading, 22)
+                    Spacer()
+                    Text(device.connection.rawValue.capitalized).font(.system(size: 10)).foregroundStyle(.secondary)
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+                }.frame(height: 52).contentShape(Rectangle())
             }
-        }.padding(.vertical, 2)
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(device.name), \(device.connection.rawValue), \(device.state.summary)")
+            .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+            .accessibilityHint("Show or hide channel details")
+
+            if expanded {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if let detail = device.detail, !detail.isEmpty {
+                            Text(detail).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if device.connection != .connected {
+                            Text("Device unavailable; channel results may be cached.").foregroundStyle(.orange)
+                        }
+                        if device.channels.isEmpty { Text("No channel data").foregroundStyle(.secondary) }
+                        ForEach(device.channels) { channel in
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack {
+                                    Text(channel.name).fontWeight(.medium)
+                                    Spacer()
+                                    Text(channel.state.label).foregroundStyle(color(for: channel.state))
+                                }
+                                if let last = channel.lastSuccess {
+                                    Text("Last success \(last.formatted(.relative(presentation: .named)))")
+                                        .foregroundStyle(.secondary)
+                                }
+                                if let detail = channel.detail, !detail.isEmpty {
+                                    Text(detail).foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
+                    }.font(.system(size: 10)).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(height: channelHeight(device))
+                .padding(.leading, 23).padding(.bottom, 10)
+            }
+        }
     }
 
-    private var headlineSymbol: String {
-        if model.error != nil { return "exclamationmark.circle.fill" }
-        return model.snapshot?.aggregate.symbol ?? "questionmark.circle"
+    private func channelHeight(_ device: DeviceStatus) -> CGFloat {
+        min(240, CGFloat(max(1, device.channels.count)) * 82 + (device.detail == nil ? 0 : 30))
     }
-    private var headlineColor: Color {
-        if model.error != nil { return .orange }
-        return model.snapshot.map { color(for: $0.aggregate) } ?? .secondary
+
+    private func listHeight(_ devices: [DeviceStatus]) -> CGFloat {
+        let rows = CGFloat(devices.count * 52 + max(0, devices.count - 1))
+        let expanded = devices.first { $0.id == expandedDevice }.map { channelHeight($0) + 10 } ?? 0
+        return min(400, rows + expanded)
     }
+
     private func color(for state: ChannelState) -> Color {
         switch state { case .healthy: .green; case .failed: .red; case .stale: .orange; case .unknown, .running: .secondary }
     }
