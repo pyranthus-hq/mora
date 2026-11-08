@@ -13,7 +13,7 @@ mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 go run ./cmd/genicns docs/assets/mora-eye.svg "$APP_DIR/Contents/Resources/Mora.icns"
 swiftc -O -target arm64-apple-macos13.0 -framework SwiftUI -framework AppKit \
-  apps/mora-menubar/Sources/StatusData.swift apps/mora-menubar/Sources/MoraStatusApp.swift \
+  apps/mora-menubar/Sources/StatusData.swift apps/mora-menubar/Sources/MenuBarIcon.swift apps/mora-menubar/Sources/MoraStatusApp.swift \
   -o "$APP_DIR/Contents/MacOS/Mora Status"
 cp "$COLLECTOR" "$APP_DIR/Contents/MacOS/mora-tentacles"
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'

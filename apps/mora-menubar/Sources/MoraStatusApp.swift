@@ -18,14 +18,9 @@ struct MoraStatusApp: App {
         MenuBarExtra {
             StatusPanel(model: model)
         } label: {
-            HStack(spacing: 4) {
-                MoraMark(size: 18)
-                Text("Mora")
-                if needsAttention {
-                    Image(systemName: "exclamationmark.circle.fill")
-                }
-            }
+            Image(nsImage: needsAttention ? MenuBarIcon.attention : MenuBarIcon.normal)
             .accessibilityLabel(needsAttention ? "Mora Status, needs attention" : "Mora Status")
+            .help(needsAttention ? "Mora — needs attention" : "Mora")
         }
         .menuBarExtraStyle(.window)
     }

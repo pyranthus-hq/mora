@@ -4,8 +4,8 @@ Standalone native macOS 13+ menu bar companion. It probes through the bundled
 `mora-tentacles` collector and displays connection reachability separately from
 each sync channel's reported state. It never changes sync state.
 
-The menu bar keeps Mora's pixel-eye mascot and name visible in every state.
-Failed or overdue checks add a warning badge; full status appears inside the panel. The build reuses the
+The menu bar uses a compact monochrome eye, with Mora named in its tooltip.
+Failed or overdue checks add a dot within the same 20×18pt icon; full status appears inside the panel. The panel and app icon retain the pixel-eye mascot. The build reuses the
 existing Go icon generator and `docs/assets/mora-eye.svg` for all app branding.
 
 ## Build
