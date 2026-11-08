@@ -1597,7 +1597,7 @@ func ingestGoogleDetailed(ctx context.Context, cfg Config, s Source, kind google
 	// Check before reading a cursor or publishing any source records.
 	actual, identityErr := fetcher.AuthedEmailContext(ctx)
 	if identityErr != nil {
-		return sourceIngestResult{}, errors.New("Google mailbox identity could not be verified before sync")
+		return sourceIngestResult{}, googleIdentityError(identityErr)
 	}
 	if identityErr = verifyGoogleSyncIdentity(s, kind, actual); identityErr != nil {
 		return sourceIngestResult{}, identityErr

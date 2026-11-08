@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/mail"
 	"sort"
 	"strings"
@@ -56,6 +57,24 @@ func verifyGoogleSyncIdentity(s Source, kind google.ItemKind, actual string) err
 		return errors.New("Google mailbox identity could not be verified before sync")
 	}
 	return requireExpectedGoogleAccount(s.Email, actual)
+}
+
+// Keep the typed cause for retry policy without publishing provider URLs or credentials.
+func googleIdentityError(cause error) error {
+	code := connectorCodeForCause(cause)
+	reason := "provider request failed"
+	var dns *net.DNSError
+	var network net.Error
+	switch {
+	case errors.As(cause, &dns):
+		reason = "DNS lookup failed"
+	case errors.As(cause, &network):
+		reason = "network request failed"
+		if network.Timeout() {
+			reason = "network request timed out"
+		}
+	}
+	return newCodedError(code, cause, "Google mailbox identity could not be verified before sync: %s", reason)
 }
 
 func bindGoogleSyncStatus(st *memory.SyncStatus, actual string) bool {
