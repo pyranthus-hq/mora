@@ -333,7 +333,9 @@ recovery limitations.
 To give one agent its own limits, use an agent profile: the scopes it can read,
 whether it can see connector evidence, and its own write policy.
 `mora mcp serve --profile <name>` applies a profile to a local agent, and
-`mora mcp serve-http` serves cloud agents through a tunnel that you run. See
+`mora mcp serve-http` serves cloud agents through a tunnel that you run.
+`mora remote expose` prints tunnel commands and executes none; Doctor names
+profiles that loosen remote defaults. See
 [Agent profiles](docs/guide.md#agent-profiles).
 
 ## Claude Code hooks

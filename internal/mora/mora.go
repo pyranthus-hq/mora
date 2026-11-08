@@ -180,6 +180,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdMCP(ctx, args[1:], stdout, stderr, stdin)
 	case "agents":
 		return cmdAgents(ctx, args[1:], stdout, stderr)
+	case "remote":
+		return cmdRemote(ctx, args[1:], stdout, stderr)
 	case "serve":
 		return cmdServe(ctx, args[1:], stdout, stderr)
 	case "integrations":
@@ -316,10 +318,13 @@ USAGE:
   mora usage off|on
   mora disconnect google
   mora mcp serve
+  mora mcp serve-http              # profile-bound Streamable HTTP MCP on 127.0.0.1 (tunnel separately)
+  mora remote expose               # print tunnel commands; executes none
   mora mcp proposals list          # list writes staged by propose-mode MCP clients
   mora mcp proposals show <id>     # inspect full staged content before approving
   mora mcp proposals approve <id>...  # publish staged writes (one rebuild per call)
   mora mcp proposals recover <id>  # finish a decision a crash left half done (--retry | --close if asked)
+
   mora serve http                  # loopback HTTP for sandboxed AI browsers (Aside); token in ~/.config/mora/http.json
   mora serve http install          # run it as an auto-restarting background service (launchd/systemd); also: uninstall|status
   mora companion pair              # pair a phone: prints a QR-able payload with a one-time code
