@@ -26,8 +26,12 @@ func TestRoundtripPendingOnlyAndReplay(t *testing.T) {
 	cfg, b := fixture(t)
 	p := b.Proposals[0]
 	body, _ := json.Marshal(p)
-	os.MkdirAll(mcp.ProposalDir(cfg), 0700)
-	os.WriteFile(filepath.Join(mcp.ProposalDir(cfg), p.ID+".json"), body, 0600)
+	if err := os.MkdirAll(mcp.ProposalDir(cfg), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mcp.ProposalDir(cfg), p.ID+".json"), body, 0600); err != nil {
+		t.Fatal(err)
+	}
 	got, err := export(cfg)
 	if err != nil || len(got.Proposals) != 1 {
 		t.Fatalf("export: %+v %v", got, err)
@@ -102,19 +106,32 @@ func TestCrashClaimAndExistingDecision(t *testing.T) {
 			c, b := fixture(t)
 			p := b.Proposals[0]
 			id := localID(p.ID)
-			if kind == "claimed" {
+			switch kind {
+			case "claimed":
 				body, _ := json.Marshal(p)
 				dir := filepath.Join(c.StateDir, "bot-return")
-				os.MkdirAll(dir, 0700)
-				saveReceipt(filepath.Join(dir, id+".json"), receipt{RemoteID: p.ID, Digest: fmt.Sprintf("%x", sha256.Sum256(body)), Status: "claimed"})
-			} else if kind == "decision" {
+				if err := os.MkdirAll(dir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := saveReceipt(filepath.Join(dir, id+".json"), receipt{RemoteID: p.ID, Digest: fmt.Sprintf("%x", sha256.Sum256(body)), Status: "claimed"}); err != nil {
+					t.Fatal(err)
+				}
+			case "decision":
 				path := decisionPath(c, id)
-				os.MkdirAll(filepath.Dir(path), 0700)
-				os.WriteFile(path, []byte("{}"), 0600)
-			} else {
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			default:
 				dir := filepath.Join(c.StateDir, "bot-return")
-				os.MkdirAll(dir, 0700)
-				os.Symlink("/dev/null", filepath.Join(dir, id+".json"))
+				if err := os.MkdirAll(dir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("/dev/null", filepath.Join(dir, id+".json")); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if _, err := intake(c, b); err == nil {
 				t.Fatal("unsafe recovery")
@@ -156,11 +173,17 @@ func TestStrictEnvelope(t *testing.T) {
 func TestExportSkipsDeliveredAndOtherAgentFormat(t *testing.T) {
 	remote, b := fixture(t)
 	local, _ := fixture(t)
-	os.MkdirAll(mcp.ProposalDir(remote), 0700)
+	if err := os.MkdirAll(mcp.ProposalDir(remote), 0700); err != nil {
+		t.Fatal(err)
+	}
 	p := b.Proposals[0]
 	body, _ := json.Marshal(p)
-	os.WriteFile(filepath.Join(mcp.ProposalDir(remote), p.ID+".json"), body, 0600)
-	os.WriteFile(filepath.Join(mcp.ProposalDir(remote), "p_muse.json"), []byte(`{"id":"p_muse","proposed_by":"muse","arguments":{"scope":"project:mora"},"other_field":true}`), 0600)
+	if err := os.WriteFile(filepath.Join(mcp.ProposalDir(remote), p.ID+".json"), body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mcp.ProposalDir(remote), "p_muse.json"), []byte(`{"id":"p_muse","proposed_by":"muse","arguments":{"scope":"project:mora"},"other_field":true}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := intake(local, b); err != nil {
 		t.Fatal(err)
 	}
@@ -169,14 +192,18 @@ func TestExportSkipsDeliveredAndOtherAgentFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 	var seen map[string]string
-	json.Unmarshal(buf.Bytes(), &seen)
+	if err := json.Unmarshal(buf.Bytes(), &seen); err != nil {
+		t.Fatal(err)
+	}
 	got, err := exportSeen(remote, seen)
 	if err != nil || len(got.Proposals) != 0 || len(got.Problems) != 0 {
 		t.Fatalf("%+v %v", got, err)
 	}
 	p.Arguments["text"] = "changed upstream"
 	body, _ = json.Marshal(p)
-	os.WriteFile(filepath.Join(mcp.ProposalDir(remote), p.ID+".json"), body, 0600)
+	if err := os.WriteFile(filepath.Join(mcp.ProposalDir(remote), p.ID+".json"), body, 0600); err != nil {
+		t.Fatal(err)
+	}
 	got, err = exportSeen(remote, seen)
 	if err != nil || len(got.Proposals) != 1 {
 		t.Fatalf("changed replay hidden: %+v %v", got, err)
@@ -202,12 +229,16 @@ func TestBadItemDoesNotBlockValidIntake(t *testing.T) {
 }
 func TestExportBatchesPast128(t *testing.T) {
 	c, b := fixture(t)
-	os.MkdirAll(mcp.ProposalDir(c), 0700)
+	if err := os.MkdirAll(mcp.ProposalDir(c), 0700); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 130; i++ {
 		p := b.Proposals[0]
 		p.ID = fmt.Sprintf("p_%03d", i)
 		body, _ := json.Marshal(p)
-		os.WriteFile(filepath.Join(mcp.ProposalDir(c), p.ID+".json"), body, 0600)
+		if err := os.WriteFile(filepath.Join(mcp.ProposalDir(c), p.ID+".json"), body, 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	first, err := export(c)
 	if err != nil || len(first.Proposals) != 128 {
