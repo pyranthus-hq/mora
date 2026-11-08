@@ -25,6 +25,8 @@ package sharing
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -208,75 +210,108 @@ func DeleteOrphans(ctx context.Context, store ObjectStore, prefix string, keep m
 // index. Nothing is written to the real corpus here; a mid-fetch failure just
 // discards the throwaway destDir. Returns the pin + version to persist on success.
 func FetchBucket(ctx context.Context, store ObjectStore, cfg BucketConfig, sub Subscription, ids []age.Identity, destDir string) (ed25519.PublicKey, int, error) {
+	snap, err := OpenBucket(ctx, store, cfg, sub, ids)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := snap.Materialize(ctx, store, cfg, sub, destDir); err != nil {
+		return nil, 0, err
+	}
+	return snap.SignPub, snap.Version, nil
+}
+
+// BucketSnapshot is a share's current manifest after OpenBucket has verified
+// its envelope. No blob has been downloaded yet. PayloadDigest is hex(sha256)
+// of the signed envelope payload: it tells apart two different manifests a
+// racing publisher signed with the same version.
+type BucketSnapshot struct {
+	SignPub       ed25519.PublicKey
+	Version       int
+	PayloadDigest string
+	Manifest      Manifest
+}
+
+// OpenBucket is the first half of FetchBucket: read the current envelope, verify
+// it (authenticity → TOFU pin → freshness), and open and validate its manifest.
+// A subscriber that already serves this exact version can stop here.
+func OpenBucket(ctx context.Context, store ObjectStore, cfg BucketConfig, sub Subscription, ids []age.Identity) (BucketSnapshot, error) {
 	prefix := cfg.ObjectPrefix()
 
 	env, err := CurrentEnvelope(ctx, store, prefix)
 	if err != nil {
 		if errors.Is(err, ErrNoManifest) {
-			return nil, 0, fmt.Errorf("subscription %q: the share has no manifest yet — has the publisher pushed?", sub.Name)
+			return BucketSnapshot{}, fmt.Errorf("subscription %q: the share has no manifest yet — has the publisher pushed?", sub.Name)
 		}
-		return nil, 0, err
+		return BucketSnapshot{}, err
 	}
 	if err := VerifyEnvelope(env, cfg.Locator(), sub.PinnedPubkey, sub.LastVersion); err != nil {
-		return nil, 0, fmt.Errorf("subscription %q: %w", sub.Name, err)
+		return BucketSnapshot{}, fmt.Errorf("subscription %q: %w", sub.Name, err)
 	}
 	manJSON, err := OpenManifestPayload(env, ids)
 	if err != nil {
-		return nil, 0, fmt.Errorf("subscription %q: %w", sub.Name, err)
+		return BucketSnapshot{}, fmt.Errorf("subscription %q: %w", sub.Name, err)
 	}
 	var man Manifest
 	if err := json.Unmarshal(manJSON, &man); err != nil {
-		return nil, 0, fmt.Errorf("subscription %q: share manifest is not valid JSON: %w", sub.Name, err)
+		return BucketSnapshot{}, fmt.Errorf("subscription %q: share manifest is not valid JSON: %w", sub.Name, err)
 	}
 	if man.Schema != ManifestSchema {
-		return nil, 0, fmt.Errorf("subscription %q: manifest schema %d unsupported (want %d) — upgrade mora", sub.Name, man.Schema, ManifestSchema)
+		return BucketSnapshot{}, fmt.Errorf("subscription %q: manifest schema %d unsupported (want %d) — upgrade mora", sub.Name, man.Schema, ManifestSchema)
 	}
 	// The inner and outer versions are both under the signature; a mismatch means a
 	// malformed publisher, not an attacker, but refuse rather than trust either.
 	if man.Version != env.Version {
-		return nil, 0, fmt.Errorf("subscription %q: manifest inner version %d != envelope %d — refusing", sub.Name, man.Version, env.Version)
+		return BucketSnapshot{}, fmt.Errorf("subscription %q: manifest inner version %d != envelope %d — refusing", sub.Name, man.Version, env.Version)
 	}
 	if !ValidScope(man.Scope) {
-		return nil, 0, fmt.Errorf("subscription %q: manifest declares invalid scope %q", sub.Name, man.Scope)
+		return BucketSnapshot{}, fmt.Errorf("subscription %q: manifest declares invalid scope %q", sub.Name, man.Scope)
 	}
-
 	if len(man.Entries) > MaxShareEntries {
-		return nil, 0, fmt.Errorf("subscription %q: manifest names %d entries, over the %d cap — refusing", sub.Name, len(man.Entries), MaxShareEntries)
+		return BucketSnapshot{}, fmt.Errorf("subscription %q: manifest names %d entries, over the %d cap — refusing", sub.Name, len(man.Entries), MaxShareEntries)
 	}
+	sum := sha256.Sum256(env.Payload)
+	return BucketSnapshot{SignPub: env.SignPub, Version: env.Version, PayloadDigest: hex.EncodeToString(sum[:]), Manifest: man}, nil
+}
+
+// Materialize is the second half of FetchBucket: download and hash-check every
+// blob the verified manifest names and write the v1-layout dir into destDir.
+func (snap BucketSnapshot) Materialize(ctx context.Context, store ObjectStore, cfg BucketConfig, sub Subscription, destDir string) error {
+	prefix := cfg.ObjectPrefix()
+	man := snap.Manifest
 	memDir := filepath.Join(destDir, "memories")
 	if err := os.MkdirAll(memDir, 0o700); err != nil {
-		return nil, 0, err
+		return err
 	}
 	foldSeen := make(map[string]string, len(man.Entries))
 	for _, e := range man.Entries {
 		if !ExportIDRE.MatchString(e.ID) {
-			return nil, 0, fmt.Errorf("subscription %q: manifest entry id %q is unsafe — refusing", sub.Name, e.ID)
+			return fmt.Errorf("subscription %q: manifest entry id %q is unsafe — refusing", sub.Name, e.ID)
 		}
 		if !BlobKeyRE.MatchString(e.Blob + ".age") {
-			return nil, 0, fmt.Errorf("subscription %q: manifest entry %q has a malformed blob reference %q", sub.Name, e.ID, e.Blob)
+			return fmt.Errorf("subscription %q: manifest entry %q has a malformed blob reference %q", sub.Name, e.ID, e.Blob)
 		}
 		if prior, dup := foldSeen[strings.ToLower(e.ID)]; dup {
-			return nil, 0, fmt.Errorf("subscription %q: manifest ids %s and %s differ only by case", sub.Name, prior, e.ID)
+			return fmt.Errorf("subscription %q: manifest ids %s and %s differ only by case", sub.Name, prior, e.ID)
 		}
 		foldSeen[strings.ToLower(e.ID)] = e.ID
 		if e.Size < 0 || e.Size > MaxMemoryBytes+(1<<20) {
-			return nil, 0, fmt.Errorf("subscription %q: manifest entry %s declares an out-of-range size %d", sub.Name, e.ID, e.Size)
+			return fmt.Errorf("subscription %q: manifest entry %s declares an out-of-range size %d", sub.Name, e.ID, e.Size)
 		}
 		ct, err := store.GetObject(ctx, prefix+e.Blob+".age")
 		if err != nil {
 			if errors.Is(err, ErrObjectNotFound) {
-				return nil, 0, fmt.Errorf("subscription %q: the blob for %s is missing — the share may be mid-update; retry `mora share pull %s`", sub.Name, e.ID, sub.Name)
+				return fmt.Errorf("subscription %q: the blob for %s is missing — the share may be mid-update; retry `mora share pull %s`", sub.Name, e.ID, sub.Name)
 			}
-			return nil, 0, err
+			return err
 		}
 		if int64(len(ct)) != e.Size {
-			return nil, 0, fmt.Errorf("subscription %q: the blob for %s is %d bytes but the manifest declared %d — refusing", sub.Name, e.ID, len(ct), e.Size)
+			return fmt.Errorf("subscription %q: the blob for %s is %d bytes but the manifest declared %d — refusing", sub.Name, e.ID, len(ct), e.Size)
 		}
 		if BlobKey(ct) != e.Blob {
-			return nil, 0, fmt.Errorf("subscription %q: the blob for %s failed its content-hash check — refusing", sub.Name, e.ID)
+			return fmt.Errorf("subscription %q: the blob for %s failed its content-hash check — refusing", sub.Name, e.ID)
 		}
 		if err := atomicio.Write(filepath.Join(memDir, e.ID+".md.age"), ct, 0o644); err != nil {
-			return nil, 0, err
+			return err
 		}
 	}
 	// A v1-schema share.json so the existing shareImport reads this exactly as it
@@ -287,10 +322,7 @@ func FetchBucket(ctx context.Context, store ObjectStore, cfg BucketConfig, sub S
 	}
 	mb, err := json.MarshalIndent(v1, "", "  ")
 	if err != nil {
-		return nil, 0, err
+		return err
 	}
-	if err := atomicio.Write(filepath.Join(destDir, "share.json"), append(mb, '\n'), 0o644); err != nil {
-		return nil, 0, err
-	}
-	return env.SignPub, env.Version, nil
+	return atomicio.Write(filepath.Join(destDir, "share.json"), append(mb, '\n'), 0o644)
 }

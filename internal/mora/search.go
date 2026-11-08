@@ -40,6 +40,10 @@ func budgetSearchResults(mems []Memory, budget int) ([]Memory, int) {
 type searchMemoryObservation struct {
 	ScoreFused bool
 	Trace      retrievalTrace
+	// BM25 is each parent-grain FTS row's raw bm25 cost (lower is better),
+	// captured before the segment arm overwrites Memory.Score with RRF. A row
+	// admitted only by the segment arm has no entry.
+	BM25 map[string]float64
 }
 
 // searchMemories is the FTS-only retrieval arm. filters is an optional
@@ -96,6 +100,10 @@ func searchMemoriesObserved(ctx context.Context, cfg Config, query, scope string
 	if observed != nil {
 		observed.Trace.FTS = append([]string(nil), parentIDs...)
 		observed.Trace.PreTruncPool = sqlLimit
+		observed.BM25 = make(map[string]float64, len(out))
+		for _, m := range out {
+			observed.BM25[m.ID] = m.Score
+		}
 	}
 	// Issue #243 — segment-grain FTS as an ADDITIONAL candidate source,
 	// mapped to PARENT ids, before fusion/slot accounting (frozen interface

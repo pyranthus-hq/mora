@@ -71,6 +71,18 @@ graph, digest, meeting, commitment, index, and share projections show only the
 current revision. Undo restores the prior revision; revision chains must be
 undone newest first.
 
+The authored-memory command acquires the governance lease before reloading the
+original and checking currentness, and holds it through replacement creation,
+index-dirty marking, and `appendGovernanceEntryLocked`. A stale target returns
+an explicit conflict before any replacement is created. Undo validates active
+descendants and revokes on that same locked ledger snapshot. The lease is
+released before rebuilding the index. On append failure only the operation's
+replacement is removed; cleanup errors are reported and retain recovery markers.
+A committed append is retained even if rebuild fails. This prevents concurrent
+revision forks; it does not repair old forks or provide file-plus-ledger crash
+atomicity.
+
+
 ## Decision validity
 
 Decision memories can carry a structured validity contract:

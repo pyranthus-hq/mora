@@ -1,0 +1,8 @@
+{"timestamp":"2026-10-03T12:00:00.000Z","type":"session_meta","payload":{"id":"thread-x1","timestamp":"2026-10-03T12:00:00.000Z","cwd":"/fake/work","cli_version":"0.144.4","history_mode":"legacy"}}
+{"timestamp":"2026-10-03T12:00:01.000Z","type":"turn_context","payload":{"cwd":"/fake/work","approval_policy":"never","model":"fake-model"}}
+{"timestamp":"2026-10-03T12:00:05.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"call_1","input":"await tools.exec_command({cmd: \"npm publish\"});"}}
+{"timestamp":"2026-10-03T12:00:06.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_1","output":"exit code 0"}}
+{"timestamp":"2026-10-03T12:00:10.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"call_2","input":"await tools.exec_command({cmd: \"ls\"});"}}
+{"timestamp":"2026-10-03T12:00:11.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_2","output":"exec command rejected by user approval settings"}}
+{"timestamp":"2026-10-03T12:00:15.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"call_3","input":"await tools.exec_command({cmd: dynamic});"}}
+{"timestamp":"2026-10-03T12:00:16.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_3","output":"exit code 0"}}

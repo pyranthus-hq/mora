@@ -15,6 +15,7 @@ package httpservice
 import (
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/atomicio"
+	"html"
 	"io"
 	"net"
 	"net/http"
@@ -98,7 +99,7 @@ func Plist(stateDir, exe string, environment map[string]string) string {
 		var b strings.Builder
 		b.WriteString("<key>EnvironmentVariables</key><dict>")
 		for i := range keys {
-			fmt.Fprintf(&b, "<key>%s</key><string>%s</string>", keys[i], vals[i])
+			fmt.Fprintf(&b, "<key>%s</key><string>%s</string>", html.EscapeString(keys[i]), html.EscapeString(vals[i]))
 		}
 		b.WriteString("</dict>\n")
 		envBlock = b.String()
@@ -114,9 +115,9 @@ func Plist(stateDir, exe string, environment map[string]string) string {
 %s<key>StandardOutPath</key><string>%s</string>
 <key>StandardErrorPath</key><string>%s</string>
 </dict></plist>
-`, Label, exe, envBlock,
-		filepath.Join(stateDir, "serve-http.out.log"),
-		filepath.Join(stateDir, "serve-http.err.log"))
+`, Label, html.EscapeString(exe), envBlock,
+		html.EscapeString(filepath.Join(stateDir, "serve-http.out.log")),
+		html.EscapeString(filepath.Join(stateDir, "serve-http.err.log")))
 }
 
 // serveHTTPSystemdUnit renders the Linux systemd --user unit. Restart=on-failure
