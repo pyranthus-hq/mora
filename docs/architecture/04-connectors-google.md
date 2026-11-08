@@ -90,6 +90,8 @@ sequenceDiagram
 
 `SaveToken` (`internal/google/oauth.go:100`) writes `~/.config/mora/tokens/google.json` via a `.tmp`+rename atomic write at **0600** (dir 0700). The 0600 mode is asserted by `TestTokenStoreRoundtrip` (`internal/google/oauth_test.go:60`). At fetch time, `NewLiveFetcher` wraps the stored token in `cfg.TokenSource(ctx, tok)` (`internal/google/client.go:23`), so the `oauth2` library auto-refreshes access tokens from the refresh token — there is no manual refresh code.
 
+`saveTokenAt` also appends an `AuthEvent` to `tokens/auth-history.jsonl` (`internal/google/authlog.go`) so `mora doctor` can show last interactive auth. Tokens written before that ledger existed have no row: doctor must **not** treat missing history as a broken credential. `printGoogleAuthRecency` (`internal/mora/doctor.go`) distinguishes (a) a recorded auth timestamp, (b) missing history with same-account recent successful sync (legacy credential — no reauth advice), (c) stale success, (d) no success observed, (e) `connector.unauthorized`, and (f) unreadable or corrupt history. Doctor uses `google.LastAuthStrict` to reject malformed or incomplete ledger rows; the tolerant `LastAuth` API remains unchanged. A current authorization failure takes precedence even when an earlier interactive-auth timestamp exists. Token-file presence alone is not authorization; a recent sync is never invented into an interactive-auth date; one account never validates another.
+
 **Production-vs-Testing durability gotcha:** the refresh token survives indefinitely only if the OAuth app is in **Production** mode. Google's **Testing** mode expires refresh tokens after ~7 days, after which every sync fails with an auth error. `isGoogleAuthError` (`internal/mora/setup.go`) pattern-matches `oauth`/`token`/`invalid_grant`/`unauthorized`/`401`/`expired`/`refresh` (`internal/mora/setup.go`) and the sync path then prints the specific recovery: re-run `connect google`, and if it recurs every ~7 days, switch the app to Production (`internal/mora/ingest.go`).
 
 `RevokeToken` (`internal/google/oauth.go:128`) best-effort POSTs the refresh token to Google's revocation endpoint; `cmdDisconnect` (`internal/mora/setup.go`) calls it then removes the token file.
@@ -124,7 +126,7 @@ Both adapters populate `Item.Meta` with structured identity for the [entity grap
 
 ## The resumable Ingest loop
 
-`ingestGoogle` (`internal/mora/ingest.go`) wires it up: resolve creds, load the token, build the `LiveFetcher`, load prior `SyncStatus`, compute the window, then call the shared `memory.Ingest` with a `Write` callback that delegates to `writeMappedMemory` and prints a running count every 500 **successfully written** items (the counter increments only after `writeMappedMemory` returns nil, `ingest.go`). The body budget is **16 KiB** (`ingest.go`).
+`ingestGoogle` (`internal/mora/ingest.go`) wires it up: resolve creds, load the token, build the `LiveFetcher`, load prior `SyncStatus`, compute the window, then call the shared `memory.Ingest` with a `Write` callback that delegates to `writeMappedMemory` and prints a running count every 500 **successfully written** items (the counter increments only after `writeMappedMemory` returns nil, `ingest.go`). The body budget is **64 KiB** (`connectorBodyBudget`, `ingest.go`), shared with WhatsApp, iMessage and Apple Calendar. `memory.MapItem` keeps the head of a longer thread, backs the cut off to a UTF-8 rune boundary, and marks the memory `Truncated`; a truncated thread gets no message-grain segments (`internal/segments`, reason `truncated`). The content hash covers the full fetched body, not the kept head, so a thread already stored under the old 16 KiB budget is rewritten at 64 KiB only when the thread itself changes.
 
 `memory.Ingest` (`internal/memory/ingest.go:32`) pages from the checkpoint cursor:
 1. `FetchPage(kind, window, cursor)`. On error: bump `ErrorCount`/`LastError`, **keep `Checkpoint = cursor`** so the next run resumes this page, and return the error (page-fetch errors stop the run but preserve resume state).
@@ -139,7 +141,7 @@ flowchart TD
   START([Ingest: cursor = Status.Checkpoint]) --> FP{FetchPage kind, window, cursor}
   FP -->|error| ERR[ErrorCount++, LastError\nkeep Checkpoint = cursor] --> RET([return err — resumable])
   FP -->|page| LOOP{for each Item}
-  LOOP --> MAP[MapItem / Map override\nbudget 16KiB, LastSynced = now]
+  LOOP --> MAP[MapItem / Map override\nbudget 64KiB, LastSynced = now]
   MAP --> W[Write → writeMappedMemory]
   W --> SKIP{same ContentHash\n&& not tombstone?}
   SKIP -->|yes| KEEP[skip rewrite\npreserve created_at]

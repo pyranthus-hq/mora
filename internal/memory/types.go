@@ -53,6 +53,12 @@ type Item struct {
 	// per-message transcript with inverted truncation) reach its own mapper without
 	// the shared MapItem path interpreting it. nil for connectors that use MapItem.
 	Payload any
+
+	// FetchError marks an item whose provider read failed in isolation (one
+	// conversation among many). The item carries only its identity. Ingest counts
+	// it as examined and failed and withholds the cursor (WalkDropped) so the next
+	// walk retries it, instead of the fetcher dropping it without a trace.
+	FetchError error
 }
 
 // FetchWindow bounds a snapshot fetch.

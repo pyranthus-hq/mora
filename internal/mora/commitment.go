@@ -286,11 +286,7 @@ func attachCommitment(line *CitedBriefLine, commitment Commitment) {
 	line.CommitmentCitations = append([]CommitmentCitation(nil), commitment.Citations...)
 }
 
-func writeCommitments(ctx context.Context, tx *sql.Tx, generation string, mems []Memory, cfg Config, now time.Time) error {
-	governance, err := loadGovernance(cfg)
-	if err != nil {
-		return err
-	}
+func writeCommitments(ctx context.Context, tx *sql.Tx, generation string, mems []Memory, cfg Config, now time.Time, governance governance) error {
 	commitments := applyTeachCommitments(materializeCommitments(mems, cfg, now), governance, cfg)
 	memByID := make(map[string]Memory, len(mems))
 	for _, m := range mems {

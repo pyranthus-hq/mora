@@ -3,6 +3,7 @@ package hooks
 import (
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/memory"
+	searchpkg "github.com/pyranthus-hq/mora/internal/search"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -10,6 +11,9 @@ import (
 
 const RecallLimit = 3
 const RecallByteLimit = 800
+
+// RecallSnippetRunes bounds one recall line's preview of the memory body.
+const RecallSnippetRunes = 180
 
 func SkipRecallPrompt(prompt string) bool {
 	if utf8.RuneCountInString(prompt) < 12 {
@@ -25,7 +29,19 @@ func SkipRecallPrompt(prompt string) bool {
 		return false
 	}
 }
+
+// FormatRecallContext renders recall lines with head-clipped previews. It is
+// FormatRecallContextFor with no query.
 func FormatRecallContext(mems []memory.Memory, threshold float64, now time.Time) string {
+	return FormatRecallContextFor(mems, "", threshold, now)
+}
+
+// FormatRecallContextFor renders up to RecallLimit lines within RecallByteLimit
+// bytes. Each preview is centered on the earliest query match in the body, so
+// a match past the first RecallSnippetRunes runes is what the agent sees. A
+// row whose Score is above threshold is skipped; callers must hand it BM25
+// costs (lower is better), not fused scores.
+func FormatRecallContextFor(mems []memory.Memory, query string, threshold float64, now time.Time) string {
 	var b strings.Builder
 	count := 0
 	for _, m := range mems {
@@ -35,7 +51,7 @@ func FormatRecallContext(mems []memory.Memory, threshold float64, now time.Time)
 		if m.Score > threshold {
 			continue
 		}
-		line := RecallLine(m, now)
+		line := RecallLineFor(m, query, now)
 		if line == "" {
 			continue
 		}
@@ -58,7 +74,16 @@ func FormatRecallContext(mems []memory.Memory, threshold float64, now time.Time)
 	}
 	return b.String()
 }
+
+// RecallLine is RecallLineFor with no query: the preview is the head of the body.
 func RecallLine(m memory.Memory, now time.Time) string {
+	return RecallLineFor(m, "", now)
+}
+
+// RecallLineFor renders one cited recall line whose preview is centered on the
+// earliest whole-token query match, the same windowing search_memory uses.
+// With no query or no body match it keeps the head of the body.
+func RecallLineFor(m memory.Memory, query string, now time.Time) string {
 	snippet := strings.Join(strings.Fields(m.Text), " ")
 	if snippet == "" {
 		snippet = strings.TrimSpace(m.Title)
@@ -66,7 +91,7 @@ func RecallLine(m memory.Memory, now time.Time) string {
 	if snippet == "" {
 		return ""
 	}
-	snippet = ClipRunes(snippet, 180)
+	snippet = recallSnippet(snippet, query)
 	title := strings.TrimSpace(m.Title)
 	if title == "" {
 		title = m.ID
@@ -80,6 +105,17 @@ func RecallLine(m memory.Memory, now time.Time) string {
 	}
 	return fmt.Sprintf("- %s [%s, age: %s, id: %s]: %s", title, provenance, MemoryAge(m.CreatedAt, now), m.ID, snippet)
 }
+func recallSnippet(flat, query string) string {
+	if strings.TrimSpace(query) == "" || utf8.RuneCountInString(flat) <= RecallSnippetRunes {
+		return ClipRunes(flat, RecallSnippetRunes)
+	}
+	if searchpkg.EarliestMatch([]rune(flat), query) <= RecallSnippetRunes/3 {
+		// No body match, or the match already sits in the head window.
+		return ClipRunes(flat, RecallSnippetRunes)
+	}
+	return searchpkg.MatchSnippet(flat, query, RecallSnippetRunes)
+}
+
 func ClipRunes(s string, limit int) string {
 	if utf8.RuneCountInString(s) <= limit {
 		return s
