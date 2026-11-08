@@ -2,7 +2,9 @@
 
 Standalone native macOS 13+ menu bar companion. It probes through the bundled
 `mora-tentacles` collector and displays connection reachability separately from
-each sync channel's reported state. It never changes sync state.
+each sync channel's reported state. The Connectors section shows local source health,
+last successful syncs and diagnostic codes. Connector failures affect the overall
+status; missing connector health is shown as unknown. It never changes sync state.
 
 ## Build
 

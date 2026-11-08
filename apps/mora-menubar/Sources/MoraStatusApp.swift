@@ -13,7 +13,7 @@ struct MoraStatusApp: App {
         MenuBarExtra {
             StatusPanel(model: model)
         } label: {
-            Image(systemName: model.snapshot?.aggregate.symbol ?? "circle.dashed")
+            Image(systemName: model.error != nil ? "exclamationmark.circle.fill" : (model.snapshot?.aggregate.symbol ?? "circle.dashed"))
                 .accessibilityLabel("Mora Status")
         }
         .menuBarExtraStyle(.window)
@@ -48,7 +48,7 @@ final class StatusModel: ObservableObject {
     init(preview: Bool = false) {
         collector = Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("mora-tentacles")
         if preview {
-            snapshot = try? StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"id":"mac","name":"This Mac (sample)","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked.","last_success":"2026-11-08T07:45:00Z"},{"name":"Personal archive","state":"stale","detail":"Fixture data — displayed to demonstrate a stale channel.","last_success":"2026-11-07T07:45:00Z"}]}]}"#.utf8))
+            snapshot = try? StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"id":"mac","name":"This Mac (sample)","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked.","last_success":"2026-11-08T07:45:00Z"},{"name":"Personal archive","state":"stale","detail":"Fixture data — displayed to demonstrate a stale channel.","last_success":"2026-11-07T07:45:00Z"}]}],"sources":[{"key":"gmail (sample)","state":"failed","detail":"Fixture data — example connector failure."}]}"#.utf8))
             lastUpdated = Date()
             detailText = "PREVIEW FIXTURE — no collector was run and no sync was checked."
             return
@@ -135,10 +135,30 @@ struct StatusPanel: View {
             }
 
             if let snapshot = model.snapshot {
-                ForEach(snapshot.devices) { device in
-                    deviceRow(device)
-                    if device.id != snapshot.devices.last?.id { Divider() }
-                }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(snapshot.devices) { device in
+                            deviceRow(device)
+                            Divider()
+                        }
+                        Text("Connectors · This Mac").font(.system(size: 13, weight: .semibold))
+                        if let error = snapshot.sourcesError {
+                            Label(error, systemImage: ChannelState.unknown.symbol)
+                                .font(.system(size: 11)).foregroundStyle(.orange)
+                        }
+                        if let sources = snapshot.sources {
+                            if sources.isEmpty && snapshot.sourcesError == nil {
+                                Text("No connectors reported").font(.system(size: 11)).foregroundStyle(.secondary)
+                            }
+                            ForEach(sources) { source in
+                                statusRow(name: source.key, state: source.state, detail: source.detail, lastSuccess: source.lastSuccess)
+                            }
+                        } else {
+                            Label("Connector health unavailable", systemImage: ChannelState.unknown.symbol)
+                                .font(.system(size: 11)).foregroundStyle(.orange)
+                        }
+                    }
+                }.frame(maxHeight: 460)
                 if let lastUpdated = model.lastUpdated {
                     Text("Updated \(lastUpdated.formatted(.relative(presentation: .named)))")
                         .font(.system(size: 10)).foregroundStyle(.secondary)
@@ -186,25 +206,30 @@ struct StatusPanel: View {
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
             ForEach(device.channels) { channel in
-                HStack(alignment: .top, spacing: 7) {
-                    Image(systemName: channel.state.symbol).foregroundStyle(color(for: channel.state)).frame(width: 14)
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack {
-                            Text(channel.name).font(.system(size: 11, weight: .medium))
-                            Spacer()
-                            Text(channel.state.label).font(.system(size: 10)).foregroundStyle(color(for: channel.state))
-                        }
-                        if let detail = channel.detail, !detail.isEmpty {
-                            Text(detail).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        }
-                        if let last = channel.lastSuccess {
-                            Text("Last success \(last.formatted(.relative(presentation: .named)))")
-                                .font(.system(size: 10)).foregroundStyle(.secondary)
-                        }
-                    }
-                }.padding(.leading, 22)
+                statusRow(name: channel.name, state: channel.state, detail: channel.detail, lastSuccess: channel.lastSuccess)
+                    .padding(.leading, 22)
             }
         }.padding(.vertical, 2)
+    }
+
+    private func statusRow(name: String, state: ChannelState, detail: String?, lastSuccess: Date?) -> some View {
+        HStack(alignment: .top, spacing: 7) {
+            Image(systemName: state.symbol).foregroundStyle(color(for: state)).frame(width: 14)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text(name).font(.system(size: 11, weight: .medium))
+                    Spacer()
+                    Text(state.label).font(.system(size: 10)).foregroundStyle(color(for: state))
+                }
+                if let detail, !detail.isEmpty {
+                    Text(detail).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                if let lastSuccess {
+                    Text("Last success \(lastSuccess.formatted(.relative(presentation: .named)))")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 
     private var headlineSymbol: String {

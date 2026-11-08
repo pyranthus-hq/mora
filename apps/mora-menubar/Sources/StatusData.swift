@@ -3,8 +3,10 @@ import Foundation
 struct StatusSnapshot: Decodable {
     let generatedAt: Date?
     let devices: [DeviceStatus]
+    let sources: [SourceStatus]?
+    let sourcesError: String?
 
-    enum CodingKeys: String, CodingKey { case generatedAt = "generated_at", devices }
+    enum CodingKeys: String, CodingKey { case generatedAt = "generated_at", devices, sources, sourcesError = "sources_error" }
     static let iso8601 = ISO8601DateFormatter()
     static let fractionalISO8601: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f
@@ -16,6 +18,9 @@ struct StatusSnapshot: Decodable {
         let value = try c.decode(String.self, forKey: .generatedAt)
         generatedAt = Self.date(value)
         devices = try c.decode([DeviceStatus].self, forKey: .devices)
+        sources = try c.decodeIfPresent([SourceStatus].self, forKey: .sources)
+        let error = try c.decodeIfPresent(String.self, forKey: .sourcesError)
+        sourcesError = error?.isEmpty == true ? nil : error
     }
 
     static func decode(_ data: Data) throws -> StatusSnapshot {
@@ -25,13 +30,37 @@ struct StatusSnapshot: Decodable {
     }
 
     var aggregate: ChannelState {
-        let channels = devices.flatMap(\.channels)
-        guard !devices.isEmpty, !channels.isEmpty else { return .unknown }
-        if channels.contains(where: { $0.state == .failed }) { return .failed }
-        if channels.contains(where: { $0.state == .stale }) { return .stale }
-        if channels.contains(where: { $0.state == .unknown }) { return .unknown }
-        if channels.contains(where: { $0.state == .running }) { return .running }
+        var states = devices.flatMap(\.channels).map(\.state) + (sources ?? []).map(\.state)
+        if devices.isEmpty || devices.flatMap(\.channels).isEmpty || sources == nil || sourcesError != nil {
+            states.append(.unknown)
+        }
+        guard !states.isEmpty else { return .unknown }
+        if states.contains(.failed) { return .failed }
+        if states.contains(.stale) { return .stale }
+        if states.contains(.unknown) { return .unknown }
+        if states.contains(.running) { return .running }
         return .healthy
+    }
+}
+
+struct SourceStatus: Decodable, Identifiable {
+    let key: String
+    let rawState: String
+    let detail: String?
+    let lastSuccessAt: String?
+    var id: String { key }
+    var state: ChannelState {
+        switch rawState {
+        case "fresh": .healthy
+        case "failed": .failed
+        case "stale": .stale
+        case "running": .running
+        default: .unknown
+        }
+    }
+    var lastSuccess: Date? { lastSuccessAt.flatMap(StatusSnapshot.date) }
+    enum CodingKeys: String, CodingKey {
+        case key, rawState = "state", detail, lastSuccessAt = "last_success_at"
     }
 }
 
