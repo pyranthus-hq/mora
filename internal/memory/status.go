@@ -30,6 +30,13 @@ type SyncStatus struct {
 	// IncrementalCursor early would let a snapshot that died mid-walk resume as
 	// an incremental sync and silently skip the rest of the backfill.
 	PendingSyncCursor string `json:"pending_sync_cursor,omitempty"`
+	// WalkDropped records that an item failed to write earlier in the current
+	// walk, so a walk resumed from a checkpoint still withholds the cursor.
+	WalkDropped bool `json:"walk_dropped,omitempty"`
+	// DroppedWalks counts consecutive completed walks that dropped an item.
+	// After maxDroppedWalks the cursor moves on anyway so one item that never
+	// writes cannot force a full re-read on every run.
+	DroppedWalks int `json:"dropped_walks,omitempty"`
 	// CursorMode records which provider endpoint Checkpoint's page token belongs
 	// to. A page token cannot identify its own API, and a snapshot page token
 	// replayed against the history endpoint (or the reverse) reads the wrong
