@@ -337,7 +337,7 @@ func TestTextAndSocketProtocol(t *testing.T) {
 func TestOversizedReplyReplayAfterLostAcknowledgement(t *testing.T) {
 	root, s, j := fixture(t)
 	m := reply(j, "done")
-	m.Body = strings.Repeat("x", (1<<20)+1)
+	m.Body = strings.Repeat("<", (2<<20)+1)
 	for i := 0; i < 2; i++ {
 		if err := receive(root, s, m); err != nil {
 			t.Fatalf("receive %d: %v", i, err)

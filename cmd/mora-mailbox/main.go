@@ -550,7 +550,8 @@ func receive(root string, s Settings, m Message) error {
 	var old Message
 	// The socket accepts up to 4 MiB frames. Invalid replies must remain
 	// replayable after a lost acknowledgement, even when larger than a job.
-	if err := readJSONLimit(archive, &old, 8<<20); err == nil {
+	// JSON HTML escaping can expand each byte sixfold during archival.
+	if err := readJSONLimit(archive, &old, 32<<20); err == nil {
 		a, _ := json.Marshal(old)
 		b, _ := json.Marshal(m)
 		if string(a) != string(b) {
