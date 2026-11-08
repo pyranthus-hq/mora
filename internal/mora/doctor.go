@@ -217,6 +217,7 @@ func hasSafeDoctorRepair(actions []doctorRepairAction) bool {
 
 func applyDoctorRepairs(ctx context.Context, cfg Config, actions []doctorRepairAction) ([]doctorVerification, error) {
 	verification := make([]doctorVerification, 0, len(actions))
+	var repairErrors []error
 	for _, action := range actions {
 		if !action.Safe {
 			continue
@@ -316,10 +317,10 @@ func applyDoctorRepairs(ctx context.Context, cfg Config, actions []doctorRepairA
 		}
 		verification = append(verification, result)
 		if err != nil {
-			return verification, fmt.Errorf("doctor repair %s: %w", action.ID, err)
+			repairErrors = append(repairErrors, fmt.Errorf("doctor repair %s: %w", action.ID, err))
 		}
 	}
-	return verification, nil
+	return verification, errors.Join(repairErrors...)
 }
 
 // verifyDoctorIndexRepair re-evaluates the predicates that can plan a rebuild.
@@ -330,7 +331,7 @@ func verifyDoctorIndexRepair(cfg Config) error {
 		failed = append(failed, "index_db: "+err.Error())
 	}
 	idx := indexHealthOf(cfg, doctorClock())
-	if idx.State != idxFresh {
+	if idx.State != idxFresh && idx.State != idxRefreshing {
 		detail := fmt.Sprintf("index_fresh: state=%s, pending_ops=%d", idx.State, idx.PendingOps)
 		if idx.LastError != "" {
 			detail += ": " + idx.LastError
