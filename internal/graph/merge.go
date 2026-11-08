@@ -160,8 +160,8 @@ func emailPhoneCandidates(persons map[string]*personAgg) []mergeCandidate {
 	}
 
 	// Near-name forms are confirmation candidates, never automatic merges. This
-	// covers address-book variants such as "Dan Rachev"/"Daniel Rachev" and a
-	// distinctive first-name-only contact such as "Samika"/"Samika Karode". The
+	// covers address-book variants such as "Dan Hollis"/"Daniel Hollis" and a
+	// distinctive first-name-only contact such as "Odessa"/"Odessa Varden". The
 	// shared anchor must be rare, the email must still echo its own trusted name,
 	// and a human must still confirm the source-native pair.
 	type namedIdentity struct{ id, name string }

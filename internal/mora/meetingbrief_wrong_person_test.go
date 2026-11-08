@@ -15,7 +15,7 @@ import (
 //
 //  1. SELF-AS-ATTENDEE — the user's own calendar identity is an alias that
 //     sources.json has never seen (Google account adit@example.com, but the
-//     calendar invites adit@adisam.com), so the user fails self-exclusion, becomes
+//     calendar invites adit@work.example), so the user fails self-exclusion, becomes
 //     an "attendee" of his own meeting, and his own records are cited back to him
 //     as the counterparty's unfinished business.
 //
@@ -51,14 +51,14 @@ func TestSelfEmailsIncludesConfiguredAliases(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	writeConfigKeyForTest(t, cfg, `self_emails = "adit@adisam.com, Adit@Other.COM"`)
+	writeConfigKeyForTest(t, cfg, `self_emails = "adit@work.example, Adit@Other.COM"`)
 
 	reloaded, err := loadConfigFor(testCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	self := selfEmails(reloaded)
-	for _, want := range []string{"adit@example.com", "adit@adisam.com", "adit@other.com"} {
+	for _, want := range []string{"adit@example.com", "adit@work.example", "adit@other.com"} {
 		if !self[want] {
 			t.Errorf("selfEmails missing %q; got %v", want, self)
 		}
@@ -67,7 +67,7 @@ func TestSelfEmailsIncludesConfiguredAliases(t *testing.T) {
 
 // TestMeetingBriefDoesNotAttributeTheUserToTheirOwnMeeting is the severity-1
 // regression. Reproduced live on the real vault: the "Dan - Adit sync up" event
-// came back with attendees ["Adit Karode", "Daniel Rachev"] and 6 of 9 cited
+// came back with attendees ["Adit Varden", "Daniel Hollis"] and 6 of 9 cited
 // lines attributed to Adit — his own iMessages surfaced as unfinished business
 // with Dan.
 func TestMeetingBriefDoesNotAttributeTheUserToTheirOwnMeeting(t *testing.T) {
@@ -84,7 +84,7 @@ func TestMeetingBriefDoesNotAttributeTheUserToTheirOwnMeeting(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The user's calendar identity is an alias the Google source has never seen.
-	writeConfigKeyForTest(t, cfg, `self_emails = "adit@adisam.com"`)
+	writeConfigKeyForTest(t, cfg, `self_emails = "adit@work.example"`)
 	cfg = mustConfig(t)
 
 	event := eventMemFull(
@@ -92,10 +92,10 @@ func TestMeetingBriefDoesNotAttributeTheUserToTheirOwnMeeting(t *testing.T) {
 		"Dan - Adit sync up",
 		at.Add(2*time.Hour).Format(time.RFC3339),
 		map[string]string{
-			"adit@adisam.com": "Adit Karode",
-			"dan@example.com": "Daniel Rachev",
+			"adit@work.example": "Adit Varden",
+			"dan@example.com":   "Daniel Hollis",
 		},
-		"adit@adisam.com", "dan@example.com",
+		"adit@work.example", "dan@example.com",
 	)
 	event.Source = "calendar_event/dan-sync"
 	event.Provider = "google"
@@ -112,14 +112,14 @@ func TestMeetingBriefDoesNotAttributeTheUserToTheirOwnMeeting(t *testing.T) {
 			"Contract redlines",
 			"Can you send the redlined contract before Friday?",
 			"dan@example.com",
-			[]string{"adit@adisam.com"},
+			[]string{"adit@work.example"},
 			at.Add(-24*time.Hour),
 		),
 		meetingBriefEmail(
 			"gmail_thread/self-note",
 			"Cell reminder",
 			"I can call your cell at 8:30am if that works?",
-			"adit@adisam.com",
+			"adit@work.example",
 			[]string{"someone-else@example.com"},
 			at.Add(-72*time.Hour),
 		),
@@ -145,7 +145,7 @@ func TestMeetingBriefDoesNotAttributeTheUserToTheirOwnMeeting(t *testing.T) {
 	}
 	for _, sec := range brief.Sections {
 		for _, line := range sec.Lines {
-			if strings.Contains(strings.ToLower(line.Text), "adit karode") {
+			if strings.Contains(strings.ToLower(line.Text), "adit varden") {
 				t.Errorf("wrong-person: line attributed to the user themselves: %q", line.Text)
 			}
 			if line.Citation.MemoryID() == "gmail_thread/self-note" {
@@ -271,12 +271,12 @@ func TestMeetingBriefExcludesSelfFromEventSelfEmail(t *testing.T) {
 		"Dan - Adit sync up",
 		at.Add(2*time.Hour).Format(time.RFC3339),
 		map[string]string{
-			"adit@adisam.com": "Adit Karode",
-			"dan@example.com": "Daniel Rachev",
+			"adit@work.example": "Adit Varden",
+			"dan@example.com":   "Daniel Hollis",
 		},
-		"adit@adisam.com", "dan@example.com",
+		"adit@work.example", "dan@example.com",
 	)
-	event.Meta["self_email"] = "adit@adisam.com" // what the Google connector now records
+	event.Meta["self_email"] = "adit@work.example" // what the Google connector now records
 
 	got := meetingBriefAttendees(event, selfEmails(cfg))
 	if len(got) != 1 || got[0].identity != "dan@example.com" {
@@ -316,10 +316,10 @@ func TestMeetingBriefGapsWhenSelfIsNotAmongAttendees(t *testing.T) {
 		"Dan - Adit sync up",
 		at.Add(2*time.Hour).Format(time.RFC3339),
 		map[string]string{
-			"adit@adisam.com": "Adit Karode",
-			"dan@example.com": "Daniel Rachev",
+			"adit@work.example": "Adit Varden",
+			"dan@example.com":   "Daniel Hollis",
 		},
-		"adit@adisam.com", "dan@example.com",
+		"adit@work.example", "dan@example.com",
 	)
 	event.Source = "calendar_event/alias-sync"
 	event.Provider = "google"
@@ -331,7 +331,7 @@ func TestMeetingBriefGapsWhenSelfIsNotAmongAttendees(t *testing.T) {
 	if err := writeMemory(cfg, meetingBriefEmail(
 		"gmail_thread/dan-ask", "Contract redlines",
 		"Can you send the redlined contract before Friday?",
-		"dan@example.com", []string{"adit@adisam.com"}, at.Add(-24*time.Hour),
+		"dan@example.com", []string{"adit@work.example"}, at.Add(-24*time.Hour),
 	)); err != nil {
 		t.Fatal(err)
 	}

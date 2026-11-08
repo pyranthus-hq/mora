@@ -70,7 +70,7 @@ func TestEmailNeverReturnsEmptyOrTruncatesContentBeforeClosing(t *testing.T) {
 		t.Fatalf("%q", r.Text)
 	}
 	// Standard signature delimiter (exactly "-- ") and mobile footers.
-	raw = "Running late, not cancelled.\n\nSent from my iPhone\n-- \nAdit Karode\n555-0100"
+	raw = "Running late, not cancelled.\n\nSent from my iPhone\n-- \nAdit Varden\n555-0100"
 	if r := Email(raw); r.Text != "Running late, not cancelled." || !reflect.DeepEqual(r.Omitted, []string{OmittedSignature}) {
 		t.Fatalf("%+v", r)
 	}

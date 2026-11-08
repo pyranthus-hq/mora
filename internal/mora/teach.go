@@ -3,6 +3,7 @@ package mora
 import (
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/memory"
 	"sort"
 	"strings"
 	"time"
@@ -81,6 +82,9 @@ func decorateDecision(m Memory, now time.Time) Memory {
 // complete, unexpired validity contract: needs-review decisions remain visible
 // for review, but never act as current law in commitment or meeting surfaces.
 func memoryMayGovernCommitments(m Memory, now time.Time) bool {
+	if memory.IsTentative(m) {
+		return false // nobody has confirmed it, so it cannot open or close an obligation
+	}
 	if m.Type != "decision" {
 		return true
 	}

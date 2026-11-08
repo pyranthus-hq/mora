@@ -47,6 +47,10 @@ var catalog = []Info{
 	{Type: "whatsapp", DisplayName: "WhatsApp", NeedsAuth: false, Ingesting: true, Rank: 1, Label: "WhatsApp"},
 	{Type: "applecalendar", DisplayName: "Apple Calendar", NeedsAuth: false, Ingesting: true, Rank: 0, Label: "Calendar (Apple)", Provider: "applecal", Upcoming: true},
 	{Type: "github", DisplayName: "GitHub Issues", NeedsAuth: false, Ingesting: true, Rank: 4, Label: "GitHub Issues"},
+	// Eywa: a governed company memory service with an agent MCP API. Its OAuth2
+	// client_credentials secret comes from MORA_EYWA_CLIENT_SECRET at run time,
+	// so there is no interactive login step here.
+	{Type: "eywa", DisplayName: "Eywa (company memory)", NeedsAuth: false, Ingesting: true, Rank: 4, Label: "Company memory"},
 }
 
 const UnknownRank = 100

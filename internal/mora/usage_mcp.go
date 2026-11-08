@@ -62,6 +62,9 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 	case mcppkg.ActionPropose:
 		inv.value, inv.err = stageMCPWriteProposal(cfg, args)
 		policyHandled = true
+	case mcppkg.ActionTentative:
+		inv.value, inv.err = mcpWriteTentative(traced, cfg, args)
+		policyHandled = true
 	}
 	if !policyHandled {
 		inv.value, inv.err = def.Handler(traced, cfg, args)

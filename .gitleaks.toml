@@ -25,3 +25,13 @@ id = "generic-api-key"
     regexTarget = "secret"
     regexes = ['''^[0-9a-f]{64}$''']
     paths = ['''^docs/experiments/memory-replay/contract/receipt\.v1\.json$''']
+
+[[rules]]
+id = "private-key"
+
+    [[rules.allowlists]]
+    description = "Synthetic PEM block in the proposal-inspection masking fixture"
+    condition = "AND"
+    regexTarget = "line"
+    regexes = ['''fixture-private-key''']
+    paths = ['''^internal/mora/mcp_proposal_show_test\.go$''']

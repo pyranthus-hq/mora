@@ -305,7 +305,9 @@ func abandonedDeadOwnerEligible(rec Record, kind Kind, runID string, now time.Ti
 	}
 	activity := classifyOperationRecord(rec, kind, runID, now, live)
 	heartbeat, err := time.Parse(time.RFC3339Nano, rec.HeartbeatAt)
-	if err != nil || activity.State != Stalled || now.Sub(heartbeat) <= HeartbeatTTL || live(rec.OwnerPID) {
+	// Rebuild receipts are liveness only; ingest preserves the heartbeat grace period.
+	recent := kind != KindIndexRebuild && now.Sub(heartbeat) <= HeartbeatTTL
+	if err != nil || activity.State != Stalled || recent || live(rec.OwnerPID) {
 		return false
 	}
 	return true
