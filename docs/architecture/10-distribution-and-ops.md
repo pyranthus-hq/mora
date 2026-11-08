@@ -350,7 +350,7 @@ scripts/regress/fda-continuity-canary.sh PIN
 # override pair: N_TAG=v0.15.0 N1_TAG=v0.15.1 ARCH=arm64 scripts/regress/fda-continuity-canary.sh PIN
 ```
 
-Default candidate pair (includes the #477 relay fix in N+1):
+Historical default pair (includes the #477 relay fix in N+1; static pinning only):
 
 | | Tag | Commit | `checksums-app.txt` |
 |---|---|---|---|
@@ -365,7 +365,14 @@ Identify N/N+1 on any host from those manifests (both architectures):
   (`identifier "com.pyranthus.mora"`, team `VS8M5VJBZ5`, Apple anchor), hardened
   runtime, secure timestamp, notarized requirement, `stapler validate`
 
-Exact host steps (also printed by the PIN script) live in
+`mora upgrade` selects the latest release, not `N1_TAG`. Before a live session,
+choose and pin N+1 as the current latest release. The printed steps stop if
+the release lookup differs, and verify the installed versions both before and
+after upgrading. A historical pair cannot be claimed as an upgrade result.
+The Brew route also needs its independently verified target version; the same
+post-upgrade version check applies.
+
+Host steps (also printed by the PIN script) live in
 `scripts/regress/fda-continuity-canary.sh`. Evidence boundaries:
 
 1. **Pre-upgrade** designated requirement + successful interactive iMessage and
@@ -379,7 +386,9 @@ Exact host steps (also printed by the PIN script) live in
    `LastSuccessAt` (process launch alone is insufficient).
 4. **Fail-closed** unrelated signer / broken-bundle fixtures must not advance
    `LastSuccessAt` (or leave that sub-gate explicitly unmet).
-5. Publish **sanitized** versions, hashes, DR, timestamps, item counts, error
+5. The script saves **raw private** output (directory mode 0700, new files
+   restricted by umask 077), not sanitized receipts. Review it locally and
+   manually redact a separate copy before sharing. Publish only sanitized versions, hashes, DR, timestamps, item counts, error
    codes — never message/calendar bodies or private host paths.
 
 SQLite open error 14 is **not** by itself an FDA denial; doctor reports
@@ -389,7 +398,7 @@ On an installed Darwin app (identity only; still not a continuity verdict):
 
 ```sh
 scripts/regress/fda-continuity-canary.sh HOST
-# consented live sync teeing only: LIVE=1 scripts/regress/fda-continuity-canary.sh HOST
+# consented live sync teeing only (nonzero on any command failure): LIVE=1 scripts/regress/fda-continuity-canary.sh HOST
 ```
 
 ---

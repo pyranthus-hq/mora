@@ -22,9 +22,10 @@
 #   ARCH             amd64|arm64 (default: host uname -m mapped, else arm64)
 #   APP              path to Mora.app (default /Applications/Mora.app then
 #                    ~/Applications/Mora.app)
-#   EVIDENCE_DIR     where to write sanitized receipts (default /tmp/mora-167)
+#   EVIDENCE_DIR     where to write RAW, PRIVATE receipts (manual redaction required) (default /tmp/mora-167)
 #   REPO             GitHub owner/repo (default pyranthus-hq/mora)
 set -euo pipefail
+umask 077
 
 REPO="${REPO:-pyranthus-hq/mora}"
 N_TAG="${N_TAG:-v0.15.0}"
@@ -89,11 +90,13 @@ hash_for_arch() {
   local line
   line="$(grep -E "  ${name}\$" "$file" || true)"
   [ -n "$line" ] || die "no ${name} entry in $(basename "$file")"
-  printf '%s\n' "${line%% *}"
+  local hash="${line%% *}"
+  [[ "$hash" =~ ^[0-9a-fA-F]{64}$ ]] || die "invalid SHA-256 for ${name}"
+  printf '%s\n' "$hash"
 }
 
 pin_pair() {
-  local arch work n_ver n1_ver n_commit n1_commit
+  local arch work n_ver n1_ver n_commit n1_commit n_amd64 n_arm64 n1_amd64 n1_arm64
   arch="$(map_arch)"
   work="$(mktemp -d)"
   trap 'rm -rf "$work"' RETURN
@@ -105,8 +108,14 @@ pin_pair() {
   fetch_checksums_app "$N1_TAG" "$work/n1.txt"
   n_commit="$(resolve_commit "$N_TAG")"
   n1_commit="$(resolve_commit "$N1_TAG")"
+  # Standalone assignments propagate failed substitutions; printf would mask them.
+  n_amd64="$(hash_for_arch "$work/n.txt" "$n_ver" amd64)"
+  n_arm64="$(hash_for_arch "$work/n.txt" "$n_ver" arm64)"
+  n1_amd64="$(hash_for_arch "$work/n1.txt" "$n1_ver" amd64)"
+  n1_arm64="$(hash_for_arch "$work/n1.txt" "$n1_ver" arm64)"
 
   mkdir -p "$EVIDENCE_DIR"
+  chmod 700 "$EVIDENCE_DIR"
   {
     printf 'issue: 167
 '
@@ -123,26 +132,26 @@ pin_pair() {
     printf 'N_commit: %s
 ' "$n_commit"
     printf 'N_sha256_amd64: %s
-' "$(hash_for_arch "$work/n.txt" "$n_ver" amd64)"
+' "$n_amd64"
     printf 'N_sha256_arm64: %s
-' "$(hash_for_arch "$work/n.txt" "$n_ver" arm64)"
+' "$n_arm64"
     printf 'N1_tag: %s
 ' "$N1_TAG"
     printf 'N1_commit: %s
 ' "$n1_commit"
     printf 'N1_sha256_amd64: %s
-' "$(hash_for_arch "$work/n1.txt" "$n1_ver" amd64)"
+' "$n1_amd64"
     printf 'N1_sha256_arm64: %s
-' "$(hash_for_arch "$work/n1.txt" "$n1_ver" arm64)"
+' "$n1_arm64"
     printf 'checksums_url_N: https://github.com/%s/releases/download/%s/checksums-app.txt
 ' "$REPO" "$N_TAG"
     printf 'checksums_url_N1: https://github.com/%s/releases/download/%s/checksums-app.txt
 ' "$REPO" "$N1_TAG"
     printf 'note: SQLite open error 14 is not by itself FDA denial (doctor cause_unverified).
 '
-    printf 'note: #477 relay fix is included in v0.15.1; prefer N=v0.15.0 N+1=v0.15.1 when host allows.
+    printf 'note: The default v0.15.0/v0.15.1 pair is historical, not a current upgrade target.
 '
-    printf 'note: If the host is already on latest, reinstall N then upgrade, or wait for the next signed release as N+1.
+    printf 'note: mora upgrade selects latest, not N1_TAG. For live testing pin N1_TAG to current latest and verify the installed result; otherwise STOP.
 '
     printf 'note: Host verifies signature/DR/hardened-runtime/notarization/staple on BOTH arch assets before upgrade.
 '
@@ -150,12 +159,23 @@ pin_pair() {
 
   printf '\nHost handoff commands (consented Darwin; share session with #294):\n'
   cat <<HOST
-# 0) Evidence dir
+# Run these steps in Bash on a consented host, not automatically.
+set -euo pipefail
+umask 077
+# 0) RAW PRIVATE evidence: review and redact before sharing.
 mkdir -p "$EVIDENCE_DIR"
+chmod 700 "$EVIDENCE_DIR"
 export EVIDENCE_DIR="$EVIDENCE_DIR"
 
+# mora upgrade has no version selector. STOP if the pinned target is not latest.
+# Re-run PIN with N1_TAG set to the actual intended latest release first.
+[ "\$(gh api repos/${REPO}/releases/latest --jq .tag_name)" = "${N1_TAG}" ] || {
+  echo 'STOP: latest release does not match pinned N1_TAG' >&2; exit 1;
+}
+
 # 1) Install / confirm N (${N_TAG}) Mora.app — record identity BEFORE upgrade
-#    Supported routes: install-app.sh from ${N_TAG} assets, or brew cask at N.
+#    Use a reviewed official installer with VERSION=${n_ver}, or a verified Brew N install.
+#    Do not run an unpinned latest installer and label it N.
 APP="\${APP:-/Applications/Mora.app}"
 [ -d "\$APP" ] || APP="\$HOME/Applications/Mora.app"
 codesign -d -r- "\$APP" 2>&1 | tee "\$EVIDENCE_DIR/pre-dr.txt"
@@ -163,6 +183,7 @@ codesign -dvvv "\$APP" 2>&1 | tee "\$EVIDENCE_DIR/pre-codesign.txt"
 stapler validate "\$APP" 2>&1 | tee "\$EVIDENCE_DIR/pre-staple.txt"
 shasum -a 256 "\$APP/Contents/MacOS/mora" | tee "\$EVIDENCE_DIR/pre-inner-sha256.txt"
 "\$APP/Contents/MacOS/mora" version | tee "\$EVIDENCE_DIR/pre-version.txt"
+[ "\$(cat "\$EVIDENCE_DIR/pre-version.txt")" = "mora ${N_TAG}" ] || [ "\$(cat "\$EVIDENCE_DIR/pre-version.txt")" = "mora ${n_ver}" ] || { echo 'STOP: wrong baseline version' >&2; exit 1; }
 
 # 2) Pre-upgrade protected reads (interactive) — must succeed WITHOUT new FDA grant
 "\$APP/Contents/MacOS/mora" doctor --json 2>&1 | tee "\$EVIDENCE_DIR/pre-doctor.json"
@@ -180,8 +201,9 @@ shasum -a 256 "\$APP/Contents/MacOS/mora" | tee "\$EVIDENCE_DIR/pre-inner-sha256
 
 # 4) Post-upgrade: same DR/team/id; CLI resolves into Mora.app; no FDA re-grant
 codesign -d -r- "\$APP" 2>&1 | tee "\$EVIDENCE_DIR/post-dr.txt"
-diff -u "\$EVIDENCE_DIR/pre-dr.txt" "\$EVIDENCE_DIR/post-dr.txt" | tee "\$EVIDENCE_DIR/dr-diff.txt" || true
+diff -u "\$EVIDENCE_DIR/pre-dr.txt" "\$EVIDENCE_DIR/post-dr.txt" | tee "\$EVIDENCE_DIR/dr-diff.txt"
 "\$APP/Contents/MacOS/mora" version | tee "\$EVIDENCE_DIR/post-version.txt"
+[ "\$(cat "\$EVIDENCE_DIR/post-version.txt")" = "mora ${N1_TAG}" ] || [ "\$(cat "\$EVIDENCE_DIR/post-version.txt")" = "mora ${n1_ver}" ] || { echo 'STOP: upgrade did not install pinned N1_TAG' >&2; exit 1; }
 command -v mora; readlink "\$(command -v mora)" 2>/dev/null | tee "\$EVIDENCE_DIR/cli-route.txt" || true
 
 # 5) Post-upgrade interactive + unattended protected reads
@@ -195,7 +217,9 @@ command -v mora; readlink "\$(command -v mora)" 2>/dev/null | tee "\$EVIDENCE_DI
 #    (use disposable fixtures only — never re-sign the live FDA-bearing app).
 #    Record refusal evidence or leave this sub-gate explicit as unmet.
 
-# Sanitize: strip vault paths with private content; publish only versions,
+# No automatic sanitization is performed. Raw output may include private paths,
+# source metadata or diagnostics. Manually redact into a separate shareable copy.
+# Publish only versions,
 # CDHash/DR, team id, timestamps, item counts, error codes — never message bodies.
 HOST
   hand_off
@@ -217,10 +241,12 @@ find_app() {
 
 host_snapshot() {
   [ "$(uname -s)" = "Darwin" ] || die "HOST mode requires Darwin"
-  local app
+  local app failed=0
   app="$(find_app)"
   [ -n "$app" ] || die "Mora.app not found; set APP=/path/to/Mora.app"
   mkdir -p "$EVIDENCE_DIR"
+  chmod 700 "$EVIDENCE_DIR"
+  note "Evidence is RAW and PRIVATE; manually redact before sharing"
   note "HOST identity snapshot for $app (not a live FDA verdict)"
   {
     printf 'app: %s\n' "$app"
@@ -231,22 +257,24 @@ host_snapshot() {
   codesign -d -r- "$app" 2>&1 | tee "$EVIDENCE_DIR/host-dr.txt" || die "codesign DR failed"
   codesign -dvvv "$app" 2>&1 | tee "$EVIDENCE_DIR/host-codesign.txt" || die "codesign -dvvv failed"
   if command -v stapler >/dev/null 2>&1; then
-    stapler validate "$app" 2>&1 | tee "$EVIDENCE_DIR/host-staple.txt" || note "stapler validate failed (record as UNKNOWN)"
+    stapler validate "$app" 2>&1 | tee "$EVIDENCE_DIR/host-staple.txt" || { note "stapler validate failed (record as UNKNOWN)"; failed=1; }
   else
-    note "stapler not available"
+    note "stapler not available (record as UNKNOWN)"
+    failed=1
   fi
-  "$app/Contents/MacOS/mora" version 2>&1 | tee "$EVIDENCE_DIR/host-version.txt" || true
+  "$app/Contents/MacOS/mora" version 2>&1 | tee "$EVIDENCE_DIR/host-version.txt" || failed=1
 
   if [ "$LIVE" = 1 ]; then
     note "LIVE=1: running interactive syncs; SUCCESS requires LastSuccessAt evidence review"
-    "$app/Contents/MacOS/mora" doctor --json 2>&1 | tee "$EVIDENCE_DIR/live-doctor.json" || true
-    "$app/Contents/MacOS/mora" sync imessage --json 2>&1 | tee "$EVIDENCE_DIR/live-imessage.json" || true
-    "$app/Contents/MacOS/mora" sync applecalendar --json 2>&1 | tee "$EVIDENCE_DIR/live-applecalendar.json" || true
+    "$app/Contents/MacOS/mora" doctor --json 2>&1 | tee "$EVIDENCE_DIR/live-doctor.json" || failed=1
+    "$app/Contents/MacOS/mora" sync imessage --json 2>&1 | tee "$EVIDENCE_DIR/live-imessage.json" || failed=1
+    "$app/Contents/MacOS/mora" sync applecalendar --json 2>&1 | tee "$EVIDENCE_DIR/live-applecalendar.json" || failed=1
     note "Review JSON for genuine new successes; SQLite 14 ≠ FDA denial by itself"
   else
     note "Skipping LIVE syncs (set LIVE=1 on a consented host after PIN + N install)"
   fi
   hand_off
+  return "$failed"
 }
 
 case "$MODE" in
