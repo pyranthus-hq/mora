@@ -3,8 +3,10 @@ import Foundation
 struct StatusSnapshot: Decodable {
     let generatedAt: Date?
     let devices: [DeviceStatus]
+    let sources: [SourceStatus]?
+    let sourcesError: String?
 
-    enum CodingKeys: String, CodingKey { case generatedAt = "generated_at", devices }
+    enum CodingKeys: String, CodingKey { case generatedAt = "generated_at", devices, sources, sourcesError = "sources_error" }
     static let iso8601 = ISO8601DateFormatter()
     static let fractionalISO8601: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f
@@ -16,6 +18,10 @@ struct StatusSnapshot: Decodable {
         let value = try c.decode(String.self, forKey: .generatedAt)
         generatedAt = Self.date(value)
         devices = try c.decode([DeviceStatus].self, forKey: .devices)
+        do { sources = try c.decodeIfPresent([SourceStatus].self, forKey: .sources) }
+        catch { sources = nil }
+        let reportedError = try c.decodeIfPresent(String.self, forKey: .sourcesError)
+        sourcesError = reportedError ?? (sources == nil ? "Connector source health is unavailable." : nil)
     }
 
     static func decode(_ data: Data) throws -> StatusSnapshot {
@@ -35,6 +41,63 @@ struct StatusSnapshot: Decodable {
         if devices.contains(where: { $0.connection != .connected || $0.channels.isEmpty }) { return .unknown }
         if channels.contains(where: { $0.state == .running }) { return .running }
         return .healthy
+    }
+
+    var sourcesSummary: String {
+        guard sourcesError == nil, let sources else { return "Unavailable" }
+        guard !sources.isEmpty else { return "No enabled sources" }
+        let fresh = sources.filter { $0.normalizedState == "fresh" }.count
+        let stale = sources.filter { $0.normalizedState == "stale" }.count
+        let failed = sources.filter { $0.normalizedState == "failed" }.count
+        let never = sources.filter { $0.normalizedState == "never" }.count
+        let running = sources.filter { $0.normalizedState == "running" }.count
+        var parts = ["\(sources.count) enabled"]
+        if fresh > 0 { parts.append("\(fresh) fresh") }
+        if stale > 0 { parts.append("\(stale) stale") }
+        if failed > 0 { parts.append("\(failed) failed") }
+        if never > 0 { parts.append("\(never) never synced") }
+        if running > 0 { parts.append("\(running) running") }
+        let known = fresh + stale + failed + never + running
+        if known < sources.count { parts.append("\(sources.count - known) unknown") }
+        return parts.joined(separator: " · ")
+    }
+}
+
+struct SourceStatus: Decodable, Identifiable {
+    let key: String
+    let state: String
+    let lastSuccessAt: Date?
+    let detail: String?
+    var id: String { key }
+
+    enum CodingKeys: String, CodingKey { case key, state, lastSuccessAt = "last_success_at", detail }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        key = try c.decode(String.self, forKey: .key)
+        state = try c.decode(String.self, forKey: .state)
+        if let text = try c.decodeIfPresent(String.self, forKey: .lastSuccessAt) {
+            lastSuccessAt = StatusSnapshot.date(text)
+        } else { lastSuccessAt = nil }
+        detail = try c.decodeIfPresent(String.self, forKey: .detail)
+    }
+
+    var normalizedState: String { state.lowercased() }
+    var label: String {
+        switch normalizedState {
+        case "fresh": "Fresh"
+        case "stale": "Stale"
+        case "failed": "Failed"
+        case "never": "Never synced"
+        default: state.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+    var symbol: String {
+        switch normalizedState {
+        case "fresh": "checkmark.circle.fill"
+        case "stale": "clock.fill"
+        case "failed": "xmark.circle.fill"
+        default: "questionmark.circle.fill"
+        }
     }
 }
 
