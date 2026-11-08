@@ -115,8 +115,9 @@ func printCheck(w io.Writer, r corrections.Report) {
 		line("  No rate yet: no rejected or interrupted command has a later session.")
 	} else {
 		line("  Ran again in a later session, same command: %s", checkRate(rep.SameCommand, rep.Eligible))
+		line("  Baseline, same command, never rejected or interrupted: %s", checkRate(rep.BaselineRepeated, rep.BaselinePairs))
 		line("  Ran again in a later session, same shape: %s", checkRate(rep.SameShape, rep.Eligible))
-		line("  Baseline, commands never rejected or interrupted: %s", checkRate(rep.BaselineRepeated, rep.BaselinePairs))
+		line("  Baseline, same shape, never rejected or interrupted: %s", checkRate(rep.BaselineShape, rep.BaselinePairs))
 	}
 	if rep.Eligible >= 1 && rep.Eligible <= 9 {
 		line("  Small sample: read these as counts, not as a rate.")

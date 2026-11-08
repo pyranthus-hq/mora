@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	configstore "github.com/pyranthus-hq/mora/internal/config"
+	indexstore "github.com/pyranthus-hq/mora/internal/index"
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	"github.com/pyranthus-hq/mora/internal/memory"
 	"github.com/pyranthus-hq/mora/internal/registry"
@@ -160,6 +161,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdSync(ctx, args[1:], stdout, stderr)
 	case "share":
 		return cmdShare(ctx, args[1:], stdout, stderr, stdin)
+	case "eywa":
+		return cmdEywa(ctx, args[1:], stdout, stderr, stdin)
 	case "reingest":
 		return cmdReingest(ctx, args[1:], stdout, stderr)
 	case "think":
@@ -294,12 +297,17 @@ USAGE:
   mora connect google --since-days 365   # widen the gmail backfill window
   mora connect github             # sync issues from the Mora + productivity repositories as read-only evidence
   mora connect github --repo owner/repo  # replace the default repository allowlist (repeatable)
+  mora connect eywa --endpoint <mcp-url> --token-url <url> --client-id <id>   # company memory: pull governed facts (secret from MORA_EYWA_CLIENT_SECRET)
   mora connect imessage            # macOS: enable iMessage, check Full Disk Access, then backfill
   mora connect imessage --since-days 365   # widen the iMessage backlog window (negative = all-time)
   mora connect filesystem ~/Documents      # add + enable + index a folder in one step (one-shot of: sources add + ingest run)
   mora sync status
   mora sync google
   mora sync github                # refresh enabled GitHub issue sources (read-only)
+  mora sync eywa                  # pull new and replaced company-memory facts (read-only records)
+  mora eywa push enable            # opt in to pushing authored memories (off by default)
+  mora eywa push --scope project:acme   # preview, confirm, then send as governed agent updates
+  mora eywa status                 # re-check whether pushed updates were admitted, in review, or held
   mora sync filesystem            # re-index enabled filesystem sources
   mora sync imessage               # macOS: read local Messages (read-only) into memories
   mora sync applecalendar          # macOS: re-read local Apple Calendar (read-only) into memories
@@ -310,7 +318,8 @@ USAGE:
   mora mcp serve
   mora mcp proposals list          # list writes staged by propose-mode MCP clients
   mora mcp proposals show <id>     # inspect full staged content before approving
-  mora mcp proposals approve <id>  # publish a staged write to the vault
+  mora mcp proposals approve <id>...  # publish staged writes (one rebuild per call)
+  mora mcp proposals recover <id>  # finish a decision a crash left half done (--retry | --close if asked)
   mora serve http                  # loopback HTTP for sandboxed AI browsers (Aside); token in ~/.config/mora/http.json
   mora serve http install          # run it as an auto-restarting background service (launchd/systemd); also: uninstall|status
   mora companion pair              # pair a phone: prints a QR-able payload with a one-time code
@@ -877,7 +886,7 @@ func createMemory(ctx context.Context, cfg Config, m Memory, opts ...createOptio
 		if err != nil {
 			return Memory{}, pendingOp{}, err
 		}
-		op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindWrite, Path: path})
+		op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindWrite, Path: path, ContentSHA256: indexstore.ContentSHA256(body)})
 		if merr != nil {
 			// errIndexUnmarkable: abort BEFORE a single vault byte changes, so a
 			// client retry cannot mint a duplicate (mcp.go's isError asymmetry).

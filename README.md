@@ -313,7 +313,7 @@ Review a pending write locally before deciding:
 mora mcp proposals list
 mora mcp proposals show <proposal-id>
 # After reviewing the full content and scope, explicitly choose:
-mora mcp proposals approve <proposal-id>
+mora mcp proposals approve <proposal-id> [<proposal-id>...]
 # or: mora mcp proposals reject <proposal-id>
 ```
 
@@ -602,7 +602,8 @@ absolute vault path for one process. It does not change `config.toml`.
   plus SQLite `query_only(1)` so it can read the live write-ahead log safely.
 - The vault, index, tokens, sync state, and usage log stay local by default.
 - Mora uses the network for source APIs, GitHub release checks, and any backup
-  or share target that you choose.
+  or share target that you choose. Pushing authored memories to a company
+  memory service (`mora eywa push`) is off until you enable it and asks first.
 - No AI model is called when Mora saves or searches. The default embedder is
   `static`, which runs no model.
 - Optional Ollama embeddings are allowed only on a loopback address.

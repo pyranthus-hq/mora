@@ -109,6 +109,8 @@ func watchParent(stderr io.Writer) func() {
 			case <-t.C:
 				if getppid() != orig {
 					fmt.Fprintln(stderr, "mora mcp serve: client process exited; shutting down")
+					// Exiting mid-rebuild would leave a dead receipt; bounded like serveMCP's drain.
+					waitForAuthoredReconciles(5 * time.Minute)
 					exitFn(0)
 					return
 				}
@@ -970,7 +972,7 @@ func mcpDeleteMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	// after the file is gone would keep serving the deleted content; the pending
 	// op both reddens the index and suppresses the id on every read path (B4),
 	// so serving-deleted-content is impossible even while the rebuild is broken.
-	op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindDelete, Path: m.Path, MemoryID: m.ID})
+	op, merr := markIndexDirty(ctx, cfg, deleteOp(m))
 	if merr != nil {
 		return nil, merr
 	}
@@ -978,6 +980,7 @@ func mcpDeleteMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 		_ = unmarkIndexDirty(cfg, op.OpID)
 		return nil, err
 	}
+	markDeleteUnlinked(cfg, op)
 	// A failed index update after a delete is worse than after a write: search
 	// keeps SERVING the deleted content as if it still existed. Delete is the
 	// privacy path, so the failure stays a LOUD error and the pending-delete

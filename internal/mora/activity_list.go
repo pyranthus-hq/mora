@@ -91,9 +91,18 @@ func listActivityMemories(cfg Config, scope string, limit int, filter searchFilt
 		}
 		readLimit = 0
 	}
-	rows, err := listMemories(cfg, scope, readLimit, filter)
-	if err != nil || hours == 0 {
+	// Read everything, drop tentative rows, then apply the limit: a limit applied
+	// first would let the newest tentative notes crowd out confirmed ones.
+	rows, err := listMemories(cfg, scope, 0, filter)
+	if err != nil {
 		return rows, err
+	}
+	rows = withoutTentative(rows)
+	if hours == 0 {
+		if readLimit > 0 && len(rows) > readLimit {
+			rows = rows[:readLimit]
+		}
+		return rows, nil
 	}
 	return recentSourceEvents(rows, now, hours, limit), nil
 }

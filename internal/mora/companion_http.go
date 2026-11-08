@@ -376,6 +376,7 @@ func (k *companionReader) searchContext(ctx context.Context, req companion.Conte
 	if err != nil {
 		return nil, nil, err
 	}
+	mems = withoutTentative(mems)
 	// BasicGaps is the pure half of the think gap analysis: staleness, evidence
 	// density, coverage holes. Search gets the honest floor rather than nothing,
 	// because a bundle with no gaps array is a claim that nothing is missing.
@@ -2086,12 +2087,9 @@ func captureClaimTokenIsStale(token string, now time.Time) (bool, error) {
 // than writing a second one keeps one definition of "that process is gone" in
 // the product.
 //
-// Its POSIX half answers false for a process this user cannot signal. That is
-// the wrong direction in general and the right one here: the published store
-// lives in a 0700 directory under this user's own home, so every token in it was
-// written by this user, and a pid that cannot be signalled is a pid that has
-// been recycled onto somebody else's program — a corpse by another name. The
-// takeover window covers the case either way.
+// Its POSIX half answers true for a process this user cannot signal. A pid
+// recycled onto somebody else's program therefore reads as alive until the
+// takeover window expires, which only delays a takeover.
 var captureProcessAlive = processAlive
 
 // capturePublicationLockDir is where the published store's cross-process guards

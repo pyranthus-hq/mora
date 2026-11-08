@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -56,16 +57,194 @@ func TestListPendingCorruptFailsClosed(t *testing.T) {
 }
 func TestShouldClearMatrix(t *testing.T) {
 	at := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
-	files := map[string]bool{"/present": true}
-	parsed := map[string]bool{"/parsed": true}
+	dir := t.TempDir()
+	onDisk := filepath.Join(dir, "disk.md")
+	if err := os.WriteFile(onDisk, []byte("published"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h, other := ContentSHA256([]byte("published")), ContentSHA256([]byte("other"))
+	seed := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	reingested, abandoned, stale := seed("re.md", "other"), seed("ab.md", "published"), seed("st.md", "other")
+	c := Coverage{
+		ListingStartedAt: at,
+		Files:            map[string]bool{"/parsed": true, "/present": true, onDisk: true, reingested: true, abandoned: true, stale: true},
+		Parsed:           map[string]bool{"/parsed": true},
+		ParsedSHA256:     map[string]string{"/parsed": h, onDisk: other, reingested: other, abandoned: h, stale: h},
+		OwnerAlive:       func(pid int) bool { return pid == 1 },
+	}
+	const alive, dead = 1, 2
 	cases := []struct {
+		name string
 		op   PendingOp
 		want bool
-	}{{PendingOp{Kind: KindRebuild, MarkedAt: at.Add(-time.Second).Format(time.RFC3339)}, true}, {PendingOp{Kind: KindRebuild, MarkedAt: at.Add(time.Second).Format(time.RFC3339)}, false}, {PendingOp{Kind: KindWrite, Path: "/parsed"}, true}, {PendingOp{Kind: KindWrite, Path: "/present"}, false}, {PendingOp{Kind: KindDelete, Path: "/missing"}, true}, {PendingOp{Kind: KindDelete, Path: "/present"}, false}, {PendingOp{}, true}}
+	}{
+		{"write no hash parsed", PendingOp{Kind: KindWrite, Path: "/parsed"}, true},
+		{"write no hash not parsed", PendingOp{Kind: KindWrite, Path: "/present"}, false},
+		{"write parsed hash equal", PendingOp{Kind: KindWrite, Path: "/parsed", ContentSHA256: h, OwnerPID: alive}, true},
+		{"write listed not parsed", PendingOp{Kind: KindWrite, Path: "/present", ContentSHA256: h, OwnerPID: dead}, false},
+		{"write on disk now equal", PendingOp{Kind: KindWrite, Path: onDisk, ContentSHA256: h, OwnerPID: dead}, false},
+		{"write owner dead", PendingOp{Kind: KindWrite, Path: "/never", ContentSHA256: h, OwnerPID: dead}, true},
+		{"write replaced owner dead", PendingOp{Kind: KindWrite, Path: "/parsed", ContentSHA256: other, OwnerPID: dead}, true},
+		{"write owner alive", PendingOp{Kind: KindWrite, Path: "/never", ContentSHA256: h, OwnerPID: alive}, false},
+		{"write replaced owner alive", PendingOp{Kind: KindWrite, Path: "/parsed", ContentSHA256: other, OwnerPID: alive}, false},
+		{"write no owner", PendingOp{Kind: KindWrite, Path: "/never", ContentSHA256: h}, false},
+		{"write hash no path", PendingOp{Kind: KindWrite, ContentSHA256: h, OwnerPID: dead}, false},
+		{"write unreadable", PendingOp{Kind: KindWrite, Path: filepath.Join(onDisk, "x"), ContentSHA256: h, OwnerPID: dead}, false},
+		{"delete no hash gone", PendingOp{Kind: KindDelete, Path: "/missing"}, true},
+		{"delete no hash parsed", PendingOp{Kind: KindDelete, Path: "/parsed"}, true},
+		{"delete no hash not parsed", PendingOp{Kind: KindDelete, Path: "/present"}, false},
+		{"delete live owner gone from listing", PendingOp{Kind: KindDelete, Path: "/missing", ContentSHA256: h, OwnerPID: alive}, false},
+		{"delete live owner parsed hash differs", PendingOp{Kind: KindDelete, Path: "/parsed", ContentSHA256: other, OwnerPID: alive}, false},
+		{"delete live owner parsed hash equal", PendingOp{Kind: KindDelete, Path: "/parsed", ContentSHA256: h, OwnerPID: alive}, false},
+		{"delete no owner", PendingOp{Kind: KindDelete, Path: "/missing", ContentSHA256: h}, false},
+		{"delete unlinked gone from listing", PendingOp{Kind: KindDelete, Path: "/missing", ContentSHA256: h, OwnerPID: alive, Unlinked: true}, true},
+		{"delete unlinked parsed hash differs", PendingOp{Kind: KindDelete, Path: "/parsed", ContentSHA256: other, OwnerPID: alive, Unlinked: true}, true},
+		{"delete unlinked restored identical bytes", PendingOp{Kind: KindDelete, Path: "/parsed", ContentSHA256: h, OwnerPID: alive, Unlinked: true}, true},
+		{"delete unlinked listed not parsed", PendingOp{Kind: KindDelete, Path: "/present", ContentSHA256: h, OwnerPID: alive, Unlinked: true}, false},
+		{"delete dead gone from listing", PendingOp{Kind: KindDelete, Path: "/missing", ContentSHA256: h, OwnerPID: dead}, true},
+		{"delete dead listed not parsed", PendingOp{Kind: KindDelete, Path: "/present", ContentSHA256: h, OwnerPID: dead}, false},
+		{"delete dead differs disk equals parsed", PendingOp{Kind: KindDelete, Path: reingested, ContentSHA256: h, OwnerPID: dead}, true},
+		{"delete dead differs file removed after parse", PendingOp{Kind: KindDelete, Path: "/parsed", ContentSHA256: other, OwnerPID: dead}, false},
+		{"delete dead differs disk moved on", PendingOp{Kind: KindDelete, Path: onDisk, ContentSHA256: h, OwnerPID: dead}, false},
+		{"delete dead all three match", PendingOp{Kind: KindDelete, Path: abandoned, ContentSHA256: h, OwnerPID: dead}, true},
+		{"delete dead match but file gone", PendingOp{Kind: KindDelete, Path: "/parsed", ContentSHA256: h, OwnerPID: dead}, false},
+		{"delete dead match but disk differs", PendingOp{Kind: KindDelete, Path: stale, ContentSHA256: h, OwnerPID: dead}, false},
+		{"delete hash no path", PendingOp{Kind: KindDelete, ContentSHA256: h, OwnerPID: dead}, false},
+		{"rebuild before listing", PendingOp{Kind: KindRebuild, MarkedAt: at.Add(-time.Second).Format(time.RFC3339)}, true},
+		{"rebuild at listing", PendingOp{Kind: KindRebuild, MarkedAt: at.Format(time.RFC3339)}, true},
+		{"rebuild after listing", PendingOp{Kind: KindRebuild, MarkedAt: at.Add(time.Second).Format(time.RFC3339)}, false},
+		{"corrupt", PendingOp{}, true},
+	}
 	for _, tc := range cases {
-		if got := ShouldClear(tc.op, at, files, parsed); got != tc.want {
-			t.Errorf("ShouldClear(%+v)=%v want %v", tc.op, got, tc.want)
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "write unreadable" && runtime.GOOS == "windows" {
+				t.Skip("a path under a file reads as missing on Windows, so this fixture cannot make a read error")
+			}
+			if got := ShouldClear(tc.op, c); got != tc.want {
+				t.Errorf("ShouldClear(%+v)=%v want %v", tc.op, got, tc.want)
+			}
+		})
+	}
+}
+
+// Only the all-three-match retirement brings a memory back, so only it is reported.
+func TestAbandonedDeleteIsReported(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	path := filepath.Join(t.TempDir(), "m.md")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := ContentSHA256([]byte("x"))
+	var reported []string
+	c := Coverage{
+		Files:        map[string]bool{path: true},
+		ParsedSHA256: map[string]string{path: h},
+		OwnerAlive:   func(int) bool { return false },
+		Abandoned:    func(op PendingOp) { reported = append(reported, op.OpID) },
+	}
+	ops := []PendingOp{
+		{OpID: "abandoned", Kind: KindDelete, Path: path, ContentSHA256: h, OwnerPID: 9},
+		{OpID: "gone", Kind: KindDelete, Path: "/missing", ContentSHA256: h, OwnerPID: 9},
+		{OpID: "restored", Kind: KindDelete, Path: path, ContentSHA256: h, OwnerPID: 9, Unlinked: true},
+	}
+	var removed []string
+	if err := ClearCovered(cfg, ops, c, func(_ config.Config, id string) error { removed = append(removed, id); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 3 || len(reported) != 1 || reported[0] != "abandoned" {
+		t.Fatalf("removed=%v reported=%v", removed, reported)
+	}
+}
+
+// The unlink rename can land between ReadDir and ReadFile. Skipping the marker
+// there drops suppression while SQLite still holds the deleted row.
+func TestListPendingFollowsRenameDuringRead(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	if err := os.MkdirAll(PendingDir(cfg), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(PendingPath(cfg, "d"), []byte(`{"op_id":"d","kind":"delete","path":"/a","memory_id":"m"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	renamed := false
+	readPendingFile = func(path string) ([]byte, error) {
+		if !renamed {
+			renamed = true
+			if err := MarkFTSCommitted(cfg, "d", os.Rename); err != nil {
+				t.Fatal(err)
+			}
 		}
+		return os.ReadFile(path)
+	}
+	t.Cleanup(func() { readPendingFile = os.ReadFile })
+	if !PendingDeleteIDs(cfg)["m"] {
+		t.Fatal("a marker renamed during the read stopped suppressing its memory")
+	}
+	readPendingFile = os.ReadFile
+	ops, err := ListPending(cfg)
+	if err != nil || len(ops) != 1 || !ops[0].Unlinked {
+		t.Fatalf("ops=%+v err=%v", ops, err)
+	}
+}
+
+// A marker retired between ReadDir and ReadFile is gone in both forms: skip it.
+func TestListPendingSkipsRetiredDuringRead(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	if err := os.MkdirAll(PendingDir(cfg), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(PendingPath(cfg, "d"), []byte(`{"op_id":"d","kind":"delete"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	readPendingFile = func(path string) ([]byte, error) {
+		_ = os.Remove(PendingPath(cfg, "d"))
+		return os.ReadFile(path)
+	}
+	t.Cleanup(func() { readPendingFile = os.ReadFile })
+	if ops, err := ListPending(cfg); err != nil || len(ops) != 0 {
+		t.Fatalf("ops=%+v err=%v", ops, err)
+	}
+}
+
+func TestDeleteMarkerSecondFormReadsUnlinked(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	if err := os.MkdirAll(PendingDir(cfg), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(PendingPath(cfg, "d"), []byte(`{"op_id":"d","kind":"delete","path":"/a","memory_id":"m"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkFTSCommitted(cfg, "d", os.Rename); err != nil {
+		t.Fatal(err)
+	}
+	ops, err := ListPending(cfg)
+	if err != nil || len(ops) != 1 || !ops[0].Unlinked || ops[0].FTSCommitted {
+		t.Fatalf("ops=%+v err=%v", ops, err)
+	}
+	if !PendingDeleteIDs(cfg)["m"] {
+		t.Fatal("an unlinked delete marker must keep suppressing its memory")
+	}
+}
+
+// A marker outside the snapshot is on disk but must not be touched.
+func TestClearCoveredRetiresOnlyTheSnapshot(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	if err := os.MkdirAll(PendingDir(cfg), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(PendingPath(cfg, "later"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var removed []string
+	err := ClearCovered(cfg, []PendingOp{{OpID: "snap"}}, Coverage{}, func(_ config.Config, id string) error { removed = append(removed, id); return nil })
+	if err != nil || len(removed) != 1 || removed[0] != "snap" {
+		t.Fatalf("clear=(%v,%v)", removed, err)
 	}
 }
 func TestClearCoveredAndSuppressDeletes(t *testing.T) {
@@ -82,7 +261,11 @@ func TestClearCoveredAndSuppressDeletes(t *testing.T) {
 		t.Fatalf("suppressed=%+v", got)
 	}
 	var removed string
-	err := ClearCovered(cfg, time.Now(), nil, nil, func(_ config.Config, id string) error { removed = id; return nil })
+	ops, err := ListPending(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ClearCovered(cfg, ops, Coverage{ListingStartedAt: time.Now()}, func(_ config.Config, id string) error { removed = id; return nil })
 	if err != nil || removed != "del" {
 		t.Fatalf("clear=(%q,%v)", removed, err)
 	}
@@ -113,10 +296,10 @@ func TestMarkFTSCommittedRenamesWithoutRetiring(t *testing.T) {
 	}
 	// The renamed marker is still a pending write: a covering rebuild retires it
 	// by the same parsed-path rule, and an uncovering one keeps it.
-	if ShouldClear(ops[0], now, nil, map[string]bool{}) {
+	if ShouldClear(ops[0], Coverage{ListingStartedAt: now}) {
 		t.Fatal("FTS-committed marker cleared without a covering parse")
 	}
-	if !ShouldClear(ops[0], now, nil, map[string]bool{ops[0].Path: true}) {
+	if !ShouldClear(ops[0], Coverage{ListingStartedAt: now, Parsed: map[string]bool{ops[0].Path: true}}) {
 		t.Fatal("FTS-committed marker not cleared by a covering parse")
 	}
 
