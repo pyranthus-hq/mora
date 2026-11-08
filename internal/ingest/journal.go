@@ -98,6 +98,21 @@ func ScanJournal(path string) (header string, pathLines int, present bool) {
 	return header, pathLines, present
 }
 
+// JournalRunID returns the run id on a journal's header line, or "" when the
+// journal is absent, has no header, or names an invalid run.
+func JournalRunID(path string, validToken func(string) bool) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, raw := range strings.Split(string(b), "\n") {
+		if line := strings.TrimSpace(raw); strings.HasPrefix(line, "run ") {
+			return HeaderRunID(line, validToken)
+		}
+	}
+	return ""
+}
+
 func HeaderRunID(header string, validToken func(string) bool) string {
 	fields := strings.Fields(header)
 	if len(fields) == 3 && fields[0] == "run" && validToken(fields[1]) {

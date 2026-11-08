@@ -172,7 +172,7 @@ func runEnabledSourceBackfill(ctx context.Context, cfg Config, stdout io.Writer,
 	output := io.Writer(&synchronizedWriter{w: stdout})
 	outcomes := runSourcePlan(ctx, plans, sourceRunOptions{Run: func(runCtx context.Context, plan sourceRunPlan) sourceRunOutcome {
 		result, runErr := ingestSourceFn(runCtx, cfg, plan.Source, output)
-		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Err: runErr}
+		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Skipped: result.Skipped, Err: runErr}
 	}})
 	for i, outcome := range outcomes {
 		if outcome.Err != nil && !outcome.Cancelled && report != nil {
@@ -302,7 +302,7 @@ func cmdIngest(ctx context.Context, args []string, stdout, stderr io.Writer) (er
 		result, runErr := ingestSourceFn(runCtx, cfg, plan.Source, progress)
 		outcome := sourceRunOutcome{
 			Key: plan.Key, Items: result.Materialized, Examined: result.Examined,
-			Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Err: runErr,
+			Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Skipped: result.Skipped, Err: runErr,
 		}
 		if path := syncStatusPathFor(cfg, plan.Source); path != "" {
 			if status, statusErr := memory.LoadStatus(path); statusErr == nil && status != nil {
@@ -444,7 +444,7 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	// github and imessage never defined --json; strip it here, route their setup
 	// prose to stderr, and answer with a receipt. connect filesystem already owns
 	// its own --json branch and its receipt, so it is left alone.
-	if len(args) >= 1 && (args[0] == "github" || args[0] == "imessage") {
+	if len(args) >= 1 && (args[0] == "github" || args[0] == "eywa" || args[0] == "imessage") {
 		source := args[0]
 		jsonOut, progress := false, false
 		rest := make([]string, 0, len(args))
@@ -471,6 +471,15 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 			}
 			if jsonOut {
 				return emitReceipt(stdout, "mora.connect.github", 1, connectReceipt{Source: source, Connected: true, Ready: true})
+			}
+			return nil
+		}
+		if source == "eywa" {
+			if err := connectEywa(ctx, rest, out); err != nil {
+				return err
+			}
+			if jsonOut {
+				return emitReceipt(stdout, "mora.connect.eywa", 1, connectReceipt{Source: source, Connected: true, Ready: true})
 			}
 			return nil
 		}
@@ -504,7 +513,7 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		return connectFilesystem(ctx, args[1:], stdout, stderr)
 	}
 	if len(args) < 1 || args[0] != "google" {
-		return errors.New("usage: mora connect google [--since-days N] [--account <label>] | mora connect github [--repo owner/repo] | mora connect imessage [--since-days N] | mora connect filesystem <path> [--name <name>]")
+		return errors.New("usage: mora connect google [--since-days N] [--account <label>] | mora connect github [--repo owner/repo] | mora connect eywa --endpoint <url> --token-url <url> --client-id <id> | mora connect imessage [--since-days N] | mora connect filesystem <path> [--name <name>]")
 	}
 	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -621,7 +630,7 @@ func cmdConnect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 }
 func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) >= 1 && genericutil.IsHelpFlag(args[0]) {
-		fmt.Fprintln(stdout, "usage: mora sync <status|google|github|filesystem|imessage|whatsapp|applecalendar|git>")
+		fmt.Fprintln(stdout, "usage: mora sync <status|google|github|eywa|filesystem|imessage|whatsapp|applecalendar|git>")
 		fmt.Fprintln(stdout, "  status    show per-source freshness (no fetch)")
 		fmt.Fprintln(stdout, "  google    re-run the Gmail + Calendar backfill")
 		fmt.Fprintln(stdout, "  github    re-run the read-only GitHub issue sync")
@@ -635,7 +644,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	}
 	if len(args) == 0 {
 		return newCodedError(errCodeUsageMissingArgument, nil,
-			"usage: mora sync <status|google|github|filesystem|imessage|whatsapp|applecalendar|git>")
+			"usage: mora sync <status|google|github|eywa|filesystem|imessage|whatsapp|applecalendar|git>")
 	}
 	// Strip the relay receipt token BEFORE any flag parsing. --mora-app-receipt
 	// is a private argument of the signed-app relay protocol, not part of a
@@ -652,7 +661,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	}
 	if len(args) == 0 {
 		return newCodedError(errCodeUsageMissingArgument, nil,
-			"usage: mora sync <status|google|github|filesystem|imessage|applecalendar|git>")
+			"usage: mora sync <status|google|github|eywa|filesystem|imessage|whatsapp|applecalendar|git>")
 	}
 	var statusJSON bool
 	if args[0] == "status" {
@@ -674,7 +683,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	// backfill.
 	sourceJSON := false
 	switch args[0] {
-	case "filesystem", "imessage", "applecalendar", "github", "google":
+	case "filesystem", "imessage", "applecalendar", "github", "eywa", "google":
 		fs := flag.NewFlagSet("sync "+args[0], flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 		jsonOut := fs.Bool("json", false, "emit the sync receipt as JSON")
@@ -855,6 +864,13 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		}
 		return err
 	}
+	if args[0] == "eywa" {
+		total, err := backfillEnabledEywa(ctx, cfg, sourceProgress)
+		if rerr := emitSyncSourceResult(cfg, stdout, "eywa", sourceJSON, total, "synced %d fact record(s)\n"); rerr != nil {
+			return rerr
+		}
+		return err
+	}
 	if args[0] == "google" {
 		total, err := backfillEnabledGoogle(ctx, cfg, sourceProgress)
 		if rerr := emitSyncSourceResult(cfg, stdout, "google", sourceJSON, total, "synced %d item(s)\n"); rerr != nil {
@@ -862,7 +878,7 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		}
 		return err
 	}
-	return fmt.Errorf("unknown sync source %q (usage: mora sync <status|google|github|filesystem|imessage|whatsapp|applecalendar|git>)", args[0])
+	return fmt.Errorf("unknown sync source %q (usage: mora sync <status|google|github|eywa|filesystem|imessage|whatsapp|applecalendar|git>)", args[0])
 }
 
 // syncSourceReceipt is the per-source re-sync outcome. Phase 2 (ISO-02) adds
@@ -1122,7 +1138,7 @@ func cmdReingest(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	}
 	outcomes := runSourcePlan(ctx, plans, sourceRunOptions{Run: func(runCtx context.Context, plan sourceRunPlan) sourceRunOutcome {
 		result, runErr := ingestSourceFn(runCtx, cfg, plan.Source, progress)
-		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Err: runErr}
+		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Skipped: result.Skipped, Err: runErr}
 	}})
 	total := sourceOutcomesMaterialized(outcomes)
 	for _, outcome := range outcomes {
@@ -1177,6 +1193,8 @@ type sourceIngestResult struct {
 	Missing      int
 	Stages       memory.IngestStages
 	Incremental  bool
+	// Skipped: another live process holds this source's lease, nothing ran.
+	Skipped bool
 }
 
 func sourceIngestResultFromMemory(result memory.IngestResult) sourceIngestResult {
@@ -1197,10 +1215,31 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 	// attemptStart is captured before ANY step that can fail, so every failure at
 	// this chokepoint — activity bookkeeping included — stamps the same attempt.
 	attemptStart := time.Now()
+	// One sync per source: a live holder means skip, before any activity record
+	// or status is written. The lease is released on every exit path below.
+	sourceKey := ingestOperationSourceKey(s)
+	// Same-key siblings in this process wait here rather than share the lease.
+	releaseLease, leaseErr := ingestpkg.AcquireLease(ctx, cfg, sourceKey, ingestLeaseSeams())
+	if leaseErr != nil {
+		var held *ingestpkg.LeaseHeldError
+		if errors.As(leaseErr, &held) {
+			warnf(out, "%s sync skipped: %v", sourceKey, held)
+			return sourceIngestResult{Skipped: true}, nil
+		}
+		if ctx.Err() != nil {
+			return result, ctx.Err()
+		}
+		// Continuing without the slot would let journal init re-enter a sibling's
+		// same-PID lease, so a lease error stops this source.
+		err := classifyConnectorError(fmt.Errorf("taking %s sync lease: %w", sourceKey, leaseErr))
+		stampSyncAttemptFailure(cfg, s, err, attemptStart, out)
+		return result, err
+	}
+	defer releaseLease()
 	// The activity receipt and matching journal header are both durable before
 	// dispatch can publish a vault file. Even a zero-item run gets a header, so
 	// its success can be closed only by the covering committed rebuild.
-	h, err := beginOperation(cfg, operationKindIngest, "starting", cfg.OperationClock())
+	h, err := beginIngestOperation(cfg, "starting", cfg.OperationClock())
 	if err != nil {
 		// The connector failure boundary (CON-07). Every source failure passes
 		// through here exactly once, so this is where an untyped one acquires a
@@ -1224,13 +1263,13 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		}, code, cfg.OperationClock())
 		return errors.Join(cause, finishErr)
 	}
-	sourceKey := ingestOperationSourceKey(s)
+	// Every publish below journals under this run's key (writeMappedMemoryDetailed
+	// reads it back), so the lease taken here is the only one the run owns and the
+	// deferred release below actually retires it.
+	cfg.BindOperationSource(sourceKey)
 	if err := ingestpkg.EnsureJournalHeader(cfg, sourceKey, ingestPublishSeams()); err != nil {
 		return result, finishFailed("journal_start_failed", err)
 	}
-	// Release only this source's lease. Concurrent in-process ingests share a PID;
-	// releasing every lease here would abandon the still-running sibling.
-	defer ingestpkg.ReleaseLeaseOwnedHere(cfg, sourceKey, ingestLeaseSeams())
 
 	progress := startOperationProgress(cfg, h, "ingesting")
 	if err := progress.Update("ingesting", operationCounts{}); err != nil {
@@ -1248,8 +1287,7 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 	_ = appendTraceEvent(cfg, traceEvent{CorrelationID: h.RunID, Stage: traceStageIngestion, Source: ingestOperationSourceKey(s), Status: traceStatus})
 	enrichSyncObservation(cfg, s, attemptStart, result.Stages.TotalMS, dispatchErr)
 	if dispatchErr == nil && result.Materialized == 0 {
-		ingestpkg.ReleaseLeaseOwnedHere(cfg, sourceKey, ingestLeaseSeams())
-		_, retireErr := ingestpkg.CompactJournal(cfg, sourceKey, map[string]bool{}, ingestRecoverySeams())
+		retireErr := retireUnpublishedIngestJournal(cfg, sourceKey, h.RunID)
 		progressErr := progress.Stop()
 		finishErr := finishOperation(cfg, h, operationCompleted, "no_changes", operationCounts{
 			Items: 0, Examined: result.Examined, Materialized: 0, Missing: result.Missing,
@@ -1269,6 +1307,12 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		dispatchErr = classifyConnectorError(dispatchErr)
 		progressErr := progress.Stop()
 		err = errors.Join(dispatchErr, progressErr)
+		// A run that failed before publishing anything leaves only its own header.
+		// Retire it the same way the zero-change success path does, or the index
+		// reads dirty until some unrelated rebuild happens to cover it.
+		if result.Materialized == 0 {
+			err = errors.Join(err, retireUnpublishedIngestJournal(cfg, sourceKey, h.RunID))
+		}
 		err = finishFailed("ingest_failed", err)
 		stampSyncAttemptFailure(cfg, s, err, attemptStart, out)
 		return result, err
@@ -1277,6 +1321,26 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 	// heartbeat stays live while sibling sources finish. The committed rebuild
 	// that retires this run's journal stops it and owns the terminal transition.
 	return result, nil
+}
+
+// retireUnpublishedIngestJournal releases this run's lease and retires its
+// journal when the run published nothing. Two guards keep that from becoming a
+// false-clean. The run must not have begun a publish (counted before each vault
+// write, so a path line lost to its best-effort append still counts). And the
+// header must be this run's own: an older header belongs to a run that may have
+// crashed after a publish whose path line never landed. CompactJournal keeps
+// any listed path whose file still exists, so a journal that recorded real
+// publishes is never retired here.
+func retireUnpublishedIngestJournal(cfg Config, sourceKey, runID string) error {
+	ingestpkg.ReleaseLeaseOwnedHere(cfg, sourceKey, ingestLeaseSeams())
+	if cfg.OperationPublishes() > 0 {
+		return nil
+	}
+	if ingestpkg.JournalRunID(ingestpkg.JournalPath(cfg, sourceKey), validOperationToken) != runID {
+		return nil
+	}
+	_, err := ingestpkg.CompactJournal(cfg, sourceKey, map[string]bool{}, nil, ingestRecoverySeams())
+	return err
 }
 
 func enrichSyncObservation(cfg Config, s Source, attemptStart time.Time, durationMS int64, runErr error) {
@@ -1341,6 +1405,17 @@ func connectorCodeForCause(err error) string {
 	if errors.As(err, &syntaxErr) || errors.As(err, &typeErr) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return errCodeConnectorMalformed
 	}
+	// A connector package may declare its failure's class through a method, so
+	// the type (never the prose) decides: the eywa connector marks a refused
+	// token or agent as unauthorized and a rate limit or outage as unavailable.
+	var unauthorized interface{ ConnectorUnauthorized() bool }
+	if errors.As(err, &unauthorized) && unauthorized.ConnectorUnauthorized() {
+		return errCodeConnectorUnauthorized
+	}
+	var unavailable interface{ ConnectorUnavailable() bool }
+	if errors.As(err, &unavailable) && unavailable.ConnectorUnavailable() {
+		return errCodeConnectorUnavailable
+	}
 	// The connector's process, binary, endpoint, or backing file is not there.
 	var execErr *exec.Error
 	var exitErr *exec.ExitError
@@ -1370,6 +1445,8 @@ func ingestSourceDispatchDetailed(ctx context.Context, cfg Config, s Source, out
 		return ingestAppleCalDetailed(ctx, cfg, s, out)
 	case "github":
 		return ingestGitHubDetailed(ctx, cfg, s, out)
+	case "eywa":
+		return ingestEywaDetailed(ctx, cfg, s, out)
 	case "gdrive":
 		return sourceIngestResult{}, nil // deferred to week 2
 	default:
@@ -1447,10 +1524,11 @@ func writeMappedMemoryDetailed(cfg Config, mm memory.MappedMemory) (bool, error)
 	// still reads the index dirty and the next rebuild recovers the memory. Only an
 	// ACTUAL publish is journaled — the content-hash-unchanged / suppressed early
 	// returns above wrote no new file and reach neither line.
-	sourceKey := ingestpkg.SourceKey(mm.Provider, mm.Account)
+	sourceKey := ingestJournalKey(cfg, ingestpkg.SourceKey(mm.Provider, mm.Account))
 	if jerr := ingestpkg.EnsureJournalHeader(cfg, sourceKey, ingestPublishSeams()); jerr != nil {
 		return false, jerr
 	}
+	cfg.NoteOperationPublish()
 	if err := atomicio.Write(out, body, 0o644); err != nil {
 		return false, err
 	}
@@ -1466,6 +1544,19 @@ func writeMappedMemoryDetailed(cfg Config, mm memory.MappedMemory) (bool, error)
 	// unsuffixed twin for the SAME provider object (#495). Best-effort.
 	migrateLegacyInstanceFile(cfg, mm)
 	return true, nil
+}
+
+// ingestJournalKey is the journal key a publish must use: the key the running
+// ingest leased (ingestSourceDetailed binds it), or the provider-derived key for
+// a publish outside a bound ingest. The two differ for Apple Calendar, whose
+// source type is "applecalendar" while its memories carry provider "applecal";
+// journaling under the provider key leased a second key the run never released,
+// so the index read dirty until another process rebuilt.
+func ingestJournalKey(cfg Config, providerKey string) string {
+	if key := cfg.OperationSourceKey(); key != "" {
+		return key
+	}
+	return providerKey
 }
 
 // testHookPostConnectorPublish fires inside writeMappedMemory AFTER the vault publish
@@ -1579,7 +1670,7 @@ func ingestGoogleDetailed(ctx context.Context, cfg Config, s Source, kind google
 	}
 
 	res, ingErr := memory.Ingest(memory.IngestParams{
-		Context: ctx, Fetcher: fetcher, Kind: kind, Window: win, Scope: s.Scope, BodyBudget: 16 * 1024,
+		Context: ctx, Fetcher: fetcher, Kind: kind, Window: win, Scope: s.Scope, BodyBudget: connectorBodyBudget,
 		Status: st, WriteResult: write, Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 	})
 	prog.done()
@@ -1607,6 +1698,14 @@ func googleTokenPath(cfg Config) string { return googleTokenPathFor(cfg, "") }
 func whatsAppStatusPath(cfg Config, name string) string {
 	return filepath.Join(cfg.StateDir, "sync", "whatsapp-"+name+".json")
 }
+
+// connectorBodyBudget is the byte budget for one Gmail thread, WhatsApp or
+// iMessage conversation, or Apple Calendar event body at ingest. Gmail and
+// Apple Calendar keep the head (memory.MapItem); WhatsApp and iMessage keep the
+// newest messages. A cut Gmail thread is marked Truncated and gets no
+// message-grain segments, so the budget is set to keep long threads whole.
+// GitHub issues use their own 64 KiB budget in ingestGitHubDetailed.
+const connectorBodyBudget = 64 * 1024
 
 const defaultWhatsAppLookbackDays = 90
 
@@ -1648,7 +1747,10 @@ func ingestWhatsAppDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	defer fetcher.Close()
 
 	statusPath := whatsAppStatusPath(cfg, s.Name)
-	st, _ := memory.LoadStatus(statusPath)
+	st, err := loadSyncStatus(statusPath)
+	if err != nil {
+		return sourceIngestResult{}, err
+	}
 	st.Source = s.Name
 	win := windowForWhatsApp(s)
 
@@ -1677,7 +1779,7 @@ func ingestWhatsAppDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ctx, Fetcher: fetcher, Kind: whatsapp.KindConversation, Window: win, Scope: s.Scope,
-		BodyBudget: 16 * 1024, Status: st, WriteResult: write,
+		BodyBudget: connectorBodyBudget, Status: st, WriteResult: write,
 		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 		Map:        whatsapp.MapConversationFn(),
 	})
@@ -1772,7 +1874,10 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	resolver, _ := imessage.NewResolver(addressBookRoot(cfg))
 
 	statusPath := imessageStatusPath(cfg, s.Name)
-	st, _ := memory.LoadStatus(statusPath)
+	st, err := loadSyncStatus(statusPath)
+	if err != nil {
+		return sourceIngestResult{}, err
+	}
 	st.Source = s.Name
 	win := windowForIMessage(s)
 
@@ -1824,7 +1929,7 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	}
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ingestCtx, Fetcher: fetcher, Kind: imessage.KindIMessageChat, Window: win, Scope: s.Scope,
-		BodyBudget: 16 * 1024, Status: st, WriteResult: write,
+		BodyBudget: connectorBodyBudget, Status: st, WriteResult: write,
 		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 		Map:        mapFn,
 	})
@@ -1888,7 +1993,10 @@ func ingestAppleCalDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	defer fetcher.Close()
 
 	statusPath := appleCalStatusPath(cfg, s.Name)
-	st, _ := memory.LoadStatus(statusPath)
+	st, err := loadSyncStatus(statusPath)
+	if err != nil {
+		return sourceIngestResult{}, err
+	}
 	st.Source = s.Name
 	prog := newProgress(out, s.Name, "events")
 	write := func(mm memory.MappedMemory) (bool, error) {
@@ -1903,7 +2011,7 @@ func ingestAppleCalDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	}
 	res, ingErr := memory.Ingest(memory.IngestParams{
 		Context: ctx, Fetcher: fetcher, Kind: applecal.KindAppleCalEvent, Window: windowForAppleCal(s, time.Now()),
-		Scope: s.Scope, BodyBudget: 16 * 1024, Status: st, WriteResult: write,
+		Scope: s.Scope, BodyBudget: connectorBodyBudget, Status: st, WriteResult: write,
 		Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 	})
 	prog.done()
@@ -1930,7 +2038,10 @@ func ingestGitHubDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		return sourceIngestResult{}, err
 	}
 	statusPath := syncStatusPathFor(cfg, s)
-	st, _ := memory.LoadStatus(statusPath)
+	st, err := loadSyncStatus(statusPath)
+	if err != nil {
+		return sourceIngestResult{}, err
+	}
 	st.Source = s.Name
 	prog := newProgress(out, s.Name, "issues")
 	write := func(mm memory.MappedMemory) (bool, error) {
@@ -2321,8 +2432,10 @@ func backfillEnabledAppleCalendar(ctx context.Context, cfg Config, stdout io.Wri
 var testHookFSPreWrite func(id string)
 
 type filesystemManifestEntry struct {
-	Size    int64 `json:"size"`
-	ModTime int64 `json:"mod_time_unix_nano"`
+	Size          int64 `json:"size"`
+	ModTime       int64 `json:"mod_time_unix_nano"`
+	TargetSize    int64 `json:"target_size,omitempty"`
+	TargetModTime int64 `json:"target_mod_time_unix_nano,omitempty"`
 }
 
 func filesystemManifestPath(cfg Config, source string) string {
@@ -2411,6 +2524,17 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 			return fmt.Errorf("stat filesystem source %q file %q: %w", s.Name, path, infoErr)
 		}
 		entry := filesystemManifestEntry{Size: info.Size(), ModTime: info.ModTime().UnixNano()}
+		if d.Type()&os.ModeSymlink != 0 {
+			target, err := os.Stat(path)
+			if err != nil {
+				return fmt.Errorf("reading filesystem source %q symlink target %q metadata: %w", s.Name, path, err)
+			}
+			if !target.Mode().IsRegular() {
+				return fmt.Errorf("filesystem source %q symlink target %q is not a regular file", s.Name, path)
+			}
+			// Staging links stay unchanged when Claude edits the memory they point to.
+			entry.TargetSize, entry.TargetModTime = target.Size(), target.ModTime().UnixNano()
+		}
 		if prior, ok := priorManifest[rel]; ok && prior == entry {
 			nextManifest[rel] = entry
 			result.Examined++
@@ -2475,7 +2599,7 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 		// journal it here too (miss it and every filesystem memory is silently
 		// unrecoverable after a killed ingest). Durable header BEFORE the write is
 		// visible; path line after a real publish.
-		sourceKey := ingestpkg.SourceKey("filesystem", s.Name)
+		sourceKey := ingestJournalKey(cfg, ingestpkg.SourceKey("filesystem", s.Name))
 		if jerr := ingestpkg.EnsureJournalHeader(cfg, sourceKey, ingestPublishSeams()); jerr != nil {
 			result.Failed++
 			result.Missing++
@@ -2483,6 +2607,7 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 		}
 		// Suppression re-check + write, atomic under the governance lease so a
 		// `mora forget` that commits mid-walk is honored, never resurrected (#113).
+		cfg.NoteOperationPublish()
 		wrote, werr := writeUnlessForgotten(cfg, "", id, dest, body, 0o644)
 		if werr != nil {
 			result.Failed++
@@ -2637,4 +2762,15 @@ func extractDocxText(path string) (string, error) {
 		}
 	}
 	return strings.TrimSpace(b.String()), nil
+}
+
+// loadSyncStatus refuses a corrupt status file instead of handing back nil:
+// four connectors dereferenced that nil and the panic took sibling sources in
+// the same run down with them (audit V8).
+func loadSyncStatus(path string) (*memory.SyncStatus, error) {
+	st, err := memory.LoadStatus(path)
+	if err != nil {
+		return nil, fmt.Errorf("sync status %s is unreadable (%w); fix or delete it to start this source over", path, err)
+	}
+	return st, nil
 }

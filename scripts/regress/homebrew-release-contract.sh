@@ -25,7 +25,7 @@ for asset in "${assets[@]}"; do
   jq -n --arg name "$asset" --arg url "https://github.com/pyranthus-hq/mora/releases/download/$tag/$asset" --argjson size "$size" \
     '{name:$name,state:"uploaded",size:$size,browser_download_url:$url}' >> "$work/asset-lines.jsonl"
 done
-jq -s '[.]' "$work/asset-lines.jsonl" > "$work/assets-good.json"
+jq -s '.' "$work/asset-lines.jsonl" > "$work/assets-good.json"
 cp "$work/assets-good.json" "$work/assets.json"
 
 cat > "$work/bin/gh" <<'MOCK_GH'
@@ -34,7 +34,7 @@ set -euo pipefail
 printf 'gh %s\n' "$*" >> "$MOCK_LOG"
 case "$*" in
   'api repos/pyranthus-hq/mora/releases/tags/v0.15.1') cat "$MOCK_RELEASE" ;;
-  'api --paginate --slurp repos/pyranthus-hq/mora/releases/394528665/assets?per_page=100') cat "$MOCK_ASSETS" ;;
+  'api --paginate repos/pyranthus-hq/mora/releases/394528665/assets?per_page=100') cat "$MOCK_ASSETS" ;;
   *) printf 'unexpected gh call: %s\n' "$*" >&2; exit 2 ;;
 esac
 MOCK_GH
@@ -95,17 +95,22 @@ if grep -Eq 'gh release download' "$work/calls.log"; then
 fi
 [[ $(grep -Ec '^curl ' "$work/calls.log") == 5 ]]
 grep -Eq '^cosign verify-blob ' "$work/calls.log"
+if grep -Eq -- '--slurp' "$work/calls.log"; then
+  printf 'FAIL used gh --slurp (breaks gh < 2.48)\n' >&2
+  exit 1
+fi
 printf 'ok   empty embedded assets use dedicated API and verified public downloads\n'
 
-jq --arg name "$amd64" '.[0] |= map(select(.name != $name))' "$work/assets-good.json" > "$work/assets.json"
+
+jq --arg name "$amd64" 'map(select(.name != $name))' "$work/assets-good.json" > "$work/assets.json"
 expect_failure 'missing required asset'
-jq --arg name "$amd64" '.[0] += [.[0][] | select(.name == $name)]' "$work/assets-good.json" > "$work/assets.json"
+jq --arg name "$amd64" '. + [.[] | select(.name == $name)]' "$work/assets-good.json" > "$work/assets.json"
 expect_failure 'duplicate required asset'
-jq --arg name "$amd64" '.[0] |= map(if .name == $name then .state = "new" else . end)' "$work/assets-good.json" > "$work/assets.json"
+jq --arg name "$amd64" 'map(if .name == $name then .state = "new" else . end)' "$work/assets-good.json" > "$work/assets.json"
 expect_failure 'asset not uploaded'
-jq --arg name "$amd64" '.[0] |= map(if .name == $name then .size = 0 else . end)' "$work/assets-good.json" > "$work/assets.json"
+jq --arg name "$amd64" 'map(if .name == $name then .size = 0 else . end)' "$work/assets-good.json" > "$work/assets.json"
 expect_failure 'empty asset metadata'
-jq --arg name "$amd64" '.[0] |= map(if .name == $name then .browser_download_url = "https://evil.example/app.zip" else . end)' "$work/assets-good.json" > "$work/assets.json"
+jq --arg name "$amd64" 'map(if .name == $name then .browser_download_url = "https://evil.example/app.zip" else . end)' "$work/assets-good.json" > "$work/assets.json"
 expect_failure 'untrusted asset URL'
 cp "$work/assets-good.json" "$work/assets.json"
 MOCK_CURL_MODE=oversize expect_failure 'download size mismatch'

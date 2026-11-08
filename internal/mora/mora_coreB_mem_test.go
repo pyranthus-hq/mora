@@ -22,7 +22,7 @@ func TestCoreB_MemWriteMemoryRoundtrip(t *testing.T) {
 	if err := writeMemory(cfg, m); err != nil {
 		t.Fatalf("writeMemory: %v", err)
 	}
-	p := memoryPath(cfg, m)
+	p := mustMemoryPath(t, cfg, m)
 	// Scope ":" must map onto a nested directory.
 	if !strings.HasSuffix(filepath.ToSlash(p), "memories/project/wink/mem_w1.md") {
 		t.Fatalf("unexpected memory path: %s", p)

@@ -56,6 +56,9 @@ func buildThink(ctx context.Context, cfg Config, query, scope string, limit int,
 	if err != nil {
 		return res, err
 	}
+	// think tells the client model to answer from its evidence, so a write
+	// nobody has confirmed stays out of it.
+	local = withoutTentative(local)
 	// Union subscribed share corpora in, owner-attributed (no-op without
 	// subscriptions). The gap analysis below stays LOCAL-only: gaps report what
 	// the user's own vault does not know, and shared ids must never be compared

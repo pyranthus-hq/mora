@@ -29,6 +29,13 @@ func TestAggregateStateWorstOfAllArms(t *testing.T) {
 		{"share degraded", Health{Index: Index{State: IndexFresh, Shares: []Index{{State: IndexDegraded}}}}, Degraded}, {"share never", Health{Index: Index{State: IndexFresh, Shares: []Index{{State: IndexNever}}}}, Unhealthy}, {"share failed", Health{Index: Index{State: IndexFresh, Shares: []Index{{State: IndexFailed}}}}, Unhealthy}, {"share dirty", Health{Index: Index{State: IndexFresh, Shares: []Index{{State: IndexDirty}}}}, Unhealthy},
 		{"producer stale", Health{Producers: []Producer{{State: ProducerStale}}}, Degraded}, {"producer never", Health{Producers: []Producer{{State: ProducerNever}}}, Degraded}, {"producer failed", Health{Producers: []Producer{{State: ProducerFailed}}}, Degraded}, {"ledger", Health{Producers: []Producer{{Subject: ProducerSubjectLedger, State: ProducerFresh}}}, Unhealthy},
 		{"activity stalled", Health{Activities: []operation.Activity{{State: operation.Stalled}}}, Unhealthy}, {"activity failed", Health{Activities: []operation.Activity{{State: operation.Failed}}}, Unhealthy}, {"activity running", Health{Activities: []operation.Activity{{State: operation.Running}}}, Healthy},
+		// #498: an operator-reviewed owner_abandoned receipt stops convicting health.
+		// Only that failure code can be acknowledged, so an ordinary failure and a
+		// stalled run stay red no matter what the stamp says.
+		{"activity abandoned unacknowledged", Health{Activities: []operation.Activity{{State: operation.Failed, FailureCode: operation.FailureOwnerAbandoned}}}, Unhealthy},
+		{"activity abandoned acknowledged", Health{Sources: []Source{{State: Fresh}}, Index: Index{State: IndexFresh}, Activities: []operation.Activity{{State: operation.Failed, FailureCode: operation.FailureOwnerAbandoned, AcknowledgedAt: "2026-09-29T15:00:00Z"}}}, Healthy},
+		{"other failure not silenceable", Health{Activities: []operation.Activity{{State: operation.Failed, FailureCode: "disk_full", AcknowledgedAt: "2026-09-29T15:00:00Z"}}}, Unhealthy},
+		{"stalled not silenceable", Health{Activities: []operation.Activity{{State: operation.Stalled, FailureCode: operation.FailureOwnerAbandoned, AcknowledgedAt: "2026-09-29T15:00:00Z"}}}, Unhealthy},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -84,6 +91,9 @@ func TestAggregateBannerProducerActivityAndPriority(t *testing.T) {
 		{"ledger", Health{Producers: []Producer{{Subject: ProducerSubjectLedger, LastError: "bad\nledger"}}}, "producer ledger unreadable — bad ledger"}, {"producer never", Health{Producers: []Producer{{Name: "digest", State: ProducerNever}}}, "digest has never been produced"}, {"producer stale", Health{Producers: []Producer{{Name: "brief", State: ProducerStale, AgeHours: 9}}}, "brief has not been produced for 9h"}, {"older producer tie", Health{Producers: []Producer{{Name: "young", State: ProducerStale, AgeHours: 2}, {Name: "old", State: ProducerStale, AgeHours: 8}}}, "old has not been produced"},
 		{"failed operation", Health{Activities: []operation.Activity{{State: operation.Failed, Kind: operation.KindIndexRebuild, FailureCode: "disk_full"}}}, "index rebuild operation FAILED (disk_full)"}, {"stalled operation", Health{Activities: []operation.Activity{{State: operation.Stalled, Kind: operation.KindIngest, Phase: "fetching\nmail"}}}, "ingest operation STALLED (phase unknown)"}, {"source never", Health{Sources: []Source{{Key: "calendar", State: Never}}}, "calendar"},
 		{"source stale", Health{Sources: []Source{{Key: "mail", State: Stale, AgeHours: 9}}}, "mail"},
+		// #498: an acknowledged receipt must not keep shouting a banner the operator
+		// already acted on; the still-stale source is what the banner should report.
+		{"acknowledged operation yields", Health{Sources: []Source{{Key: "mail", State: Stale, AgeHours: 9}}, Activities: []operation.Activity{{State: operation.Failed, Kind: operation.KindIngest, FailureCode: operation.FailureOwnerAbandoned, AcknowledgedAt: "2026-09-29T15:00:00Z"}}}, "mail"},
 		{"source unknown", Health{Sources: []Source{{Key: "oddsource", State: "odd"}}}, "oddsource"},
 		{"producer failed", Health{Producers: []Producer{{Name: "digest", State: ProducerFailed, AgeHours: 4}}}, "digest has not been produced"},
 		{"producer unknown", Health{Producers: []Producer{{Name: "odd", State: "odd", AgeHours: 1}}}, "odd has not been produced"},
@@ -130,5 +140,42 @@ func TestBannerPrivateEmptyAndSkipBranches(t *testing.T) {
 	}
 	if got := BannerAll(Health{Index: Index{State: IndexFresh, Shares: []Index{{State: IndexFresh}, {State: IndexDirty}}}, Producers: []Producer{{State: ProducerFresh}, {Name: "x", State: ProducerStale}}}); !strings.Contains(got, "subscription index is DIRTY") {
 		t.Fatal(got)
+	}
+}
+
+// TestRefreshingIndexIsNotAnAlarm pins the refreshing contract: search is current,
+// so neither the personal index nor a subscription mid-pull may turn the
+// aggregate unhealthy, render an alarm banner, or point an agent at a rebuild.
+func TestRefreshingIndexIsNotAnAlarm(t *testing.T) {
+	running := []operation.Activity{{State: operation.Running, Kind: operation.KindIndexRebuild, Phase: "graph"}}
+	cases := []struct {
+		name string
+		h    Health
+	}{
+		{"projections pending", Health{Sources: []Source{{Key: "gmail", State: Fresh}}, Index: Index{State: IndexRefreshing, PendingOps: 2, DirtySince: "2026-10-15T12:00:00Z"}}},
+		{"live rebuild self-op", Health{Index: Index{State: IndexRefreshing, PendingOps: 1}, Activities: running}},
+		{"share pull in progress", Health{Index: Index{State: IndexFresh, Shares: []Index{{State: IndexRefreshing}}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := AggregateState(tc.h); got != Healthy {
+				t.Fatalf("AggregateState=%q, want %q", got, Healthy)
+			}
+			if got := BannerAll(tc.h); got != "" {
+				t.Fatalf("BannerAll=%q, want no alarm while refreshing", got)
+			}
+			tc.h.State = AggregateState(tc.h)
+			if c := ProjectCompact(tc.h); c.State != Healthy || c.Banner != "" {
+				t.Fatalf("compact=%+v, want healthy with no banner", c)
+			}
+		})
+	}
+	// A refreshing personal index must never hide a real alarm in another arm.
+	h := Health{Index: Index{State: IndexRefreshing, PendingOps: 1, Shares: []Index{{State: IndexFailed, LastError: "digest"}}}}
+	if got := AggregateState(h); got != Unhealthy {
+		t.Fatalf("refreshing index masked a failed share: aggregate=%q", got)
+	}
+	if got := BannerAll(h); !strings.Contains(got, "subscription index FAILED") {
+		t.Fatalf("refreshing index masked a failed share banner: %q", got)
 	}
 }
