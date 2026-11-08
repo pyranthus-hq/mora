@@ -807,9 +807,9 @@ mora mcp serve-http --port 7780 --allow-host <your-machine>.<tailnet>.ts.net
 ```
 
 - The server binds only to `127.0.0.1`. To reach it from the internet, run a
-  tunnel that you control, for example
-  `tailscale funnel --bg --https=443 http://127.0.0.1:7780`. Mora never opens a
-  public port itself.
+  tunnel that you control. `mora remote expose` prints the Tailscale Funnel and
+  Cloudflare tunnel commands (and the matching `mora mcp serve-http --allow-host`
+  line) and executes none of them. Mora never opens a public port itself.
 - Each request needs `Authorization: Bearer <token>`. The token selects exactly
   one profile, and no request argument can widen that profile.
 - The server does not start when no profile is active.
@@ -820,6 +820,12 @@ mora mcp serve-http --port 7780 --allow-host <your-machine>.<tailnet>.ts.net
   `Host` headers get 403.
 - The `initialize` reply tells the agent which scopes it can read, so that it
   reads an empty result as "nothing matched here", not "nothing exists".
+
+Remote defaults for every profile are: hide raw sources, propose writes, and
+deny deletion. If a profile loosens any of those (`--raw-sources`, `--write open`,
+or `delete_memory` on the allowlist), `mora doctor` names the profile and the
+relaxations in both human and `--json` output (`agent_relaxations`, plus
+non-critical `agent_remote_defaults:<name>` checks).
 
 When a cloud agent reads a result, that result is under the vendor's data rules.
 Give a cloud agent only the scopes that you would give to that vendor.
@@ -1274,8 +1280,16 @@ The JSON report separates raw `observed` probe results from typed `diagnosis`.
 When Mora cannot prove a cause, it reports `cause_unverified`; it does not infer
 a permission problem from connector error prose. `--repair --dry-run --json`
 returns the exact safe mutation plan without changing state. Applying that plan
-requires `--yes`, records before/after verification for every action, and is
-idempotent. Doctor never applies unsafe or destructive repairs.
+requires `--yes` and records before/after verification for every action. An index
+rebuild is verified only when `index_db`, `index_fresh`, and
+`index_matches_vault` pass afterward. If a check remains failed, repair exits
+with an error and reports `verified: false` with a `detail` explaining the
+unresolved condition and why another repair would be planned. For example, a
+journal path outside the vault cannot be covered by rebuilding; its evidence
+is preserved for investigation. Successful repairs are not planned again while
+their checks remain healthy. `doctor --repair --yes` also exits 1 during a
+legitimate in-flight ingest if pending operations or non-empty journals keep the
+index dirty after repair. Doctor never applies unsafe or destructive repairs.
 
 `mora doctor --json` emits the `mora.doctor.report` v1 receipt — the same report
 it always printed, now with `schema` and `schema_version` beside its existing

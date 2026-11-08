@@ -60,6 +60,13 @@ type doctorReport struct {
 	Repairable    bool                 `json:"repairable"`
 	RepairPlan    []doctorRepairAction `json:"repair_plan"`
 	Verification  []doctorVerification `json:"verification"`
+	// AgentRelaxations lists active agent profiles that loosen the remote
+	// defaults (raw sources on, write open, deletion allowed). Always a
+	// non-null array — `[]` when no profile relaxes. Non-critical checks
+	// `agent_remote_defaults:<name>` accompany each entry. Overlap note:
+	// #548/#554 also edit doctor.go (auth history / orphaned receipts);
+	// this field and its checks are additive on the agent-profiles branch.
+	AgentRelaxations []agentRemoteRelaxation `json:"agent_relaxations"`
 	// PendingMCPProposals counts propose-mode writes still waiting for
 	// `mora mcp proposals approve` (for example, left over from v0.15.3, whose
 	// default staged every agent write). Additive; omitted when zero.
@@ -217,6 +224,7 @@ func hasSafeDoctorRepair(actions []doctorRepairAction) bool {
 
 func applyDoctorRepairs(ctx context.Context, cfg Config, actions []doctorRepairAction) ([]doctorVerification, error) {
 	verification := make([]doctorVerification, 0, len(actions))
+	var repairErrors []error
 	for _, action := range actions {
 		if !action.Safe {
 			continue
@@ -232,7 +240,7 @@ func applyDoctorRepairs(ctx context.Context, cfg Config, actions []doctorRepairA
 		case "rebuild_index":
 			_, err = rebuildIndex(ctx, cfg)
 			if err == nil {
-				_, err = os.Stat(action.Target)
+				err = verifyDoctorIndexRepair(cfg)
 			}
 		case "retire_abandoned_ingest":
 			planned := map[string]string{}
@@ -316,10 +324,34 @@ func applyDoctorRepairs(ctx context.Context, cfg Config, actions []doctorRepairA
 		}
 		verification = append(verification, result)
 		if err != nil {
-			return verification, fmt.Errorf("doctor repair %s: %w", action.ID, err)
+			repairErrors = append(repairErrors, fmt.Errorf("doctor repair %s: %w", action.ID, err))
 		}
 	}
-	return verification, nil
+	return verification, errors.Join(repairErrors...)
+}
+
+// verifyDoctorIndexRepair re-evaluates the predicates that can plan a rebuild.
+// A committed database alone does not prove that pending journals were covered.
+func verifyDoctorIndexRepair(cfg Config) error {
+	var failed []string
+	if _, err := os.Stat(dbPath(cfg)); err != nil {
+		failed = append(failed, "index_db: "+err.Error())
+	}
+	idx := indexHealthOf(cfg, doctorClock())
+	if idx.State != idxFresh && idx.State != idxRefreshing {
+		detail := fmt.Sprintf("index_fresh: state=%s, pending_ops=%d", idx.State, idx.PendingOps)
+		if idx.LastError != "" {
+			detail += ": " + idx.LastError
+		}
+		failed = append(failed, detail)
+	}
+	if ok, _ := indexMatchesVault(cfg); !ok {
+		failed = append(failed, "index_matches_vault: committed manifest does not match the vault")
+	}
+	if len(failed) == 0 {
+		return nil
+	}
+	return fmt.Errorf("rebuild completed but verification failed (%s); doctor will re-plan while index checks fail; inspect pending operations and ingest journals for active runs or paths the vault rebuild cannot cover before retrying", strings.Join(failed, "; "))
 }
 
 // doctorClock is the wall clock doctor's freshness checks (and --pulse) resolve
@@ -645,6 +677,19 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 	idxH.Shares = shareIndexHealthAll(cfg, now)
 
+	// Agent profile remote-default relaxations (#539): advisory only. Loosening
+	// raw_sources / write=open / delete_memory is intentional, but Doctor must
+	// name every active profile that does so. A missing agents.json is fine
+	// (no profiles); a corrupt store is a non-critical warn.
+	agentRelax, agentStoreErr := collectAgentRemoteRelaxations(cfg)
+	if agentStoreErr != nil {
+		agentRelax = []agentRemoteRelaxation{}
+		checks = append(checks, doctorCheck{Name: "agents_store_readable", OK: false, Critical: false})
+	}
+	for _, r := range agentRelax {
+		checks = append(checks, doctorCheck{Name: "agent_remote_defaults:" + r.Name, OK: false, Critical: false})
+	}
+
 	// Whole-product storage accountant (Packet H3b): doctor's storage_status and
 	// share admission measure the same footprint. A walk/stat failure is a critical
 	// `unknown`, never a silent undercount. This MUST precede the `healthy` collapse
@@ -706,6 +751,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			Producers: prodHealth,
 			Observed:  observed, Diagnosis: diagnoses,
 			Repairable: hasSafeDoctorRepair(repairPlan), RepairPlan: repairPlan, Verification: verification,
+			AgentRelaxations:    agentRelax,
 			PendingMCPProposals: pendingProposals,
 		}
 		if rec, present, _ := readBlockRecord(cfg); present {
@@ -788,6 +834,15 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		fmt.Fprintf(stdout, "%s share %q publishes scope %s (age-encrypted to %d recipient key(s)) on `mora share push`\n",
 			sty.warn("warn"), p.Name, p.Scope, len(p.Recipients))
 		fmt.Fprintln(stdout, "     ciphertext only, but keep the remote PRIVATE + user-controlled.")
+	}
+	// Agent profile remote-default relaxations (#539): name every active profile
+	// that loosens hide-raw / propose-writes / deny-deletion. Advisory only.
+	if agentStoreErr != nil {
+		fmt.Fprintf(stdout, "%s agents store unreadable: %v\n", sty.warn("warn"), agentStoreErr)
+	}
+	for _, r := range agentRelax {
+		fmt.Fprintf(stdout, "%s agent profile %q relaxes remote defaults: %s\n",
+			sty.warn("warn"), r.Name, strings.Join(r.Relaxations, ", "))
 	}
 	// Google auth recency: tokens last weeks so a reauth is rare and invisible —
 	// surface "last authed / how long ago" per connected account so the user can
