@@ -1057,7 +1057,13 @@ file. On Windows, `rules import` always needs a terminal.
 An imported rule ends when its grant expires. `rules list` shows `expired`, and
 the hook stops warning at that moment. An import refuses a grant it has already
 used, and any grant older than the newest one it took for that rule, so an old
-grant cannot turn a rule back on after `rules off`.
+grant cannot turn a rule back on after `rules off`. Import, approval, revocation
+and compilation serialize their mutations across processes. Import durably
+reserves the grant before changing rule files or approvals. This is fail-closed,
+not an all-or-nothing transaction: an interrupted or failed import can consume
+the grant and leave partial files. Request a new signed grant to retry; do not
+remove the replay ledger. A malformed replay ledger refuses further imports.
+The archived signature is the same snapshot used for verification.
 
 What a grant proves:
 

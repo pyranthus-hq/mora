@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -190,8 +191,14 @@ func CheckGrantFresh(stateDir string, g Grant) error {
 	}
 	for _, line := range bytes.Split(data, []byte("\n")) {
 		var row GrantSeen
-		if json.Unmarshal(line, &row) != nil || row.V != 1 {
+		if len(bytes.TrimSpace(line)) == 0 {
 			continue
+		}
+		if json.Unmarshal(line, &row) != nil || row.V != 1 || !grantNonceRE.MatchString(row.Nonce) || !idRE.MatchString(row.RuleID) {
+			return errors.New("imported-grant ledger is invalid; refusing import")
+		}
+		if _, err := time.Parse(time.RFC3339, row.IssuedAt); err != nil {
+			return errors.New("imported-grant ledger has invalid issue time; refusing import")
 		}
 		if row.Nonce == g.Nonce {
 			return errors.New("this grant was already imported here")
@@ -204,4 +211,27 @@ func CheckGrantFresh(stateDir string, g Grant) error {
 		}
 	}
 	return nil
+}
+
+// ReserveGrant durably consumes a grant before import can change the vault or
+// approvals. The caller must hold the rules mutation guard through activation.
+// A failed attempt remains consumed: recovery requires a newly signed grant.
+func ReserveGrant(stateDir string, g Grant) error {
+	if err := CheckGrantFresh(stateDir, g); err != nil {
+		return err
+	}
+	path := GrantsSeenPath(stateDir)
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	row, err := json.Marshal(GrantSeen{V: 1, TS: time.Now().UTC().Format(TSLayout), Nonce: g.Nonce, RuleID: g.Rule.ID, IssuedAt: g.IssuedAt})
+	if err != nil {
+		return err
+	}
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		data = append(data, '\n')
+	}
+	data = append(data, row...)
+	return atomicio.WriteDurable(path, append(data, '\n'), 0o600)
 }

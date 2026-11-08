@@ -1,6 +1,8 @@
 package rules
 
 import (
+	"errors"
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"os"
 	"path/filepath"
 	"strings"
@@ -160,4 +162,65 @@ func writeRuleForTest(vault string, r Rule) error {
 		return err
 	}
 	return os.WriteFile(path, Render(r), 0o600)
+}
+
+func TestReserveGrantFailsClosedOnInvalidLedger(t *testing.T) {
+	for _, body := range []string{"{", `{"v":2}`, `{"v":1,"nonce":"a","rule_id":"no-sudo","issued_at":"bad"}`} {
+		t.Run(body, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.MkdirAll(Dir(dir), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(GrantsSeenPath(dir), []byte(body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := ReserveGrant(dir, testGrant(t, time.Now())); err == nil {
+				t.Fatal("accepted corrupt ledger")
+			}
+			got, err := os.ReadFile(GrantsSeenPath(dir))
+			if err != nil || string(got) != body {
+				t.Fatalf("ledger changed: %q %v", got, err)
+			}
+		})
+	}
+}
+
+func TestReserveGrantPersistsBeforeEffects(t *testing.T) {
+	dir := t.TempDir()
+	g := testGrant(t, time.Now())
+	if err := ReserveGrant(dir, g); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate stopping immediately after reservation, without any approval.
+	if _, err := os.Stat(ApprovalsPath(dir)); !os.IsNotExist(err) {
+		t.Fatalf("unexpected approvals: %v", err)
+	}
+	if err := ReserveGrant(dir, g); err == nil {
+		t.Fatal("accepted interrupted grant again")
+	}
+	newer := g
+	newer.Nonce = strings.Repeat("b", 32)
+	newer.IssuedAt = time.Now().Add(time.Second).UTC().Format(time.RFC3339)
+	if err := ReserveGrant(dir, newer); err != nil {
+		t.Fatal(err)
+	}
+	older := g
+	older.Nonce = strings.Repeat("c", 32)
+	if err := ReserveGrant(dir, older); err == nil {
+		t.Fatal("accepted older grant")
+	}
+}
+
+func TestReserveGrantRequiresDurabilityBarrier(t *testing.T) {
+	dir := t.TempDir()
+	old := atomicio.MarkerSyncFn
+	t.Cleanup(func() { atomicio.MarkerSyncFn = old })
+	boom := errors.New("sync failed")
+	atomicio.MarkerSyncFn = func(*os.File) error { return boom }
+	if err := ReserveGrant(dir, testGrant(t, time.Now())); !errors.Is(err, boom) {
+		t.Fatalf("reservation = %v, want sync failure", err)
+	}
+	if _, err := os.Stat(GrantsSeenPath(dir)); !os.IsNotExist(err) {
+		t.Fatalf("published reservation despite failed sync: %v", err)
+	}
 }

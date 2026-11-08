@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
+	"github.com/pyranthus-hq/mora/internal/leasefile"
 	"github.com/pyranthus-hq/mora/internal/rules"
 )
 
@@ -146,7 +147,7 @@ func rulesVerify(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(pos) != 1 {
 		return errors.New(usage)
 	}
-	g, r, _, err := rulesVerifyGrant(ctx, pos[0], *signers, *scope)
+	g, r, _, _, err := rulesVerifyGrant(ctx, pos[0], *signers, *scope)
 	if err != nil {
 		return err
 	}
@@ -174,7 +175,18 @@ func rulesImport(ctx context.Context, args []string, stdout io.Writer, stdin io.
 		return errors.New(usage)
 	}
 	path := pos[0]
-	g, r, body, err := rulesVerifyGrant(ctx, path, *signers, *scope)
+	// Freeze the canonical trust-file identity and trust decision before verification.
+	// Never verify through a user-controlled symlink then trust its later target.
+	signerPath, err := filepath.EvalSymlinks(*signers)
+	if err != nil {
+		return err
+	}
+	signerPath, err = filepath.Abs(signerPath)
+	if err != nil {
+		return err
+	}
+	trusted := rulesSignersTrusted(signerPath)
+	g, r, body, sig, err := rulesVerifyGrant(ctx, path, signerPath, *scope)
 	if err != nil {
 		return err
 	}
@@ -182,10 +194,7 @@ func rulesImport(ctx context.Context, args []string, stdout io.Writer, stdin io.
 	if err != nil {
 		return err
 	}
-	if err := rules.CheckGrantFresh(cfg.StateDir, g); err != nil {
-		return err
-	}
-	if !rulesSignersTrusted(*signers) {
+	if !trusted {
 		if err := rulesRequireTerminal(stdin); err != nil {
 			return fmt.Errorf("%s is writable by this account, so a person must confirm: %w", *signers, err)
 		}
@@ -193,29 +202,39 @@ func rulesImport(ctx context.Context, args []string, stdout io.Writer, stdin io.
 			return err
 		}
 	}
-	rulePath := rules.RulePath(cfg.VaultDir, g.Rule.ID)
-	if err := os.MkdirAll(filepath.Dir(rulePath), 0o700); err != nil {
+	var set rules.ActiveSet
+	err = leasefile.WithGuard(filepath.Join(rules.Dir(cfg.StateDir), "mutation.lock"), func() error {
+		if _, err := rules.CheckGrant(g, rulesNow()); err != nil {
+			return err
+		}
+		// Reserve before any approval or vault change. Interrupted attempts consume
+		// the grant, rather than allowing a replay to undo a later rules off.
+		if err := rules.ReserveGrant(cfg.StateDir, g); err != nil {
+			return err
+		}
+		rulePath := rules.RulePath(cfg.VaultDir, g.Rule.ID)
+		if err := os.MkdirAll(filepath.Dir(rulePath), 0o700); err != nil {
+			return err
+		}
+		if err := atomicio.Write(rulePath, []byte(g.Rule.File), 0o600); err != nil {
+			return err
+		}
+		if err := rulesKeepGrant(cfg.VaultDir, body, sig, g); err != nil {
+			return err
+		}
+		sum := sha256.Sum256(body)
+		if err := rules.AppendApproval(cfg.StateDir, rules.Approval{
+			RuleID: g.Rule.ID, RuleHash: g.Rule.Hash, Mode: g.Mode,
+			Via: "grant:" + hex.EncodeToString(sum[:6]), Approver: g.Principal, Expires: g.ExpiresAt,
+		}); err != nil {
+			return err
+		}
+		var err error
+		set, err = rules.Compile(cfg.VaultDir, cfg.StateDir)
 		return err
-	}
-	if err := atomicio.Write(rulePath, []byte(g.Rule.File), 0o600); err != nil {
-		return err
-	}
-	if err := rulesKeepGrant(cfg.VaultDir, path, body, g); err != nil {
-		return err
-	}
-	sum := sha256.Sum256(body)
-	if err := rules.AppendApproval(cfg.StateDir, rules.Approval{
-		RuleID: g.Rule.ID, RuleHash: g.Rule.Hash, Mode: g.Mode,
-		Via: "grant:" + hex.EncodeToString(sum[:6]), Approver: g.Principal, Expires: g.ExpiresAt,
-	}); err != nil {
-		return err
-	}
-	if err := rules.AppendGrantSeen(cfg.StateDir, rules.GrantSeen{Nonce: g.Nonce, RuleID: g.Rule.ID, IssuedAt: g.IssuedAt}); err != nil {
-		return err
-	}
-	set, err := rules.Compile(cfg.VaultDir, cfg.StateDir)
+	})
 	if err != nil {
-		return err
+		return fmt.Errorf("grant import failed (if already reserved, request a new signed grant): %w", err)
 	}
 	fmt.Fprintf(stdout, "imported %s (%s), signed by %s, expires %s. Active rules: %d\n", g.Rule.ID, g.Mode, g.Principal, g.ExpiresAt, len(set.Rules))
 	return nil
@@ -223,9 +242,9 @@ func rulesImport(ctx context.Context, args []string, stdout io.Writer, stdin io.
 
 // rulesVerifyGrant reads a grant and its .sig file and checks both. It returns
 // the exact bytes that were verified.
-func rulesVerifyGrant(ctx context.Context, path, signers, scope string) (rules.Grant, rules.Rule, []byte, error) {
-	fail := func(err error) (rules.Grant, rules.Rule, []byte, error) {
-		return rules.Grant{}, rules.Rule{}, nil, err
+func rulesVerifyGrant(ctx context.Context, path, signers, scope string) (rules.Grant, rules.Rule, []byte, []byte, error) {
+	fail := func(err error) (rules.Grant, rules.Rule, []byte, []byte, error) {
+		return rules.Grant{}, rules.Rule{}, nil, nil, err
 	}
 	body, err := os.ReadFile(path)
 	if err != nil {
@@ -245,8 +264,24 @@ func rulesVerifyGrant(ctx context.Context, path, signers, scope string) (rules.G
 	if _, err := os.Stat(signers); err != nil {
 		return fail(fmt.Errorf("no signers file at %s; pass --signers: %w", signers, err))
 	}
+	sig, err := os.ReadFile(path + ".sig")
+	if err != nil {
+		return fail(err)
+	}
+	tmp, err := os.CreateTemp("", "mora-grant-signature-*")
+	if err != nil {
+		return fail(err)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(sig); err != nil {
+		_ = tmp.Close()
+		return fail(err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fail(err)
+	}
 	cmd := exec.CommandContext(ctx, rulesSSHKeygen, "-Y", "verify", "-f", signers, "-I", g.Principal,
-		"-n", rules.GrantNamespace, "-s", path+".sig")
+		"-n", rules.GrantNamespace, "-s", tmp.Name())
 	cmd.Stdin = bytes.NewReader(body)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -256,7 +291,7 @@ func rulesVerifyGrant(ctx context.Context, path, signers, scope string) (rules.G
 	if m == nil || string(m[1]) != g.Key {
 		return fail(errors.New("the grant names a different key from the one that signed it"))
 	}
-	return g, r, body, nil
+	return g, r, body, sig, nil
 }
 
 func rulesSign(ctx context.Context, key, path string, stdin io.Reader) error {
@@ -295,11 +330,7 @@ func rulesKeyFingerprint(key string) (string, error) {
 
 // rulesKeepGrant copies an imported grant and its signature into the vault, so
 // each rule's trail stays with the rule.
-func rulesKeepGrant(vaultDir, path string, body []byte, g rules.Grant) error {
-	sig, err := os.ReadFile(path + ".sig")
-	if err != nil {
-		return err
-	}
+func rulesKeepGrant(vaultDir string, body, sig []byte, g rules.Grant) error {
 	dir := filepath.Join(vaultDir, "grants")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
