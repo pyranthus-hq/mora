@@ -45,6 +45,7 @@ var connectorIDPrefixes = []string{
 	// internal/githubissues/github.go overrides the stable id to this shape,
 	// so "github_issue/" would never match a real record.
 	"github:",
+	"eywa_fact/",
 }
 
 // agentNoteSources are the filesystem sources known to mirror an agent's own
@@ -134,11 +135,37 @@ func isFilesystemDocument(m Memory) bool {
 	return false
 }
 
+// TentativeTag marks an agent write that saved without owner review. A tag
+// travels through the vault file and the index with no schema change, and
+// write_memory has no tags argument, so an agent cannot set or clear it.
+const TentativeTag = "mora-tentative"
+
+// TrustTentative is the Trust value of a record that carries TentativeTag.
+const TrustTentative = "tentative"
+
+// IsTentative reports whether nobody has confirmed the record.
+func IsTentative(m Memory) bool {
+	for _, tag := range m.Tags {
+		if tag == TentativeTag {
+			return true
+		}
+	}
+	return false
+}
+
+func deriveTrust(m Memory) string {
+	if IsTentative(m) {
+		return TrustTentative
+	}
+	return ""
+}
+
 // WithProvenance returns a copy of the record with the derived kind attached,
 // overwriting anything that was there. Read surfaces call this; nothing writes
 // the result back to disk.
 func WithProvenance(m Memory) Memory {
 	m.Provenance = DeriveProvenance(m)
+	m.Trust = deriveTrust(m)
 	return m
 }
 
@@ -146,6 +173,7 @@ func WithProvenance(m Memory) Memory {
 func WithProvenanceAll(mems []Memory) []Memory {
 	for i := range mems {
 		mems[i].Provenance = DeriveProvenance(mems[i])
+		mems[i].Trust = deriveTrust(mems[i])
 	}
 	return mems
 }

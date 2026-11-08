@@ -22,6 +22,11 @@ func CreateExclusive(path string, body []byte, mode os.FileMode, options ...Clai
 		_ = file.Close()
 		return err
 	}
+	// Data sync before the name exists, so a crash cannot leave a named-but-empty file.
+	if err := MarkerSyncFn(file); err != nil {
+		_ = file.Close()
+		return err
+	}
 	if err := file.Close(); err != nil {
 		return err
 	}
@@ -38,10 +43,12 @@ func CreateExclusive(path string, body []byte, mode os.FileMode, options ...Clai
 		}
 	}
 	err = link(temp, path)
-	if err == nil || errors.Is(err, os.ErrExist) {
-		return err
+	if err == nil {
+		// shortcut: a dir-sync failure after publication is ignored so callers never retry and duplicate; upgrade to a published-but-not-durable outcome if a caller needs to know
+		_ = SyncDirFn(dir)
+		return nil
 	}
-	if !unsupported(err) {
+	if errors.Is(err, os.ErrExist) || !unsupported(err) {
 		return err
 	}
 	claim, claimErr := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
@@ -54,5 +61,7 @@ func CreateExclusive(path string, body []byte, mode os.FileMode, options ...Clai
 	if renameErr := RenameReplaceWithRetry(temp, path); renameErr != nil {
 		return errors.Join(renameErr, os.Remove(path))
 	}
+	// shortcut: a dir-sync failure after publication is ignored so callers never retry and duplicate; upgrade to a published-but-not-durable outcome if a caller needs to know
+	_ = SyncDirFn(dir)
 	return nil
 }

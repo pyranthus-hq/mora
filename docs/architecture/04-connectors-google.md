@@ -126,7 +126,7 @@ Both adapters populate `Item.Meta` with structured identity for the [entity grap
 
 ## The resumable Ingest loop
 
-`ingestGoogle` (`internal/mora/ingest.go`) wires it up: resolve creds, load the token, build the `LiveFetcher`, load prior `SyncStatus`, compute the window, then call the shared `memory.Ingest` with a `Write` callback that delegates to `writeMappedMemory` and prints a running count every 500 **successfully written** items (the counter increments only after `writeMappedMemory` returns nil, `ingest.go`). The body budget is **16 KiB** (`ingest.go`).
+`ingestGoogle` (`internal/mora/ingest.go`) wires it up: resolve creds, load the token, build the `LiveFetcher`, load prior `SyncStatus`, compute the window, then call the shared `memory.Ingest` with a `Write` callback that delegates to `writeMappedMemory` and prints a running count every 500 **successfully written** items (the counter increments only after `writeMappedMemory` returns nil, `ingest.go`). The body budget is **64 KiB** (`connectorBodyBudget`, `ingest.go`), shared with WhatsApp, iMessage and Apple Calendar. `memory.MapItem` keeps the head of a longer thread, backs the cut off to a UTF-8 rune boundary, and marks the memory `Truncated`; a truncated thread gets no message-grain segments (`internal/segments`, reason `truncated`). The content hash covers the full fetched body, not the kept head, so a thread already stored under the old 16 KiB budget is rewritten at 64 KiB only when the thread itself changes.
 
 `memory.Ingest` (`internal/memory/ingest.go:32`) pages from the checkpoint cursor:
 1. `FetchPage(kind, window, cursor)`. On error: bump `ErrorCount`/`LastError`, **keep `Checkpoint = cursor`** so the next run resumes this page, and return the error (page-fetch errors stop the run but preserve resume state).
@@ -141,7 +141,7 @@ flowchart TD
   START([Ingest: cursor = Status.Checkpoint]) --> FP{FetchPage kind, window, cursor}
   FP -->|error| ERR[ErrorCount++, LastError\nkeep Checkpoint = cursor] --> RET([return err — resumable])
   FP -->|page| LOOP{for each Item}
-  LOOP --> MAP[MapItem / Map override\nbudget 16KiB, LastSynced = now]
+  LOOP --> MAP[MapItem / Map override\nbudget 64KiB, LastSynced = now]
   MAP --> W[Write → writeMappedMemory]
   W --> SKIP{same ContentHash\n&& not tombstone?}
   SKIP -->|yes| KEEP[skip rewrite\npreserve created_at]

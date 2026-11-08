@@ -492,7 +492,7 @@ func TestCoreB_IdxWriteGraphDirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writeGraph(context.Background(), tx, Config{VaultDir: t.TempDir()}, []Memory{structural, nullTs, blast}); err != nil {
+	if err := writeGraph(context.Background(), tx, governance{}, []Memory{structural, nullTs, blast}); err != nil {
 		_ = tx.Rollback()
 		t.Fatalf("writeGraph: %v", err)
 	}

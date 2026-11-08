@@ -1,6 +1,7 @@
 package httpservice
 
 import (
+	"encoding/xml"
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -313,5 +315,47 @@ func TestHealthyRequiresHTTP200(t *testing.T) {
 	}
 	if Healthy(1) {
 		t.Fatal("closed port accepted")
+	}
+}
+
+func TestServeHTTPPlistEscapesDynamicValues(t *testing.T) {
+	for _, component := range []string{"plain", "A&B <Tools> 'quoted' \"Résumé\""} {
+		t.Run(component, func(t *testing.T) {
+			stateDir := filepath.Join(t.TempDir(), component)
+			exe := filepath.Join(t.TempDir(), component, "mora")
+			environment := map[string]string{
+				"MORA_CONFIG_DIR": filepath.Join(t.TempDir(), component, "config"),
+				"MORA_VAULT":      filepath.Join(t.TempDir(), component, "vault"),
+				"MORA_PORT":       "7777",
+			}
+			if component != "plain" {
+				environment["MORA_PORT"] += "&<value>\"'"
+			}
+			var decoded struct {
+				XMLName xml.Name `xml:"plist"`
+				Dict    struct {
+					Values    []string `xml:"string"`
+					Arguments struct {
+						Values []string `xml:"string"`
+					} `xml:"array"`
+					Dictionaries []struct {
+						Keys   []string `xml:"key"`
+						Values []string `xml:"string"`
+					} `xml:"dict"`
+				} `xml:"dict"`
+			}
+			plist := Plist(stateDir, exe, environment)
+			if err := xml.Unmarshal([]byte(plist), &decoded); err != nil {
+				t.Fatalf("invalid launchd XML: %v", err)
+			}
+			wantValues := []string{Label, filepath.Join(stateDir, "serve-http.out.log"), filepath.Join(stateDir, "serve-http.err.log")}
+			if !reflect.DeepEqual(decoded.Dict.Values, wantValues) || !reflect.DeepEqual(decoded.Dict.Arguments.Values, []string{exe, "serve", "http"}) {
+				t.Fatalf("paths did not round-trip: %+v", decoded.Dict)
+			}
+			keys, values := EnvVars(environment)
+			if len(decoded.Dict.Dictionaries) != 2 || !reflect.DeepEqual(decoded.Dict.Dictionaries[1].Keys, keys) || !reflect.DeepEqual(decoded.Dict.Dictionaries[1].Values, values) {
+				t.Fatalf("environment or plist structure changed: %+v", decoded.Dict.Dictionaries)
+			}
+		})
 	}
 }
