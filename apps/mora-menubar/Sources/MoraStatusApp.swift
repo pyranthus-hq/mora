@@ -26,7 +26,7 @@ final class PreviewWindowDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard CommandLine.arguments.contains("--preview") else { return }
         let view = StatusPanel(model: StatusModel(preview: true), isPreview: true)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 360), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 660), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Mora Status Preview · fixture data"
         window.contentView = NSHostingView(rootView: view)
         window.center()
@@ -172,7 +172,7 @@ struct StatusPanel: View {
                     if device.id != snapshot.devices.last?.id { Divider() }
                 }
                 }
-                }.frame(maxHeight: 470)
+                }.frame(height: 470)
                 if let lastUpdated = model.lastUpdated {
                     Text("Updated \(lastUpdated.formatted(.relative(presentation: .named)))")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
