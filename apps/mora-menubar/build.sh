@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-export TMPDIR="${TMPDIR:-/tmp/mora-tentacles-ui}"
+export TMPDIR="${TMPDIR:-/tmp/mora-source-health-tmp}"
 mkdir -p "$TMPDIR"
 cd "$(dirname "$0")/../.."
 APP_DIR="${APP_DIR:-$PWD/apps/mora-menubar/build/Mora Status.app}"

@@ -7,7 +7,7 @@ changes the signed Mora.app or the core CLI. No AI calls, analytics or new crede
 ## Build and check
 
 ```sh
-go test ./cmd/mora-tentacles
+CGO_ENABLED=0 go test ./cmd/mora-tentacles
 CGO_ENABLED=0 go build -o /tmp/mora-tentacles ./cmd/mora-tentacles
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/mora-tentacles-linux ./cmd/mora-tentacles
 ./apps/mora-menubar/test.sh
@@ -49,8 +49,20 @@ receipt without completion becomes failed after 30 minutes. Job exclusion uses a
 
 Receipt success proves those CLI operations completed, not connector completeness,
 MCP retrieval, or a new memory's end-to-end round trip. The UI shows this distinction.
-Windows→Mac authored-memory sync remains a separate planned change; a one-way archive
-must never be relabelled as bidirectional sync.
+The scoped Grok proposal intake below is not Windows/WSL authored-memory vault sync;
+a one-way archive must never be relabelled as bidirectional sync.
+
+The Mac status snapshot also reads `mora doctor --json` from `~/.local/bin/mora` and
+includes only enabled-source health metadata: source key, state, recorded last success,
+and a typed error code or generic failure detail. Raw error prose and source bodies are
+not copied into the status snapshot. This probe is bounded to 12 seconds and 1 MiB. It never reads source
+bodies, syncs, repairs, or invokes `doctor --pulse`: pulse advances its producer stamp
+and can notify, so it is not safe for 60-second UI polling. An unavailable helper or
+invalid report is surfaced as `sources_error`; enabled sources are never inferred.
+The separate scoped `bot-return.json` receipt appears on the local Mac as
+`Grok → Mac proposals`. Freshness proves that this project-scoped proposal intake
+completed; notes still await owner approval and this receipt does not prove vault
+publication or full Windows/WSL return sync.
 
 ## Rollback
 

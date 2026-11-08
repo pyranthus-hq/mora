@@ -117,6 +117,101 @@ func TestCommandOutputBoundAndTimeout(t *testing.T) {
 	}
 }
 
+func TestSourceHealthAcceptsUnhealthyDoctorExit2AndPreservesUnknownState(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture")
+	}
+	bin := filepath.Join(t.TempDir(), "mora")
+	output := `{"schema":"mora.doctor.report","schema_version":1,"sources":[{"key":"gmail:work","state":"failed","last_success_at":"2026-11-08T07:12:00Z","last_error":"PRIVATE_FOREIGN_ACCOUNT /private/other-project","error_code":"connector.unavailable"},{"key":"calendar","state":"paused-by-policy"}]}`
+	script := "#!/bin/sh\nprintf '%s\\n' '" + output + "'\nexit 2\n"
+	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MORA_BIN", bin)
+	sources, detail := sourceHealth()
+	if detail != "" || len(sources) != 2 {
+		t.Fatalf("doctor unhealthy report was rejected: sources=%+v detail=%q", sources, detail)
+	}
+	if sources[0].State != "failed" || sources[0].LastSuccessAt != "2026-11-08T07:12:00Z" || sources[0].Detail != "connector.unavailable" {
+		t.Fatalf("source details lost: %+v", sources[0])
+	}
+	if strings.Contains(sources[0].Detail, "PRIVATE_FOREIGN_ACCOUNT") {
+		t.Fatal("private source error prose leaked into the compact status snapshot")
+	}
+	if sources[1].State != "paused-by-policy" {
+		t.Fatalf("unknown state was normalized or treated as healthy: %+v", sources[1])
+	}
+}
+
+func TestSourceHealthMalformedAndUnavailableAreExplicit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture")
+	}
+	bin := filepath.Join(t.TempDir(), "mora")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' '{broken'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MORA_BIN", bin)
+	if sources, detail := sourceHealth(); len(sources) != 0 || detail == "" {
+		t.Fatalf("malformed response was not marked unavailable: %+v, %q", sources, detail)
+	}
+	t.Setenv("MORA_BIN", filepath.Join(t.TempDir(), "missing"))
+	if sources, detail := sourceHealth(); len(sources) != 0 || detail == "" {
+		t.Fatalf("missing helper was not marked unavailable: %+v, %q", sources, detail)
+	}
+}
+
+func TestBotReturnReceiptReportsBoundedProposalIntakeHealth(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MORA_TENTACLES_STATE_DIR", root)
+	oldClock := clock
+	defer func() { clock = oldClock }()
+	now := time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC)
+	clock = func() time.Time { return now }
+	path := filepath.Join(root, "bot-return.json")
+	if got := botReturnChannel(); got.State != "unknown" {
+		t.Fatalf("missing receipt: %+v", got)
+	}
+	for _, tc := range []struct {
+		name    string
+		receipt Receipt
+		state   string
+	}{
+		{"fresh", Receipt{Schema: 1, Job: "bot-return", State: "succeeded", StartedAt: now.Format(time.RFC3339), FinishedAt: now.Format(time.RFC3339), LastSuccess: now.Format(time.RFC3339), Operations: 1}, "healthy"},
+		{"stale", Receipt{Schema: 1, Job: "bot-return", State: "succeeded", StartedAt: now.Add(-20 * time.Minute).Format(time.RFC3339), FinishedAt: now.Add(-16 * time.Minute).Format(time.RFC3339), LastSuccess: now.Add(-16 * time.Minute).Format(time.RFC3339), Operations: 1}, "stale"},
+		{"failed", Receipt{Schema: 1, Job: "bot-return", State: "failed", StartedAt: now.Format(time.RFC3339), FinishedAt: now.Format(time.RFC3339), Operations: 1, Detail: "intake failed"}, "failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := atomicJSON(path, tc.receipt); err != nil {
+				t.Fatal(err)
+			}
+			got := botReturnChannel()
+			if got.State != tc.state {
+				t.Fatalf("got %+v, want %s", got, tc.state)
+			}
+			if tc.state == "healthy" && !strings.Contains(got.Detail, "await owner approval") {
+				t.Fatalf("success overclaims publication: %+v", got)
+			}
+		})
+	}
+	if err := atomicJSON(path, Receipt{Schema: 1, Job: "mac-devbox", State: "succeeded", StartedAt: now.Format(time.RFC3339), FinishedAt: now.Format(time.RFC3339), LastSuccess: now.Format(time.RFC3339), Operations: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if got := botReturnChannel(); got.State != "unknown" {
+		t.Fatalf("wrong job receipt accepted: %+v", got)
+	}
+}
+
+func TestAggregatedWindowsDropsUnverifiedReturnButStandaloneKeepsIt(t *testing.T) {
+	channels := []Channel{{Name: "Personal archive", State: "healthy"}, {Name: "Windows → Mac", State: "unknown"}}
+	if got := aggregateRemoteChannels("windows", append([]Channel(nil), channels...)); len(got) != 1 || got[0].Name != "Personal archive" {
+		t.Fatalf("aggregate retained the unverified return channel: %+v", got)
+	}
+	if got := aggregateRemoteChannels("devbox", channels); len(got) != 2 {
+		t.Fatalf("standalone/non-Windows status was changed: %+v", got)
+	}
+}
+
 func TestJobLockRecoversAfterProcessDeath(t *testing.T) {
 	if path := os.Getenv("MORA_LOCK_TEST_PATH"); path != "" {
 		release, err := acquireJobLock(path)

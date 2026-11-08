@@ -37,8 +37,16 @@ type Device struct {
 	Channels   []Channel `json:"channels"`
 }
 type Snapshot struct {
-	GeneratedAt string   `json:"generated_at"`
-	Devices     []Device `json:"devices"`
+	GeneratedAt  string         `json:"generated_at"`
+	Devices      []Device       `json:"devices"`
+	Sources      []SourceHealth `json:"sources"`
+	SourcesError string         `json:"sources_error,omitempty"`
+}
+type SourceHealth struct {
+	Key           string `json:"key"`
+	State         string `json:"state"`
+	LastSuccessAt string `json:"last_success_at,omitempty"`
+	Detail        string `json:"detail,omitempty"`
 }
 type Peer struct {
 	ID           string `json:"id"`
@@ -119,6 +127,7 @@ func run(args []string) error {
 		return e
 	}
 	s := Snapshot{GeneratedAt: stamp(), Devices: make([]Device, len(cfg.Peers)+1)}
+	s.Sources, s.SourcesError = sourceHealth()
 	s.Devices[0] = probe("mac")
 	var wg sync.WaitGroup
 	for i, p := range cfg.Peers {
@@ -127,6 +136,52 @@ func run(args []string) error {
 	}
 	wg.Wait()
 	return emit(s)
+}
+
+// sourceHealth reads Mora's machine-readable doctor report without running its
+// --pulse path, which advances producer state and can notify on unhealthy data.
+func sourceHealth() ([]SourceHealth, string) {
+	bin := os.Getenv("MORA_BIN")
+	if bin == "" {
+		bin = filepath.Join(home(), ".local/bin/mora")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	b, err := command(ctx, bin, "doctor", "--json")
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+			if ctx.Err() != nil {
+				return []SourceHealth{}, "Mora doctor source health timed out."
+			}
+			return []SourceHealth{}, "Mora doctor source health is unavailable."
+		}
+	}
+	var report struct {
+		Schema        string `json:"schema"`
+		SchemaVersion int    `json:"schema_version"`
+		Sources       *[]struct {
+			Key           string `json:"key"`
+			State         string `json:"state"`
+			LastSuccessAt string `json:"last_success_at"`
+			ErrorCode     string `json:"error_code"`
+		} `json:"sources"`
+	}
+	if json.Unmarshal(b, &report) != nil || report.Schema != "mora.doctor.report" || report.SchemaVersion != 1 || report.Sources == nil {
+		return []SourceHealth{}, "Mora doctor returned an invalid source health report."
+	}
+	sources := make([]SourceHealth, 0, len(*report.Sources))
+	for _, source := range *report.Sources {
+		if source.Key == "" || source.State == "" {
+			return []SourceHealth{}, "Mora doctor returned an invalid source health report."
+		}
+		detail := source.ErrorCode
+		if source.State == "failed" && detail == "" {
+			detail = "Source sync reported an error."
+		}
+		sources = append(sources, SourceHealth{Key: source.Key, State: source.State, LastSuccessAt: source.LastSuccessAt, Detail: detail})
+	}
+	return sources, ""
 }
 func validateConfig(c Config) error {
 	if len(c.Peers) > 8 {
@@ -205,7 +260,20 @@ func remote(p Peer) Device {
 	got.ID = p.ID
 	got.Name = p.Name
 	got.Connection = "connected"
+	got.Channels = aggregateRemoteChannels(p.Profile, got.Channels)
 	return got
+}
+func aggregateRemoteChannels(profile string, channels []Channel) []Channel {
+	if profile != "windows" {
+		return channels
+	}
+	filtered := channels[:0]
+	for _, channel := range channels {
+		if channel.Name != "Windows → Mac" {
+			filtered = append(filtered, channel)
+		}
+	}
+	return filtered
 }
 func readReceipt(path, name string, maxAge time.Duration) Channel {
 	c := Channel{Name: name, State: "unknown", Detail: "No sync receipt yet."}
@@ -263,6 +331,7 @@ func probe(profile string) Device {
 		d.Name = "This Mac"
 		d.Detail = "Local status · checks do not trigger sync"
 		d.Channels = append(d.Channels, readReceipt(filepath.Join(root, "mac-backup.json"), "Vault backup", time.Hour))
+		d.Channels = append(d.Channels, botReturnChannel())
 		for _, j := range []string{"mac-devbox", "mac-gateway"} {
 			name := "Devbox work shares"
 			if j == "mac-gateway" {
@@ -282,6 +351,25 @@ func probe(profile string) Device {
 		d.Channels = append(d.Channels, Channel{Name: "Windows → Mac", State: "unknown", Detail: "Authored-memory return path is not configured. Archive pulls are one-way."})
 	}
 	return d
+}
+func botReturnChannel() Channel {
+	path := filepath.Join(stateRoot(), "bot-return.json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return Channel{Name: "Grok → Mac proposals", State: "unknown", Detail: "No proposal return receipt yet."}
+	}
+	var receipt Receipt
+	if json.Unmarshal(b, &receipt) != nil || receipt.Schema != 1 || receipt.Job != "bot-return" {
+		return Channel{Name: "Grok → Mac proposals", State: "unknown", Detail: "Proposal return receipt is unreadable."}
+	}
+	c := readReceipt(path, "Grok → Mac proposals", 15*time.Minute)
+	if c.State == "healthy" || c.State == "stale" {
+		c.Detail = "Proposal intake completed. Notes await owner approval; this is not vault publication."
+		if c.State == "stale" {
+			c.Detail = "Last proposal intake is overdue. " + c.Detail
+		}
+	}
+	return c
 }
 func service(name, unit string) Channel {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

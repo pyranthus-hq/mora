@@ -8,7 +8,9 @@ The menu bar, panel, and app icon share a monochrome eye-and-tentacles mark.
 Its native 20×18pt menu image keeps a fixed footprint, including its attention dot.
 The 320pt panel opens with one compact row per device. Select a row to expand
 channel receipts and explanations; only one device expands at a time. Details
-retains the full collector output. Connectivity and check status remain separate.
+retains the collector status response. A separate Sources row stays collapsed by
+default and expands to show enabled connectors, freshness, last recorded source sync,
+and health detail. This is independent of device connectivity.
 
 ## Build
 
@@ -47,4 +49,5 @@ Preview mode uses clearly labelled fixture data and does not run the collector.
 ```
 
 This exercises failed, stale, unknown, malformed, and independent connection
-states using the same Foundation parser as the app.
+states, source summaries, unknown source states, timestamps, and unavailable probes
+using the same Foundation parser as the app.

@@ -70,7 +70,7 @@ final class StatusModel: ObservableObject {
         self.preview = preview
         collector = Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("mora-tentacles")
         if preview {
-            snapshot = try? StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"id":"mac","name":"This Mac","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked.","last_success":"2026-11-08T07:45:00Z"},{"name":"Personal archive","state":"stale","detail":"Fixture data — displayed to demonstrate a stale channel.","last_success":"2026-11-07T07:45:00Z"}]},{"id":"devbox","name":"Devbox","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked."}]},{"id":"windows","name":"Windows (WSL)","connection":"connected","channels":[{"name":"Windows → Mac","state":"unknown","detail":"Fixture data — return path not configured."}]}]}"#.utf8))
+            snapshot = try? StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"id":"mac","name":"This Mac","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked.","last_success":"2026-11-08T07:45:00Z"},{"name":"Personal archive","state":"stale","detail":"Fixture data — displayed to demonstrate a stale channel.","last_success":"2026-11-07T07:45:00Z"}]},{"id":"devbox","name":"Devbox","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked."}]},{"id":"windows","name":"Windows (WSL)","connection":"connected","channels":[{"name":"Windows → Mac","state":"unknown","detail":"Fixture data — return path not configured."}]}],"sources":[{"key":"gmail:work","state":"fresh","last_success_at":"2026-11-08T07:45:00Z","detail":"Fixture data — no source content was read."},{"key":"calendar","state":"stale","last_success_at":"2026-11-07T07:45:00Z","detail":"Fixture data — stale connector example."},{"key":"imessage","state":"provider-paused","detail":"Fixture data — unknown state example."}]}"#.utf8))
             lastUpdated = Date()
             detailText = "PREVIEW FIXTURE — no collector was run and no sync was checked."
             return
@@ -142,6 +142,7 @@ struct StatusPanel: View {
     var isPreview = false
     @State private var showDetails = false
     @State private var expandedDevice: String?
+    @State private var expandedSources = false
 
     private var headline: String {
         if model.isRefreshing && model.snapshot == nil { return "Checking…" }
@@ -180,6 +181,8 @@ struct StatusPanel: View {
                             deviceRow(device)
                             if device.id != snapshot.devices.last?.id { Divider() }
                         }
+                        Divider()
+                        sourceRow(snapshot)
                     }
                 }.frame(height: listHeight(snapshot.devices))
             } else if model.error == nil {
@@ -280,7 +283,90 @@ struct StatusPanel: View {
     private func listHeight(_ devices: [DeviceStatus]) -> CGFloat {
         let rows = CGFloat(devices.count * 52 + max(0, devices.count - 1))
         let expanded = devices.first { $0.id == expandedDevice }.map { channelHeight($0) + 10 } ?? 0
-        return min(400, rows + expanded)
+        let sourceHeight: CGFloat
+        if expandedSources, let snapshot = model.snapshot {
+            if let sourcesError = snapshot.sourcesError { sourceHeight = min(100, CGFloat(sourcesError.count / 45 + 50)) }
+            else { sourceHeight = min(220, CGFloat(max(1, snapshot.sources?.count ?? 0)) * 58) }
+        } else { sourceHeight = 0 }
+        return min(400, rows + 45 + expanded + sourceHeight)
+    }
+
+    private func sourceRow(_ snapshot: StatusSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button { expandedSources.toggle() } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: sourceSummarySymbol(snapshot))
+                        .foregroundStyle(sourceSummaryColor(snapshot)).frame(width: 14)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Sources").font(.system(size: 12, weight: .medium))
+                        Text(model.error == nil ? snapshot.sourcesSummary : "Previous · \(snapshot.sourcesSummary)")
+                            .font(.system(size: 10)).foregroundStyle(model.error == nil ? Color.secondary : Color.orange)
+                    }
+                    Spacer()
+                    Image(systemName: expandedSources ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+                }.frame(height: 48).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Enabled connector sources, \(snapshot.sourcesSummary)")
+            .accessibilityValue(expandedSources ? "Expanded" : "Collapsed")
+            .accessibilityHint("Show or hide connector freshness details")
+
+            if expandedSources {
+                VStack(alignment: .leading, spacing: 9) {
+                    if model.error != nil {
+                        Text("Previous snapshot — source results may be stale.")
+                            .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let error = snapshot.sourcesError {
+                        Text(error).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    } else if let sources = snapshot.sources {
+                        if sources.isEmpty {
+                            Text("No enabled sources.").foregroundStyle(.secondary)
+                        }
+                        ForEach(sources) { source in
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: source.symbol).foregroundStyle(sourceColor(source))
+                                    Text(source.key).fontWeight(.medium)
+                                    Spacer()
+                                    Text(source.label).foregroundStyle(sourceColor(source))
+                                }
+                                if let last = source.lastSuccessAt {
+                                    Text("Last source sync \(last.formatted(.relative(presentation: .named)))")
+                                        .foregroundStyle(.secondary)
+                                }
+                                if let detail = source.detail, !detail.isEmpty {
+                                    Text(detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
+                    } else {
+                        Text("Source checks unavailable.").foregroundStyle(.secondary)
+                    }
+                }
+                .font(.system(size: 10)).frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 23).padding(.bottom, 10)
+            }
+        }
+    }
+
+    private func sourceColor(_ source: SourceStatus) -> Color {
+        switch source.normalizedState { case "fresh": .green; case "stale": .orange; case "failed": .red; default: .secondary }
+    }
+    private func sourceSummarySymbol(_ snapshot: StatusSnapshot) -> String {
+        if snapshot.sourcesError != nil || snapshot.sources == nil { return "questionmark.circle.fill" }
+        if snapshot.sources?.contains(where: { $0.normalizedState == "failed" }) == true { return "xmark.circle.fill" }
+        if snapshot.sources?.contains(where: { $0.normalizedState == "stale" }) == true { return "clock.fill" }
+        if snapshot.sources?.isEmpty == false && snapshot.sources?.allSatisfy({ $0.normalizedState == "fresh" }) == true { return "checkmark.circle.fill" }
+        return "questionmark.circle.fill"
+    }
+    private func sourceSummaryColor(_ snapshot: StatusSnapshot) -> Color {
+        if snapshot.sourcesError != nil || snapshot.sources == nil { return .secondary }
+        if snapshot.sources?.contains(where: { $0.normalizedState == "failed" }) == true { return .red }
+        if snapshot.sources?.contains(where: { $0.normalizedState == "stale" }) == true { return .orange }
+        if snapshot.sources?.isEmpty == false && snapshot.sources?.allSatisfy({ $0.normalizedState == "fresh" }) == true { return .green }
+        return .secondary
     }
 
     private func color(for state: ChannelState) -> Color {
