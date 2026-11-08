@@ -36,6 +36,9 @@ type claudeHookGroup = hookspkg.Group
 
 type hookEnvelope struct {
 	HookSpecificOutput hookSpecificOutput `json:"hookSpecificOutput"`
+	// SystemMessage is shown to the user in Claude Code; additionalContext goes
+	// to the model only.
+	SystemMessage string `json:"systemMessage,omitempty"`
 }
 
 type hookSpecificOutput struct {
@@ -173,6 +176,7 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 	defer cancel()
 	mems, serr := hookSearchMemories(searchCtx, cfg, prompt, opts.scope, hookRecallLimit*4)
 	var body string
+	recalled := 0
 	if serr == nil && searchCtx.Err() == nil {
 		kept := mems[:0]
 		for _, m := range mems {
@@ -183,13 +187,13 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 			}
 		}
 		mems = kept
-		body = formatRecallContextFor(mems, prompt, opts.threshold, hookNow())
+		body, recalled = hookspkg.FormatRecallContextCount(mems, prompt, opts.threshold, hookNow())
 	}
 	body = prependBannerLine(banner, body)
 	if body == "" {
 		return nil
 	}
-	_ = writeHookOutput(stdout, "UserPromptSubmit", body)
+	_ = writeHookOutputWithMessage(stdout, "UserPromptSubmit", body, hookspkg.SteppedInLine(recalled))
 	return nil
 }
 
@@ -199,9 +203,6 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 func skipRecallPrompt(prompt string) bool { return hookspkg.SkipRecallPrompt(prompt) }
 func formatRecallContext(mems []Memory, threshold float64, now time.Time) string {
 	return hookspkg.FormatRecallContext(mems, threshold, now)
-}
-func formatRecallContextFor(mems []Memory, query string, threshold float64, now time.Time) string {
-	return hookspkg.FormatRecallContextFor(mems, query, threshold, now)
 }
 
 // hookRecallSearch is searchMemories with the hook's score domain restored.
@@ -264,10 +265,16 @@ func hookWithinProject(root, cwd string) bool {
 }
 
 func writeHookOutput(stdout io.Writer, eventName, context string) error {
+	return writeHookOutputWithMessage(stdout, eventName, context, "")
+}
+
+// writeHookOutputWithMessage also sets systemMessage, the line Claude Code
+// shows to the user. An empty message is omitted.
+func writeHookOutputWithMessage(stdout io.Writer, eventName, context, message string) error {
 	out := hookEnvelope{HookSpecificOutput: hookSpecificOutput{
 		HookEventName:     eventName,
 		AdditionalContext: context,
-	}}
+	}, SystemMessage: message}
 	return json.NewEncoder(stdout).Encode(out)
 }
 
