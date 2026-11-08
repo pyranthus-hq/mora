@@ -152,6 +152,14 @@ jobs:
         env:
           CGO_ENABLED: "0"
         run: go vet ./...
+      - name: Repeat native pending-marker contention regressions
+        env:
+          CGO_ENABLED: "0"
+        run: go test -vet=off -count=20 ./internal/index -run 'TestListPendingWindowsSharingViolation|TestListPendingRetriesContention|TestPendingReadExpired'
+      - name: Repeat native index concurrency regressions
+        env:
+          CGO_ENABLED: "0"
+        run: go test -vet=off -count=3 -timeout=20m ./internal/mora -run 'TestConcurrencyContractStress|TestConcurrentRebuildsDoNotCorrupt'
       - name: Repeat atomicio fallback regression tests
         env:
           CGO_ENABLED: "0"

@@ -84,6 +84,8 @@ A write marker stores `content_sha256`, the hash of the exact bytes it publishes
 | `rebuild` | `marked_at ≤ listing_started_at` | clear | Any rebuild that listed after the op was marked covers it — **not** only its own `op_id`, or a SIGKILLed rebuild's op is unrecoverable forever. |
 | corrupt | | clear | A committed rebuild may reap it. |
 
+Pending-marker reads retry transient Windows sharing violations with jittered backoff and one five-second contention budget shared by the listing, including a renamed marker. Permanent read errors still fail immediately, and an exhausted budget returns the last error rather than dropping suppression evidence. Rename and retirement handling remain unchanged.
+
 `unmarkIndexDirty` removes the dirty form first and the FTS-committed form second. A concurrent rename either already happened (the second removal finds it) or fails on the missing source, so no interleaving leaves a covered marker behind.
 
 Ingest uses a **crash-recoverable journal** instead of one pathless op, because a killed backfill cannot write a terminal completion bit (`SyncStatus` only persists after `memory.Ingest` returns). The durable header keeps the index dirty across a SIGKILL. The next committed rebuild lists every published file — journaled or not — indexes it, and retires the lines inside its snapshot, because a line is written after its file is published. A source with a live ingest at the snapshot is deferred, and one guard serializes journal creation, appends and compaction (rule d: retire on *listed*, deliberately asymmetric with the write rule, so one persistently-malformed connector file cannot pin thousands of memories dirty forever — the manifest's `unparseable` count owns that signal instead).

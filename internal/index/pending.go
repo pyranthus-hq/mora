@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,6 +69,32 @@ const ftsCommittedSuffix = ".fts.json"
 // readPendingFile is a seam so a test can land a rename inside ListPending.
 var readPendingFile = os.ReadFile
 
+// pendingReadRetryable permits deterministic contention tests on every platform.
+var pendingReadRetryable = atomicio.SharingViolationRetryable
+
+// readPendingWithRetry shares one lazily started contention budget across the
+// listing, including renamed markers. Permanent errors and disappearance return
+// immediately; callers retain responsibility for following the rename.
+func readPendingWithRetry(path string, deadline *time.Time) ([]byte, error) {
+	backoff := time.Millisecond
+	for {
+		b, err := readPendingFile(path)
+		if err == nil || !pendingReadRetryable(err) {
+			return b, err
+		}
+		if deadline.IsZero() {
+			*deadline = time.Now().Add(5 * time.Second)
+		}
+		remaining := time.Until(*deadline)
+		if remaining <= 0 {
+			return nil, err
+		}
+		delay := min(backoff+time.Duration(rand.Int64N(int64(backoff))), remaining)
+		time.Sleep(delay)
+		backoff = min(2*backoff, 32*time.Millisecond)
+	}
+}
+
 func PendingDir(cfg config.Config) string { return filepath.Join(cfg.StateDir, "pending") }
 
 func PendingPath(cfg config.Config, opID string) string {
@@ -120,6 +147,7 @@ func ListPending(cfg config.Config) ([]PendingOp, error) {
 		return nil, err
 	}
 	var ops []PendingOp
+	var readDeadline time.Time
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
@@ -129,12 +157,12 @@ func ListPending(cfg config.Config) ([]PendingOp, error) {
 		if ftsCommitted {
 			id = strings.TrimSuffix(e.Name(), ftsCommittedSuffix)
 		}
-		b, rerr := readPendingFile(filepath.Join(PendingDir(cfg), e.Name()))
+		b, rerr := readPendingWithRetry(filepath.Join(PendingDir(cfg), e.Name()), &readDeadline)
 		if errors.Is(rerr, os.ErrNotExist) && !ftsCommitted {
 			// Renamed to its second form after ReadDir. Skipping it here would drop
 			// a delete's suppression. The rename only ever runs this way.
 			ftsCommitted = true
-			b, rerr = readPendingFile(filepath.Join(PendingDir(cfg), id+ftsCommittedSuffix))
+			b, rerr = readPendingWithRetry(filepath.Join(PendingDir(cfg), id+ftsCommittedSuffix), &readDeadline)
 		}
 		if errors.Is(rerr, os.ErrNotExist) {
 			continue // a concurrent committed writer retired it after ReadDir
