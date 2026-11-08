@@ -419,11 +419,22 @@ func filterAgentResult(p agentProfile, name string, args map[string]any, value a
 	if !p.RawSources {
 		delete(out, "freshness")
 		delete(out, "excluded_by_filter")
+		if health, ok := out["health"].(map[string]any); ok {
+			delete(health, "per_source")
+			delete(health, "sources_omitted")
+			delete(health, "banner")
+		}
 	}
 	if !p.unrestricted() {
 		// The count of rows cut for size includes rows this profile cannot
 		// see, so it would show that they exist.
 		delete(out, "results_truncated")
+		// These describe the pre-filter population, including hidden records.
+		delete(out, "confidence")
+		delete(out, "excluded_by_disposition")
+		delete(out, "exclusion_count_basis")
+		delete(out, "shares_unhealthy")
+		delete(out, "query_correlation_id")
 	}
 	return out, kept, nil
 }

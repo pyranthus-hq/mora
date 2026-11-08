@@ -298,3 +298,8 @@ queries or content-bearing fields.
 
 - **Notification handling is technically non-conformant** but I have not observed it breaking a real client. `serveMCP` writes a response line for every parsed request, so a `notifications/initialized` line yields a `-32601` error envelope rather than no response. Whether Claude Code/Codex ever send a notification to this server (and silently ignore the spurious reply) is not verified from the code in this repo.
 - **Request-line cap.** Formerly a latent 64KB edge (default `bufio.Scanner`, no `Buffer` override — one big `write_memory` line terminated the read loop). Fixed: explicit 4MB `mcpMaxRequestBytes` buffer + a loud, actionable error past the cap. Regression-tested.
+
+Profile-filtered responses omit pre-filter confidence, disposition-exclusion counts,
+share diagnostics, and query correlation IDs because those describe records outside
+the grant. With raw sources disabled, compact health retains its aggregate state
+and index status but omits source names, counts, and banners.
