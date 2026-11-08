@@ -1,0 +1,80 @@
+{
+  "corrections": {
+    "bash_interrupted": 0,
+    "bash_rejected": 0,
+    "other_interrupted": 0,
+    "other_rejected": 0,
+    "user_actions": 0
+  },
+  "harnesses": [
+    {
+      "calls": 0,
+      "name": "claude",
+      "sessions": 0,
+      "signal": "typed",
+      "subagent_files": 0
+    },
+    {
+      "calls": 0,
+      "name": "codex",
+      "sessions": 0,
+      "signal": "no_rejection_signal",
+      "subagent_files": 0
+    }
+  ],
+  "not_counted": {
+    "blocked_by_auto_mode": 0,
+    "blocked_by_rule": 0,
+    "cancelled_siblings": 0,
+    "interrupted_between_calls": 0,
+    "interrupted_in_subagent": 0,
+    "interrupted_not_human": 0,
+    "unknown_denial_kinds": 0,
+    "untyped_rejections": 0
+  },
+  "read": {
+    "bad_timestamps": 0,
+    "calls_without_id": 0,
+    "claude_sessions": 0,
+    "claude_subagent_files": 0,
+    "codex_commands_unreadable": 0,
+    "codex_patches_declined": 0,
+    "codex_sessions": 0,
+    "codex_turn_interrupts": 0,
+    "copied_calls": 0,
+    "denials_without_call": 0,
+    "empty_files": 0,
+    "files_read": 0,
+    "files_skipped_old": 0,
+    "interrupted_between_calls": 0,
+    "lines": 0,
+    "malformed_lines": 0,
+    "oversize_lines": 0,
+    "partial_last_lines": 0,
+    "symlinks_skipped": 0,
+    "unknown_records": 0,
+    "unreadable_files": 0,
+    "untyped_rejections": 0
+  },
+  "repeat": {
+    "baseline_pairs": 0,
+    "baseline_rate": null,
+    "baseline_repeated": 0,
+    "baseline_shape_rate": null,
+    "baseline_shape_repeated": 0,
+    "eligible": 0,
+    "rate": null,
+    "same_command": 0,
+    "same_shape": 0,
+    "scored": 0,
+    "shape_rate": null
+  },
+  "schema": "mora.check",
+  "schema_version": 1,
+  "top_patterns": [],
+  "window": {
+    "first": "",
+    "last": "",
+    "since": ""
+  }
+}

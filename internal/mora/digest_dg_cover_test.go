@@ -131,7 +131,7 @@ func TestDg_DeltaDigestErrorAndFilterPaths(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(cfg.ConfigDir, "sources.json"), []byte("{not json"), 0o600); err != nil {
 			t.Fatalf("WriteFile sources: %v", err)
 		}
-		_, _, err := buildDeltaDigest(cfg, fixedNow, briefOpts{}, 10, nil, nil)
+		_, _, err := buildDeltaDigest(cfg, fixedNow, briefOpts{}, 10, nil, nil, nil)
 		if err == nil || !strings.Contains(err.Error(), "invalid character") {
 			t.Fatalf("buildDeltaDigest error = %v, want json parse error", err)
 		}
@@ -143,7 +143,7 @@ func TestDg_DeltaDigestErrorAndFilterPaths(t *testing.T) {
 		seedSyncStatus(t, cfg, "gmail", fixedNow.Add(-time.Hour))
 		seedSyncStatus(t, cfg, "imessage", fixedNow.Add(-time.Hour))
 
-		d, _, err := buildDeltaDigest(cfg, fixedNow, briefOpts{source: "gmail"}, 10, nil, nil)
+		d, _, err := buildDeltaDigest(cfg, fixedNow, briefOpts{source: "gmail"}, 10, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("buildDeltaDigest: %v", err)
 		}
@@ -192,7 +192,7 @@ func TestDg_DeltaSectionItemsColdAndSteadyEdges(t *testing.T) {
 		dgMemory("bad-cold", "gmail", "bad cold", "not-rfc3339"),
 		dgMemory("good-cold", "gmail", "good cold", now.Add(-time.Hour).Format(time.RFC3339)),
 	}
-	cold, _, coldLines, coldCountOnly, more := deltaSectionItems(cfg, briefDelta{ColdStart: true}, coldMems, now, "gmail", 10, nil)
+	cold, _, coldLines, coldCountOnly, more := deltaSectionItems(cfg, briefDelta{ColdStart: true}, coldMems, now, "gmail", 10, nil, nil)
 	if len(cold) != 1 || cold[0].ID != "good-cold" || more != 0 {
 		t.Fatalf("cold items=%+v more=%d, want only good cold item", cold, more)
 	}
@@ -218,7 +218,7 @@ func TestDg_DeltaSectionItemsColdAndSteadyEdges(t *testing.T) {
 		{ID: "bad-steady", Change: "updated"},
 	}}
 
-	items, _, lines, countOnly, more := deltaSectionItems(cfg, delta, mems, now, "calendar", 10, map[string]int64{"series-b": 9})
+	items, _, lines, countOnly, more := deltaSectionItems(cfg, delta, mems, now, "calendar", 10, map[string]int64{"series-b": 9}, nil)
 	if more != 0 {
 		t.Fatalf("more=%d, want 0", more)
 	}

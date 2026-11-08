@@ -286,3 +286,34 @@ func TestHk_HookStatusMalformedHooks(t *testing.T) {
 // not valid JSON at all surfaces a parse error instead of being silently
 // treated as empty settings. (Treating it as empty is exactly the wipe hazard:
 // install would then rewrite the file with only mora hooks.)
+
+// TestHk_HookStatusProjectMalformedGlobal asserts a bad global settings file
+// does not fail a --project status read. PreToolUse lives in the global file,
+// so it reports unknown there.
+func TestHk_HookStatusProjectMalformedGlobal(t *testing.T) {
+	home := withTempHookHome(t)
+	writeClaudeSettingsFixture(t, home, "{bad")
+	project := t.TempDir()
+	t.Chdir(project)
+	local := filepath.Join(project, ".claude", "settings.local.json")
+	if err := os.MkdirAll(filepath.Dir(local), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(local, []byte(`{"theme":"dark"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var text bytes.Buffer
+	if err := hookStatus(testCtx(t), &text, false, true); err != nil {
+		t.Fatalf("project status failed on a bad global file: %v", err)
+	}
+	if !strings.Contains(text.String(), "SessionStart: not installed") || !strings.Contains(text.String(), "PreToolUse: unknown (") {
+		t.Fatalf("text status = %q", text.String())
+	}
+	var js bytes.Buffer
+	if err := hookStatus(testCtx(t), &js, true, true); err != nil {
+		t.Fatalf("project status --json failed on a bad global file: %v", err)
+	}
+	if !strings.Contains(js.String(), `"pre_tool_use":"unknown"`) && !strings.Contains(js.String(), `"pre_tool_use": "unknown"`) {
+		t.Fatalf("json status = %s", js.String())
+	}
+}

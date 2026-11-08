@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	indexstore "github.com/pyranthus-hq/mora/internal/index"
 	"os"
 	"path/filepath"
 	"strings"
@@ -317,10 +318,10 @@ func TestUnmarkIndexDirtyRetriesTransientRemoval(t *testing.T) {
 	transient := errors.New("transient sharing violation")
 	origRemove, origRetryable := removePendingOpFile, leaseRemovalRetryableFn
 	t.Cleanup(func() { removePendingOpFile, leaseRemovalRetryableFn = origRemove, origRetryable })
-	calls := 0
+	calls := map[string]int{}
 	removePendingOpFile = func(got string) error {
-		calls++
-		if calls == 1 {
+		calls[got]++
+		if got == path && calls[got] == 1 {
 			return transient
 		}
 		return os.Remove(got)
@@ -329,7 +330,15 @@ func TestUnmarkIndexDirtyRetriesTransientRemoval(t *testing.T) {
 	if err := unmarkIndexDirty(cfg, opID); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 2 {
-		t.Fatalf("remove calls = %d, want 2", calls)
+	if calls[path] != 2 {
+		t.Fatalf("remove calls for the dirty form = %d, want 2 (one transient failure, one retry)", calls[path])
+	}
+	// unmark also retires the FTS-committed form, so a marker renamed by a
+	// concurrent write cannot outlive the rebuild that covered it.
+	if ftsPath := indexstore.FTSCommittedPath(cfg, opID); calls[ftsPath] != 1 {
+		t.Fatalf("remove calls for the FTS-committed form = %d, want 1", calls[ftsPath])
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("marker survived unmark: %v", err)
 	}
 }

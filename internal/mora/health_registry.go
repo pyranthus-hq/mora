@@ -35,8 +35,8 @@ var mcpHealthExemptTools = map[string]bool{}
 //   - GET /healthz is the LIVENESS probe itself — it reports Health.State (see
 //     handleHealthz), but per C3 it is "health-reporting, banner-exempt," not
 //     name-matched into the rendered-banner/typed-payload completeness set.
-//   - GET /{$} is the static landing page (embeds the bearer token for the
-//     browser bridge) — it renders no product data.
+//   - GET /{$} is the authenticated landing page (exposes the browser bridge
+//     token only after bearer authentication) — it renders no product data.
 //   - POST /call is a generic passthrough router to an arbitrary allowed tool
 //     name, not itself a distinct product surface — the tool it dispatches to
 //     (search_memory, think, …) is covered individually via its own named

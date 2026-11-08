@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +19,7 @@ import (
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/genericutil"
+	ingestpkg "github.com/pyranthus-hq/mora/internal/ingest"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
@@ -685,5 +689,60 @@ func TestInnerDeadlineWithMaterializedWorkIsPartial(t *testing.T) {
 	}
 	if got.ErrorCode != errCodeConnectorUnavailable {
 		t.Fatalf("error code = %q, want the timeout named rather than connector.unclassified", got.ErrorCode)
+	}
+}
+
+// A lease held by another live process makes the sync a skip: the fetcher never
+// runs, no failure is stamped, and the receipt says "skipped". A dead holder's
+// lease is taken over.
+func TestIngestSourceSkipsWhenAnotherProcessHoldsLease(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	src := Source{Name: "mail", Type: "gmail", Scope: "global"}
+	key := ingestOperationSourceKey(src)
+	original := ingestSourceDispatchFn
+	t.Cleanup(func() { ingestSourceDispatchFn = original })
+	calls := 0
+	ingestSourceDispatchFn = func(context.Context, Config, Source, io.Writer) (sourceIngestResult, error) {
+		calls++
+		return sourceIngestResult{}, nil
+	}
+	lease := ingestpkg.LeasePath(cfg, key)
+	if err := os.MkdirAll(filepath.Dir(lease), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lease, []byte(strconv.Itoa(os.Getppid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	result, err := ingestSourceDetailed(context.Background(), cfg, src, &out)
+	if err != nil || !result.Skipped || calls != 0 {
+		t.Fatalf("result=%+v err=%v calls=%d, want skipped without fetching", result, err, calls)
+	}
+	if b, _ := os.ReadFile(lease); string(b) != strconv.Itoa(os.Getppid()) {
+		t.Fatalf("holder's lease disturbed: %q", b)
+	}
+	if path := syncStatusPathFor(cfg, src); path != "" {
+		if st, _ := memory.LoadStatus(path); st != nil && st.LastError != "" {
+			t.Fatalf("skip stamped a failure: %+v", st)
+		}
+	}
+	plans := []sourceRunPlan{{Key: key, Source: src}}
+	agg, aggErr := aggregateSourceRuns(plans, []sourceRunOutcome{{Key: key, Skipped: true}}, nil, nil)
+	if aggErr != nil || agg.Sources[0].Status != sourceRunStatusSkipped || agg.FailedSources != 0 || !agg.Usable {
+		t.Fatalf("aggregate=%+v err=%v", agg, aggErr)
+	}
+
+	// Dead holder: take over, run, release.
+	if err := os.WriteFile(lease, []byte("2147483646"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err = ingestSourceDetailed(context.Background(), cfg, src, io.Discard)
+	if err != nil || result.Skipped || calls != 1 {
+		t.Fatalf("takeover: result=%+v err=%v calls=%d", result, err, calls)
+	}
+	if _, err := os.Stat(lease); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("lease not released after sync: %v", err)
 	}
 }

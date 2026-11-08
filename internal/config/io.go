@@ -202,10 +202,10 @@ func ApplyEnv(cfg Config) (Config, error) {
 func ParseMCPWritePolicy(raw string) (string, error) {
 	p := strings.ToLower(strings.TrimSpace(raw))
 	switch p {
-	case "open", "propose", "readonly":
+	case "open", "propose", "readonly", "tentative":
 		return p, nil
 	default:
-		return "", fmt.Errorf("invalid mcp_write_policy %q (want open, propose, or readonly)", raw)
+		return "", fmt.Errorf("invalid mcp_write_policy %q (want open, propose, readonly, or tentative)", raw)
 	}
 }
 

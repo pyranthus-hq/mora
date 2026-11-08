@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 const (
@@ -95,7 +97,7 @@ func calendarEventsInRange(cfg Config, start, end time.Time, source string) ([]M
 	var rows []row
 	for _, path := range files {
 		m, err := parseMemory(path)
-		if err != nil || m.DeletedAt != "" || !g.memoryVisible(m.ID) {
+		if err != nil || m.DeletedAt != "" || !g.memoryVisible(m.ID) || memory.IsTentative(m) {
 			continue
 		}
 		if source == "calendar" && m.Provider != "calendar" {

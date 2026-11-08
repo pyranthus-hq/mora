@@ -171,11 +171,13 @@ func TestCLIRegistryMatchesProductionDispatch(t *testing.T) {
 		{"connect", "cmdConnect", []string{"args[0]"}},
 		{"sync", "cmdSync", []string{"args[0]"}},
 		{"share", "cmdShare", []string{"args[0]"}},
+		{"eywa", "cmdEywa", []string{"args[0]"}},
 		{"usage", "cmdUsage", []string{"args[0]"}},
 		{"disconnect", "cmdDisconnect", []string{"args[0]"}},
 		{"mcp", "cmdMCP", []string{"args[0]"}},
 		{"serve", "cmdServe", []string{"args[0]"}},
 		{"hook", "cmdHook", []string{"args[0]"}},
+		{"rules", "cmdRules", []string{"args[0]"}},
 		{"loop", "cmdLoop", []string{"sub"}},
 	} {
 		assertDispatchSet(t, registry, funcs, family.prefix, family.function, family.discriminants...)
@@ -617,6 +619,7 @@ func TestCLIRegistryPriorityGapsUseRealRun(t *testing.T) {
 		for _, args := range [][]string{
 			{"connect", "google", "--__issue205_probe__"},
 			{"connect", "github", "--repo", "invalid"},
+			{"connect", "eywa", "--endpoint", "http://eywa.example.com/mcp"},
 			{"connect", "imessage", "--__issue205_probe__"},
 			{"connect", "filesystem"},
 		} {
@@ -709,6 +712,17 @@ func TestCLIRegistryHookIOThroughRun(t *testing.T) {
 		got := decodeHookOutput(t, out.String())
 		if !strings.Contains(got.HookSpecificOutput.AdditionalContext, "eelpout recall token alpha") {
 			t.Fatalf("recall omitted seeded memory: %q", got.HookSpecificOutput.AdditionalContext)
+		}
+	})
+	subRun(t, "pre-tool-use", func(t *testing.T) {
+		seedPreToolActive(t, nil)
+		var out bytes.Buffer
+		if err := Run(testCtx(t), []string{"hook", "pre-tool-use"}, &out, &out, strings.NewReader(preToolInputS1)); err != nil {
+			t.Fatal(err)
+		}
+		got := decodeHookOutput(t, out.String())
+		if got.HookSpecificOutput.HookEventName != "PreToolUse" || got.HookSpecificOutput.AdditionalContext == "" {
+			t.Fatalf("pre-tool-use output = %q", out.String())
 		}
 	})
 }

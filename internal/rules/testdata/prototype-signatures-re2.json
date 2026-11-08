@@ -1,0 +1,40 @@
+{
+  "note": "RE2 port of venture contracts/fixed-signatures-v3.json, test data only. memory-cli-no-json moves its lookahead into unless; memory-data-folder swaps its lookbehind and lookahead for consumed classes.",
+  "signatures": [
+    {
+      "id": "compound-cd",
+      "spec": {
+        "version": 1,
+        "tool": "Bash",
+        "match": "^\\s*cd\\s+[^;&|\\n]*?\\s*(&&|;)"
+      }
+    },
+    {
+      "id": "nested-agent-cli",
+      "spec": {
+        "version": 1,
+        "tool": "Bash",
+        "match": "(?:^|[;&|(\\n]\\s*|&&\\s*|\\bthen\\s+|\\bdo\\s+|\\btimeout\\s+\\S+\\s+|\\bnohup\\s+|\\bexec\\s+|=\\$\\(\\s*)(?:\\S*/)?codex\\s+(exec|review|consult)\\b",
+        "context": "subagent"
+      }
+    },
+    {
+      "id": "memory-cli-no-json",
+      "spec": {
+        "version": 1,
+        "tool": "Bash",
+        "match": "(?:^|[;&|(\\n]\\s*|&&\\s*|\\bthen\\s+|\\bdo\\s+|\\btimeout\\s+\\S+\\s+|\\bnohup\\s+|\\bexec\\s+|=\\$\\(\\s*)\\s*(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*(?:\\S*/)?mora\\s+(?:read|search)\\b",
+        "unless": "--json\\b"
+      }
+    },
+    {
+      "id": "memory-data-folder",
+      "spec": {
+        "version": 1,
+        "tool": "Bash",
+        "match": "(?:^|[^A-Za-z0-9_./~$-])(?:~|\\$HOME|\\$\\{HOME\\}|/home/[^/\\s\"']+|/Users/[^/\\s\"']+|/root)/(?:\\.local/share/mora|vault/mora)(?:$|[/\\s\"'`;&|)<>*:])",
+        "exclude": "(?:-not|\\\\?!)\\s+-(?:i?path|i?wholename|i?name|i?regex)\\s+(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()]+)|-(?:i?path|i?wholename|i?name|i?regex)\\s+(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()]+)\\s+-prune\\b|\\\\?\\(\\s*-(?:i?path|i?wholename|i?name|i?regex)\\s+(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()]+)(?:\\s+-o(?:r)?\\s+-(?:i?path|i?wholename|i?name|i?regex)\\s+(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()]+))*\\s*\\\\?\\)\\s+-prune\\b|--(?:exclude-dir|exclude|ignore-dir|ignore)(?:=|\\s+)(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()]+)|(?:-g|--glob|--iglob)(?:=|\\s*)(?:\"![^\"]*\"|'![^']*'|![^\\s;&|()]+)"
+      }
+    }
+  ]
+}

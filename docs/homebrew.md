@@ -41,8 +41,10 @@ bash scripts/prepare-homebrew-release.sh --tag v0.15.1 --out /tmp/mora.rb
 ```
 
 This command reads the release's dedicated assets endpoint because the tag
-response can omit its embedded asset list. It only writes the requested output
-file and does not change the tap. Run the secret-free regressions with
+response can omit its embedded asset list. Asset pages are normalized with
+`jq -s` so preparation works on GitHub CLI builds that lack `gh api --slurp`
+(added in gh 2.48) as well as newer runners. It only writes the requested
+output file and does not change the tap. Run the secret-free regressions with
 `bash scripts/regress/homebrew-release.sh` and
 `bash scripts/regress/homebrew-release-contract.sh`.
 
@@ -68,10 +70,55 @@ If a signed app or old Brew package already exists, remove that installation
 using its documented uninstaller first, preserving the vault and configuration.
 Do not use `--adopt`, `--force`, or clear quarantine. A conflicting app in
 `~/Applications` is refused. Avoid reinstalling an older Cask over a newer
-self-updated app; wait for the tap version to catch up.
+self-updated app; wait for the tap version to catch up. Prefer
+`brew upgrade --cask pyranthus-hq/tap/mora` over `--greedy`: greedy must not
+silently downgrade a newer self-updated app that the tap has not caught up to.
 
 The third-party tap retains a narrowly scoped Ruby preflight because Homebrew's
 literal `preflight_steps` cannot express the conflicting-user-app check. Its
-style check requires an explicit `Cask/InstallSteps` exception for this guard. `brew uninstall --cask
-pyranthus-hq/tap/mora` removes the installation without a data-deleting `zap`.
-Manage any schedules separately before uninstalling.
+style check requires an explicit `Cask/InstallSteps` exception for this guard.
+`brew uninstall --cask pyranthus-hq/tap/mora` removes the installation without a
+data-deleting `zap`. Manage any schedules separately before uninstalling.
+
+## Signed-host canary (acceptance handoff)
+
+Static preparation (generator, checksum/signature gating, regress scripts, and
+docs) can run without Darwin. Live Brew audit/style/install/upgrade/uninstall,
+codesign/stapler proof, CLI→updater route on a real Caskroom link, N→N+1 /
+notification behavior, and FDA continuity with #167 require a consented signed
+macOS host. Adit owns that host session; do not claim it from static evidence.
+
+On a consented host with the published tap and matching signed release assets:
+
+```sh
+# Style + audit (record the Cask/InstallSteps exception; do not hide it)
+brew tap pyranthus-hq/tap
+brew style --cask pyranthus-hq/tap/mora
+brew audit --cask --online pyranthus-hq/tap/mora
+
+# Clean install, CLI symlink, updater route
+brew uninstall --cask pyranthus-hq/tap/mora 2>/dev/null || true
+brew install --cask pyranthus-hq/tap/mora
+command -v mora
+readlink "$(command -v mora)"   # expect .../Mora.app/Contents/MacOS/mora
+mora version
+mora upgrade --check            # expect whole-app route, not raw brew mutate
+codesign -dv --verbose=4 /Applications/Mora.app 2>&1 | tee /tmp/mora-294-codesign.txt
+stapler validate /Applications/Mora.app
+
+# Fail-closed migration (do not use --adopt/--force)
+# With ~/Applications/Mora.app present, install must odie with migration text.
+
+# Uninstall preserves vault/config/state/tokens/backups (no zap)
+printf 'probe\n' > "$HOME/Library/Application Support/mora/.294-canary"
+brew uninstall --cask pyranthus-hq/tap/mora
+test -f "$HOME/Library/Application Support/mora/.294-canary"
+
+# N→N+1 / greedy downgrade / FDA continuity: share one session with #167.
+# Record release tag, tap commit, and sanitized receipts. Do not claim
+# automatic updater ownership from installation alone.
+```
+
+Keep `auto_updates` absent until this canary plus schedule/notification audit
+prove the claim. Coordinate FDA evidence with #167; do not duplicate its
+protected-source work here.

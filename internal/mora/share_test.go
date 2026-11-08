@@ -1982,10 +1982,10 @@ func TestShareImportRefusesCaseFoldCollision(t *testing.T) {
 // there, and a case-variant vault_dir must not slip past the prefix check
 // (review finding).
 func TestSharePathsOverlapCaseFold(t *testing.T) {
-	if !sharePathsOverlap("/users/adit/vault/mora/data/share", "/Users/Adit/VAULT/mora", true) {
+	if !sharePathsOverlap("/users/alex/vault/mora/data/share", "/Users/Alex/VAULT/mora", true) {
 		t.Fatal("case-folded overlap not detected")
 	}
-	if sharePathsOverlap("/users/adit/vault/mora/data/share", "/Users/Adit/VAULT/mora", false) {
+	if sharePathsOverlap("/users/alex/vault/mora/data/share", "/Users/Alex/VAULT/mora", false) {
 		t.Fatal("case-sensitive comparison must not fold")
 	}
 	if sharePathsOverlap("/a/b-data/share", "/a/b", true) {
