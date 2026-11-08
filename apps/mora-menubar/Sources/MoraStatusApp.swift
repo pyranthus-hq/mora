@@ -11,7 +11,8 @@ struct MoraStatusApp: App {
     init() { _model = StateObject(wrappedValue: StatusModel(preview: CommandLine.arguments.contains("--preview"))) }
 
     private var needsAttention: Bool {
-        model.error != nil || model.snapshot?.aggregate == .failed || model.snapshot?.aggregate == .stale
+        guard model.error == nil, let snapshot = model.snapshot else { return true }
+        return snapshot.menuNeedsAttention
     }
 
     var body: some Scene {
@@ -259,7 +260,7 @@ struct StatusPanel: View {
                                     Text(channel.state.label).foregroundStyle(color(for: channel.state))
                                 }
                                 if let last = channel.lastSuccess {
-                                    Text("Last success \(last.formatted(.relative(presentation: .named)))")
+                                    Text("\(channel.name == "Search index" ? "Last indexed snapshot" : "Last success") \(last.formatted(.relative(presentation: .named)))")
                                         .foregroundStyle(.secondary)
                                 }
                                 if let detail = channel.detail, !detail.isEmpty {
@@ -288,7 +289,7 @@ struct StatusPanel: View {
             if let sourcesError = snapshot.sourcesError { sourceHeight = min(100, CGFloat(sourcesError.count / 45 + 50)) }
             else { sourceHeight = min(220, CGFloat(max(1, snapshot.sources?.count ?? 0)) * 58) }
         } else { sourceHeight = 0 }
-        return min(400, rows + 45 + expanded + sourceHeight)
+        return min(400, rows + 50 + expanded + sourceHeight)
     }
 
     private func sourceRow(_ snapshot: StatusSnapshot) -> some View {
@@ -355,6 +356,7 @@ struct StatusPanel: View {
         switch source.normalizedState { case "fresh": .green; case "stale": .orange; case "failed": .red; default: .secondary }
     }
     private func sourceSummarySymbol(_ snapshot: StatusSnapshot) -> String {
+        if model.error != nil { return "questionmark.circle.fill" }
         if snapshot.sourcesError != nil || snapshot.sources == nil { return "questionmark.circle.fill" }
         if snapshot.sources?.contains(where: { $0.normalizedState == "failed" }) == true { return "xmark.circle.fill" }
         if snapshot.sources?.contains(where: { $0.normalizedState == "stale" }) == true { return "clock.fill" }
@@ -362,6 +364,7 @@ struct StatusPanel: View {
         return "questionmark.circle.fill"
     }
     private func sourceSummaryColor(_ snapshot: StatusSnapshot) -> Color {
+        if model.error != nil { return .secondary }
         if snapshot.sourcesError != nil || snapshot.sources == nil { return .secondary }
         if snapshot.sources?.contains(where: { $0.normalizedState == "failed" }) == true { return .red }
         if snapshot.sources?.contains(where: { $0.normalizedState == "stale" }) == true { return .orange }

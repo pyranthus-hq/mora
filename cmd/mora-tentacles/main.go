@@ -48,6 +48,12 @@ type SourceHealth struct {
 	LastSuccessAt string `json:"last_success_at,omitempty"`
 	Detail        string `json:"detail,omitempty"`
 }
+type doctorIndex struct {
+	State      string `json:"state"`
+	IndexedAt  string `json:"indexed_at"`
+	Blocked    bool   `json:"blocked"`
+	PendingOps int    `json:"pending_ops"`
+}
 type Peer struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
@@ -127,7 +133,16 @@ func run(args []string) error {
 		return e
 	}
 	s := Snapshot{GeneratedAt: stamp(), Devices: make([]Device, len(cfg.Peers)+1)}
-	s.Sources, s.SourcesError = sourceHealth()
+	type healthResult struct {
+		sources []SourceHealth
+		err     string
+		index   Channel
+	}
+	health := make(chan healthResult, 1)
+	go func() {
+		sources, err, index := sourceHealth()
+		health <- healthResult{sources: sources, err: err, index: index}
+	}()
 	s.Devices[0] = probe("mac")
 	var wg sync.WaitGroup
 	for i, p := range cfg.Peers {
@@ -135,12 +150,16 @@ func run(args []string) error {
 		go func(i int, p Peer) { defer wg.Done(); s.Devices[i+1] = remote(p) }(i, p)
 	}
 	wg.Wait()
+	result := <-health
+	s.Sources, s.SourcesError = result.sources, result.err
+	s.Devices[0].Channels = append(s.Devices[0].Channels, result.index)
 	return emit(s)
 }
 
 // sourceHealth reads Mora's machine-readable doctor report without running its
 // --pulse path, which advances producer state and can notify on unhealthy data.
-func sourceHealth() ([]SourceHealth, string) {
+func sourceHealth() ([]SourceHealth, string, Channel) {
+	unknownIndex := Channel{Name: "Search index", State: "unknown", Detail: "Search index health is unavailable."}
 	bin := os.Getenv("MORA_BIN")
 	if bin == "" {
 		bin = filepath.Join(home(), ".local/bin/mora")
@@ -152,9 +171,9 @@ func sourceHealth() ([]SourceHealth, string) {
 		var exitErr *exec.ExitError
 		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
 			if ctx.Err() != nil {
-				return []SourceHealth{}, "Mora doctor source health timed out."
+				return []SourceHealth{}, "Mora doctor source health timed out.", unknownIndex
 			}
-			return []SourceHealth{}, "Mora doctor source health is unavailable."
+			return []SourceHealth{}, "Mora doctor source health is unavailable.", unknownIndex
 		}
 	}
 	var report struct {
@@ -166,14 +185,15 @@ func sourceHealth() ([]SourceHealth, string) {
 			LastSuccessAt string `json:"last_success_at"`
 			ErrorCode     string `json:"error_code"`
 		} `json:"sources"`
+		Index *doctorIndex `json:"index"`
 	}
 	if json.Unmarshal(b, &report) != nil || report.Schema != "mora.doctor.report" || report.SchemaVersion != 1 || report.Sources == nil {
-		return []SourceHealth{}, "Mora doctor returned an invalid source health report."
+		return []SourceHealth{}, "Mora doctor returned an invalid source health report.", unknownIndex
 	}
 	sources := make([]SourceHealth, 0, len(*report.Sources))
 	for _, source := range *report.Sources {
 		if source.Key == "" || source.State == "" {
-			return []SourceHealth{}, "Mora doctor returned an invalid source health report."
+			return []SourceHealth{}, "Mora doctor returned an invalid source health report.", unknownIndex
 		}
 		detail := source.ErrorCode
 		if source.State == "failed" && detail == "" {
@@ -181,7 +201,34 @@ func sourceHealth() ([]SourceHealth, string) {
 		}
 		sources = append(sources, SourceHealth{Key: source.Key, State: source.State, LastSuccessAt: source.LastSuccessAt, Detail: detail})
 	}
-	return sources, ""
+	return sources, "", indexChannel(report.Index)
+}
+
+func indexChannel(index *doctorIndex) Channel {
+	c := Channel{Name: "Search index", State: "unknown", Detail: "Search index health is unavailable."}
+	if index == nil {
+		return c
+	}
+	if index.Blocked || index.State == "blocked" || index.State == "failed" {
+		c.State = "failed"
+		c.Detail = "Search index is blocked or failed."
+		return c
+	}
+	switch index.State {
+	case "fresh":
+		if _, err := time.Parse(time.RFC3339, index.IndexedAt); err != nil {
+			c.Detail = "Search index reports fresh without a valid indexed timestamp."
+			return c
+		}
+		c.State = "healthy"
+		c.LastSuccess = index.IndexedAt
+		c.Detail = "Search index is current."
+	case "dirty":
+		c.State = "stale"
+		c.LastSuccess = index.IndexedAt
+		c.Detail = fmt.Sprintf("Serving the last committed snapshot; refresh is pending (%d operations), so results may not include current source data.", index.PendingOps)
+	}
+	return c
 }
 func validateConfig(c Config) error {
 	if len(c.Peers) > 8 {
@@ -261,6 +308,7 @@ func remote(p Peer) Device {
 	got.Name = p.Name
 	got.Connection = "connected"
 	got.Channels = aggregateRemoteChannels(p.Profile, got.Channels)
+	got.Detail = aggregateRemoteDetail(p.Profile, got.Detail)
 	return got
 }
 func aggregateRemoteChannels(profile string, channels []Channel) []Channel {
@@ -274,6 +322,12 @@ func aggregateRemoteChannels(profile string, channels []Channel) []Channel {
 		}
 	}
 	return filtered
+}
+func aggregateRemoteDetail(profile, detail string) string {
+	if profile == "windows" {
+		return "Personal archive pull + scoped gateway; full Windows-origin return not configured."
+	}
+	return detail
 }
 func readReceipt(path, name string, maxAge time.Duration) Channel {
 	c := Channel{Name: name, State: "unknown", Detail: "No sync receipt yet."}
