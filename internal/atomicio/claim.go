@@ -12,6 +12,10 @@ type ClaimOptions struct {
 }
 
 // ClaimExclusiveDurable publishes an already-fsynced file without replacing an existing destination.
+// Without hard links, Windows uses a no-replace move of the synced file; Unix
+// atomically renames it over an exclusive placeholder. Neither copies a visible
+// partial body. The Unix placeholder may remain empty after a crash.
+// The fallback consumes temp. The caller must sync the parent directory for name durability.
 func ClaimExclusiveDurable(temp, dest string, options ...ClaimOptions) error {
 	link, unsupported := os.Link, claimLinkUnsupported
 	if len(options) > 0 {
@@ -29,12 +33,5 @@ func ClaimExclusiveDurable(temp, dest string, options ...ClaimOptions) error {
 	if !unsupported(err) {
 		return err
 	}
-	claim, createErr := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if createErr != nil {
-		return createErr
-	}
-	if closeErr := claim.Close(); closeErr != nil {
-		return errors.Join(closeErr, os.Remove(dest))
-	}
-	return RenameReplaceWithRetry(temp, dest)
+	return claimExclusiveFallback(temp, dest)
 }
