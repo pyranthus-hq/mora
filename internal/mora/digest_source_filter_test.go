@@ -51,7 +51,7 @@ func TestWindowDigestHonorsSourceFilter(t *testing.T) {
 		"imessage": {{ID: "m1", Title: "Kai", Provider: "imessage", Text: "hey", CreatedAt: "2026-06-09T10:00:00Z"}},
 		"calendar": {{ID: "c1", Title: "Standup", Provider: "calendar", Text: "daily", CreatedAt: "2026-06-09T11:00:00Z"}},
 	}
-	d, err := buildWindowDigest(cfg, now, 168, 8, byInstance, nil, "imessage")
+	d, err := buildWindowDigest(cfg, now, 168, 8, byInstance, nil, "imessage", nil)
 	if err != nil {
 		t.Fatalf("buildWindowDigest: %v", err)
 	}

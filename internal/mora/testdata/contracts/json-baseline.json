@@ -96,6 +96,10 @@
     "status": "empty"
   },
   {
+    "path": "confirm",
+    "status": "static_only"
+  },
+  {
     "path": "connect",
     "status": "static_only"
   },
@@ -638,6 +642,10 @@
   {
     "path": "think",
     "status": "empty"
+  },
+  {
+    "path": "undo",
+    "status": "static_only"
   },
   {
     "path": "unforget",

@@ -931,6 +931,14 @@
     {
       "json_contract": "receipt",
       "kind": "verb",
+      "path": "confirm",
+      "payload": "mora.confirm",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
       "path": "delete",
       "payload": "mora.delete",
       "platform": "all",
@@ -957,6 +965,14 @@
       "kind": "verb",
       "path": "reingest",
       "payload": "mora.reingest",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
+      "path": "undo",
+      "payload": "mora.undo",
       "platform": "all",
       "reason": ""
     },
@@ -1764,6 +1780,10 @@
       "version": 1
     },
     {
+      "name": "mora.confirm",
+      "version": 1
+    },
+    {
       "name": "mora.connect.eywa",
       "version": 1
     },
@@ -2141,6 +2161,10 @@
     },
     {
       "name": "mora.think",
+      "version": 1
+    },
+    {
+      "name": "mora.undo",
       "version": 1
     },
     {

@@ -31,13 +31,16 @@ const authoredReconcileTTL = 10 * time.Minute
 // exiting mid-rebuild and leaving a stalled receipt behind.
 var authoredReconcilesInFlight sync.WaitGroup
 
-// waitForAuthoredReconciles waits up to limit for in-flight reconciles.
-func waitForAuthoredReconciles(limit time.Duration) {
+// waitForAuthoredReconciles waits up to limit for in-flight reconciles and
+// reports whether they all finished.
+func waitForAuthoredReconciles(limit time.Duration) bool {
 	done := make(chan struct{})
 	go func() { authoredReconcilesInFlight.Wait(); close(done) }()
 	select {
 	case <-done:
+		return true
 	case <-time.After(limit):
+		return false
 	}
 }
 

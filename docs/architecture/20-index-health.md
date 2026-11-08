@@ -61,17 +61,32 @@ mutate(memory m):
 
 ## The clearing rules (A3)
 
-A committed rebuild retires only the ops it **demonstrably** covered. It snapshots `listing_started_at` immediately before listing and collects `parsed` — the paths `parseMemory` actually succeeded on:
+A committed rebuild retires only the ops it **demonstrably** covered. Just before it lists the vault it snapshots the marker list, each journal's identity and size, and `listing_started_at`. A marker or journal line made after that snapshot stays for the next rebuild, even if its path was parsed. The rebuild also keeps a path-to-hash map of every file `parseMemory` succeeded on.
 
-| Kind | Cleared when | Why |
-|---|---|---|
-| `rebuild` | `marked_at ≤ listing_started_at` | Any rebuild that listed after the op was marked covers it — **not** only its own `op_id`, or a SIGKILLed rebuild's op is unrecoverable forever. |
-| `write` | `path ∈ parsed` | `parsed`, not the listing: a truncated/hand-mangled file is listed yet not indexed, and must stay dirty (never "fresh but missing"). |
-| `delete` | `path ∉ files` **or** `path ∈ parsed` | The second clause covers legitimate re-ingest — a connector rewrites a memory onto its own stable path — so the op does not live forever and B4 does not hide a live memory. |
+A write marker stores `content_sha256`, the hash of the exact bytes it publishes, and `owner_pid`. A delete marker stores the hash of the file it removes, and renames to its second form (`<id>.fts.json`) once the unlink finished. Older binaries already list and retire that name. First match wins, and no rule uses age alone:
+
+| Kind | Facts | Result | Why |
+|---|---|---|---|
+| `write` | no hash (older binary) | clear if parsed | The rule before hashes. Parsed, not listed: a truncated file is listed yet not indexed. |
+| `write` | parsed hash equals marker hash | clear | The exact state was indexed. |
+| `write` | listed but not parsed | keep | Never "fresh but missing". |
+| `write` | file on disk now equals marker hash | keep | It landed after parsing. |
+| `write` | owner process dead | clear | The write never landed or was replaced. |
+| `write` | anything else | keep | The owner may still publish. |
+| `delete` | no hash (older binary) | clear if gone or parsed | The rule before hashes. |
+| `delete` | unlink not recorded and owner alive | keep | A live deleter can still remove what this rebuild indexed. |
+| `delete` | path gone from the listing | clear | The rebuild cannot have indexed it. |
+| `delete` | listed but not parsed | keep | The file state is unproven. |
+| `delete` | unlink recorded, parsed | clear | The delete finished, so this file came back after it, whatever its bytes. B4 must not hide a live memory. |
+| `delete` | unlink not recorded, owner dead, parsed hash differs, disk equals parsed | clear | Same, once the disk shows the owner did not remove those bytes. |
+| `delete` | unlink not recorded, owner dead, parsed, disk and marker hashes all equal | clear and warn | The delete was abandoned, so the memory comes back. Owner death is read before the disk. |
+| `delete` | anything else | keep | |
+| `rebuild` | `marked_at ≤ listing_started_at` | clear | Any rebuild that listed after the op was marked covers it — **not** only its own `op_id`, or a SIGKILLed rebuild's op is unrecoverable forever. |
+| corrupt | | clear | A committed rebuild may reap it. |
 
 `unmarkIndexDirty` removes the dirty form first and the FTS-committed form second. A concurrent rename either already happened (the second removal finds it) or fails on the missing source, so no interleaving leaves a covered marker behind.
 
-Ingest uses a **crash-recoverable journal** instead of one pathless op, because a killed backfill cannot write a terminal completion bit (`SyncStatus` only persists after `memory.Ingest` returns). The durable header keeps the index dirty across a SIGKILL. The next committed rebuild lists every published file — journaled or not — indexes it, and retires the journal (rule d: retire on *listed*, deliberately asymmetric with the write rule, so one persistently-malformed connector file cannot pin thousands of memories dirty forever — the manifest's `unparseable` count owns that signal instead).
+Ingest uses a **crash-recoverable journal** instead of one pathless op, because a killed backfill cannot write a terminal completion bit (`SyncStatus` only persists after `memory.Ingest` returns). The durable header keeps the index dirty across a SIGKILL. The next committed rebuild lists every published file — journaled or not — indexes it, and retires the lines inside its snapshot, because a line is written after its file is published. A source with a live ingest at the snapshot is deferred, and one guard serializes journal creation, appends and compaction (rule d: retire on *listed*, deliberately asymmetric with the write rule, so one persistently-malformed connector file cannot pin thousands of memories dirty forever — the manifest's `unparseable` count owns that signal instead).
 
 ## The typed health kernel
 

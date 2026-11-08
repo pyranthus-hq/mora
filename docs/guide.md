@@ -647,23 +647,59 @@ command, error code, or schema that the binary does not have.
 Choose how much authority the agent gets:
 
 ```bash
+mora config mcp-write-policy tentative
 mora config mcp-write-policy open
 mora config mcp-write-policy propose
 mora config mcp-write-policy readonly
 ```
 
-- `open` allows `write_memory` and `delete_memory`.
+- `tentative` is the default whenever `config.toml` has no `mcp_write_policy`
+  line, however Mora was started (`mora init`, `mora setup`, or `mora mcp serve`
+  on a machine that was never initialized). A low-risk write saves at once with
+  the tag `mora-tentative`. Low risk means type `insight` or `fact`, a
+  `project:*` scope, and no secret, money, sensitive or agent-aimed text. Any
+  other write goes to the proposal queue, and the result has `held_because`. It
+  refuses deletes. Phone captures go to the queue.
+- `open` allows `write_memory` and `delete_memory`. You must choose it.
 - `propose` stores write proposals in the local config directory. It does not
-  add them to the vault before approval. It refuses deletes. This is the
-  default whenever `config.toml` has no `mcp_write_policy` line, however Mora
-  was started (`mora init`, `mora setup`, or `mora mcp serve` on a machine that
-  was never initialized).
+  add them to the vault before approval. It refuses deletes.
 - `readonly` refuses writes and deletes.
 
-An explicit policy is never changed. An install created before this default
-changed that never set a policy has no `mcp_write_policy` line, so after
-upgrading it runs in `propose` too. Run `mora config mcp-write-policy open` to
-go back to direct writes.
+An explicit policy is never changed. v0.15.3 resolved an unset policy to
+`propose`. v0.15.2 and earlier resolved it to `open`. Writes still queued from
+v0.15.3 stay queued: `mora doctor` prints how many are pending, and
+`mora mcp proposals approve <id>` publishes one.
+
+A tentative memory shows in search, read, list and context with a
+`"trust":"tentative"` label. It does not reach the recall hook, the digest, the
+brief, commitments or share. List them and keep one like this:
+
+```bash
+mora confirm --list            # tentative memories
+mora confirm <memory-id>       # remove the tag; the memory becomes normal
+```
+
+`mora confirm` has no MCP tool, and it logs a `confirm` line. Both commands
+accept `--json`.
+
+The hold filter is coarse. It does not stop a false claim written in plain
+words. An agent with a shell can run `mora confirm` or
+`mora mcp proposals approve`, so tentative is a review aid, not a sandbox.
+
+Every agent write that reaches the vault (MCP stdio, the loopback HTTP
+`/call` route, companion captures, and approved proposals) appends one line to
+`<vault>/agent-writes.log`: timestamp, `write`, memory id, scope, source,
+caller (for example `mcp-stdio/claude-code` or `http`) and the title. The log
+holds no body text. To reverse one:
+
+```bash
+mora undo <memory-id>          # agent-written memories only
+mora undo --force <memory-id>  # any memory
+```
+
+`mora undo` uses the same delete path as `mora delete`, updates the index, and
+appends an `undo` line to the log. It refuses a memory an agent did not write
+unless you pass `--force`.
 
 Review staged writes locally:
 

@@ -7,6 +7,7 @@ import (
 	evidencepkg "github.com/pyranthus-hq/mora/internal/evidence"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	meetingpkg "github.com/pyranthus-hq/mora/internal/meeting"
+	"github.com/pyranthus-hq/mora/internal/memory"
 	saliencepkg "github.com/pyranthus-hq/mora/internal/salience"
 	"io"
 	"sort"
@@ -585,7 +586,7 @@ func meetingBriefMemories(cfg Config) ([]Memory, error) {
 		if perr != nil || m.DeletedAt != "" {
 			continue
 		}
-		if !governance.memoryVisible(m.ID) {
+		if !governance.memoryVisible(m.ID) || memory.IsTentative(m) {
 			continue
 		}
 		mems = append(mems, m)
