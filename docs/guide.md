@@ -277,6 +277,29 @@ without an event window. Verified Gmail message correspondence includes
 the newest message excerpt. The bounded result is recent stored activity, not
 proof of a complete inbox or a list of messages requiring replies.
 
+Authored records are excluded from event lists by default. To explicitly include
+their stored write time, use:
+
+```bash
+mora list --event-since-hours 24 --include-authored-writes --limit 200 --json
+```
+
+The MCP equivalent is `list_memory` with `event_since_hours: 24` and
+`include_authored_writes: true` (the list-only `since_hours` alias also works).
+The opt-in requires an event window and is echoed only when true. Opted-in rows
+include `event_source`: `authored_write` for authored `created_at` placement,
+`message_evidence` or `occurred_at` for connector events. Missing, malformed,
+zero, and future authored times are excluded. Selection and ordering happen
+before the limit; ordinary filesystem documents are excluded.
+
+**Resync limitation:** imported agent-note mirrors are also authored. A
+filesystem resync that rematerializes them (including after a file mtime change)
+rewrites `created_at`, so old notes can re-enter this window in bulk. This flag
+is therefore default off; consumers requiring protection from resync floods
+must leave it off. A native `mora write` record uses its stored creation time;
+index rebuilds do not refresh that time. This opt-in does not change search,
+default event lists, or connector activity stamps.
+
 `mora search <query> --source gmail|imessage|calendar[:account] --json` applies
 the same pre-ranking connector filter as `search_memory` and echoes it under
 `source`; rows keep their full metadata (`meta.occurred_at`, message evidence)
