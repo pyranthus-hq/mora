@@ -1,5 +1,5 @@
 {
-  "body": "# Mora digest — \u003ctimestamp\u003e (last 24h)\n",
+  "body": "# Mora digest — \u003ctimestamp\u003e (last 24h)\n\n## Manual (2)\n- envelope probe — envelope probe body (id: \u003cid\u003e)\n- envelope seed — envelope probe seed (id: \u003cid\u003e)\n",
   "generated": true,
   "schema": "mora.brief",
   "schema_version": 1

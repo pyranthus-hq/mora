@@ -717,3 +717,52 @@ func TestBeginIngestProbesOnlyEligibleCandidatesOnce(t *testing.T) {
 		})
 	}
 }
+
+func TestBeginPrunesDeadRebuildAtOnce(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	oldProcessAlive := ProcessAlive
+	t.Cleanup(func() { ProcessAlive = oldProcessAlive })
+	ProcessAlive = func(pid int) bool { return pid == 4343 }
+	write := func(runID string, pid int) {
+		t.Helper()
+		rec := Record{SchemaVersion: SchemaVersion, Kind: KindIndexRebuild, State: Running, RunID: runID, OwnerPID: pid,
+			StartedAt: operationTestNow.Add(-time.Minute).Format(time.RFC3339Nano), HeartbeatAt: operationTestNow.Add(-time.Second).Format(time.RFC3339Nano), Phase: "listing"}
+		if err := SaveRecord(Path(cfg, KindIndexRebuild, runID), rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("op_dead", 4242)
+	write("op_live", 4343)
+	if err := os.WriteFile(Path(cfg, KindIndexRebuild, "op_corrupt"), []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Begin(cfg, KindIndexRebuild, "listing", operationTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(Path(cfg, KindIndexRebuild, "op_dead")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("recent dead rebuild receipt survived: %v", err)
+	}
+	for _, id := range []string{"op_live", "op_corrupt"} {
+		if _, err := os.Stat(Path(cfg, KindIndexRebuild, id)); err != nil {
+			t.Fatalf("receipt %s was pruned: %v", id, err)
+		}
+	}
+}
+
+func TestBeginKeepsRecentDeadIngest(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	oldProcessAlive := ProcessAlive
+	t.Cleanup(func() { ProcessAlive = oldProcessAlive })
+	ProcessAlive = func(int) bool { return false }
+	rec := Record{SchemaVersion: SchemaVersion, Kind: KindIngest, State: Running, RunID: "op_dead", OwnerPID: 4242,
+		StartedAt: operationTestNow.Add(-time.Minute).Format(time.RFC3339Nano), HeartbeatAt: operationTestNow.Add(-time.Second).Format(time.RFC3339Nano), Phase: "fetching"}
+	if err := SaveRecord(Path(cfg, KindIngest, "op_dead"), rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Begin(cfg, KindIngest, "fetching", operationTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(Path(cfg, KindIngest, "op_dead")); err != nil {
+		t.Fatalf("recent dead ingest receipt was pruned: %v", err)
+	}
+}

@@ -1002,7 +1002,7 @@ func TestCompanionCaptureForeignFileAtThePinnedIDIsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	path := memoryPath(cfg, foreign)
+	path := mustMemoryPath(t, cfg, foreign)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -1061,7 +1061,7 @@ func TestCompanionCaptureOwnFileAtThePinnedIDIsAppliedWithoutASecondWrite(t *tes
 	if err != nil {
 		t.Fatalf("first publish: %v", err)
 	}
-	before, err := os.ReadFile(memoryPath(cfg, Memory{Scope: "personal", Type: "insight", ID: captureTestMemoryID}))
+	before, err := os.ReadFile(mustMemoryPath(t, cfg, Memory{Scope: "personal", Type: "insight", ID: captureTestMemoryID}))
 	if err != nil {
 		t.Fatalf("read the published memory: %v", err)
 	}
@@ -1235,7 +1235,7 @@ func TestCompanionCaptureForeignRejectionLeavesNoResidue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	path := memoryPath(cfg, foreign)
+	path := mustMemoryPath(t, cfg, foreign)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -1346,7 +1346,7 @@ func TestCompanionCapturePrePlantedOwnerCannotClaimALaterMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	path := memoryPath(cfg, foreign)
+	path := mustMemoryPath(t, cfg, foreign)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -1670,7 +1670,7 @@ func TestCompanionCaptureAtCapRejectionLeavesTheTreeIdentical(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	path := memoryPath(cfg, foreign)
+	path := mustMemoryPath(t, cfg, foreign)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -1893,30 +1893,39 @@ func TestCompanionCaptureReceiptSiblingIsExclusive(t *testing.T) {
 
 	const racers = 2
 	var (
-		ready   sync.WaitGroup
-		release = make(chan struct{})
-		once    sync.Once
-		mu      sync.Mutex
-		wg      sync.WaitGroup
-		answers [][]byte
+		arrivals int
+		ready    = make(chan struct{}, racers)
+		release  = make(chan struct{})
+		once     sync.Once
+		mu       sync.Mutex
+		wg       sync.WaitGroup
+		answers  [][]byte
 	)
-	ready.Add(racers)
-	original := capturePublicationRaceGate
-	capturePublicationRaceGate = func() {
-		ready.Done()
+	original := capturePublicationLink
+	capturePublicationLink = func(oldname, newname string) error {
+		mu.Lock()
+		arrivals++
+		mu.Unlock()
+		select {
+		case ready <- struct{}{}:
+		default:
+		}
 		<-release
+		return original(oldname, newname)
 	}
-	t.Cleanup(func() { capturePublicationRaceGate = original })
-	go func() {
-		ready.Wait()
+	// Release and join every worker before restoring the global seam, including
+	// when an assertion fails because the receipt path never reaches the gate.
+	t.Cleanup(func() {
 		once.Do(func() { close(release) })
-	}()
+		wg.Wait()
+		capturePublicationLink = original
+	})
 
 	for i := 0; i < racers; i++ {
+		body := receiptBytesFor(t, id, i)
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			body := receiptBytesFor(t, id, i)
 			got, err := recordCaptureReceipt(cfg, id, body)
 			mu.Lock()
 			defer mu.Unlock()
@@ -1927,7 +1936,24 @@ func TestCompanionCaptureReceiptSiblingIsExclusive(t *testing.T) {
 			answers = append(answers, got)
 		}(i)
 	}
+	// Both callers must reach the exclusive primitive before either can claim
+	// the sibling. A missing gate fails here instead of leaking a watcher.
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for i := 0; i < racers; i++ {
+		select {
+		case <-ready:
+		case <-timer.C:
+			t.Fatalf("only %d of %d racers reached the receipt link gate", i, racers)
+		}
+	}
+	once.Do(func() { close(release) })
 	wg.Wait()
+	if arrivals != racers {
+		t.Fatalf("gate arrivals = %d, want %d", arrivals, racers)
+	}
+
+	capturePublicationLink = original
 
 	if len(answers) != racers {
 		t.Fatalf("%d racers answered, want %d", len(answers), racers)
@@ -2728,5 +2754,36 @@ func TestCompanionCaptureTokenReleaseOnlyRemovesItsOwn(t *testing.T) {
 	}
 	if _, err := os.Stat(token); !os.IsNotExist(err) {
 		t.Fatalf("the owner's release left the token behind: %v", err)
+	}
+}
+
+func TestCompanionCaptureScopeContainment(t *testing.T) {
+	for _, scope := range []string{"project:..:..:outside", "project:..", "project:a/b", "project:my-app.v2"} {
+		t.Run(scope, func(t *testing.T) {
+			handler, token, cfg, _ := captureListener(t, mcpWritePolicyOpen)
+			c := captureFixture(t, companionListenerDevice(t, cfg), "key.scope", "Synthetic scope capture")
+			c.Scope = scope
+			before := scopeVaultTree(t, cfg.VaultDir)
+			// Marshal the wire payload directly so malformed input reaches the server.
+			body, err := json.Marshal(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, companionRequest(t, http.MethodPost, companion.RouteCapture, token, string(body)).WithContext(testCtx(t)))
+			if scope == "project:my-app.v2" {
+				if rec.Code != http.StatusOK {
+					t.Fatalf("valid scope: %d %s", rec.Code, rec.Body)
+				}
+			} else {
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("bad scope: %d %s", rec.Code, rec.Body)
+				}
+				if !sameTree(before, scopeVaultTree(t, cfg.VaultDir)) || proposalCount(t, cfg) != 0 {
+					t.Fatal("rejected capture changed vault or staged a proposal")
+				}
+			}
+			assertNoOutsideFiles(t, lookupTestEnv(t).home, cfg.VaultDir, cfg.ConfigDir, cfg.StateDir, cfg.DataDir)
+		})
 	}
 }

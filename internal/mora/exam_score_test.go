@@ -430,10 +430,18 @@ func examDailyPredictions(d Digest, inventory ...Commitment) []exam.Prediction {
 			}
 			continue
 		}
-		direction := string(item.Direction)
-		if direction == "" {
-			direction = exam.Unknown
+		if item.Direction == "" {
+			// Plain item: no obligation claim, but its citation is still checked.
+			out = append(out, exam.Prediction{
+				Surface:   exam.SurfaceDaily,
+				Text:      renderDigestItemLine(item),
+				MemoryID:  item.ID,
+				Direction: exam.Unknown,
+				Lifecycle: exam.Unknown,
+			})
+			continue
 		}
+		direction := string(item.Direction)
 		lifecycle := item.Lifecycle
 		if lifecycle == "" {
 			lifecycle = exam.Unknown
@@ -455,6 +463,26 @@ func examDailyPredictions(d Digest, inventory ...Commitment) []exam.Prediction {
 		})
 	}
 	return append(out, examInventoryPredictions(exam.SurfaceDaily, inventory...)...)
+}
+
+// examDropCheckedPlain removes plain daily rows whose citation resolves in the
+// ledger. A plain row is no obligation prediction, so a valid one must not move
+// extraction precision. A plain row citing an unknown memory stays, so coverage
+// and Unmatched still see it.
+func examDropCheckedPlain(l exam.Ledger, preds []exam.Prediction) []exam.Prediction {
+	known := map[string]bool{}
+	for _, a := range l.Artifacts {
+		known[a.MemoryID] = true
+	}
+	out := make([]exam.Prediction, 0, len(preds))
+	for _, p := range preds {
+		plain := p.Surface == exam.SurfaceDaily && p.Direction == exam.Unknown && p.CommitmentID == "" && p.Origin == ""
+		if plain && known[p.MemoryID] {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 const examRealPredictionsPath = "exam/testdata/real-predictions.json"
@@ -480,7 +508,7 @@ func examSurfaces(t *testing.T) map[string][]exam.Prediction {
 	}
 	return map[string][]exam.Prediction{
 		exam.SurfaceMeeting: examMeetingPredictions(brief, snapshot.Commitments...),
-		exam.SurfaceDaily:   examDailyPredictions(digest),
+		exam.SurfaceDaily:   examDropCheckedPlain(loadExamLedger(t), examDailyPredictions(digest)),
 		"meeting_uncapped":  examMeetingPredictions(uncapped, snapshot.Commitments...),
 	}
 }
@@ -785,5 +813,25 @@ func TestUnwrapEmittedHandlesTheRealPresentationLayer(t *testing.T) {
 			t.Errorf("UnwrapEmitted(%q) = %q, which is not a ledger span — the unwrap or the ledger is wrong",
 				p.Text, exam.UnwrapEmitted(p.Text))
 		}
+	}
+}
+
+// TestExamPlainItemCitationChecked proves a plain item citing a missing memory
+// is not silently dropped: it must lower coverage and raise Unmatched.
+func TestExamPlainItemCitationChecked(t *testing.T) {
+	l := loadExamLedger(t)
+	if len(l.Artifacts) == 0 {
+		t.Fatal("ledger has no artifacts")
+	}
+	preds := []exam.Prediction{
+		{Surface: exam.SurfaceDaily, Text: "- Valid plain", MemoryID: l.Artifacts[0].MemoryID, Direction: exam.Unknown, Lifecycle: exam.Unknown},
+		{Surface: exam.SurfaceDaily, Text: "- Ghost plain", MemoryID: "gmail_thread/does-not-exist", Direction: exam.Unknown, Lifecycle: exam.Unknown},
+	}
+	sc, err := exam.Score(l, examDropCheckedPlain(l, preds), exam.SurfaceDaily)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Unmatched == 0 || sc.CitationCoverage.Recall >= 1 {
+		t.Fatalf("ghost plain citation unseen: unmatched=%d coverage=%+v", sc.Unmatched, sc.CitationCoverage)
 	}
 }
