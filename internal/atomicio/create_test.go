@@ -356,3 +356,33 @@ func TestCreateExclusiveDirSyncFailureAfterPublishIsIgnored(t *testing.T) {
 		t.Fatalf("published file missing: %v", err)
 	}
 }
+
+func TestAtomicCreateFallbackSyncsBeforeAndAfterPublication(t *testing.T) {
+	forceLinkUnsupported(t)
+	path := filepath.Join(t.TempDir(), "memory.md")
+	body := []byte("complete synced body")
+	oldFile, oldDir := MarkerSyncFn, SyncDirFn
+	t.Cleanup(func() { MarkerSyncFn, SyncDirFn = oldFile, oldDir })
+	fileSynced, dirSynced := false, false
+	MarkerSyncFn = func(f *os.File) error {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("name published before file sync: %v", err)
+		}
+		fileSynced = true
+		return f.Sync()
+	}
+	SyncDirFn = func(dir string) error {
+		got, err := os.ReadFile(path)
+		if !fileSynced || dir != filepath.Dir(path) || err != nil || !bytes.Equal(got, body) {
+			t.Fatalf("directory sync before complete publication: synced=%v dir=%s body=%q err=%v", fileSynced, dir, got, err)
+		}
+		dirSynced = true
+		return errors.New("directory sync failed after publication")
+	}
+	if err := atomicCreate(path, body, 0o644); err != nil {
+		t.Fatalf("published file must not invite retry: %v", err)
+	}
+	if !fileSynced || !dirSynced {
+		t.Fatalf("missing sync: file=%v directory=%v", fileSynced, dirSynced)
+	}
+}
