@@ -102,7 +102,9 @@ sequenceDiagram
 
 ### Gmail: thread-level
 
-`fetchGmailPage` (`internal/google/gmail.go:15`) lists threads (`Users.Threads.List("me")`, page size **50**) with a built-in query that excludes `category:promotions` and `category:social`, plus an `after:` date filter and any user query/label IDs (`buildGmailQuery`, `:41`). For each listed thread it fetches the **full** thread and maps it. A per-thread `Get` failure is *skipped*, not fatal (`:33`).
+`fetchGmailPageContext` lists threads (`Users.Threads.List("me")`, page size **50**) with a built-in query that excludes `category:promotions` and `category:social`, plus an `after:` date filter and any user query/label IDs (`buildGmailQuery`). Full-thread reads use at most **four workers** per page, overlapping network latency while preserving the list order (and sorted IDs on the history path). A shared per-fetcher gate spaces request admissions by 500 ms, including retries after their existing bounded backoff; concurrent workers do not multiply the request-rate budget.
+
+A `404` thread read is skipped in a snapshot and emitted as a tombstone in history. Any other error cancels and joins the page's workers and returns no partial page or advanced cursor. Pagination, snapshot-baseline capture, and durable checkpoint publication remain sequential: parallelism is confined to independent thread reads inside an already-listed page. Tests in `gmail_concurrency_test.go` cover overlap, the worker bound, ordered results, shared pacing, retries, and cancellation.
 
 `gmailThreadToItem` (`internal/google/gmail.go`) collapses a whole thread into **one** `Item` (capture stays thread-grained) while retaining both the legacy thread union and ordered per-message evidence:
 - Subject = the first non-empty `Subject` header in thread order; `OccurredAt` = the latest message `InternalDate`.
