@@ -141,7 +141,7 @@ func cmdConfig(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 	args = positional
 	if len(args) != 2 {
-		return errors.New("usage: mora config [context <small|default|large> | embedder <ollama|static> | mmr <on|off> | mcp-write-policy <open|propose|readonly>]")
+		return errors.New("usage: mora config [context <small|default|large> | embedder <ollama|static> | mmr <on|off> | mcp-write-policy <tentative|open|propose|readonly>]")
 	}
 	key, val := args[0], strings.ToLower(strings.TrimSpace(args[1]))
 	switch key {

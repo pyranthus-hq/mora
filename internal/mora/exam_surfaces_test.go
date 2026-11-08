@@ -220,7 +220,7 @@ func predictionIDs(preds []exam.Prediction) []string {
 
 func scoreExamSurface(t *testing.T, ledger exam.Ledger, preds []exam.Prediction, surface string) exam.Scorecard {
 	t.Helper()
-	sc, err := exam.Score(ledger, preds, surface)
+	sc, err := exam.Score(ledger, examDropCheckedPlain(ledger, preds), surface)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -524,8 +524,10 @@ func TestExamSurfaceClockGuard(t *testing.T) {
 	}
 }
 
-// TestExamServiceOnlyGateIsAssembled proves service-authored requests cannot cross
-// the materialized-commitment eligibility gate.
+// TestExamServiceOnlyGateIsAssembled proves a service-authored request never
+// becomes an obligation: it may render as a plain informational line (F14 turned
+// the commitment inventory from an eligibility gate into a ranking boost), but it
+// carries no obligation row and ranks below every real commitment.
 func TestExamServiceOnlyGateIsAssembled(t *testing.T) {
 	cfg, _, at := seedExamHome(t)
 	pinExamSurfaceClocks(t, at)
@@ -561,9 +563,55 @@ func TestExamServiceOnlyGateIsAssembled(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := runExamCLI(t, "pulse", "--digest", "--since-hours", "720")
+	lines := strings.Split(output, "\n")
+	start, end := -1, len(lines)
+	for i, line := range lines {
+		if strings.HasPrefix(line, "## Emails") {
+			start = i
+		} else if start >= 0 && i > start && strings.HasPrefix(line, "## ") {
+			end = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("no Emails section:\n%s", output)
+	}
+	lastObligation := -1
+	for i := start; i < end; i++ {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "obligation:") {
+			lastObligation = i
+		}
+	}
+	if lastObligation < 0 {
+		t.Fatalf("Emails section has no obligation row:\n%s", output)
+	}
 	for _, id := range ids {
-		if strings.Contains(output, "(id: "+id+")") {
-			t.Fatalf("service-only request crossed the commitment eligibility gate (%s):\n%s", id, output)
+		for i, line := range lines {
+			if !strings.Contains(line, "(id: "+id+")") {
+				continue
+			}
+			if i+1 < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[i+1]), "obligation:") {
+				t.Fatalf("service-only request became an obligation (%s):\n%s", id, output)
+			}
+			if i >= start && i < end && i < lastObligation {
+				t.Fatalf("service-only request ranked above a real commitment (%s):\n%s", id, output)
+			}
+		}
+	}
+	// A tripwire is service mail, so it usually sorts below the cap and never
+	// renders. That is the wanted result. The snapshot check below holds either way.
+	snapshot, err := readCommitmentSnapshot(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range snapshot.Commitments {
+		if c.State != commitOpen {
+			continue
+		}
+		for _, id := range ids {
+			if c.OpenedBy.MemoryID == id {
+				t.Fatalf("service-only request opened commitment %s", c.ID)
+			}
 		}
 	}
 }

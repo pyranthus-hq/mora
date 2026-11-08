@@ -186,6 +186,15 @@ const (
 	buildModeHeal                         // re-cut from frozen corpus: no new attempt record
 )
 
+// shareRunOutcome is what an import run reports to the chokepoint. Seq is the
+// generation the subscription now serves. Verified means the run committed
+// nothing: it found the publisher's source unchanged and re-verified the head
+// already committed at Seq, so the succeeded attempt record carries verified_at.
+type shareRunOutcome struct {
+	Seq      int
+	Verified bool
+}
+
 // shareBuildAndPublish is the single chokepoint. It acquires the storage lease
 // then the per-subscription import lease (the ONE legal order), runs a GC
 // preflight sweep, starts the CAS heartbeat, and — in import mode — publishes the
@@ -193,7 +202,16 @@ const (
 // its terminal state via the owner-CAS after fn returns. fn receives the fresh
 // run_id and returns the committed seq (0 if it committed nothing).
 func shareBuildAndPublish(ctx context.Context, cfg Config, name string, mode shareBuildMode, fn func(runID string) (int, error)) error {
-	return shareBuildAndPublishPrepared(ctx, cfg, name, mode, nil, fn, nil)
+	return shareBuildAndPublishPrepared(ctx, cfg, name, mode, nil, func(runID string) (shareRunOutcome, error) {
+		seq, err := fn(runID)
+		return shareRunOutcome{Seq: seq}, err
+	}, nil)
+}
+
+// shareImportAndPublish is the import-mode chokepoint for a run that may end as
+// a verified no-op (see shareRunOutcome).
+func shareImportAndPublish(ctx context.Context, cfg Config, name string, fn func(runID string) (shareRunOutcome, error)) error {
+	return shareBuildAndPublishPrepared(ctx, cfg, name, buildModeImport, nil, fn, nil)
 }
 
 // shareBuildAndPublishPrepared is the subscribe form of the chokepoint. prepare
@@ -201,7 +219,7 @@ func shareBuildAndPublish(ctx context.Context, cfg Config, name string, mode sha
 // waiting duplicate therefore cannot overwrite the winner's succeeded attempt
 // with a synthetic failed one. finalize runs only after the attempt reaches its
 // successful terminal state, while both leases are still held.
-func shareBuildAndPublishPrepared(ctx context.Context, cfg Config, name string, mode shareBuildMode, prepare func() error, fn func(runID string) (int, error), finalize func() error) error {
+func shareBuildAndPublishPrepared(ctx context.Context, cfg Config, name string, mode shareBuildMode, prepare func() error, fn func(runID string) (shareRunOutcome, error), finalize func() error) error {
 	runID := newRunID(time.Now())
 	storeRel, err := acquireStorageLease(cfg, runID, time.Now())
 	if err != nil {
@@ -236,7 +254,7 @@ func shareBuildAndPublishPrepared(ctx context.Context, cfg Config, name string, 
 			return serr
 		}
 	}
-	seq, ferr := fn(runID)
+	out, ferr := fn(runID)
 	if mode == buildModeImport {
 		var terminalErr error
 		if ferr != nil {
@@ -244,9 +262,11 @@ func shareBuildAndPublishPrepared(ctx context.Context, cfg Config, name string, 
 				RunID: runID, State: "failed", LastError: sanitizeHealthError(ferr.Error()),
 			})
 		} else {
-			terminalErr = finishShareAttempt(cfg, name, runID, shareAttempt{
-				RunID: runID, State: "succeeded", Seq: seq,
-			})
+			done := shareAttempt{RunID: runID, State: "succeeded", Seq: out.Seq}
+			if out.Verified {
+				done.VerifiedAt = time.Now().UTC().Format(time.RFC3339)
+			}
+			terminalErr = finishShareAttempt(cfg, name, runID, done)
 		}
 		if terminalErr != nil {
 			return errors.Join(ferr, fmt.Errorf("share %q: durable attempt transition failed: %w", name, terminalErr))

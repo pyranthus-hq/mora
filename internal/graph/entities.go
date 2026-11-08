@@ -35,6 +35,9 @@ func extractEntities(mems []memory.Memory) []structuralEntity {
 	for _, m := range mems {
 		add("scope", m.Scope, m.ID)
 		for _, t := range m.Tags {
+			if t == memory.TentativeTag {
+				continue // a trust marker, not a topic
+			}
 			add("tag", t, m.ID)
 		}
 		hay := m.Title + "\n" + m.Text

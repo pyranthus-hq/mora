@@ -1,0 +1,51 @@
+mora check (read-only, counts only, safe to paste)
+Window: all transcripts on disk, 2026-10-01 to 2026-10-04
+
+Sessions read
+  Claude Code: sessions 5, subagent files 1, Bash calls 18
+  Codex: sessions 1, shell calls 2, no rejection signal
+
+Tier A corrections (you rejected or interrupted a tool call)
+  Bash commands rejected: 4
+  Bash commands interrupted: 1
+  Other tools rejected or interrupted: 3 (rules cover Bash only)
+  User actions behind these: 7
+
+Repeat after correction
+  Commands rejected or interrupted: 5
+  With a later session: 4
+  Ran again in a later session, same command: 2 of 4 (50.0%)
+  Baseline, same command, never rejected or interrupted: 4 of 9 (44.4%)
+  Ran again in a later session, same shape: 3 of 4 (75.0%)
+  Baseline, same shape, never rejected or interrupted: 4 of 9 (44.4%)
+  Small sample: read these as counts, not as a rate.
+
+Top repeated patterns (same command / same shape)
+  git push --force: 1 / 1
+  npm publish: 1 / 1
+  rm -rf: 0 / 1
+
+Not counted as corrections
+  Blocked by a rule or hook: 1
+  Blocked by auto mode: 1
+  Cancelled beside an interrupted call: 1
+  Interrupted inside a subagent: 1
+  Interrupted by shutdown or a non-human turn: 0
+  Interrupted between tool calls: 0
+  Older rejections with no typed field: 0
+  Unknown denial kinds: 0
+
+Read notes
+  Files read: 7
+  Empty files: 1
+  Unreadable files: 0
+  Unknown records skipped: 1
+  Malformed lines skipped: 1
+  Partial last lines: 1
+  Oversize lines skipped: 0
+  Copied calls removed: 4
+  Codex commands not readable: 1
+  Codex turn interrupts, not tied to a command: 0
+  Codex patches declined, not commands: 0
+
+A rejection does not always mean the command was wrong. Read the rate beside the baseline.

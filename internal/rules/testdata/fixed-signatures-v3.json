@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "owner": "steward",
+  "supersedes": "fixed-signatures-v2.json",
+  "regex": "Python re syntax, applied with search() to the full Bash command text",
+  "exclude": "Optional per signature. Before match is applied, every non-overlapping occurrence of exclude in the command is replaced by one space (re.sub). A command is a hit when match then finds a search() hit.",
+  "context": "Optional per signature. subagent means a call counts as a hit only when it comes from a subagent; the rate still divides by all Bash calls.",
+  "baseline": "compound-cd and nested-agent-cli are the v2 patterns unchanged, so counts stay like for like with the 2026-10-08 guard-hook baseline",
+  "signatures": [
+    {
+      "id": "compound-cd",
+      "tool": "Bash",
+      "match": "^\\s*cd\\s+[^;&|\\n]*?\\s*(&&|;)",
+      "description": "A command that starts with a directory change chained to another command by && or ;."
+    },
+    {
+      "id": "nested-agent-cli",
+      "tool": "Bash",
+      "match": "(?:^|[;&|(\\n]\\s*|&&\\s*|\\bthen\\s+|\\bdo\\s+|\\btimeout\\s+\\S+\\s+|\\bnohup\\s+|\\bexec\\s+|=\\$\\(\\s*)(?:\\S*/)?codex\\s+(exec|review|consult)\\b",
+      "description": "codex exec, review or consult launched in command position; counted only when the calling context is a subagent.",
+      "context": "subagent"
+    },
+    {
+      "id": "memory-cli-no-json",
+      "tool": "Bash",
+      "match": "(?:^|[;&|(\\n]\\s*|&&\\s*|\\bthen\\s+|\\bdo\\s+|\\btimeout\\s+\\S+\\s+|\\bnohup\\s+|\\bexec\\s+|=\\$\\(\\s*)\\s*(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*(?:\\S*/)?mora\\s+(?:read|search)\\b(?![^;&|\\n]*--json\\b)",
+      "description": "mora read or mora search run in command position without --json in the same simple command."
+    },
+    {
+      "id": "memory-data-folder",
+      "tool": "Bash",
+      "match": "(?<![A-Za-z0-9_./~$-])(?:~|\\$HOME|\\$\\{HOME\\}|/home/[^/\\s\"']+|/Users/[^/\\s\"']+|/root)/(?:\\.local/share/mora|vault/mora)(?=$|[/\\s\"'`;&|)<>*:])",
+      "exclude": "(?:-not|\\\\?!)\\s+-(?:i?path|i?wholename|i?name|i?regex)\\s+(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()]+)|-(?:i?path|i?wholename|i?name|i?regex)\\s+(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()]+)\\s+-prune\\b|\\\\?\\(\\s*-(?:i?path|i?wholename|i?name|i?regex)\\s+(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()]+)(?:\\s+-o(?:r)?\\s+-(?:i?path|i?wholename|i?name|i?regex)\\s+(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()]+))*\\s*\\\\?\\)\\s+-prune\\b|--(?:exclude-dir|exclude|ignore-dir|ignore)(?:=|\\s+)(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()]+)|(?:-g|--glob|--iglob)(?:=|\\s*)(?:\"![^\"]*\"|'![^']*'|![^\\s;&|()]+)",
+      "description": "A command that names the memory tool's data folders (~/.local/share/mora or ~/vault/mora, also as $HOME, /home/<user>, /Users/<user> or /root forms) other than in a find exclusion (-not -path, ! -path, -path ... -prune) or an --exclude, --exclude-dir, --ignore or negated --glob flag."
+    }
+  ]
+}
