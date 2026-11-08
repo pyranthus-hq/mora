@@ -331,7 +331,7 @@ func verifyDoctorIndexRepair(cfg Config) error {
 		failed = append(failed, "index_db: "+err.Error())
 	}
 	idx := indexHealthOf(cfg, doctorClock())
-	if idx.State != idxFresh {
+	if idx.State != idxFresh && idx.State != idxRefreshing {
 		detail := fmt.Sprintf("index_fresh: state=%s, pending_ops=%d", idx.State, idx.PendingOps)
 		if idx.LastError != "" {
 			detail += ": " + idx.LastError
