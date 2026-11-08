@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"fmt"
 	"github.com/pyranthus-hq/mora/internal/memory"
 	"strings"
 	"testing"
@@ -139,5 +140,85 @@ func TestRecallCompositionEdges(t *testing.T) {
 	mems := []Memory{{ID: "1", Text: "one", CreatedAt: now.Format(time.RFC3339)}, {ID: "2", Text: "two", CreatedAt: now.Format(time.RFC3339)}, {ID: "3", Text: "three", CreatedAt: now.Format(time.RFC3339)}, {ID: "4", Text: "four", CreatedAt: now.Format(time.RFC3339)}}
 	if got := strings.Count(FormatRecallContext(mems, 0, now), "\n-"); got != 3 {
 		t.Fatalf("additional rows=%d want 3", got)
+	}
+}
+
+func TestRecallLineForCentersOnQueryMatch(t *testing.T) {
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	body := strings.Repeat("filler words about nothing in particular here ", 10) + "the lockbox code is zephyrine and it changes monthly"
+	m := Memory{ID: "m1", Title: "Notes", Source: "test", CreatedAt: now.Format(time.RFC3339), Text: body}
+	if got := RecallLine(m, now); strings.Contains(got, "zephyrine") {
+		t.Fatalf("RecallLine without a query keeps the head, got %q", got)
+	}
+	got := RecallLineFor(m, "what is the zephyrine code", now)
+	if !strings.Contains(got, "zephyrine") {
+		t.Fatalf("RecallLineFor should center on the match, got %q", got)
+	}
+	if !strings.Contains(got, "…") {
+		t.Fatalf("a centered window should mark the elided head, got %q", got)
+	}
+}
+
+func TestRecallLineForKeepsHeadWithoutBodyMatch(t *testing.T) {
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	body := strings.Repeat("abcdefghij ", 40)
+	m := Memory{ID: "m1", Title: "Notes", Source: "test", CreatedAt: now.Format(time.RFC3339), Text: body}
+	if got, want := RecallLineFor(m, "unrelated question words", now), RecallLine(m, now); got != want {
+		t.Fatalf("no body match should keep the head clip:\n got %q\nwant %q", got, want)
+	}
+	if got, want := RecallLineFor(m, "", now), RecallLine(m, now); got != want {
+		t.Fatalf("empty query must equal RecallLine:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestSteppedInLine(t *testing.T) {
+	for n, want := range map[int]string{
+		-1: "",
+		0:  "",
+		1:  "Mora stepped in · 1 lesson",
+		2:  "Mora stepped in · 2 lessons",
+		3:  "Mora stepped in · 3 lessons",
+	} {
+		if got := SteppedInLine(n); got != want {
+			t.Fatalf("SteppedInLine(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+func TestFormatRecallContextCountMatchesRenderedLines(t *testing.T) {
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	mems := []Memory{
+		{ID: "a", Title: "First lesson", Text: "Run the tests from the repo root.", Score: -3},
+		{ID: "b", Title: "Too weak", Text: "Above the threshold, so it is skipped.", Score: 1},
+		{ID: "c", Title: "Second lesson", Text: "Use migrate deploy on staging.", Score: -2},
+	}
+	body, n := FormatRecallContextCount(mems, "", 0, now)
+	if n != 2 {
+		t.Fatalf("count = %d, want 2:\n%s", n, body)
+	}
+	if body != FormatRecallContextFor(mems, "", 0, now) {
+		t.Fatal("FormatRecallContextCount must render the same body as FormatRecallContextFor")
+	}
+	if got := strings.Count(body, "\n- "); got != n {
+		t.Fatalf("rendered %d lines, count says %d:\n%s", got, n, body)
+	}
+	if _, n := FormatRecallContextCount(nil, "", 0, now); n != 0 {
+		t.Fatalf("empty input count = %d, want 0", n)
+	}
+}
+
+func TestFormatRecallContextCountStopsAtRecallLimit(t *testing.T) {
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	var mems []Memory
+	for i := 0; i < RecallLimit+2; i++ {
+		mems = append(mems, Memory{ID: fmt.Sprintf("m%d", i), Title: "Lesson", Text: "Run the tests from the repo root.", Score: -1})
+	}
+	mems = append(mems[:1], append([]Memory{{ID: "blank", Score: -1}}, mems[1:]...)...)
+	body, n := FormatRecallContextCount(mems, "", 0, now)
+	if n != RecallLimit {
+		t.Fatalf("count = %d, want the cap %d:\n%s", n, RecallLimit, body)
+	}
+	if got := strings.Count(body, "\n- "); got != n {
+		t.Fatalf("rendered %d lines, count says %d", got, n)
 	}
 }

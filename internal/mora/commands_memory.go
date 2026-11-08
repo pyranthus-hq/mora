@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/activity"
 	"github.com/pyranthus-hq/mora/internal/disposition"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"github.com/pyranthus-hq/mora/internal/memory"
@@ -70,6 +71,9 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	if err != nil {
 		return err
 	}
+	if *scope == "" {
+		*scope = "global"
+	}
 	m := Memory{Scope: *scope, Type: *mtype, Title: *title, Tags: genericutil.SplitCSV(*tags), Source: *source, CreatedAt: time.Now().Format(time.RFC3339), Text: *text}
 	if *target != "" {
 		m.Meta = map[string]any{"target": *target}
@@ -88,7 +92,8 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	// Create-exclusive publish: a colliding newID can never clobber an existing
 	// memory (os.Link fails EEXIST → re-mint), so a same-instant concurrent writer
 	// never silently loses its write. createMemory sets m.ID and m.Path.
-	m, _, err = createMemory(ctx, cfg, m)
+	var op pendingOp
+	m, op, err = createMemory(ctx, cfg, m)
 	if err != nil {
 		return err
 	}
@@ -115,8 +120,15 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	}
 	// Keep the marker until the elected full reconciliation has committed: indexUpsert
 	// makes FTS immediately visible, but only rebuildIndex can make graph, vectors,
-	// and commitments byte-identical to the vault. The warning is a diagnostic and
-	// rides stderr so it can never share stdout with the --json receipt (CON-02).
+	// and commitments byte-identical to the vault. The FTS-committed form tells
+	// health the write is already searchable (refreshing, not dirty). The warning
+	// is a diagnostic and rides stderr so it can never share stdout with the --json
+	// receipt (CON-02).
+	if authoredWriteProjectionPending(cfg, op) {
+		if err := markFTSCommitted(cfg, op); err != nil {
+			fmt.Fprintf(stderr, "warning: memory saved and searchable, but its index marker could not be updated: %v\n", err)
+		}
+	}
 	if err := reconcileAuthoredWrites(ctx, cfg); err != nil {
 		fmt.Fprintf(stderr, "warning: memory saved and text search updated, but full index reconciliation is pending: %v\n", err)
 	}
@@ -197,11 +209,13 @@ func newMemoriesPayload(items []Memory) memoriesPayload {
 	return memoriesPayload{Memories: out}
 }
 func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	now := briefClock()
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	scope := fs.String("scope", "", "scope")
 	limit := fs.Int("limit", 20, "limit")
 	source := fs.String("source", "", "provider family or instance")
+	includeAuthored := fs.Bool("include-authored-writes", false, "include authored CreatedAt placements in event lists; imported mirrors may be re-dated by resync")
 	eventHours := fs.Int("event-since-hours", 0, "explicit source events within this many hours; orders by event time")
 	jsonOut := fs.Bool("json", false, "json")
 	if err := fs.Parse(args); err != nil {
@@ -211,6 +225,9 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if err != nil {
 		return err
 	}
+	if *includeAuthored && *eventHours == 0 {
+		return errors.New("include-authored-writes requires event-since-hours")
+	}
 	eventWindowRequested := hasIntFlag(args, "--event-since-hours")
 	if *eventHours < 0 || *eventHours > 24*366 || (eventWindowRequested && *eventHours == 0) || (*eventHours > 0 && (*limit < 1 || *limit > 1000)) {
 		return errors.New("list limit must be 1-1000 and event-since-hours must be 1-8784 when specified")
@@ -219,7 +236,6 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if *source != "" {
 		filterArgs["source"] = *source
 	}
-	now := briefClock()
 	filter, err := parseSearchFilters(filterArgs, now)
 	if err != nil {
 		return err
@@ -233,7 +249,7 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return err
 	}
 	if *eventHours > 0 {
-		items = recentSourceEvents(items, now, *eventHours, *limit)
+		items = recentSourceEvents(items, now, *eventHours, *limit, activity.Options{IncludeAuthoredWrites: *includeAuthored})
 	}
 	items, err = decorateDispositions(cfg, items, now, filter)
 	if err != nil {
@@ -244,13 +260,14 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		if *eventHours > 0 {
 			from, to := activityWindowBounds(now, *eventHours)
 			return emitReceipt(stdout, "mora.list", 1, struct {
-				Memories        []Memory `json:"memories"`
-				Source          string   `json:"source"`
-				EventSinceHours int      `json:"event_since_hours"`
-				Order           string   `json:"order"`
-				WindowFrom      string   `json:"window_from"`
-				WindowTo        string   `json:"window_to"`
-			}{items, *source, *eventHours, "source-event", from, to})
+				Memories              []Memory `json:"memories"`
+				Source                string   `json:"source"`
+				EventSinceHours       int      `json:"event_since_hours"`
+				IncludeAuthoredWrites bool     `json:"include_authored_writes,omitempty"`
+				Order                 string   `json:"order"`
+				WindowFrom            string   `json:"window_from"`
+				WindowTo              string   `json:"window_to"`
+			}{items, *source, *eventHours, *includeAuthored, "source-event", from, to})
 		}
 		if *source != "" {
 			return emitReceipt(stdout, "mora.list", 1, struct {
@@ -352,6 +369,9 @@ func cmdSearch(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		return emitReceipt(stdout, "mora.search", 1, newMemoriesPayload(items))
 	}
 	printHealthBannerLine(stdout, cfg, now)
+	if len(items) == 0 {
+		fmt.Fprintf(stderr, "No memories match %q. Search matches whole words only.\n", strings.Join(queryArgs, " "))
+	}
 	return emit(stdout, items, false)
 }
 func cmdDelete(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -376,31 +396,56 @@ func cmdDelete(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if err != nil {
 		return err
 	}
+	reconcile, err := deleteMemoryFile(ctx, cfg, m)
+	if err != nil {
+		return err
+	}
+	var rerr error
+	if *jsonOut {
+		rerr = emitReceipt(stdout, "mora.delete", 1, deleteReceipt{ID: m.ID, Deleted: true})
+	} else {
+		fmt.Fprintf(stdout, "deleted %s\n", m.ID)
+	}
+	// The receipt is out; now let the graph, vector and commitment projections
+	// catch up. Only a long-lived MCP server or an installed index-hourly job
+	// would otherwise retire the markers, and a CLI process cannot rely on
+	// either. A failure is a warning: the id is already out of the index and
+	// suppressed on every read path.
+	if reconcile {
+		if err := reconcileAuthoredWrites(ctx, cfg); err != nil {
+			fmt.Fprintf(stderr, "warning: memory deleted and removed from search, but full index reconciliation is pending: %v\n", err)
+		}
+	}
+	return rerr
+}
+
+// deleteMemoryFile removes one memory from the vault and the index. It is the
+// shared core of `mora delete` and `mora undo`; reconcile reports whether the
+// caller should run reconcileAuthoredWrites after emitting its receipt.
+func deleteMemoryFile(ctx context.Context, cfg Config, m Memory) (reconcile bool, err error) {
 	// Mark the delete BEFORE removing the file (A5 row 4): a rebuild that fails
 	// after the file is gone would otherwise keep SERVING the deleted content
 	// (Finding 4 — a data-safety P0). While the op is pending its memory_id is
 	// suppressed on every read path (B4), so fail-closed here is an actual
 	// guarantee, not just a banner.
-	op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindDelete, Path: m.Path, MemoryID: m.ID})
+	op, merr := markIndexDirty(ctx, cfg, deleteOp(m))
 	if merr != nil {
-		return merr
+		return false, merr
 	}
 	if err := os.Remove(m.Path); err != nil {
 		_ = unmarkIndexDirty(cfg, op.OpID) // the file never went away
-		return err
+		return false, err
 	}
-	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
+	markDeleteUnlinked(cfg, op)
+	reconcile, err = reflectDeleteInIndex(ctx, cfg, m.ID)
+	if err != nil {
 		// The op REMAINS -> the index reads dirty AND B4 suppresses the deleted id.
 		// A partial delete stays a LOUD error with no receipt, mirroring the MCP
 		// delete_memory asymmetry: serving deleted content warrants the error,
 		// and the retry is harmless. Do not soften this into a receipt.
-		return fmt.Errorf("memory %s deleted, but the search index could not be updated: %w — run `mora index rebuild`", m.ID, err)
+		return false, fmt.Errorf("memory %s deleted, but the search index could not be updated: %w — run `mora index rebuild`", m.ID, err)
 	}
-	if *jsonOut {
-		return emitReceipt(stdout, "mora.delete", 1, deleteReceipt{ID: m.ID, Deleted: true})
-	}
-	fmt.Fprintf(stdout, "deleted %s\n", m.ID)
-	return nil
+	return reconcile, nil
 }
 
 type deleteReceipt struct {
@@ -415,8 +460,28 @@ func cmdContext(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	query := fs.String("query", "", "query")
 	budget := fs.Int("budget", 0, "token budget (default: profile default)")
 	jsonOut := fs.Bool("json", false, "json")
-	if err := fs.Parse(args); err != nil {
-		return err
+	// flag stops at the first bare word, so collect words and keep parsing:
+	// `mora context lunch --scope x` must match `mora search lunch` (AUD2).
+	var words []string
+	for rest := args; ; {
+		if err := fs.Parse(rest); err != nil {
+			return err
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		if n := len(rest) - fs.NArg(); n > 0 && rest[n-1] == "--" {
+			words = append(words, fs.Args()...) // after "--" every word is literal
+			break
+		}
+		words = append(words, fs.Arg(0))
+		rest = fs.Args()[1:]
+	}
+	if len(words) > 0 {
+		if *query != "" {
+			return errors.New("context takes the query once: as words or as --query, not both")
+		}
+		*query = strings.Join(words, " ")
 	}
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {

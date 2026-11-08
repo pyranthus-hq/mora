@@ -40,6 +40,11 @@ func BuildContext(cfg config.Config, items []memory.Memory, budget int, hasQuery
 	if budget <= 0 {
 		return ""
 	}
+	if hasQuery && len(items) == 0 {
+		// Without this, a miss fell through to the control files below and read
+		// like an answer (first-run audit AUD1).
+		return genericutil.TruncateRunes("No memory matched this query.\n", budget)
+	}
 	var wiki []contextBlock
 	for _, rel := range []string{"index.md", "priority-map.md", "live-tasks.md", "heartbeat.md", "auto-resolver.md"} {
 		path := filepath.Join(cfg.VaultDir, rel)
@@ -159,6 +164,9 @@ func missingCorrectionWarning(block contextBlock) string {
 // It never calls a record true, and it says outright that repeating an agent's
 // note adds nothing to the evidence behind it.
 func provenanceLine(m memory.Memory) string {
+	if memory.IsTentative(m) {
+		return "Provenance: tentative agent note" + sourceSuffix(m) + "; nobody has confirmed it. Treat it as a lead."
+	}
 	switch memory.DeriveProvenance(m) {
 	case memory.ProvenanceEvidence:
 		return "Provenance: evidence from " + evidenceOrigin(m) + "."

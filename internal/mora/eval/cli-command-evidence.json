@@ -103,6 +103,28 @@
       }
     },
     {
+      "name": "memory undo",
+      "paths": ["undo"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestUndoRemovesAgentMemoryAndLogs"]},
+        "json": {"status": "test", "tests": ["TestUndoJSONReceipt"]},
+        "state": {"status": "test", "tests": ["TestUndoRemovesAgentMemoryAndLogs"]},
+        "error": {"status": "test", "tests": ["TestUndoRemovesAgentMemoryAndLogs"]},
+        "refusal": {"status": "test", "tests": ["TestUndoRefusesNonAgentMemoryWithoutForce"]}
+      }
+    },
+    {
+      "name": "memory confirm",
+      "paths": ["confirm"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestTentativeStaysOutOfAuthoritativeSurfacesUntilConfirmed"]},
+        "json": {"status": "test", "tests": ["TestConfirmJSONReceipt"]},
+        "state": {"status": "test", "tests": ["TestTentativeStaysOutOfAuthoritativeSurfacesUntilConfirmed"]},
+        "error": {"status": "test", "tests": ["TestTentativeStaysOutOfAuthoritativeSurfacesUntilConfirmed"]},
+        "refusal": {"status": "test", "tests": ["TestTentativeStaysOutOfAuthoritativeSurfacesUntilConfirmed"]}
+      }
+    },
+    {
       "name": "entities",
       "paths": ["entities"],
       "evidence": {
@@ -324,9 +346,9 @@
     },
     {
       "name": "connect",
-      "paths": ["connect", "connect google", "connect github", "connect imessage", "connect filesystem"],
+      "paths": ["connect", "connect google", "connect github", "connect eywa", "connect imessage", "connect filesystem"],
       "evidence": {
-        "success": {"status": "platform_seam", "tests": ["TestCoreA_CmdConnectRouting", "TestConnectFilesystemOneShot", "TestCoreB_GapConnectIMessagePersistsSinceDays", "TestGitHubStatusPathAndCatalogContract"], "reason": "Filesystem succeeds locally; Google, GitHub, and iMessage route through explicit credential/platform seams."},
+        "success": {"status": "platform_seam", "tests": ["TestCoreA_CmdConnectRouting", "TestConnectFilesystemOneShot", "TestCoreB_GapConnectIMessagePersistsSinceDays", "TestGitHubStatusPathAndCatalogContract", "TestEywaConnectThenSyncWritesReadOnlyFacts"], "reason": "Filesystem succeeds locally; Google, GitHub, Eywa, and iMessage route through explicit credential/platform seams."},
         "json": {"status": "test", "tests": ["TestContractMutationJSONReceipts"], "reason": "connect filesystem emits the mora.connect.filesystem receipt; the credential-seam flows stay interactive text."},
         "state": {"status": "platform_seam", "tests": ["TestConnectFilesystemOneShot", "TestCoreB_GapConnectIMessagePersistsSinceDays"], "reason": "Source registration is persisted through hermetic filesystem and platform-seam tests."},
         "error": {"status": "test", "tests": ["TestConnectFilesystemMissingPathErrors", "TestConnectFilesystemPreservesCorruptSources", "TestCLIRegistryPriorityGapsUseRealRun/connect_routes"]},
@@ -335,9 +357,9 @@
     },
     {
       "name": "sync",
-      "paths": ["sync", "sync status", "sync google", "sync github", "sync filesystem", "sync imessage", "sync whatsapp", "sync applecalendar", "sync git"],
+      "paths": ["sync", "sync status", "sync google", "sync github", "sync eywa", "sync filesystem", "sync imessage", "sync whatsapp", "sync applecalendar", "sync git"],
       "evidence": {
-        "success": {"status": "platform_seam", "tests": ["TestCoreA_CmdSync", "TestSyncFilesystemReindexesOnlyEnabledFilesystemSources", "TestSyncGitInit_BootstrapsRepoAndPushes", "TestGitHubStatusPathAndCatalogContract"], "reason": "Provider and git work use read-only provider fakes and a fake git runner."},
+        "success": {"status": "platform_seam", "tests": ["TestCoreA_CmdSync", "TestSyncFilesystemReindexesOnlyEnabledFilesystemSources", "TestSyncGitInit_BootstrapsRepoAndPushes", "TestGitHubStatusPathAndCatalogContract", "TestEywaConnectThenSyncWritesReadOnlyFacts"], "reason": "Provider and git work use read-only provider fakes and a fake git runner."},
         "json": {"status": "test", "tests": ["TestContractMutationJSONReceipts", "TestContractLeafJSONReceipts"], "reason": "sync status and every per-source re-sync verb emit receipts; sync git stays a text transport surface."},
         "state": {"status": "test", "tests": ["TestCoreA_CmdSync", "TestFailedSyncNeverAdvancesWatermark", "TestSyncDoesNotResurrectDoneTask"]},
         "error": {"status": "test", "tests": ["TestSyncFilesystemSurfacesCorruptSourceRegistry", "TestSyncGit_FailLoudOnPushError", "TestFailedSyncNeverAdvancesWatermark"]},
@@ -353,6 +375,17 @@
         "state": {"status": "test", "tests": ["TestShareInitCreatesStagingManifestAndRegistry", "TestSharePushEncryptsScopeExactlyAndPushes", "TestSharePullReimportsAfterPublisherUpdate", "TestManualShareGCDoesNotRequireSuccessfulPull"]},
         "error": {"status": "test", "tests": ["TestCorruptSharesRegistryIsActionable", "TestShareAttemptTerminalTransitionFailureIsReturned", "TestShareStorageAccountingFailsClosedOnUnreadablePath"]},
         "refusal": {"status": "test", "tests": ["TestSharePushRefusesNonInteractiveWithoutYes", "TestShareRemoveRequiresYes", "TestSharePushHardStopsOnTrackedPlaintext"]}
+      }
+    },
+    {
+      "name": "eywa",
+      "paths": ["eywa", "eywa push", "eywa preview", "eywa status"],
+      "evidence": {
+        "success": {"status": "platform_seam", "tests": ["TestEywaPushPreviewConfirmSendsLineageAndRecordsInReview", "TestEywaStatusRepollsPendingUpdates"], "reason": "The company memory service is replaced by an in-process fake MCP server; selection, preview, state, and polling are production code."},
+        "json": {"status": "test", "tests": ["TestEywaPushPreviewConfirmSendsLineageAndRecordsInReview", "TestEywaStatusRepollsPendingUpdates"], "reason": "eywa push and eywa status emit receipts; eywa preview is a human-auditable text surface."},
+        "state": {"status": "test", "tests": ["TestEywaPushPreviewConfirmSendsLineageAndRecordsInReview", "TestEywaPushEnableIsExplicit"]},
+        "error": {"status": "test", "tests": ["TestEywaPushStopsOnAuthFailureAndKeepsState", "TestEywaSyncSurfacesAuthFailureAsUnauthorized"]},
+        "refusal": {"status": "test", "tests": ["TestEywaPushRefusesWhenDisabledOrUnconfirmed", "TestEywaPreviewSendsNothingAndExcludesConnectorRecords"]}
       }
     },
     {
@@ -425,11 +458,22 @@
       "name": "mcp",
       "paths": ["mcp", "mcp serve", "mcp proposals"],
       "evidence": {
-        "success": {"status": "test", "tests": ["TestMCPInitializeServesInstructions", "TestCoreB_McpServeSkipsNotificationAndMalformed", "TestMCPWritePolicyProposeStagesThenOwnerApproves"]},
-        "json": {"status": "test", "tests": ["TestMCPToolsCallReturnsCallToolResult"], "reason": "MCP serve is a JSON-RPC pipe."},
+        "success": {"status": "test", "tests": ["TestMCPInitializeServesInstructions", "TestCoreB_McpServeSkipsNotificationAndMalformed", "TestMCPWritePolicyProposeStagesThenOwnerApproves", "TestMCPProposalShowFullContentReadOnly", "TestMCPProposalShowEffectiveDefaults"]},
+        "json": {"status": "test", "tests": ["TestMCPToolsCallReturnsCallToolResult", "TestMCPProposalShowFullContentReadOnly"], "reason": "MCP serve is a JSON-RPC pipe; proposal show emits a versioned CLI receipt."},
         "state": {"status": "test", "tests": ["TestCoreB_McpCallWriteMemoryHappy", "TestCoreB_McpCallDeleteMemoryHappy", "TestMCPWritePolicyProposeStagesThenOwnerApproves"], "reason": "Tool calls may mutate Mora state; propose mode stages writes for explicit local approval."},
-        "error": {"status": "test", "tests": ["TestCoreB_McpServeScannerError", "TestServeMCPOverHardCapErrorsLoudly"]},
-        "refusal": {"status": "test", "tests": ["TestCoreB_McpCallDeleteMemoryMissingID", "TestMCPWritePolicyReadonlyRefusesMutationsBeforeLookup", "TestMCPWritePolicyProposeNeverStagesDelete"]}
+        "error": {"status": "test", "tests": ["TestCoreB_McpServeScannerError", "TestServeMCPOverHardCapErrorsLoudly", "TestMCPProposalShowRejectsInvalidOrMissingInput"]},
+        "refusal": {"status": "test", "tests": ["TestCoreB_McpCallDeleteMemoryMissingID", "TestMCPWritePolicyReadonlyRefusesMutationsBeforeLookup", "TestMCPWritePolicyProposeNeverStagesDelete", "TestMCPProposalShowRefusesUnsafeFiles", "TestMCPProposalShowMasksCredentialPatterns"]}
+      }
+    },
+    {
+      "name": "agent profiles",
+      "paths": ["agents", "agents add", "agents update", "agents list", "agents revoke", "agents rotate", "agents log", "mcp serve-http", "remote", "remote expose"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestAgentsCLIStoresOnlyTokenHashAndRevokes", "TestMCPHTTPRequiresProfileTokenAndAllowedHost", "TestRemoteExposePrintsTunnelCommands", "TestDoctorFlagsAgentRemoteDefaultRelaxations"], "reason": "add/update/list/rotate/revoke run through cmdAgents; serve-http through its handler; remote expose prints tunnel argv only; doctor names relaxing profiles."},
+        "json": {"status": "test", "tests": ["TestMCPHTTPRequiresProfileTokenAndAllowedHost", "TestRemoteExposePrintsTunnelCommands", "TestDoctorFlagsAgentRemoteDefaultRelaxations"], "reason": "serve-http answers JSON-RPC; remote expose and doctor publish structured relaxations / tunnel argv; agents verbs remain CLI-JSON exempt."},
+        "state": {"status": "test", "tests": ["TestAgentsCLIStoresOnlyTokenHashAndRevokes", "TestAgentReceiptsRecordRowsNeverText", "TestAgentProfileProposesEvenWhenVaultPolicyIsOpen"], "reason": "Durable state is agents.json in ConfigDir (token hashes only) and per-agent receipts in StateDir."},
+        "error": {"status": "test", "tests": ["TestAgentProfileValidation"]},
+        "refusal": {"status": "test", "tests": ["TestAgentProfileNeverReturnsRawSourcesOrForeignScopes", "TestMCPHTTPRequiresProfileTokenAndAllowedHost", "TestRemoteExposeDoesNotRunTunnels", "TestRemoteExposeRefusesBadPort"], "reason": "A profile never receives raw sources or foreign scopes; serve-http refuses missing/wrong tokens; remote expose never execs tunnels and refuses a bad port."}
       }
     },
     {
@@ -445,13 +489,35 @@
     },
     {
       "name": "claude hooks",
-      "paths": ["hook", "hook session-start", "hook recall", "hook install", "hook uninstall", "hook status"],
+      "paths": ["hook", "hook session-start", "hook recall", "hook pre-tool-use", "hook install", "hook uninstall", "hook status"],
       "evidence": {
-        "success": {"status": "platform_seam", "tests": ["TestCLIRegistryHookIOThroughRun", "TestHookInstallFreshSettings", "TestHookStatusReportsInstalledHooks", "TestHookUninstallRemovesOnlyMoraHooks"], "reason": "Hook I/O and settings mutations run through Run in a hermetic HOME; executable discovery is injected."},
-        "json": {"status": "test", "tests": ["TestCLIRegistryHookIOThroughRun"], "reason": "session-start and recall emit Claude hook JSON; lifecycle commands emit text."},
-        "state": {"status": "test", "tests": ["TestHookInstallMergesAndIsIdempotent", "TestHookUninstallRemovesOnlyMoraHooks"]},
-        "error": {"status": "test", "tests": ["TestHk_HookSessionStartInvalidJSON", "TestHk_HookRecallSearchError", "TestHk_HookInstallWriteError"]},
-        "refusal": {"status": "test", "tests": ["TestHookInstallMalformedHooksDoesNotOverwrite", "TestHookInstallUnparseableSettingsFailsClosed"]}
+        "success": {"status": "platform_seam", "tests": ["TestCLIRegistryHookIOThroughRun", "TestHookInstallFreshSettings", "TestHookStatusReportsInstalledHooks", "TestHookUninstallRemovesOnlyMoraHooks", "TestHookPreToolWarnedGroupPrintsGolden", "TestHookInstallPreToolThroughRun"], "reason": "Hook I/O and settings mutations run through Run in a hermetic HOME; executable discovery is injected."},
+        "json": {"status": "test", "tests": ["TestCLIRegistryHookIOThroughRun", "TestHookStatusPreToolJSON"], "reason": "session-start, recall and pre-tool-use emit Claude hook JSON; lifecycle commands emit text; status --json carries pre_tool_use."},
+        "state": {"status": "test", "tests": ["TestHookInstallMergesAndIsIdempotent", "TestHookUninstallRemovesOnlyMoraHooks", "TestHookPreToolSilentGroupLogsOnly", "TestHookUninstallPreToolKeepsOtherHooks"]},
+        "error": {"status": "test", "tests": ["TestHk_HookSessionStartInvalidJSON", "TestHk_HookRecallSearchError", "TestHk_HookInstallWriteError", "TestHk_PreToolFailOpen", "TestHookPreToolExitCodes"]},
+        "refusal": {"status": "test", "tests": ["TestHookInstallMalformedHooksDoesNotOverwrite", "TestHookInstallUnparseableSettingsFailsClosed", "TestHookInstallPreToolRejectsProject"]}
+      }
+    },
+    {
+      "name": "warning rules",
+      "paths": ["rules", "rules add", "rules test", "rules approve", "rules off", "rules list", "rules compile", "rules grant", "rules verify", "rules import"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestRulesAddWritesFileAndRefusesDuplicate", "TestRulesApproveCompilesActive", "TestRulesTestHitAndMiss", "TestRulesOffRemovesFromActive", "TestRulesGrantVerifyImportRoundTrip"]},
+        "json": {"status": "test", "tests": ["TestRulesListJSON"], "reason": "list --json emits mora.rules.list; the other rules commands print text."},
+        "state": {"status": "test", "tests": ["TestRulesApproveCompilesActive", "TestRulesEditedFileShowsChangedAndCompileDrops", "TestRulesOffRemovesFromActive", "TestRulesImportRefusesReplayAfterOff"]},
+        "error": {"status": "test", "tests": ["TestRulesAddRejectsPythonOnlySyntax", "TestRulesApproveWrongIDRefuses", "TestRulesVerifyRefusesTamperedGrant"]},
+        "refusal": {"status": "test", "tests": ["TestRulesApproveRefusesNonInteractive", "TestRulesApproveRefusesInsideAgentSession", "TestRulesGrantRefusesInsideAgentSession", "TestRulesImportNeedsAPersonWhenSignersAreWritable"]}
+      }
+    },
+    {
+      "name": "agent corrections",
+      "paths": ["check"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestCheckGolden", "TestCheckEmptyHome"]},
+        "json": {"status": "test", "tests": ["TestCheckJSON"]},
+        "state": {"status": "test", "tests": ["TestCheckWritesNothing"], "reason": "check is read-only, so the test proves that no file changes."},
+        "error": {"status": "test", "tests": ["TestCheckBadFlags", "TestCheckUnreadableFile"]},
+        "refusal": {"status": "test", "tests": ["TestCheckCanary"], "reason": "check refuses to print raw text: the canary must not reach stdout or stderr."}
       }
     },
     {

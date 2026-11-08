@@ -133,14 +133,24 @@ func TestMeetingBriefJunkInvariance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build digest with junk: %v", err)
 	}
-	cleanDigestBytes, _ := json.Marshal(cleanDigest)
-	withJunkDigestBytes, _ := json.Marshal(withJunkDigest)
-	if !bytes.Equal(cleanDigestBytes, withJunkDigestBytes) {
-		t.Fatalf("non-commitment junk changed the commitment-gated daily digest\nclean: %s\nwith junk: %s", cleanDigestBytes, withJunkDigestBytes)
+	// Junk may now surface as low-signal evidence, so the whole digest is no
+	// longer byte-equal. The promises that remain: the genuine item leads the
+	// gmail section, and no junk item carries an owner or direction.
+	for _, section := range withJunkDigest.Sections {
+		if section.Source != "gmail" {
+			continue
+		}
+		if len(section.Items) == 0 || section.Items[0].ID != "gmail_thread/genuine-obligation" {
+			t.Fatalf("genuine item is not first in the gmail section: %+v", section.Items)
+		}
+		for _, item := range section.Items[1:] {
+			if item.Direction != "" || !reflect.ValueOf(item.Owner).IsZero() || len(item.Obligations) != 0 {
+				t.Fatalf("junk item %s carries an owner or direction: %+v", item.ID, item)
+			}
+		}
 	}
 
-	// The typed inventory now gates the whole digest, so non-commitment junk is
-	// byte-invariant across every lane, including the previously exposed delta.
+	// Protected lanes stay invariant under non-commitment junk.
 	if !reflect.DeepEqual(digestInvariantOf(cleanDigest), digestInvariantOf(withJunkDigest)) {
 		t.Fatalf("junk changed protected digest lanes\nclean: %+v\nwith junk: %+v", digestInvariantOf(cleanDigest), digestInvariantOf(withJunkDigest))
 	}

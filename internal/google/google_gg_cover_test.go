@@ -157,14 +157,15 @@ func TestGg_FetchPageContextCancelsGmailList(t *testing.T) {
 
 func TestGg_FetchPageContextCancelsGmailThreadDetail(t *testing.T) {
 	started, observed := make(chan struct{}), make(chan struct{})
+	var startedOnce, observedOnce sync.Once
 	fake := &ggFakeGoogle{
 		threadsList: func(*http.Request) (int, string) {
 			return http.StatusOK, `{"threads":[{"id":"t1"},{"id":"t2"}]}`
 		},
 		threadGet: func(_ string, r *http.Request) (int, string) {
-			close(started)
+			startedOnce.Do(func() { close(started) })
 			<-r.Context().Done()
-			close(observed)
+			observedOnce.Do(func() { close(observed) })
 			return http.StatusRequestTimeout, `{}`
 		},
 	}
@@ -179,7 +180,7 @@ func TestGg_FetchPageContextCancelsGmailThreadDetail(t *testing.T) {
 		t.Fatalf("gmail detail cancellation = %v", err)
 	}
 	<-observed
-	if got := len(fake.recorded()); got != 3 { // profile snapshot + list + first detail
+	if got := len(fake.recorded()); got < 3 || got > 4 { // profile + list + up to two in-flight details
 		t.Fatalf("requests = %v, remaining detail loop continued", fake.recorded())
 	}
 }
@@ -561,8 +562,16 @@ func TestGg_StartLoopbackAuthSuccess(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("StartLoopbackAuth did not complete after callback")
 	}
-	// The printed guidance must lead with the browser-opening expectation.
-	if !strings.Contains(buf.String(), "Opening your browser") {
+	// WSL deliberately asks for manual paste; other hosts attempt auto-open.
+	// Both paths must still complete the real loopback exchange above.
+	if IsWSL() {
+		if strings.Contains(buf.String(), "Opening your browser") {
+			t.Fatalf("WSL must not promise browser auto-open, got:\n%s", buf.String())
+		}
+		if !strings.Contains(buf.String(), "WSL detected — paste this link into your Windows browser to sign in:") {
+			t.Fatalf("expected WSL manual-paste guidance, got:\n%s", buf.String())
+		}
+	} else if !strings.Contains(buf.String(), "Opening your browser") {
 		t.Fatalf("expected browser-opening guidance, got:\n%s", buf.String())
 	}
 }

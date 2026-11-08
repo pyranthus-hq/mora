@@ -20,7 +20,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	tag := fs.String("tag", "", "canonical release tag (vMAJOR.MINOR.PATCH)")
 	checksums := fs.String("checksums", "", "path to checksums-app.txt")
 	out := fs.String("out", "", "output Cask path, or - for stdout")
-	autoUpdates := fs.Bool("auto-updates", false, "declare auto_updates true (refused until #291 lands)")
+	autoUpdates := fs.Bool("auto-updates", false, "declare auto_updates true (refused until #294 acceptance)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

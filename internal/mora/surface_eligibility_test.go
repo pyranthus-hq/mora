@@ -5,27 +5,22 @@ import (
 	"time"
 )
 
-func TestFilterDigestInstancesByCommitmentsGatesBeforeAssembly(t *testing.T) {
-	instances := map[string][]Memory{
-		"gmail": {
-			{ID: "open"},
-			{ID: "closed"},
-			{ID: "duplicate"},
-			{ID: "not-a-commitment"},
-		},
-	}
+func TestBoostCommittedSalienceRanksOpenCommitmentsFirst(t *testing.T) {
+	memSal := map[string]int64{"open": 1, "closed": 9, "duplicate": 9, "not-a-commitment": 9}
 	inventory := map[string][]Commitment{
-		"open":      {{State: commitOpen}},
+		"open":      {{State: commitClosed}, {State: commitOpen}},
 		"closed":    {{State: commitClosed}},
 		"duplicate": {{State: commitOpen, DuplicateOf: "canonical"}},
 	}
 
-	got := filterDigestInstancesByCommitments(instances, inventory)
-	if len(got["gmail"]) != 1 || got["gmail"][0].ID != "open" {
-		t.Fatalf("filtered instances = %+v, want only the open canonical commitment artifact", got)
+	boostCommittedSalience(memSal, inventory)
+	if memSal["open"] != 1+commitmentSalienceBoost {
+		t.Fatalf("open commitment salience = %d, want one boost over its person salience", memSal["open"])
 	}
-	if len(instances["gmail"]) != 4 {
-		t.Fatal("filter mutated its input")
+	for _, id := range []string{"closed", "duplicate", "not-a-commitment"} {
+		if memSal[id] != 9 {
+			t.Fatalf("%s salience = %d, want unchanged (no boost without an open canonical commitment)", id, memSal[id])
+		}
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	graphpkg "github.com/pyranthus-hq/mora/internal/graph"
+	"github.com/pyranthus-hq/mora/internal/memory"
 	"io"
 	"sort"
 	"strings"
@@ -144,6 +145,7 @@ func entityDetailGraph(ctx context.Context, cfg Config, w io.Writer, entities []
 	if err != nil {
 		return err
 	}
+	refs = withoutTentative(refs)
 	if jsonOut {
 		return emit(w, map[string]any{"name": match.Name, "kind": match.Kind, "count": match.Count, "found": true, "memories": refs}, true)
 	}
@@ -416,6 +418,8 @@ type contextItemJSON struct {
 	ID        string `json:"id"`
 	Title     string `json:"title"`
 	CreatedAt string `json:"created_at"`
+	// Trust is "tentative" for an unconfirmed agent note and absent otherwise.
+	Trust string `json:"trust,omitempty"`
 	// Corroborating mirrors a cluster head's Memory.Corroborating (issue #237,
 	// round-2/round-3 P1 scoping fix): a nested array on the head's own
 	// receipt, the same compact four-key ref shape as search_memory/think —
@@ -437,7 +441,7 @@ func contextReceipts(items []Memory, budgetChars int) []contextItemJSON {
 	used := 2 // enclosing "[]"
 	const jsonSep = 2
 	for _, m := range items {
-		row := contextItemJSON{ID: m.ID, Title: m.Title, CreatedAt: m.CreatedAt, Corroborating: m.Corroborating, Owner: m.Owner}
+		row := contextItemJSON{ID: m.ID, Title: m.Title, CreatedAt: m.CreatedAt, Trust: memory.WithProvenance(m).Trust, Corroborating: m.Corroborating, Owner: m.Owner}
 		cost := jsonLen(row) + jsonSep
 		if used+cost > budgetChars {
 			break

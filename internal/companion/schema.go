@@ -515,7 +515,7 @@ func validateScope(field, s string) error {
 		return nil
 	}
 	name, ok := strings.CutPrefix(s, "project:")
-	if !ok || name == "" || !opaqueRunes(name) {
+	if !ok || name == "" || !opaqueRunes(name) || strings.ContainsAny(name, ":/\\") || name == "." || name == ".." {
 		return errf(CodeInvalidValue, field, `scope must be "personal" or "project:<name>"`)
 	}
 	return nil

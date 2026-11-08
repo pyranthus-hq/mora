@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"github.com/pyranthus-hq/mora/internal/config"
+	"github.com/pyranthus-hq/mora/internal/leasefile"
 )
 
 // RecoverySeams supplies consistency helpers owned by adjacent index/composition boundaries.
@@ -24,7 +26,41 @@ type Recovery struct {
 	RetiredRunIDs []string
 }
 
-func RecoverJournals(cfg config.Config, files []string, seams RecoverySeams) (Recovery, error) {
+// SnapshotJournals records each journal's identity and size just before a
+// rebuild lists the vault. A line is written after its file is published, so a
+// line inside that size proves the listing saw the publish. A source with a live
+// ingest is left out: it can publish at any moment, so its journal waits for a
+// rebuild that starts after the run ended.
+func SnapshotJournals(cfg config.Config, seams RecoverySeams) (map[string]os.FileInfo, error) {
+	entries, err := os.ReadDir(JournalRoot(cfg))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	snapshot := map[string]os.FileInfo{}
+	for _, e := range entries {
+		if !e.IsDir() || seams.LeaseHeld(cfg, e.Name()) {
+			continue
+		}
+		info, err := os.Stat(JournalPath(cfg, e.Name()))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		// Windows reads the file id lazily, at the first compare. Pin it now, or a
+		// journal replaced after this point would compare equal to itself.
+		os.SameFile(info, info)
+		snapshot[e.Name()] = info
+	}
+	return snapshot, nil
+}
+
+// RecoverJournals retires only what snapshot proves the rebuild's listing saw.
+func RecoverJournals(cfg config.Config, files []string, snapshot map[string]os.FileInfo, seams RecoverySeams) (Recovery, error) {
 	listed := seams.CleanPathSet(files)
 	entries, err := os.ReadDir(JournalRoot(cfg))
 	if errors.Is(err, os.ErrNotExist) {
@@ -36,10 +72,11 @@ func RecoverJournals(cfg config.Config, files []string, seams RecoverySeams) (Re
 	var result Recovery
 	var recoveryErr error
 	for _, e := range entries {
-		if !e.IsDir() {
+		seen, ok := snapshot[e.Name()]
+		if !e.IsDir() || !ok {
 			continue
 		}
-		retired, err := CompactJournal(cfg, e.Name(), listed, seams)
+		retired, err := CompactJournal(cfg, e.Name(), listed, seen, seams)
 		if err != nil {
 			recoveryErr = errors.Join(recoveryErr, fmt.Errorf("retiring ingest journal: %w", err))
 			continue
@@ -50,7 +87,21 @@ func RecoverJournals(cfg config.Config, files []string, seams RecoverySeams) (Re
 	}
 	return result, recoveryErr
 }
-func CompactJournal(cfg config.Config, sourceKey string, listed map[string]bool, seams RecoverySeams) (string, error) {
+
+// CompactJournal retires the lines of one journal. seen bounds them to a rebuild's
+// snapshot; a nil seen means the whole file. The guard covers the read through the
+// replace or remove, and every creator and appender takes it, so a line cannot land
+// between the bytes read here and the journal written back.
+func CompactJournal(cfg config.Config, sourceKey string, listed map[string]bool, seen os.FileInfo, seams RecoverySeams) (retired string, err error) {
+	err = leasefile.WithGuard(JournalPath(cfg, sourceKey), func() error {
+		var cerr error
+		retired, cerr = compactJournal(cfg, sourceKey, listed, seen, seams)
+		return cerr
+	})
+	return retired, err
+}
+
+func compactJournal(cfg config.Config, sourceKey string, listed map[string]bool, seen os.FileInfo, seams RecoverySeams) (string, error) {
 	path := JournalPath(cfg, sourceKey)
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -58,6 +109,19 @@ func CompactJournal(cfg config.Config, sourceKey string, listed map[string]bool,
 	}
 	if err != nil {
 		return "", err
+	}
+	cut := len(b)
+	if seen != nil {
+		// A journal rewritten since the snapshot has other lines at those offsets,
+		// so nothing in it is proven: leave it for the next rebuild.
+		now, err := os.Stat(path)
+		if err != nil || !os.SameFile(seen, now) || int64(len(b)) < seen.Size() {
+			return "", nil
+		}
+		cut = bytes.LastIndexByte(b[:seen.Size()], '\n') + 1
+		if cut == 0 && len(b) > 0 {
+			return "", nil // every line arrived after the snapshot
+		}
 	}
 	// Case-folding only finds candidates; file identity must confirm coverage.
 	// Keep Linux's exact-path behavior, and never merge distinct files on a
@@ -72,7 +136,7 @@ func CompactJournal(cfg config.Config, sourceKey string, listed map[string]bool,
 	}
 	var header string
 	var keptPaths []string
-	for _, raw := range strings.Split(string(b), "\n") {
+	for _, raw := range strings.Split(string(b[:cut]), "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
@@ -103,6 +167,13 @@ func CompactJournal(cfg config.Config, sourceKey string, listed map[string]bool,
 			continue // the file is gone; nothing to recover
 		}
 		keptPaths = append(keptPaths, line)
+	}
+	// Lines past the snapshot may record a publish the listing missed, even for a
+	// listed path, so they stay whatever the path looks like now.
+	for _, raw := range strings.Split(string(b[cut:]), "\n") {
+		if line := strings.TrimSpace(raw); line != "" {
+			keptPaths = append(keptPaths, line)
+		}
 	}
 	if len(keptPaths) == 0 {
 		// A3 rule d: retire the header ONLY when no LIVE ingest lease is held for this
@@ -137,4 +208,60 @@ func CompactJournal(cfg config.Config, sourceKey string, listed map[string]bool,
 		return "", err
 	}
 	return "", nil
+}
+
+// UncoveredRunIDs reports ingest run ids whose journals still have publication
+// evidence remaining after rebuild journal compaction: existing path lines.
+// Header-only journals and paths that no longer exist are omitted — those can be
+// retired by CompactJournal once no live lease remains. Callers that cannot prove
+// committed coverage must retain failure evidence for these runs rather than
+// inventing completion or erasing the receipt to silence health.
+// Headers identify only the first writer: later runs may append to the same
+// journal. The empty key represents uncovered evidence without a valid header.
+// A nonempty result therefore cannot prove that any other receipt is safe to erase.
+func UncoveredRunIDs(cfg config.Config, seams RecoverySeams) (map[string]bool, error) {
+	out := map[string]bool{}
+	entries, err := os.ReadDir(JournalRoot(cfg))
+	if errors.Is(err, os.ErrNotExist) {
+		return out, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		path := JournalPath(cfg, e.Name())
+		b, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		var header string
+		uncovered := false
+		for _, raw := range strings.Split(string(b), "\n") {
+			line := strings.TrimSpace(raw)
+			if line == "" {
+				continue
+			}
+			if strings.HasPrefix(line, "run ") {
+				header = line
+				continue
+			}
+			p := seams.CleanPath(line)
+			if _, statErr := os.Stat(p); errors.Is(statErr, os.ErrNotExist) {
+				continue
+			}
+			uncovered = true
+			break
+		}
+		if !uncovered {
+			continue
+		}
+		out[HeaderRunID(header, seams.ValidToken)] = true
+	}
+	return out, nil
 }

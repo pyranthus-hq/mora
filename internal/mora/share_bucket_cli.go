@@ -170,7 +170,7 @@ func shareSubscribeBucketWithStore(ctx context.Context, cfg Config, name string,
 			return lerr
 		}
 		return validateSubscriptionNameAvailable(lockedShares, name)
-	}, func(runID string) (int, error) {
+	}, func(runID string) (shareRunOutcome, error) {
 
 		// First-contact is a transport write too: publish attempt.json before a
 		// run-private probe fetch, and keep both the probe and full import inside
@@ -178,27 +178,27 @@ func shareSubscribeBucketWithStore(ctx context.Context, cfg Config, name string,
 		probe := shareFetchDir(cfg, name, runID) + "-probe"
 		_ = os.RemoveAll(probe)
 		if err := os.MkdirAll(probe, 0o700); err != nil {
-			return 0, err
+			return shareRunOutcome{}, err
 		}
 		defer os.RemoveAll(probe)
 		pin, probeVer, err := bucketFetch(ctx, store, bc, sub, ids, probe)
 		if err != nil {
-			return 0, err
+			return shareRunOutcome{}, err
 		}
 		fp := signPubFingerprint(pin)
 		if confirmPin == "" {
-			return 0, fmt.Errorf("first contact: ask the publisher to run `mora share fingerprint` and send the result through a separate trusted channel, then re-run with --confirm-pin %s", fp)
+			return shareRunOutcome{}, fmt.Errorf("first contact: ask the publisher to run `mora share fingerprint` and send the result through a separate trusted channel, then re-run with --confirm-pin %s", fp)
 		}
 		if confirmPin != fp {
-			return 0, fmt.Errorf("--confirm-pin %s does not match this share's publisher fingerprint %s — refusing (possible impostor)", confirmPin, fp)
+			return shareRunOutcome{}, fmt.Errorf("--confirm-pin %s does not match this share's publisher fingerprint %s — refusing (possible impostor)", confirmPin, fp)
 		}
 
 		verifiedSub := sub
 		verifiedSub.PinnedPubkey = append(ed25519.PublicKey(nil), pin...)
 		verifiedSub.LastVersion = probeVer
-		seq, st, p, v, ierr := bucketShareImportWithStore(ctx, cfg, verifiedSub, bc, runID, store)
+		out, st, p, v, ierr := bucketShareImportWithStore(ctx, cfg, verifiedSub, bc, runID, store, false)
 		stats, gotPin, gotVer = st, p, v
-		return seq, ierr
+		return out, ierr
 	}, func() error {
 		lockedShares, lerr := loadShares(cfg)
 		if lerr != nil {
@@ -228,10 +228,11 @@ func sharePullBucket(ctx context.Context, cfg Config, sub shareSubscription, bc 
 	var stats shareImportStats
 	var pin ed25519.PublicKey
 	var ver int
-	if err := shareBuildAndPublish(ctx, cfg, sub.Name, buildModeImport, func(runID string) (int, error) {
-		seq, st, p, v, ierr := bucketShareImport(ctx, cfg, sub, bc, runID)
-		stats, pin, ver = st, p, v
-		return seq, ierr
+	var out shareRunOutcome
+	if err := shareImportAndPublish(ctx, cfg, sub.Name, func(runID string) (shareRunOutcome, error) {
+		o, st, p, v, ierr := bucketShareImport(ctx, cfg, sub, bc, runID, true)
+		out, stats, pin, ver = o, st, p, v
+		return o, ierr
 	}); err != nil {
 		return err
 	}
@@ -241,7 +242,7 @@ func sharePullBucket(ctx context.Context, cfg Config, sub shareSubscription, bc 
 	if err := updateSubscriptionState(cfg, sub.Name, pin, ver); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "share %q: %d new/updated, %d removed, %d total.\n", sub.Name, stats.Imported, stats.Removed, stats.Total)
+	printSharePullResult(stdout, sub.Name, out, stats)
 	return nil
 }
 

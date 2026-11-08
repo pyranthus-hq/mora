@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	configstore "github.com/pyranthus-hq/mora/internal/config"
+	indexstore "github.com/pyranthus-hq/mora/internal/index"
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	"github.com/pyranthus-hq/mora/internal/memory"
 	"github.com/pyranthus-hq/mora/internal/registry"
@@ -114,6 +115,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdGraph(ctx, args[1:], stdout, stderr)
 	case "delete":
 		return cmdDelete(ctx, args[1:], stdout, stderr)
+	case "undo":
+		return cmdUndo(ctx, args[1:], stdout, stderr)
+	case "confirm":
+		return cmdConfirm(ctx, args[1:], stdout, stderr)
 	case "forget":
 		return cmdForget(ctx, args[1:], stdout, stderr)
 	case "retention":
@@ -156,6 +161,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdSync(ctx, args[1:], stdout, stderr)
 	case "share":
 		return cmdShare(ctx, args[1:], stdout, stderr, stdin)
+	case "eywa":
+		return cmdEywa(ctx, args[1:], stdout, stderr, stdin)
 	case "reingest":
 		return cmdReingest(ctx, args[1:], stdout, stderr)
 	case "think":
@@ -171,12 +178,20 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdDisconnect(ctx, args[1:], stdout, stderr)
 	case "mcp":
 		return cmdMCP(ctx, args[1:], stdout, stderr, stdin)
+	case "agents":
+		return cmdAgents(ctx, args[1:], stdout, stderr)
+	case "remote":
+		return cmdRemote(ctx, args[1:], stdout, stderr)
 	case "serve":
 		return cmdServe(ctx, args[1:], stdout, stderr)
 	case "integrations":
 		return cmdIntegrations(ctx, args[1:], stdout)
 	case "hook":
 		return cmdHook(ctx, args[1:], stdout, stderr, stdin)
+	case "rules":
+		return cmdRules(ctx, args[1:], stdout, stderr, stdin)
+	case "check":
+		return cmdCheck(ctx, args[1:], stdout, stderr)
 	case "loop":
 		return cmdLoop(ctx, args[1:], stdout, stderr)
 	case "upgrade":
@@ -243,6 +258,8 @@ USAGE:
   mora read <id> --json
   mora list --scope project:acme --json
   mora delete <id> --yes
+  mora confirm <memory-id> | --list   # keep a tentative agent write (confirm --list shows them)
+  mora undo <memory-id> [--force]  # remove an agent-written memory; refuses others without --force (log: <vault>/agent-writes.log)
   mora context --scope project:acme --query "auth" --budget 6000 --json
   mora think "what did Sam decide about the launch" --json   # cited evidence + gap analysis
   mora brief --event-id <id>       # cited unfinished-business brief for one calendar event
@@ -276,18 +293,23 @@ USAGE:
   mora schedule install doctor-pulse   # daily 09:00 freshness alarm (after the 08:00 brief)
   mora config context large        # context profile: small | default | large (budget + snippet density)
   mora config mmr on               # diversity-aware rerank of hybrid results (needs embedder=ollama)
-  mora config mcp-write-policy propose   # open | propose | readonly for MCP mutations
+  mora config mcp-write-policy propose   # tentative | open | propose | readonly for MCP mutations
   mora connectors list|enable <type>|disable <type>
   mora connect google              # sign in with Google in your browser, then backfill Gmail + Calendar (last 90 days)
   mora connect google --since-days 365   # widen the gmail backfill window
   mora connect github             # sync issues from the Mora + productivity repositories as read-only evidence
   mora connect github --repo owner/repo  # replace the default repository allowlist (repeatable)
+  mora connect eywa --endpoint <mcp-url> --token-url <url> --client-id <id>   # company memory: pull governed facts (secret from MORA_EYWA_CLIENT_SECRET)
   mora connect imessage            # macOS: enable iMessage, check Full Disk Access, then backfill
   mora connect imessage --since-days 365   # widen the iMessage backlog window (negative = all-time)
   mora connect filesystem ~/Documents      # add + enable + index a folder in one step (one-shot of: sources add + ingest run)
   mora sync status
   mora sync google
   mora sync github                # refresh enabled GitHub issue sources (read-only)
+  mora sync eywa                  # pull new and replaced company-memory facts (read-only records)
+  mora eywa push enable            # opt in to pushing authored memories (off by default)
+  mora eywa push --scope project:acme   # preview, confirm, then send as governed agent updates
+  mora eywa status                 # re-check whether pushed updates were admitted, in review, or held
   mora sync filesystem            # re-index enabled filesystem sources
   mora sync imessage               # macOS: read local Messages (read-only) into memories
   mora sync applecalendar          # macOS: re-read local Apple Calendar (read-only) into memories
@@ -296,7 +318,13 @@ USAGE:
   mora usage off|on
   mora disconnect google
   mora mcp serve
-  mora mcp proposals list          # inspect writes staged by propose-mode MCP clients
+  mora mcp serve-http              # profile-bound Streamable HTTP MCP on 127.0.0.1 (tunnel separately)
+  mora remote expose               # print tunnel commands; executes none
+  mora mcp proposals list          # list writes staged by propose-mode MCP clients
+  mora mcp proposals show <id>     # inspect full staged content before approving
+  mora mcp proposals approve <id>...  # publish staged writes (one rebuild per call)
+  mora mcp proposals recover <id>  # finish a decision a crash left half done (--retry | --close if asked)
+
   mora serve http                  # loopback HTTP for sandboxed AI browsers (Aside); token in ~/.config/mora/http.json
   mora serve http install          # run it as an auto-restarting background service (launchd/systemd); also: uninstall|status
   mora companion pair              # pair a phone: prints a QR-able payload with a one-time code
@@ -304,6 +332,17 @@ USAGE:
   mora companion revoke <id>       # end one device's access
   mora companion serve             # the narrow loopback listener a paired phone reads (Today/context/health only)
   mora hook install|uninstall|status
+  mora hook install --pre-tool     # opt in to Bash warnings from approved rules (see mora rules)
+  mora rules add --template compound-cd
+  mora rules approve <id> --mode warn|shadow [--holdout]   # in your own terminal only
+  mora rules test <id> -- <command>
+  mora rules list [--json]
+  mora rules off <id>
+  mora rules compile
+  mora rules grant <id> --to SCOPE --as NAME --key PATH   # sign a rule for a wider scope, in your own terminal only
+  mora rules verify <grant-file> [--signers PATH] [--scope SCOPE]
+  mora rules import <grant-file> --scope SCOPE [--signers PATH]
+  mora check [--since 30d] [--json]   # read-only count of rejected or interrupted commands
   mora upgrade                     # manually self-update to the latest release
   mora upgrade --check             # check + cache published stable release availability
   mora upgrade --policy auto|notify|off
@@ -845,6 +884,10 @@ func createMemory(ctx context.Context, cfg Config, m Memory, opts ...createOptio
 	for _, opt := range opts {
 		opt(&options)
 	}
+	if options.tentative {
+		m.Tags = append(m.Tags, memory.TentativeTag)
+		m.Trust = memory.TrustTentative
+	}
 	for attempt := 0; attempt < maxCreateAttempts; attempt++ {
 		m.ID = newIDFn()
 		if options.explicitID != "" {
@@ -854,8 +897,11 @@ func createMemory(ctx context.Context, cfg Config, m Memory, opts ...createOptio
 		if err != nil {
 			return Memory{}, pendingOp{}, err
 		}
-		path := memoryPath(cfg, m)
-		op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindWrite, Path: path})
+		path, err := memoryPath(cfg, m)
+		if err != nil {
+			return Memory{}, pendingOp{}, err
+		}
+		op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindWrite, Path: path, ContentSHA256: indexstore.ContentSHA256(body)})
 		if merr != nil {
 			// errIndexUnmarkable: abort BEFORE a single vault byte changes, so a
 			// client retry cannot mint a duplicate (mcp.go's isError asymmetry).
@@ -884,7 +930,10 @@ func createMemory(ctx context.Context, cfg Config, m Memory, opts ...createOptio
 
 // createOptions carries the optional settings of a governed create. The zero
 // value is what every pre-existing caller gets.
-type createOptions struct{ explicitID string }
+type createOptions struct {
+	explicitID string
+	tentative  bool
+}
 
 // createOption adjusts one governed create.
 type createOption func(*createOptions)
@@ -899,6 +948,12 @@ type createOption func(*createOptions)
 // link wins, and everybody else is told the memory already exists.
 func withExplicitMemoryID(id string) createOption {
 	return func(o *createOptions) { o.explicitID = id }
+}
+
+// withTentative saves the memory as tentative. Only the server sets this; no
+// write_memory argument reaches it.
+func withTentative() createOption {
+	return func(o *createOptions) { o.tentative = true }
 }
 
 // errMemoryAlreadyExists reports that a create with a PINNED id found the vault
@@ -1108,21 +1163,19 @@ var linkPublish = os.Link
 // or ERROR_NOT_SUPPORTED (Windows) — never os.ErrExist. vault_dir is
 // user-configurable, so a hard failure here would regress `mora write` / MCP
 // write_memory below where the old atomicWrite (plain os.Rename) worked. On that
-// (and only that) error class we preserve the no-clobber guarantee WITHOUT a hard
-// link: (1) claim the path with os.OpenFile(O_CREATE|O_EXCL) — an atomic
-// create-exclusive that fails EEXIST if a racer or a colliding id already owns it,
-// so we surface os.ErrExist exactly like the link path; then (2) rename our staged
-// temp onto our OWN claimed placeholder. The rename is safe from clobber because
-// every same-path racer already lost at the O_EXCL claim, so it can only replace
-// our own empty placeholder, never a rival's memory — and it keeps content
-// atomicity (no torn frontmatter). TRADEOFF, documented honestly: between (1) and
-// (2) a concurrent reader can observe an EMPTY placeholder file. That degrades
-// gracefully — parseMemory returns "missing frontmatter" on it and every
-// index/list/find caller (rebuildIndex, findMemory, listMemories, digest,
-// meetingprep, graph, share) skips a parse error with `continue`, so the
-// placeholder is ignored (never a crash) and picked up once the rename lands. Only
-// no-hardlink filesystems ever reach this branch; POSIX/NTFS keep the pure-link
-// path with no such window.
+// (and only that) error class we preserve the no-clobber guarantee without a
+// hard link. Windows moves the complete staged file with MoveFileEx without
+// REPLACE_EXISTING or COPY_ALLOWED: an existing destination makes it fail,
+// and no intermediate body is published. Unix claims path with O_CREATE|O_EXCL
+// then atomically renames the staged file over its own empty placeholder.
+// POSIX rename never removes the destination between claim and publication.
+// The staged file's explicit mode survives publication on both paths.
+//
+// On the Unix fallback only, readers can observe an empty placeholder (also
+// possible after a crash). parseMemory rejects that as missing frontmatter;
+// readers that skip parse errors omit it until publication completes. Neither
+// fallback writes body bytes into the published path, so readers cannot accept
+// valid frontmatter with a partially written body.
 //
 // A link error that is NEITHER os.ErrExist NOR the link-unsupported class is a
 // real fault and surfaces as-is — never masked as a collision or silently routed

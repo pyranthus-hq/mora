@@ -19,6 +19,54 @@
     {
       "json_contract": "exempt",
       "kind": "subcommand",
+      "path": "agents add",
+      "payload": "",
+      "platform": "all",
+      "reason": "prints a new bearer token once; no two runs produce the same output, and a secret must never enter a golden document"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "agents list",
+      "payload": "",
+      "platform": "all",
+      "reason": "profile rows carry creation times that differ on every run; its --json output is not yet a published payload"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "agents log",
+      "payload": "",
+      "platform": "all",
+      "reason": "receipt lines carry call times that differ on every run; its --json output is not yet a published payload"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "agents revoke",
+      "payload": "",
+      "platform": "all",
+      "reason": "text-only confirmation of a profile-store change"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "agents rotate",
+      "payload": "",
+      "platform": "all",
+      "reason": "prints a new bearer token once; no two runs produce the same output, and a secret must never enter a golden document"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "agents update",
+      "payload": "",
+      "platform": "all",
+      "reason": "text-only confirmation of a profile-store change"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
       "path": "companion expose",
       "payload": "",
       "platform": "all",
@@ -67,10 +115,26 @@
     {
       "json_contract": "exempt",
       "kind": "subcommand",
+      "path": "eywa preview",
+      "payload": "",
+      "platform": "all",
+      "reason": "human-auditable full-text preview of exactly what a push would send; sends nothing"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
       "path": "hook install",
       "payload": "",
       "platform": "native-seam",
       "reason": "host mutation with no result payload; receipts are out of scope for #416"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "hook pre-tool-use",
+      "payload": "",
+      "platform": "all",
+      "reason": "Claude Code owns this stdout: the command emits Claude Code's hookSpecificOutput envelope, not a Mora payload, prints nothing on its silent paths, and always exits 0"
     },
     {
       "json_contract": "exempt",
@@ -103,6 +167,86 @@
       "payload": "",
       "platform": "all",
       "reason": "long-running JSON-RPC server; its protocol is the contract"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "mcp serve-http",
+      "payload": "",
+      "platform": "all",
+      "reason": "long-running Streamable HTTP server; its protocol is the contract"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "remote expose",
+      "payload": "",
+      "platform": "all",
+      "reason": "print-only tunnel helper; its mora.remote.expose receipt is pinned by TestRemoteExposePrintsTunnelCommands and the no-exec property by TestRemoteExposeDoesNotRunTunnels"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "rules add",
+      "payload": "",
+      "platform": "all",
+      "reason": "writes one vault rule file and prints a text confirmation; the rule stays inactive until approved"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "rules approve",
+      "payload": "",
+      "platform": "all",
+      "reason": "interactive approval at a person's own terminal; non-interactive and agent-session callers are refused"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "rules compile",
+      "payload": "",
+      "platform": "all",
+      "reason": "state rebuild with a text confirmation; it can only drop rules, never add one"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "rules grant",
+      "payload": "",
+      "platform": "all",
+      "reason": "writes a signed grant file and prints its paths; the file is the machine-readable result"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "rules import",
+      "payload": "",
+      "platform": "all",
+      "reason": "state change with a text confirmation, as rules approve"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "rules off",
+      "payload": "",
+      "platform": "all",
+      "reason": "interactive approval at a person's own terminal; non-interactive and agent-session callers are refused"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "rules test",
+      "payload": "",
+      "platform": "all",
+      "reason": "prints hit or miss as text for one command and never logs"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "rules verify",
+      "payload": "",
+      "platform": "all",
+      "reason": "text check with an exit code; a factory reads the grant file and calls ssh-keygen itself"
     },
     {
       "json_contract": "exempt",
@@ -155,6 +299,14 @@
     {
       "json_contract": "exempt",
       "kind": "verb",
+      "path": "agents",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
       "path": "companion",
       "payload": "",
       "platform": "all",
@@ -180,6 +332,14 @@
       "json_contract": "exempt",
       "kind": "verb",
       "path": "disconnect",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "eywa",
       "payload": "",
       "platform": "all",
       "reason": "dispatch-only group; a bare invocation is a usage error"
@@ -259,7 +419,23 @@
     {
       "json_contract": "exempt",
       "kind": "verb",
+      "path": "remote",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
       "path": "retention",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "rules",
       "payload": "",
       "platform": "all",
       "reason": "dispatch-only group; a bare invocation is a usage error"
@@ -387,6 +563,14 @@
     {
       "json_contract": "receipt",
       "kind": "subcommand",
+      "path": "connect eywa",
+      "payload": "mora.connect.eywa",
+      "platform": "network-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
       "path": "connect filesystem",
       "payload": "mora.connect.filesystem",
       "platform": "all",
@@ -429,6 +613,22 @@
       "kind": "subcommand",
       "path": "disconnect google",
       "payload": "mora.disconnect.google",
+      "platform": "network-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "eywa push",
+      "payload": "mora.eywa.push",
+      "platform": "network-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "eywa status",
+      "payload": "mora.eywa.status",
       "platform": "network-seam",
       "reason": ""
     },
@@ -651,6 +851,14 @@
     {
       "json_contract": "receipt",
       "kind": "subcommand",
+      "path": "sync eywa",
+      "payload": "mora.sync.eywa",
+      "platform": "network-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
       "path": "sync filesystem",
       "payload": "mora.sync.filesystem",
       "platform": "all",
@@ -827,6 +1035,14 @@
     {
       "json_contract": "receipt",
       "kind": "verb",
+      "path": "confirm",
+      "payload": "mora.confirm",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
       "path": "delete",
       "payload": "mora.delete",
       "platform": "all",
@@ -853,6 +1069,14 @@
       "kind": "verb",
       "path": "reingest",
       "payload": "mora.reingest",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
+      "path": "undo",
+      "payload": "mora.undo",
       "platform": "all",
       "reason": ""
     },
@@ -1027,6 +1251,14 @@
     {
       "json_contract": "result",
       "kind": "subcommand",
+      "path": "rules list",
+      "payload": "mora.rules.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
       "path": "schedule list",
       "payload": "mora.schedule.list",
       "platform": "all",
@@ -1149,6 +1381,14 @@
       "kind": "verb",
       "path": "capabilities",
       "payload": "mora.capabilities",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "check",
+      "payload": "mora.check",
       "platform": "all",
       "reason": ""
     },
@@ -1314,6 +1554,19 @@
       "needs_auth": false,
       "type": "applecalendar",
       "upcoming": true
+    },
+    {
+      "features": {
+        "deep_link": "unsupported",
+        "incremental_sync": "unsupported",
+        "repair": "unsupported"
+      },
+      "ingesting": true,
+      "label": "Company memory",
+      "name": "Eywa (company memory)",
+      "needs_auth": false,
+      "type": "eywa",
+      "upcoming": false
     },
     {
       "features": {
@@ -1587,6 +1840,10 @@
       "version": 1
     },
     {
+      "name": "mora.check",
+      "version": 1
+    },
+    {
       "name": "mora.companion.context",
       "version": 1
     },
@@ -1624,6 +1881,14 @@
     },
     {
       "name": "mora.config.mmr",
+      "version": 1
+    },
+    {
+      "name": "mora.confirm",
+      "version": 1
+    },
+    {
+      "name": "mora.connect.eywa",
       "version": 1
     },
     {
@@ -1676,6 +1941,14 @@
     },
     {
       "name": "mora.entities",
+      "version": 1
+    },
+    {
+      "name": "mora.eywa.push",
+      "version": 1
+    },
+    {
+      "name": "mora.eywa.status",
       "version": 1
     },
     {
@@ -1803,6 +2076,10 @@
       "version": 1
     },
     {
+      "name": "mora.rules.list",
+      "version": 1
+    },
+    {
       "name": "mora.schedule.list",
       "version": 1
     },
@@ -1888,6 +2165,10 @@
     },
     {
       "name": "mora.sync.applecalendar",
+      "version": 1
+    },
+    {
+      "name": "mora.sync.eywa",
       "version": 1
     },
     {
@@ -1984,6 +2265,10 @@
     },
     {
       "name": "mora.think",
+      "version": 1
+    },
+    {
+      "name": "mora.undo",
       "version": 1
     },
     {
