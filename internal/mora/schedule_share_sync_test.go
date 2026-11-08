@@ -60,8 +60,8 @@ func TestDarwinShareSyncPlist(t *testing.T) {
 		"<key>StartInterval</key><integer>900</integer>",
 		"<key>MORA_CONFIG_DIR</key><string>/Users/x/scratch/mora</string>",
 		"<key>GIT_TERMINAL_PROMPT</key><string>0</string>",
-		"<key>StandardOutPath</key><string>/Users/x/state/share-sync.out.log</string>",
-		"<key>StandardErrorPath</key><string>/Users/x/state/share-sync.err.log</string>",
+		"<key>StandardOutPath</key><string>" + filepath.Join("/Users/x/state", "share-sync.out.log") + "</string>",
+		"<key>StandardErrorPath</key><string>" + filepath.Join("/Users/x/state", "share-sync.err.log") + "</string>",
 	} {
 		if !strings.Contains(plist, want) {
 			t.Fatalf("share-sync plist missing %q:\n%s", want, plist)

@@ -305,11 +305,12 @@ func WindowsTaskName(job string) string {
 // /TR at ~261 chars — a very long MORA_CONFIG_DIR would need a wrapper script.
 func WindowsTaskCommand(exe, cmdArgs string) string {
 	var sets []string
-	if creds := os.Getenv("MORA_GOOGLE_CREDENTIALS"); creds != "" {
-		sets = append(sets, `set "MORA_GOOGLE_CREDENTIALS=`+creds+`"`)
+	job := ""
+	if cmdArgs == commands["share-sync"] {
+		job = "share-sync"
 	}
-	if cfgDir := os.Getenv("MORA_CONFIG_DIR"); cfgDir != "" {
-		sets = append(sets, `set "MORA_CONFIG_DIR=`+cfgDir+`"`)
+	for _, kv := range jobEnv(job) {
+		sets = append(sets, `set "`+kv[0]+`=`+kv[1]+`"`)
 	}
 	if len(sets) == 0 {
 		return `"` + exe + `" ` + cmdArgs

@@ -57,6 +57,9 @@ func systemdInterval(job string) string {
 func systemdQuote(v string) string {
 	v = strings.ReplaceAll(v, `\`, `\\`)
 	v = strings.ReplaceAll(v, `"`, `\"`)
+	v = strings.ReplaceAll(v, "\n", `\n`)
+	v = strings.ReplaceAll(v, "\r", `\r`)
+	v = strings.ReplaceAll(v, "\t", `\t`)
 	return `"` + strings.ReplaceAll(v, "%", "%%") + `"`
 }
 
@@ -65,7 +68,7 @@ func systemdQuote(v string) string {
 // systemd timer.
 func SystemdUnitsFor(cfg config.Config, job string) (service, timer string, ok bool) {
 	cmdArgs, known := commands[job]
-	if !known || !HasSystemdTimer(job) {
+	if !known || !HasSystemdTimer(job) || strings.ContainsAny(cfg.StateDir, "\x00\n\r") {
 		return "", "", false
 	}
 	exe, _ := executable()
@@ -120,7 +123,10 @@ func installSystemdTimer(stdout io.Writer, cfg config.Config, job string) error 
 	if cfg.HomeDir() == "" {
 		return errors.New("cannot resolve a home directory for systemd user units")
 	}
-	service, timer, _ := SystemdUnitsFor(cfg, job)
+	service, timer, ok := SystemdUnitsFor(cfg, job)
+	if !ok {
+		return errors.New("cannot render systemd timer: unsupported job or unsafe state directory")
+	}
 	servicePath, timerPath := systemdUnitPaths(cfg, job)
 	if err := os.MkdirAll(filepath.Dir(servicePath), 0o755); err != nil {
 		return err
