@@ -7,6 +7,10 @@ import (
 )
 
 // CreateExclusive stages body beside path and publishes it without replacing an existing file.
+// Without hard links, Windows publishes with a no-replace rename; Unix claims
+// an empty placeholder before atomically renaming the staged file over it.
+// Neither path exposes a partially written body. The Unix placeholder can be
+// observed by readers and may remain empty after a crash.
 func CreateExclusive(path string, body []byte, mode os.FileMode, options ...ClaimOptions) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -51,15 +55,8 @@ func CreateExclusive(path string, body []byte, mode os.FileMode, options ...Clai
 	if errors.Is(err, os.ErrExist) || !unsupported(err) {
 		return err
 	}
-	claim, claimErr := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
-	if claimErr != nil {
-		return claimErr
-	}
-	if closeErr := claim.Close(); closeErr != nil {
-		return errors.Join(closeErr, os.Remove(path))
-	}
-	if renameErr := RenameReplaceWithRetry(temp, path); renameErr != nil {
-		return errors.Join(renameErr, os.Remove(path))
+	if err := createExclusiveFallback(temp, path, mode); err != nil {
+		return err
 	}
 	// shortcut: a dir-sync failure after publication is ignored so callers never retry and duplicate; upgrade to a published-but-not-durable outcome if a caller needs to know
 	_ = SyncDirFn(dir)
