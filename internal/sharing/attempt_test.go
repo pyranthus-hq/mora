@@ -377,3 +377,41 @@ func TestAttemptStoreFinishFailureBranches(t *testing.T) {
 		}
 	})
 }
+func TestAttemptStoreVerifiedAtRoundTripsAndFailsClosed(t *testing.T) {
+	now := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	s := AttemptStore{DataDir: t.TempDir(), Now: func() time.Time { return now }}
+	if err := s.Start("x", "r", now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	// A failed attempt cannot claim it verified anything.
+	if err := s.Finish("x", "r", Attempt{State: "failed", VerifiedAt: "2026-03-04T05:06:07Z"}); err == nil || !strings.Contains(err.Error(), "verified_at") {
+		t.Fatal(err)
+	}
+	if err := s.Finish("x", "r", Attempt{State: "succeeded", Seq: 3, VerifiedAt: "yesterday"}); err == nil || !strings.Contains(err.Error(), "RFC 3339") {
+		t.Fatal(err)
+	}
+	if got, ok, err := s.Load("x"); err != nil || !ok || got.State != "active" {
+		t.Fatalf("a refused transition must leave the active record: %+v %v %v", got, ok, err)
+	}
+	if err := s.Finish("x", "r", Attempt{State: "succeeded", Seq: 3, VerifiedAt: "2026-03-04T05:06:07Z"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := s.Load("x"); err != nil || !ok || got.VerifiedAt != "2026-03-04T05:06:07Z" || got.Seq != 3 {
+		t.Fatalf("%+v %v %v", got, ok, err)
+	}
+
+	path := attemptPath(s, "x")
+	for name, body := range map[string]string{
+		"on_failed": `{"run_id":"r","started_at":"x","state":"failed","verified_at":"2026-03-04T05:06:07Z"}`,
+		"malformed": `{"run_id":"r","started_at":"x","state":"succeeded","seq":3,"verified_at":"soon"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := s.Load("x"); err == nil || !strings.Contains(err.Error(), "verified_at") {
+				t.Fatal(err)
+			}
+		})
+	}
+}

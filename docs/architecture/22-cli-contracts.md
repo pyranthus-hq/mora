@@ -217,7 +217,9 @@ state vocabularies are **unchanged, and no fourth was introduced**:
 
 - `fresh | stale | failed | never` — per-source health, read by `doctor`, `sync status`, and the banner.
 - `healthy | degraded | unhealthy` — the aggregate verdict.
-- `fresh | dirty | degraded | failed | never` — index health.
+- `fresh | dirty | degraded | failed | never` — index health. (Since 2026-10, also `refreshing`:
+  search is current while derived projections catch up. It is not an alarm, passes `index_fresh`,
+  and turns `dirty` if the catch-up stops. See [index health](./20-index-health.md).)
 
 `error_code` was added **beside** the existing free-text `last_error`, which is unchanged in name,
 type, and meaning. A record written before this change decodes with an empty `error_code` and is read

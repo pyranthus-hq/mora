@@ -31,7 +31,7 @@ func meetingBriefEmail(id, title, body, from string, to []string, at time.Time) 
 			"occurred_at": at.UTC().Format(time.RFC3339),
 			"names": map[string]string{
 				"neil@example.com": "Neil Patel",
-				"riya@example.com": "Riya Karode",
+				"riya@example.com": "Riya Varden",
 			},
 		},
 	}
@@ -66,7 +66,7 @@ func TestMeetingBriefFixtureIsFullyCitedDeterministicAndActionable(t *testing.T)
 		map[string]string{
 			"adit@example.com": "Adit",
 			"neil@example.com": "Neil Patel",
-			"riya@example.com": "Riya Karode",
+			"riya@example.com": "Riya Varden",
 		},
 		"adit@example.com", "riya@example.com", "neil@example.com",
 	)

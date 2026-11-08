@@ -150,6 +150,13 @@ func Write(path string, settings map[string]any) error {
 	return atomicio.Write(path, append(body, '\n'), 0o600)
 }
 func upsert(groups map[string][]Group, event, sub string, def Command) {
+	upsertMatcher(groups, event, "", sub, def)
+}
+
+// upsertMatcher is upsert for events whose groups carry a matcher, such as
+// PreToolUse. Mora's own entry is replaced in place; otherwise a new group is
+// appended. A user's own groups, even with the same matcher, are never changed.
+func upsertMatcher(groups map[string][]Group, event, matcher, sub string, def Command) {
 	existing := groups[event]
 	if idx := find(existing, sub); idx >= 0 {
 		gi, hi := split(idx)
@@ -157,7 +164,7 @@ func upsert(groups map[string][]Group, event, sub string, def Command) {
 		groups[event] = existing
 		return
 	}
-	groups[event] = append(existing, Group{Hooks: []Command{def}})
+	groups[event] = append(existing, Group{Matcher: matcher, Hooks: []Command{def}})
 }
 func find(groups []Group, sub string) int {
 	marker := Marker + ":" + sub
@@ -176,6 +183,9 @@ func Install(path, exe string, threshold float64) error {
 	if err != nil {
 		return err
 	}
+	if settings == nil || groups == nil {
+		return fmt.Errorf("refusing to modify %s: settings and hooks must be JSON objects", path)
+	}
 	upsert(groups, "SessionStart", "session-start", Command{Type: "command", Command: shellQuote(exe) + " hook session-start " + Marker + ":session-start", Timeout: 15})
 	recall := shellQuote(exe) + " hook recall"
 	if threshold != 0 {
@@ -185,6 +195,100 @@ func Install(path, exe string, threshold float64) error {
 	upsert(groups, "UserPromptSubmit", "recall", Command{Type: "command", Command: recall, Timeout: 10})
 	settings["hooks"] = groups
 	return Write(path, settings)
+}
+
+// PreToolSub is the managed marker suffix of the PreToolUse warning hook.
+const PreToolSub = "pre-tool-use"
+
+// PreToolCommand is the installed shell command. The hook already fails open
+// inside the process; the shell guard also turns a runtime fatal or an
+// unrecovered panic (exit 2, which Claude would show) into a silent exit 0.
+func PreToolCommand(exe string) string {
+	return shellQuote(exe) + " hook pre-tool-use 2>/dev/null || true " + Marker + ":" + PreToolSub
+}
+
+// InstallPreTool adds or replaces only Mora's PreToolUse entry for Bash.
+func InstallPreTool(path, exe string) error {
+	settings, groups, err := Load(path)
+	if err != nil {
+		return err
+	}
+	if settings == nil || groups == nil {
+		return fmt.Errorf("refusing to modify %s: settings and hooks must be JSON objects", path)
+	}
+	upsertMatcher(groups, "PreToolUse", "Bash", PreToolSub, Command{Type: "command", Command: PreToolCommand(exe), Timeout: 5})
+	settings["hooks"] = groups
+	return Write(path, settings)
+}
+
+// InstallProjectRecall omits the unscoped brief and binds recall to one directory.
+func InstallProjectRecall(path, exe, scope, projectDir string, threshold float64) error {
+	if !filepath.IsAbs(projectDir) || filepath.Clean(path) != filepath.Join(projectDir, ".claude", "settings.local.json") {
+		return errors.New("project recall settings must be in the project directory")
+	}
+	path, err := ProjectSettingsPath(projectDir)
+	if err != nil {
+		return err
+	}
+	projectDir = filepath.Dir(filepath.Dir(path))
+	settings, groups, err := Load(path)
+	if err != nil {
+		return err
+	}
+	if settings == nil || groups == nil {
+		return errors.New("project Claude settings and hooks must be JSON objects")
+	}
+	managedRecall := 0
+	for event, eventGroups := range groups {
+		for _, group := range eventGroups {
+			for _, hook := range group.Hooks {
+				if !strings.Contains(hook.Command, Marker+":") {
+					continue
+				}
+				if event != "UserPromptSubmit" || !strings.Contains(hook.Command, Marker+":recall") {
+					return errors.New("remove other managed Mora hooks before installing project recall")
+				}
+				managedRecall++
+			}
+		}
+	}
+	if managedRecall > 1 {
+		return errors.New("remove duplicate managed Mora recall hooks before installing project recall")
+	}
+	recall := shellQuote(exe) + " hook recall --scope " + shellQuote(scope) + " --project-dir " + shellQuote(projectDir)
+	if threshold != 0 {
+		recall += " --threshold " + strconv.FormatFloat(threshold, 'g', -1, 64)
+	}
+	recall += " " + Marker + ":recall"
+	upsert(groups, "UserPromptSubmit", "recall", Command{Type: "command", Command: recall, Timeout: 10})
+	settings["hooks"] = groups
+	return Write(path, settings)
+}
+
+// ProjectSettingsPath refuses symlinks instead of following or replacing user configuration.
+func ProjectSettingsPath(projectDir string) (string, error) {
+	root, err := filepath.EvalSymlinks(projectDir)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(root, ".claude")
+	local := filepath.Join(dir, "settings.local.json")
+	for _, path := range []string{dir, filepath.Join(dir, "settings.json"), local} {
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("project hooks do not support symlinked Claude settings: %s", path)
+		}
+		if (path == dir && !info.IsDir()) || (path != dir && !info.Mode().IsRegular()) {
+			return "", fmt.Errorf("unsupported project Claude settings entry: %s", path)
+		}
+	}
+	return local, nil
 }
 func Uninstall(path string) error {
 	settings, groups, err := Load(path)
@@ -217,6 +321,62 @@ func Uninstall(path string) error {
 		settings["hooks"] = groups
 	}
 	return Write(path, settings)
+}
+
+// UninstallSub removes only the managed commands carrying Marker:sub, and
+// drops any group, then any event, left empty by that.
+func UninstallSub(path, sub string) error {
+	settings, groups, err := Load(path)
+	if err != nil {
+		return err
+	}
+	if settings == nil {
+		return fmt.Errorf("refusing to modify %s: settings must be a JSON object", path)
+	}
+	marker := Marker + ":" + sub
+	for event, eventGroups := range groups {
+		var kept []Group
+		for _, group := range eventGroups {
+			var commands []Command
+			for _, command := range group.Hooks {
+				if !strings.Contains(command.Command, marker) {
+					commands = append(commands, command)
+				}
+			}
+			// A group Mora emptied is dropped; any other group is kept as is,
+			// so a user's own "hooks": [] stays an array.
+			if len(commands) != len(group.Hooks) {
+				if len(commands) == 0 {
+					continue
+				}
+				group.Hooks = commands
+			}
+			kept = append(kept, group)
+		}
+		if len(kept) == 0 {
+			delete(groups, event)
+		} else {
+			groups[event] = kept
+		}
+	}
+	if len(groups) == 0 {
+		delete(settings, "hooks")
+	} else {
+		settings["hooks"] = groups
+	}
+	return Write(path, settings)
+}
+
+// PreToolStatus reports "installed" or "not installed" for the PreToolUse hook.
+func PreToolStatus(path string) (string, error) {
+	_, groups, err := Load(path)
+	if err != nil {
+		return "", err
+	}
+	if find(groups["PreToolUse"], PreToolSub) >= 0 {
+		return "installed", nil
+	}
+	return "not installed", nil
 }
 func Status(path string) (string, string, error) {
 	_, groups, err := Load(path)

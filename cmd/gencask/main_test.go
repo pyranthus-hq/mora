@@ -43,7 +43,7 @@ func TestRunRefusesAutoUpdates(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"--tag", "v1.2.3", "--checksums", manifest, "--out", "-", "--auto-updates"}, &stdout, &stderr)
-	if code != 1 || !strings.Contains(stderr.String(), "#291") || stdout.Len() != 0 {
+	if code != 1 || !strings.Contains(stderr.String(), "#294") || stdout.Len() != 0 {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }

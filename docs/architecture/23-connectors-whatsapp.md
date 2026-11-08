@@ -27,8 +27,8 @@ Each chat maps to one `whatsapp_conversation/<jid>` memory. Message rows join
 `ZWAGROUPMEMBER` for group attribution and `ZWAMEDIAITEM` for recoverable
 contact, location, and document structure.
 
-The custom mapper keeps the newest transcript blocks when the body budget is
-exceeded. Empty text is never silently discarded: known media types render as
+The custom mapper keeps the newest transcript blocks when the body budget
+(64 KiB, `connectorBodyBudget` in `internal/mora/ingest.go`) is exceeded. Empty text is never silently discarded: known media types render as
 typed placeholders and unknown numeric types remain explicit. `CreatedAt` and
 `meta.occurred_at` use the newest retained conversation event. Per-message
 evidence refs use `ZSTANZAID`, falling back to the local Core Data row identity

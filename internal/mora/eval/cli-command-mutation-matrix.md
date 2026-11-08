@@ -129,9 +129,8 @@ The CLI matrix does not rewrite the meaning of the two earlier campaigns:
   `obligations-v1/mutation-matrix.md` remain explicitly issue-owned; they are not
   hidden CLI holes.
 - `scripts/eval/gate2-mutation-matrix.sh` validates the 93 exact Gate 2 named
-  witnesses. The production mutation replays in `mutation-matrix-gate2.md` are
-  historical evidence and must not be described as newly replayed by that
-  witness-integrity command.
+  witnesses. Earlier production mutation replays are historical evidence and
+  must not be described as newly replayed by that witness-integrity command.
 
 ## Final closeout commands
 
