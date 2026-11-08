@@ -986,9 +986,11 @@ session counts cover the files Mora opened, while the call counts cover the
 window.
 
 The baseline asks the same question about commands nobody rejected or
-interrupted. A rate close to the baseline means the correction changed nothing
-that can be seen. Under 10 commands with a later session, Mora tells you to read
-the numbers as counts. With none, it prints no rate at all.
+interrupted, once for `same command` and once for `same shape`. Compare each
+rate with its own baseline. Most shapes come back anyway, so a high `same shape`
+rate means little alone. A rate close to its baseline means the correction
+changed nothing that can be seen. Under 10 commands with a later session, Mora
+tells you to read the numbers as counts. With none, it prints no rate at all.
 
 Read these numbers with care:
 

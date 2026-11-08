@@ -85,10 +85,10 @@ func TestCheckJSON(t *testing.T) {
 		t.Errorf("corrections = %+v", doc.Corrections)
 	}
 	rep := doc.Repeat
-	if rep.Scored != 5 || rep.Eligible != 4 || rep.SameCommand != 2 || rep.SameShape != 3 || rep.BaselinePairs != 9 || rep.BaselineRepeated != 4 {
+	if rep.Scored != 5 || rep.Eligible != 4 || rep.SameCommand != 2 || rep.SameShape != 3 || rep.BaselinePairs != 9 || rep.BaselineRepeated != 4 || rep.BaselineShape != 4 {
 		t.Errorf("repeat = %+v", rep)
 	}
-	if rep.Rate == nil || *rep.Rate != 0.5 || rep.ShapeRate == nil || *rep.ShapeRate != 0.75 || rep.BaselineRate == nil || *rep.BaselineRate != 0.4444 {
+	if rep.Rate == nil || *rep.Rate != 0.5 || rep.ShapeRate == nil || *rep.ShapeRate != 0.75 || rep.BaselineRate == nil || *rep.BaselineRate != 0.4444 || rep.BaselineShapeRate == nil || *rep.BaselineShapeRate != 0.4444 {
 		t.Errorf("rates = %+v", rep)
 	}
 	top := []corrections.Pattern{
@@ -127,7 +127,7 @@ func TestCheckJSONEmptyHomeHasNoNullArrays(t *testing.T) {
 		}
 	}
 	repeat := doc["repeat"].(map[string]any)
-	for _, name := range []string{"rate", "shape_rate", "baseline_rate"} {
+	for _, name := range []string{"rate", "shape_rate", "baseline_rate", "baseline_shape_rate"} {
 		if v, ok := repeat[name]; !ok || v != nil {
 			t.Errorf("%s = %v, want null", name, v)
 		}
