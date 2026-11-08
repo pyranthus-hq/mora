@@ -88,6 +88,9 @@ func OrderSelections(in []Selection, cap int, upcoming bool) (order []int, more 
 	}
 	sort.SliceStable(order, func(i, j int) bool {
 		a, b := in[order[i]], in[order[j]]
+		if a.LowSignal != b.LowSignal {
+			return !a.LowSignal // receipts and newsletters sort last, so the cap keeps people.
+		}
 		if a.Salience != b.Salience {
 			return a.Salience > b.Salience
 		}

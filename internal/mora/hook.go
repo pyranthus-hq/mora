@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	hookspkg "github.com/pyranthus-hq/mora/internal/hooks"
+	"github.com/pyranthus-hq/mora/internal/memory"
 	"github.com/pyranthus-hq/mora/internal/memoryfile"
 	"io"
 	"os"
@@ -173,15 +174,15 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 	mems, serr := hookSearchMemories(searchCtx, cfg, prompt, opts.scope, hookRecallLimit*4)
 	var body string
 	if serr == nil && searchCtx.Err() == nil {
-		if opts.scope != "" {
-			kept := mems[:0]
-			for _, m := range mems {
-				if m.Scope == opts.scope {
-					kept = append(kept, m)
-				}
+		kept := mems[:0]
+		for _, m := range mems {
+			// Recall speaks with Mora's voice inside the agent's prompt, so a
+			// write nobody has confirmed never rides it.
+			if (opts.scope == "" || m.Scope == opts.scope) && !memory.IsTentative(m) {
+				kept = append(kept, m)
 			}
-			mems = kept
 		}
+		mems = kept
 		body = formatRecallContextFor(mems, prompt, opts.threshold, hookNow())
 	}
 	body = prependBannerLine(banner, body)

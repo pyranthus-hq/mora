@@ -265,22 +265,32 @@ use. Its writes follow the same [agent write policy](#agent-write-policy).
 This section covers only the MCP `write_memory` tool (and `delete_memory`). It
 does not affect `mora write`, connectors, tasks, or teach corrections.
 
-**Current default (v0.15.3 and later): `propose`.** An agent's `write_memory`
-call does not reach your vault. Mora holds it in `~/.config/mora/mcp-proposals/`
-and tells the agent it is pending. It is saved only when you run
-`mora mcp proposals approve <id>`. Mora shows no pop-up or notice for pending
-writes; run `mora mcp proposals list` to see them.
+**Default: `tentative`.** A low-risk agent write saves at once and carries a
+`mora-tentative` tag. Low risk means type `insight` or `fact`, a `project:*`
+scope, and no secret, money, sensitive or agent-aimed text. Every other write
+waits in the proposal queue, and the reply says why (`held_because`).
 
-**v0.15.2 and earlier: `open`.** Agent writes were saved at once.
+A tentative memory shows in search, read, list and context with a label. It
+does not reach the recall hook, the digest, the brief, commitments or share.
+Run `mora confirm --list` to see them. Run `mora confirm <id>` to keep one.
+Run `mora undo <id>` to remove an agent write. Under this policy
+`delete_memory` is refused, and phone captures go to the queue.
+
+The hold filter is coarse. It does not stop a false claim written in plain
+words. An agent with a shell can run `mora confirm` or
+`mora mcp proposals approve`, so this is not a sandbox.
+
+`open`, `propose` and `readonly` stay explicit choices. v0.15.3 defaulted to
+`propose`. v0.15.2 and earlier defaulted to `open`.
 
 The setting is the `mcp_write_policy` key in `~/.config/mora/config.toml`.
 `mora init` and the installers never write this key, so an install without it
-uses the code default. An install upgraded from v0.15.2 or earlier without the
-key switches from saving at once to `propose`.
+uses the code default.
 
 Set it with one command:
 
 ```bash
+mora config mcp-write-policy tentative # default: low-risk writes save with a tag; the rest wait
 mora config mcp-write-policy open      # agent writes save at once; deletes allowed
 mora config mcp-write-policy propose   # agent writes wait for approval; deletes refused
 mora config mcp-write-policy readonly  # agent writes and deletes refused
@@ -303,7 +313,7 @@ Review a pending write locally before deciding:
 mora mcp proposals list
 mora mcp proposals show <proposal-id>
 # After reviewing the full content and scope, explicitly choose:
-mora mcp proposals approve <proposal-id>
+mora mcp proposals approve <proposal-id> [<proposal-id>...]
 # or: mora mcp proposals reject <proposal-id>
 ```
 

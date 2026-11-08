@@ -141,7 +141,7 @@ func (s *httpServer) lower(ctx context.Context) *loopbackhttp.Server {
 		// Request contexts carry cancellation but not the launch context's
 		// injected sandbox; restore it so every dispatched tool resolves the
 		// same config the server was started under.
-		return callMCPTool(configstore.CarryInjection(reqCtx, ctx), name, args)
+		return callMCPTool(withAgentCaller(configstore.CarryInjection(reqCtx, ctx), "http"), name, args)
 	}, Health: func() loopbackhttp.Health {
 		cfg, err := loadConfigFor(ctx)
 		if err != nil {
