@@ -2,7 +2,6 @@ package atomicio
 
 import (
 	"errors"
-	"io"
 	"os"
 )
 
@@ -13,10 +12,10 @@ type ClaimOptions struct {
 }
 
 // ClaimExclusiveDurable publishes an already-fsynced file without replacing an existing destination.
-// On volumes without hard links, it copies through the exclusive destination handle,
-// preserves the source permissions, and syncs the copy before returning success.
-// Readers may observe an incomplete copy while that fallback is in progress.
-// The caller owns temp cleanup and must sync the parent directory for name durability.
+// Without hard links, Windows uses a no-replace move of the synced file; Unix
+// atomically renames it over an exclusive placeholder. Neither copies a visible
+// partial body. The Unix placeholder may remain empty after a crash.
+// The fallback consumes temp. The caller must sync the parent directory for name durability.
 func ClaimExclusiveDurable(temp, dest string, options ...ClaimOptions) error {
 	link, unsupported := os.Link, claimLinkUnsupported
 	if len(options) > 0 {
@@ -34,36 +33,5 @@ func ClaimExclusiveDurable(temp, dest string, options ...ClaimOptions) error {
 	if !unsupported(err) {
 		return err
 	}
-	claim, createErr := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if createErr != nil {
-		return createErr
-	}
-	// Keep the claimed name present throughout publication. Replacing a closed
-	// placeholder can briefly remove dest on Windows, admitting a second winner.
-	cleanup := func(err error) error {
-		return errors.Join(err, claim.Close(), os.Remove(dest))
-	}
-	source, err := os.Open(temp)
-	if err != nil {
-		return cleanup(err)
-	}
-	defer source.Close()
-	info, err := source.Stat()
-	if err != nil {
-		return cleanup(err)
-	}
-	if _, err := io.Copy(claim, source); err != nil {
-		return cleanup(err)
-	}
-	// Chmod explicitly restores permissions masked by the process umask.
-	if err := claim.Chmod(info.Mode().Perm()); err != nil {
-		return cleanup(err)
-	}
-	if err := claim.Sync(); err != nil {
-		return cleanup(err)
-	}
-	if err := claim.Close(); err != nil {
-		return errors.Join(err, os.Remove(dest))
-	}
-	return nil
+	return claimExclusiveFallback(temp, dest)
 }

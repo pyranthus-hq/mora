@@ -6,9 +6,52 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 )
+
+func TestClaimExclusiveDurableFallbackReadVisibility(t *testing.T) {
+	unsupported := errors.New("forced unsupported link")
+	opts := ClaimOptions{Link: func(string, string) error { return unsupported }, Unsupported: func(err error) bool { return errors.Is(err, unsupported) }}
+	body := bytes.Repeat([]byte("complete commit record\n"), 1<<18)
+iterations:
+	for iter := 0; iter < 10; iter++ {
+		dir := t.TempDir()
+		temp, dest := filepath.Join(dir, "temp"), filepath.Join(dir, "dest")
+		if err := WriteDurable(temp, body, 0600); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- ClaimExclusiveDurable(temp, dest, opts) }()
+		var readErr error
+		for {
+			got, err := os.ReadFile(dest)
+			if err == nil && len(got) != 0 && !bytes.Equal(got, body) {
+				readErr = fmt.Errorf("partial record: %d of %d bytes", len(got), len(body))
+			}
+			if err != nil && !errors.Is(err, os.ErrNotExist) && !SharingViolationRetryable(err) {
+				readErr = err
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				got, err := os.ReadFile(dest)
+				if err != nil || !bytes.Equal(got, body) {
+					t.Fatalf("final record: %d bytes, %v", len(got), err)
+				}
+				continue iterations
+			default:
+				runtime.Gosched()
+			}
+		}
+	}
+}
 
 func TestClaimExclusiveDurableCreateExclusiveAndFallback(t *testing.T) {
 	dir := t.TempDir()
