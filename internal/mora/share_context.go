@@ -111,3 +111,28 @@ func printSharedCorporaPointer(w io.Writer, p *sharedCorporaPointer, surface str
 	fmt.Fprintf(w, "\nShared: %s not summarized in %s. Read %s with `mora search`, `mora think`, or `mora context --query`.\n",
 		shareCountPhrase(p.Subscriptions, p.Memories), surface, pronoun)
 }
+
+// boundedSharedCorporaPointer keeps subscription metadata from consuming an
+// unbounded model payload. Aggregate counts remain honest when names are elided.
+func boundedSharedCorporaPointer(p *sharedCorporaPointer, budget int) *sharedCorporaPointer {
+	if p == nil {
+		return nil
+	}
+	out := *p
+	out.Shares = append([]sharedCorpusSummary(nil), p.Shares...)
+	for len(out.Shares) > 0 && jsonLen(map[string]any{"shared_corpora": &out}) > budget {
+		out.Shares = out.Shares[:len(out.Shares)-1]
+	}
+	if jsonLen(map[string]any{"shared_corpora": &out}) > budget {
+		out.Error = ""
+		if p.Error != "" {
+			out.Note = "Share registry unavailable; run mora doctor."
+		} else {
+			out.Note = "Subscribed shares are not summarized; query search_memory or context_memory."
+		}
+	}
+	if jsonLen(map[string]any{"shared_corpora": &out}) > budget {
+		return nil
+	}
+	return &out
+}

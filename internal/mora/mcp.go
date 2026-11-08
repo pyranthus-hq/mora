@@ -746,14 +746,23 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 	// deeper pool. The current-state and no-query paths do not, so run the same
 	// conservative pass over what this call retrieved. It only adds pointers.
 	items = annotateLaterRelated(items)
-	text := buildContext(cfg, items, charBudget, query != "")
+	var shared *sharedCorporaPointer
+	if query == "" || intent != contextIntentGeneric {
+		shared = boundedSharedCorporaPointer(sharedCorporaPointerFor(cfg), charBudget/2)
+	}
+	sharedBytes := 0
+	if shared != nil {
+		sharedBytes = jsonLen(map[string]any{"shared_corpora": shared})
+	}
+	textBudget := maxInt(0, charBudget-sharedBytes)
+	text := buildContext(cfg, items, textBudget, query != "")
 	resultCount := len(items)
 	if intent == contextIntentOpenLoops {
-		text = renderOpenCommitmentContext(commitments, charBudget)
+		text = renderOpenCommitmentContext(commitments, textBudget)
 		resultCount = len(commitments)
 	}
 	recordMCPUsage(ctx, cfg, usageEvent{Tool: "context_memory", Query: query, Scope: scope, Results: resultCount, Millis: time.Since(start).Milliseconds()})
-	used := estimateTokensUsed(len(text))
+	used := estimateTokensUsed(len(text) + sharedBytes)
 	// #241: health scoped the same way as mcpSearchMemory's — an excluded
 	// source must not drag the always-present health banner down. Reuses the
 	// SAME `now` captured once above (briefClock()), not a fresh time.Now().
@@ -783,10 +792,8 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 	// (no query, current state, open loops) points at them instead, so a
 	// machine that only subscribes never reads as empty. Absent with no
 	// subscriptions.
-	if query == "" || intent != contextIntentGeneric {
-		if shared := sharedCorporaPointerFor(cfg); shared != nil {
-			out["shared_corpora"] = shared
-		}
+	if shared != nil {
+		out["shared_corpora"] = shared
 	}
 	// Issue #237, round-3 amendment: an OPTIONAL top-level "corroborating" array,
 	// a sibling of "context" — the SAME compact four-key ref shape search_memory
@@ -933,7 +940,7 @@ func mcpBrief(ctx context.Context, cfg Config, args map[string]any) (any, error)
 	// tools that read them. The pointer's bytes come out of the item budget so
 	// the payload still fits max_tokens. With no subscriptions shared is nil
 	// and the payload below is byte-identical to the pre-share one.
-	shared := sharedCorporaPointerFor(cfg)
+	shared := boundedSharedCorporaPointer(sharedCorporaPointerFor(cfg), budgetChars/2)
 	// Reuse the Phase-15 budget machinery VERBATIM (additive — the digest case and
 	// its helpers are untouched): envelope-gated synthesis_prompt, max_tokens
 	// budget, T0-safe by construction (16-03 adds the gate row). Model-free: the

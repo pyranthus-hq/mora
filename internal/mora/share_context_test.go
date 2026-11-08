@@ -259,12 +259,14 @@ func TestMCPBriefSharePointerStaysWithinBudget(t *testing.T) {
 	}
 	subscribeAcme(t, cfg)
 	const maxTokens = 1000
-	raw, out := mcpJSON(t, "brief", map[string]any{"max_tokens": maxTokens})
-	assertSharedCorporaPointer(t, raw, out)
-	sections, _ := json.Marshal(out["sections"])
-	noteBytes, _ := json.Marshal(out["shared_corpora"])
-	if budget := mcpDigestBudgetChars(cfg, maxTokens); len(sections)+len(noteBytes) > budget {
-		t.Fatalf("sections (%d) + pointer (%d) exceed the %d-byte budget", len(sections), len(noteBytes), budget)
+	for _, envelope := range []bool{false, true} {
+		raw, out := mcpJSON(t, "brief", map[string]any{"max_tokens": float64(maxTokens), "envelope": envelope})
+		assertSharedCorporaPointer(t, raw, out)
+		sections, _ := json.Marshal(out["sections"])
+		noteBytes, _ := json.Marshal(out["shared_corpora"])
+		if budget := mcpDigestBudgetChars(cfg, maxTokens); len(sections)+len(noteBytes) > budget {
+			t.Fatalf("envelope=%v sections (%d) + pointer (%d) exceed the %d-byte budget", envelope, len(sections), len(noteBytes), budget)
+		}
 	}
 }
 
@@ -309,5 +311,66 @@ func TestCLIBriefJSONPointsAtSharesWhenSubscribed(t *testing.T) {
 	}
 	if p.Subscriptions != 1 || p.Memories != 1 || len(p.Shares) != 1 || p.Shares[0].Name != "neil" || !p.Shares[0].Pulled {
 		t.Fatalf("brief --json shared_corpora wrong: %+v", p)
+	}
+}
+
+func TestSharedPointerBoundedWithManySubscriptions(t *testing.T) {
+	p := &sharedCorporaPointer{Subscriptions: 100, Memories: 1000, Note: strings.Repeat("note", 100)}
+	for i := 0; i < 100; i++ {
+		p.Shares = append(p.Shares, sharedCorpusSummary{Name: strings.Repeat("owner", 40), Memories: 10, Pulled: true})
+	}
+	for _, budget := range []int{0, 100, 200, 500, 2000} {
+		got := boundedSharedCorporaPointer(p, budget)
+		if got != nil {
+			if n := jsonLen(map[string]any{"shared_corpora": got}); n > budget {
+				t.Fatalf("%d bytes > %d", n, budget)
+			}
+			if got.Subscriptions != 100 || got.Memories != 1000 {
+				t.Fatal("counts changed")
+			}
+		}
+	}
+	if len(p.Shares) != 100 {
+		t.Fatal("input mutated")
+	}
+}
+
+func TestContextManifestPreservesCollidingOwnerIDs(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	m := fixtureMemory(sharedAcmeID, "Acme widgets", "acme ships widgets")
+	if err := writeMemory(cfg, m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rebuildIndex(testCtx(t), cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, owner := range []string{"neil", "other"} {
+		setupSubscription(t, cfg, owner, []Memory{m})
+	}
+	_, out := mcpJSON(t, "context_memory", map[string]any{"query": "acme widgets"})
+	entries := out["evidence_manifest"].([]any)
+	sources := map[string]bool{}
+	for _, e := range entries {
+		row := e.(map[string]any)
+		if row["evidence_id"] == sharedAcmeID {
+			sources[row["canonical_source_id"].(string)] = true
+		}
+	}
+	if len(sources) != 3 || !sources["share:neil"] || !sources["share:other"] {
+		t.Fatalf("owner citations collapsed: %#v", entries)
+	}
+}
+
+func TestSharedSessionToolsRemainUnavailableToRestrictedProfiles(t *testing.T) {
+	cfg := seedAgentFixture(t)
+	subscribeAcme(t, cfg)
+	p := museProfile()
+	for _, tool := range []string{"brief", "context_memory"} {
+		p.Tools = []string{tool}
+		if err := p.validate(); err == nil {
+			t.Fatalf("restricted profile permitted %s", tool)
+		}
 	}
 }

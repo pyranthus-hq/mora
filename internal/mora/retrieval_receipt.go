@@ -147,22 +147,25 @@ func ingestCorrelationID(m Memory) string {
 }
 
 func evidenceManifest(returned, originals []Memory) []evidenceManifestEntry {
-	byID := make(map[string]Memory, len(originals))
+	type corpusID struct{ owner, id string }
+	byID := make(map[corpusID]Memory, len(originals))
 	for _, m := range originals {
-		byID[m.ID] = m
+		byID[corpusID{m.Owner, m.ID}] = m
 	}
-	seen := map[string]bool{}
+	type citationID struct{ source, id string }
+	seen := map[citationID]bool{}
 	manifest := make([]evidenceManifestEntry, 0, len(returned))
 	add := func(entry evidenceManifestEntry) {
-		if entry.EvidenceID == "" || seen[entry.EvidenceID] {
+		key := citationID{entry.CanonicalSourceID, entry.EvidenceID}
+		if entry.EvidenceID == "" || seen[key] {
 			return
 		}
-		seen[entry.EvidenceID] = true
+		seen[key] = true
 		manifest = append(manifest, entry)
 	}
 	for _, shaped := range returned {
 		m := shaped
-		if original, ok := byID[shaped.ID]; ok {
+		if original, ok := byID[corpusID{shaped.Owner, shaped.ID}]; ok {
 			m = original
 		}
 		add(evidenceManifestEntry{EvidenceID: m.ID, CanonicalSourceID: canonicalSourceID(m), Timestamp: evidenceTimestamp(m), DeepLink: evidenceDeepLink(m), IngestCorrelationID: ingestCorrelationID(m)})
