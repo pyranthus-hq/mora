@@ -307,7 +307,7 @@ func TestUncoveredRunIDsDistinguishesCoveredFromUncovered(t *testing.T) {
 	writeJournal(t, cfg, "empty", "run r_gone 2026-01-01T00:00:00Z\n/no/such/path.md\n")
 
 	seams := recoverySeams(false)
-	if _, err := CompactJournal(cfg, "gmail", map[string]bool{seams.CleanPath(covered): true}, seams); err != nil {
+	if _, err := CompactJournal(cfg, "gmail", map[string]bool{seams.CleanPath(covered): true}, nil, seams); err != nil {
 		t.Fatal(err)
 	}
 	got, err := UncoveredRunIDs(cfg, seams)
