@@ -37,11 +37,11 @@ func TestGenerateCaskGolden(t *testing.T) {
 
 func TestGenerateCaskRefusesAutoUpdatesUntilUpdaterLands(t *testing.T) {
 	if CaskAutoUpdatesReady {
-		t.Fatal("test must be revisited when #291 enables Cask auto-updates")
+		t.Fatal("test must be revisited when #294 enables Cask auto-updates")
 	}
 	_, err := GenerateCask("v1.2.3", strings.NewReader(testManifest), true)
-	if err == nil || !strings.Contains(err.Error(), "#291") {
-		t.Fatalf("error = %v, want #291 refusal", err)
+	if err == nil || !strings.Contains(err.Error(), "#294") {
+		t.Fatalf("error = %v, want #294 refusal", err)
 	}
 }
 
@@ -81,12 +81,20 @@ func TestGeneratedCaskUsesOnlySignedAppArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(body)
-	for _, want := range []string{`_app.zip`, `app "Mora.app"`, `Contents/MacOS/mora`} {
+	for _, want := range []string{
+		`_app.zip`,
+		`app "Mora.app"`,
+		`Contents/MacOS/mora`,
+		`preflight do`,
+		`Applications/Mora.app`,
+		`never uses --adopt`,
+		`preserves its vault, configuration, state`,
+	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("Cask missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{"xattr", "quarantine", "postflight", "zap ", ".tar.gz", "auto_updates true", `license "`} {
+	for _, forbidden := range []string{"xattr", "quarantine", "postflight", "zap ", ".tar.gz", "auto_updates true", `license "`, "--force", "adopt true"} {
 		if strings.Contains(s, forbidden) {
 			t.Errorf("Cask contains forbidden %q", forbidden)
 		}

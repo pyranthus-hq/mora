@@ -7,7 +7,6 @@ import (
 	configstore "github.com/pyranthus-hq/mora/internal/config"
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	"io"
-	"os"
 	"time"
 )
 
@@ -17,8 +16,24 @@ const (
 	mcpWritePolicyReadonly = mcppkg.WritePolicyReadonly
 )
 
+// unsetMCPWritePolicy is what an install without an mcp_write_policy line
+// resolves to. In production it is always mcppkg.DefaultWritePolicy. It is a
+// variable only so this package's TestMain can keep the many older tests that
+// exercise open-mode writes after a bare `mora init` on their old behavior;
+// write_policy_default_test.go restores the shipped value and pins it.
+var unsetMCPWritePolicy = mcppkg.DefaultWritePolicy
+
 func parseMCPWritePolicy(raw string) (string, error) { return configstore.ParseMCPWritePolicy(raw) }
-func configMCPWritePolicy(c Config) string           { return mcppkg.NormalizeWritePolicy(c.MCPWritePolicy) }
+
+// configMCPWritePolicy is the single resolver every MCP and companion write
+// path uses. An explicit value always wins; an unset value resolves to
+// mcppkg.DefaultWritePolicy (tentative).
+func configMCPWritePolicy(c Config) string {
+	if c.MCPWritePolicy == "" {
+		return unsetMCPWritePolicy
+	}
+	return mcppkg.NormalizeWritePolicy(c.MCPWritePolicy)
+}
 
 type mcpWriteProposal = mcppkg.Proposal
 
@@ -29,13 +44,27 @@ func readMCPWriteProposal(cfg Config, id string) (mcpWriteProposal, string, erro
 func listMCPWriteProposals(cfg Config) ([]mcpWriteProposal, error) { return mcppkg.ListProposals(cfg) }
 
 func stageMCPWriteProposal(cfg Config, args map[string]any) (any, error) {
-	return stageMCPWriteProposalBy(cfg, args, "")
+	return stageMCPWriteProposalHeld(cfg, args, "", nil)
 }
 
-// stageMCPWriteProposalBy stages a propose-mode write and records which agent
-// profile proposed it ("" for an unprofiled client), so the owner reviewing
-// the queue sees who is asking.
-func stageMCPWriteProposalBy(cfg Config, args map[string]any, proposedBy string) (any, error) {
+// mcpWriteTentative is write_memory under the tentative policy. A write that
+// passes tentativeHoldReasons saves at once; any other goes to the same queue
+// propose uses, and the result names why.
+func mcpWriteTentative(ctx context.Context, cfg Config, args map[string]any) (any, error) {
+	m, err := mcpMemoryFromArgs(args, mcpWriteClock())
+	if err != nil {
+		return nil, err
+	}
+	if reasons := tentativeHoldReasons(m); len(reasons) > 0 {
+		return stageMCPWriteProposalHeld(cfg, args, "", reasons)
+	}
+	return mcpWriteMemoryWith(ctx, cfg, args, withTentative())
+}
+
+// stageMCPWriteProposalHeld stages a write. proposedBy names the agent profile
+// ("" for an unprofiled client), so the owner reviewing the queue sees who is
+// asking; heldBecause says why a tentative write did not save at once.
+func stageMCPWriteProposalHeld(cfg Config, args map[string]any, proposedBy string, heldBecause []string) (any, error) {
 	now := mcpWriteClock()
 	m, err := mcpMemoryFromArgs(args, now)
 	if err != nil {
@@ -48,11 +77,15 @@ func stageMCPWriteProposalBy(cfg Config, args map[string]any, proposedBy string)
 	if _, err := mcppkg.SaveProposal(cfg, proposal); err != nil {
 		return nil, err
 	}
-	return map[string]any{
+	result := map[string]any{
 		"proposal": map[string]any{"id": proposal.ID, "status": "pending", "proposed_at": proposal.ProposedAt},
-		"message":  fmt.Sprintf("not written to the vault; the owner can inspect and approve with `mora mcp proposals approve %s`", proposal.ID),
+		"message":  fmt.Sprintf("not written to the vault; inspect with `mora mcp proposals show %s` before approving with `mora mcp proposals approve %s`", proposal.ID, proposal.ID),
 		"health":   compactHealthOf(cfg, now),
-	}, nil
+	}
+	if len(heldBecause) > 0 {
+		result["held_because"] = heldBecause
+	}
+	return result, nil
 }
 
 // mcpProposalRow is one pending propose-mode write, projected for machines.
@@ -63,13 +96,25 @@ type mcpProposalRow struct {
 	Scope      string `json:"scope"`
 	Type       string `json:"type"`
 	Title      string `json:"title"`
+	Status     string `json:"status,omitempty"`
+	MemoryID   string `json:"memory_id,omitempty"`
 }
 
 // mcpProposalsPayload carries the queue under a named key, never null.
 type mcpProposalsPayload struct {
-	Proposals []mcpProposalRow `json:"proposals"`
-	Decision  string           `json:"decision,omitempty"`
-	MemoryID  string           `json:"memory_id,omitempty"`
+	Proposals  []mcpProposalRow       `json:"proposals"`
+	Decision   string                 `json:"decision,omitempty"`
+	MemoryID   string                 `json:"memory_id,omitempty"`
+	Inspection *mcpProposalInspection `json:"inspection,omitempty"`
+}
+
+// approveDrainLimit bounds how long approve waits for the rebuild it started.
+var approveDrainLimit = 2 * time.Minute
+
+func drainReconcileOrWarn(stderr io.Writer) {
+	if !waitForAuthoredReconciles(approveDrainLimit) {
+		fmt.Fprintln(stderr, "warning: the memory is saved, but the index rebuild is unfinished; run `mora index rebuild`")
+	}
 }
 
 func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -96,12 +141,21 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 		for _, proposal := range proposals {
 			memory, err := mcpMemoryFromArgs(proposal.Arguments, time.Now())
 			if err != nil {
-				return fmt.Errorf("proposal %s is invalid: %w", proposal.ID, err)
+				fmt.Fprintf(stderr, "warning: skipping invalid proposal %s: %v\n", proposal.ID, err)
+				continue
 			}
-			rows = append(rows, mcpProposalRow{
+			row := mcpProposalRow{
 				ID: proposal.ID, ProposedAt: proposal.ProposedAt, ProposedBy: proposal.ProposedBy,
 				Scope: memory.Scope, Type: memory.Type, Title: memory.Title,
-			})
+			}
+			d, err := readMCPProposalDecision(cfg, proposal.ID)
+			if err != nil {
+				return err
+			}
+			if d != nil {
+				row.Status, row.MemoryID = d.Status, d.MemoryID
+			}
+			rows = append(rows, row)
 		}
 		if jsonOut {
 			return emitReceipt(stdout, "mora.mcp.proposals", 1, mcpProposalsPayload{Proposals: rows})
@@ -115,50 +169,99 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 			if row.ProposedBy != "" {
 				by = "  by " + row.ProposedBy
 			}
-			fmt.Fprintf(stdout, "%s  %s%s  [%s/%s] %s\n", row.ID, row.ProposedAt, by, row.Scope, row.Type, row.Title)
+			fmt.Fprintf(stdout, "%s  %s%s  [%s/%s] %s", row.ID, row.ProposedAt, by, row.Scope, row.Type, row.Title)
+			if row.Status != "" {
+				fmt.Fprintf(stdout, "  [decision: %s; memory: %s; do not approve again]", row.Status, row.MemoryID)
+			}
+			fmt.Fprintln(stdout)
 		}
 		return nil
 	}
-	if len(args) == 2 && args[0] == "approve" {
-		if err := refuseDashLedPositional("mcp proposals approve", "proposal id", args[1]); err != nil {
+	if len(args) == 2 && args[0] == "show" {
+		if err := refuseDashLedPositional("mcp proposals show", "proposal id", args[1]); err != nil {
 			return err
 		}
-		proposal, path, err := readMCPWriteProposal(cfg, args[1])
-		if err != nil {
-			return err
+		return showMCPWriteProposal(cfg, args[1], stdout)
+	}
+	if len(args) >= 2 && args[0] == "approve" {
+		ids := args[1:]
+		for _, id := range ids {
+			if err := refuseDashLedPositional("mcp proposals approve", "proposal id", id); err != nil {
+				return err
+			}
 		}
-		result, err := mcpWriteMemory(ctx, cfg, proposal.Arguments)
-		if err != nil {
-			return err
-		}
-		if err := os.Remove(path); err != nil {
-			return fmt.Errorf("proposal %s was written to the vault but its pending file could not be removed: %w", proposal.ID, err)
-		}
-		memoryID := ""
-		if wrapped, ok := result.(map[string]any); ok {
-			if memory, ok := wrapped["memory"].(Memory); ok {
-				memoryID = memory.ID
+		// approve starts background rebuilds and then exits, which would kill them and
+		// leave a dead receipt. Drain once after the last id, also on failure returns.
+		defer drainReconcileOrWarn(stderr)
+		rows := make([]mcpProposalRow, 0, len(ids))
+		var failure error
+		for _, id := range ids {
+			// A retried batch treats an id that already finished as done.
+			if d, derr := readMCPProposalDecision(cfg, id); derr == nil && d != nil && d.Action == "approve" && d.Status == "approved" {
+				rows = append(rows, mcpProposalRow{ID: id, Status: "approved", MemoryID: d.MemoryID})
+				if !jsonOut {
+					fmt.Fprintf(stdout, "Already approved %s as memory %s.\n", id, d.MemoryID)
+				}
+				continue
+			}
+			memoryID, err := decideMCPWriteProposal(ctx, cfg, id, "approve")
+			if err != nil {
+				rows = append(rows, mcpProposalRow{ID: id, Status: "failed"})
+				failure = err
+				break
+			}
+			rows = append(rows, mcpProposalRow{ID: id, Status: "approved", MemoryID: memoryID})
+			if !jsonOut {
+				fmt.Fprintf(stdout, "Approved %s as memory %s.\n", id, memoryID)
 			}
 		}
 		if jsonOut {
-			return emitReceipt(stdout, "mora.mcp.proposals", 1, mcpProposalsPayload{
-				Proposals: []mcpProposalRow{{ID: proposal.ID}}, Decision: "approve", MemoryID: memoryID,
-			})
+			payload := mcpProposalsPayload{Proposals: rows, Decision: "approve"}
+			if len(rows) == 1 && failure == nil {
+				payload.MemoryID = rows[0].MemoryID
+			}
+			if err := emitReceipt(stdout, "mora.mcp.proposals", 1, payload); err != nil {
+				return err
+			}
 		}
-		fmt.Fprintf(stdout, "Approved %s as memory %s.\n", proposal.ID, memoryID)
-		return nil
+		return failure
+	}
+	if len(args) >= 2 && args[0] == "recover" {
+		retry, closeIt := false, false
+		for _, a := range args[2:] {
+			switch a {
+			case "--retry":
+				retry = true
+			case "--close":
+				closeIt = true
+			default:
+				return fmt.Errorf("usage: mora mcp proposals recover ID [--retry|--close]; unknown argument %q", a)
+			}
+		}
+		if err := refuseDashLedPositional("mcp proposals recover", "proposal id", args[1]); err != nil {
+			return err
+		}
+		defer drainReconcileOrWarn(stderr)
+		text := stdout
+		if jsonOut {
+			text = io.Discard
+		}
+		status, memoryID, err := recoverMCPWriteProposal(cfg, args[1], retry, closeIt, text)
+		if err != nil || !jsonOut {
+			return err
+		}
+		return emitReceipt(stdout, "mora.mcp.proposals", 1, mcpProposalsPayload{
+			Proposals: []mcpProposalRow{{ID: args[1], Status: status, MemoryID: memoryID}}, Decision: "recover", MemoryID: memoryID,
+		})
 	}
 	if len(args) == 2 && args[0] == "reject" {
 		if err := refuseDashLedPositional("mcp proposals reject", "proposal id", args[1]); err != nil {
 			return err
 		}
-		_, path, err := readMCPWriteProposal(cfg, args[1])
-		if err != nil {
+		if _, err := decideMCPWriteProposal(ctx, cfg, args[1], "reject"); err != nil {
 			return err
 		}
-		if err := os.Remove(path); err != nil {
-			return err
-		}
+
 		if jsonOut {
 			return emitReceipt(stdout, "mora.mcp.proposals", 1, mcpProposalsPayload{
 				Proposals: []mcpProposalRow{{ID: args[1]}}, Decision: "reject",
@@ -167,5 +270,5 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 		fmt.Fprintf(stdout, "Rejected %s.\n", args[1])
 		return nil
 	}
-	return errors.New("usage: mora mcp proposals <list|approve ID|reject ID>")
+	return errors.New("usage: mora mcp proposals <list|show ID|approve ID [ID...]|reject ID|recover ID [--retry|--close]>")
 }

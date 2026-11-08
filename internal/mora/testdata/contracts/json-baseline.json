@@ -60,6 +60,10 @@
     "status": "parses"
   },
   {
+    "path": "check",
+    "status": "parses"
+  },
+  {
     "path": "companion",
     "status": "empty"
   },
@@ -120,7 +124,15 @@
     "status": "empty"
   },
   {
+    "path": "confirm",
+    "status": "static_only"
+  },
+  {
     "path": "connect",
+    "status": "static_only"
+  },
+  {
+    "path": "connect eywa",
     "status": "static_only"
   },
   {
@@ -188,6 +200,22 @@
     "status": "parses"
   },
   {
+    "path": "eywa",
+    "status": "empty"
+  },
+  {
+    "path": "eywa preview",
+    "status": "empty"
+  },
+  {
+    "path": "eywa push",
+    "status": "static_only"
+  },
+  {
+    "path": "eywa status",
+    "status": "static_only"
+  },
+  {
     "path": "forget",
     "status": "static_only"
   },
@@ -210,6 +238,10 @@
   {
     "path": "hook install",
     "status": "static_only"
+  },
+  {
+    "path": "hook pre-tool-use",
+    "status": "empty"
   },
   {
     "path": "hook recall",
@@ -376,6 +408,34 @@
     "status": "parses"
   },
   {
+    "path": "rules",
+    "status": "empty"
+  },
+  {
+    "path": "rules add",
+    "status": "flag_error"
+  },
+  {
+    "path": "rules approve",
+    "status": "flag_error"
+  },
+  {
+    "path": "rules compile",
+    "status": "flag_error"
+  },
+  {
+    "path": "rules list",
+    "status": "parses"
+  },
+  {
+    "path": "rules off",
+    "status": "flag_error"
+  },
+  {
+    "path": "rules test",
+    "status": "empty"
+  },
+  {
     "path": "schedule",
     "status": "empty"
   },
@@ -500,6 +560,10 @@
     "status": "static_only"
   },
   {
+    "path": "sync eywa",
+    "status": "static_only"
+  },
+  {
     "path": "sync filesystem",
     "status": "parses"
   },
@@ -610,6 +674,10 @@
   {
     "path": "think",
     "status": "empty"
+  },
+  {
+    "path": "undo",
+    "status": "static_only"
   },
   {
     "path": "unforget",

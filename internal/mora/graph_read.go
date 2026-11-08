@@ -199,6 +199,7 @@ func graphGetEntity(ctx context.Context, cfg Config, name string) (map[string]an
 	if err != nil {
 		return nil, err
 	}
+	mems = withoutTentative(mems)
 	var aliases []string
 	if match.AliasesJSON != "" {
 		_ = json.Unmarshal([]byte(match.AliasesJSON), &aliases)

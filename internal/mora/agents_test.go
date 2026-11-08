@@ -241,6 +241,34 @@ func TestMCPServeHTTPRefusesToStartWithoutProfiles(t *testing.T) {
 	}
 }
 
+// TestAgentProfileProposesUnderTheTentativeDefault pins that a low-risk write,
+// which the shipped default would save at once, only queues for a propose profile.
+func TestAgentProfileProposesUnderTheTentativeDefault(t *testing.T) {
+	useShippedWritePolicyDefault(t)
+	cfg := seedAgentFixture(t)
+	if got := configMCPWritePolicy(cfg); got != "tentative" {
+		t.Fatalf("fixture policy = %q, want tentative", got)
+	}
+	before, err := allMemoryFiles(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := callMCPTool(withAgentProfile(testCtx(t), museProfile()), "write_memory", map[string]any{"title": "Muse note", "text": "low risk", "type": "fact"})
+	if err != nil {
+		t.Fatalf("write_memory: %v", err)
+	}
+	if proposalIDOf(got) == "" {
+		t.Fatalf("write_memory did not stage a proposal: %s", mustJSON(t, got))
+	}
+	after, err := allMemoryFiles(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("profile write reached the vault before approval: %d -> %d files", len(before), len(after))
+	}
+}
+
 func TestAgentProfileProposesEvenWhenVaultPolicyIsOpen(t *testing.T) {
 	cfg := seedAgentFixture(t)
 	if configMCPWritePolicy(cfg) != mcpWritePolicyOpen {

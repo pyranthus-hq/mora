@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // MappedMemory is the plain hand-off struct. internal/mora converts it to its
@@ -118,6 +119,22 @@ func kindToType(k ItemKind) (typ, provider string) {
 	return "source", string(k)
 }
 
+// runeSafeCut returns the largest n <= limit such that s[:n] does not end in
+// the middle of a UTF-8 sequence. A byte budget that lands inside a multi-byte
+// rune (emoji, CJK, accented Latin) backs off to that rune's first byte, so the
+// kept head is always valid UTF-8 when the input is.
+func runeSafeCut(s string, limit int) int {
+	if limit >= len(s) {
+		return len(s)
+	}
+	for n := limit; n > 0 && n > limit-utf8.UTFMax; n-- {
+		if utf8.RuneStart(s[n]) {
+			return n
+		}
+	}
+	return limit // not valid UTF-8 near the cut: keep the plain byte cut
+}
+
 // MapItem converts a fetched Item into a MappedMemory, applying a byte budget.
 // Truncation keeps from the START of the body (Gmail behavior); connectors that
 // need a different keep-direction build their own mapper reusing this struct.
@@ -127,7 +144,7 @@ func MapItem(it Item, scope string, bodyBudget int) MappedMemory {
 	orig := len(body)
 	truncated := false
 	if bodyBudget > 0 && orig > bodyBudget {
-		body = body[:bodyBudget]
+		body = body[:runeSafeCut(body, bodyBudget)]
 		truncated = true
 	}
 	created := it.OccurredAt

@@ -58,6 +58,10 @@ type doctorReport struct {
 	Repairable    bool                 `json:"repairable"`
 	RepairPlan    []doctorRepairAction `json:"repair_plan"`
 	Verification  []doctorVerification `json:"verification"`
+	// PendingMCPProposals counts propose-mode writes still waiting for
+	// `mora mcp proposals approve` (for example, left over from v0.15.3, whose
+	// default staged every agent write). Additive; omitted when zero.
+	PendingMCPProposals int `json:"pending_mcp_proposals,omitempty"`
 }
 
 type doctorObservation struct {
@@ -414,7 +418,9 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	// state and embedder provenance are critical checks — a stale source timestamp
 	// can never mask an older/degraded index.
 	idxH := indexHealthOf(cfg, now)
-	checks = append(checks, doctorCheck{Name: "index_fresh", OK: idxH.State == idxFresh, Critical: true})
+	// refreshing passes: search is current and the in-flight work is tracked by
+	// markers that turn dirty if it stops (indexHealthOf rule 4).
+	checks = append(checks, doctorCheck{Name: "index_fresh", OK: idxH.State == idxFresh || idxH.State == idxRefreshing, Critical: true})
 	checks = append(checks, doctorCheck{Name: "index_embedder", OK: idxH.Embedder.Match, Critical: true})
 	activities := operationActivities(cfg, now, operationProcessAlive)
 	for _, a := range activities {
@@ -460,7 +466,8 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	// is surfaced for investigation). The Index arm carries the per-share sub-arm.
 	shareHealth := shareHealthAll(cfg, now)
 	for _, sh := range shareHealth {
-		checks = append(checks, doctorCheck{Name: "share_fresh:" + sh.Name, OK: sh.State == healthFresh, Critical: true})
+		// A pull in progress keeps serving a verified committed generation.
+		checks = append(checks, doctorCheck{Name: "share_fresh:" + sh.Name, OK: sh.State == healthFresh || sh.State == shareRefreshing, Critical: true})
 	}
 	idxH.Shares = shareIndexHealthAll(cfg, now)
 
@@ -484,6 +491,8 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			healthy = false
 		}
 	}
+
+	pendingProposals, _ := pendingMCPProposalCount(cfg)
 
 	gitSync := false
 	if _, err := os.Stat(filepath.Join(cfg.VaultDir, ".git")); err == nil {
@@ -523,6 +532,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			Producers: prodHealth,
 			Observed:  observed, Diagnosis: diagnoses,
 			Repairable: hasSafeDoctorRepair(repairPlan), RepairPlan: repairPlan, Verification: verification,
+			PendingMCPProposals: pendingProposals,
 		}
 		if rec, present, _ := readBlockRecord(cfg); present {
 			rep.RebuildBlock = &rec
@@ -598,6 +608,9 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	// surface "last authed / how long ago" per connected account so the user can
 	// tell at a glance when they last signed in.
 	printGoogleAuthRecency(cfg, stdout, now)
+	if pendingProposals > 0 {
+		fmt.Fprintf(stdout, "%s %d agent write(s) pending in the MCP proposal queue — review with `mora mcp proposals list`, approve with `mora mcp proposals approve <id>`\n", sty.warn("warn"), pendingProposals)
+	}
 	// iMessage readiness prints in a dedicated ORDERED block so the Full Disk
 	// Access guidance reads top-to-bottom (Surface 3).
 	printIMessageReadiness(cfg, stdout, false)

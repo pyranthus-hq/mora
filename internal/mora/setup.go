@@ -175,6 +175,25 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout, stde
 			return err
 		}
 	}
+	if ctype == "eywa" {
+		// Like filesystem: without an endpoint there is nothing to consent to yet.
+		sources, err := loadSources(cfg)
+		if err != nil {
+			return err
+		}
+		configured := false
+		for _, s := range sources {
+			if s.Type == "eywa" && s.Eywa != nil {
+				configured = true
+			}
+		}
+		if !configured {
+			fmt.Fprintln(stdout, "eywa needs its endpoints before it can be enabled — none are configured yet.")
+			fmt.Fprintln(stdout, "Configure and pull:  mora connect eywa --endpoint <mcp-url> --token-url <url> --client-id <id>")
+			fmt.Fprintf(stdout, "The client secret is read from %s at run time and never stored.\n", "MORA_EYWA_CLIENT_SECRET")
+			return nil
+		}
+	}
 	if ctype == "filesystem" {
 		// A filesystem source is meaningless without a folder, so enable must
 		// never mint the pathless {Name:"filesystem", Path:""} row setSourceEnabled
@@ -223,6 +242,11 @@ func enableConnector(ctx context.Context, cfg Config, ctype string, stdout, stde
 		if runtimeGOOS() != "darwin" {
 			fmt.Fprintf(stderr, "note: Apple Calendar ingest only runs on macOS; this machine is %s.\n", runtimeGOOS())
 		}
+		return nil
+	}
+	if ctype == "eywa" {
+		okf(stdout, "enabled eywa. Pulled facts are read-only evidence; push stays off until `mora eywa push enable`.")
+		fmt.Fprintln(stdout, "Pull facts with `mora sync eywa` (MORA_EYWA_CLIENT_SECRET must be set).")
 		return nil
 	}
 	if ctype == "github" {
