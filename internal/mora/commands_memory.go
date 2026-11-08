@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/pyranthus-hq/mora/internal/activity"
 	"github.com/pyranthus-hq/mora/internal/disposition"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"github.com/pyranthus-hq/mora/internal/memory"
@@ -208,11 +209,13 @@ func newMemoriesPayload(items []Memory) memoriesPayload {
 	return memoriesPayload{Memories: out}
 }
 func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	now := briefClock()
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	scope := fs.String("scope", "", "scope")
 	limit := fs.Int("limit", 20, "limit")
 	source := fs.String("source", "", "provider family or instance")
+	includeAuthored := fs.Bool("include-authored-writes", false, "include authored CreatedAt placements in event lists; imported mirrors may be re-dated by resync")
 	eventHours := fs.Int("event-since-hours", 0, "explicit source events within this many hours; orders by event time")
 	jsonOut := fs.Bool("json", false, "json")
 	if err := fs.Parse(args); err != nil {
@@ -222,6 +225,9 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if err != nil {
 		return err
 	}
+	if *includeAuthored && *eventHours == 0 {
+		return errors.New("include-authored-writes requires event-since-hours")
+	}
 	eventWindowRequested := hasIntFlag(args, "--event-since-hours")
 	if *eventHours < 0 || *eventHours > 24*366 || (eventWindowRequested && *eventHours == 0) || (*eventHours > 0 && (*limit < 1 || *limit > 1000)) {
 		return errors.New("list limit must be 1-1000 and event-since-hours must be 1-8784 when specified")
@@ -230,7 +236,6 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if *source != "" {
 		filterArgs["source"] = *source
 	}
-	now := briefClock()
 	filter, err := parseSearchFilters(filterArgs, now)
 	if err != nil {
 		return err
@@ -244,7 +249,7 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return err
 	}
 	if *eventHours > 0 {
-		items = recentSourceEvents(items, now, *eventHours, *limit)
+		items = recentSourceEvents(items, now, *eventHours, *limit, activity.Options{IncludeAuthoredWrites: *includeAuthored})
 	}
 	items, err = decorateDispositions(cfg, items, now, filter)
 	if err != nil {
@@ -255,13 +260,14 @@ func cmdList(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		if *eventHours > 0 {
 			from, to := activityWindowBounds(now, *eventHours)
 			return emitReceipt(stdout, "mora.list", 1, struct {
-				Memories        []Memory `json:"memories"`
-				Source          string   `json:"source"`
-				EventSinceHours int      `json:"event_since_hours"`
-				Order           string   `json:"order"`
-				WindowFrom      string   `json:"window_from"`
-				WindowTo        string   `json:"window_to"`
-			}{items, *source, *eventHours, "source-event", from, to})
+				Memories              []Memory `json:"memories"`
+				Source                string   `json:"source"`
+				EventSinceHours       int      `json:"event_since_hours"`
+				IncludeAuthoredWrites bool     `json:"include_authored_writes,omitempty"`
+				Order                 string   `json:"order"`
+				WindowFrom            string   `json:"window_from"`
+				WindowTo              string   `json:"window_to"`
+			}{items, *source, *eventHours, *includeAuthored, "source-event", from, to})
 		}
 		if *source != "" {
 			return emitReceipt(stdout, "mora.list", 1, struct {
@@ -390,26 +396,9 @@ func cmdDelete(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if err != nil {
 		return err
 	}
-	// Mark the delete BEFORE removing the file (A5 row 4): a rebuild that fails
-	// after the file is gone would otherwise keep SERVING the deleted content
-	// (Finding 4 — a data-safety P0). While the op is pending its memory_id is
-	// suppressed on every read path (B4), so fail-closed here is an actual
-	// guarantee, not just a banner.
-	op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindDelete, Path: m.Path, MemoryID: m.ID})
-	if merr != nil {
-		return merr
-	}
-	if err := os.Remove(m.Path); err != nil {
-		_ = unmarkIndexDirty(cfg, op.OpID) // the file never went away
-		return err
-	}
-	reconcile, err := reflectDeleteInIndex(ctx, cfg, m.ID)
+	reconcile, err := deleteMemoryFile(ctx, cfg, m)
 	if err != nil {
-		// The op REMAINS -> the index reads dirty AND B4 suppresses the deleted id.
-		// A partial delete stays a LOUD error with no receipt, mirroring the MCP
-		// delete_memory asymmetry: serving deleted content warrants the error,
-		// and the retry is harmless. Do not soften this into a receipt.
-		return fmt.Errorf("memory %s deleted, but the search index could not be updated: %w — run `mora index rebuild`", m.ID, err)
+		return err
 	}
 	var rerr error
 	if *jsonOut {
@@ -428,6 +417,35 @@ func cmdDelete(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		}
 	}
 	return rerr
+}
+
+// deleteMemoryFile removes one memory from the vault and the index. It is the
+// shared core of `mora delete` and `mora undo`; reconcile reports whether the
+// caller should run reconcileAuthoredWrites after emitting its receipt.
+func deleteMemoryFile(ctx context.Context, cfg Config, m Memory) (reconcile bool, err error) {
+	// Mark the delete BEFORE removing the file (A5 row 4): a rebuild that fails
+	// after the file is gone would otherwise keep SERVING the deleted content
+	// (Finding 4 — a data-safety P0). While the op is pending its memory_id is
+	// suppressed on every read path (B4), so fail-closed here is an actual
+	// guarantee, not just a banner.
+	op, merr := markIndexDirty(ctx, cfg, deleteOp(m))
+	if merr != nil {
+		return false, merr
+	}
+	if err := os.Remove(m.Path); err != nil {
+		_ = unmarkIndexDirty(cfg, op.OpID) // the file never went away
+		return false, err
+	}
+	markDeleteUnlinked(cfg, op)
+	reconcile, err = reflectDeleteInIndex(ctx, cfg, m.ID)
+	if err != nil {
+		// The op REMAINS -> the index reads dirty AND B4 suppresses the deleted id.
+		// A partial delete stays a LOUD error with no receipt, mirroring the MCP
+		// delete_memory asymmetry: serving deleted content warrants the error,
+		// and the retry is harmless. Do not soften this into a receipt.
+		return false, fmt.Errorf("memory %s deleted, but the search index could not be updated: %w — run `mora index rebuild`", m.ID, err)
+	}
+	return reconcile, nil
 }
 
 type deleteReceipt struct {

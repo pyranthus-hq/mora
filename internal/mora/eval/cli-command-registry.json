@@ -99,6 +99,20 @@
       "payload": "mora.delete"
     },
     {
+      "path": "undo",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.undo"
+    },
+    {
+      "path": "confirm",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.confirm"
+    },
+    {
       "path": "forget",
       "kind": "verb",
       "platform": "all",
@@ -246,6 +260,13 @@
       "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
+      "path": "eywa",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
       "path": "reingest",
       "kind": "verb",
       "platform": "all",
@@ -293,6 +314,13 @@
       "platform": "all",
       "json_contract": "exempt",
       "reason": "long-running JSON-RPC server; its protocol is the contract"
+    },
+    {
+      "path": "agents",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "path": "serve",
@@ -675,6 +703,13 @@
       "payload": "mora.connect.github"
     },
     {
+      "path": "connect eywa",
+      "kind": "subcommand",
+      "platform": "network-seam",
+      "json_contract": "receipt",
+      "payload": "mora.connect.eywa"
+    },
+    {
       "path": "connect imessage",
       "kind": "subcommand",
       "platform": "darwin-seam",
@@ -708,6 +743,13 @@
       "platform": "network-seam",
       "json_contract": "receipt",
       "payload": "mora.sync.github"
+    },
+    {
+      "path": "sync eywa",
+      "kind": "subcommand",
+      "platform": "network-seam",
+      "json_contract": "receipt",
+      "payload": "mora.sync.eywa"
     },
     {
       "path": "sync filesystem",
@@ -822,6 +864,27 @@
       "payload": "mora.share.storage-limit"
     },
     {
+      "path": "eywa push",
+      "kind": "subcommand",
+      "platform": "network-seam",
+      "json_contract": "receipt",
+      "payload": "mora.eywa.push"
+    },
+    {
+      "path": "eywa preview",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "human-auditable full-text preview of exactly what a push would send; sends nothing"
+    },
+    {
+      "path": "eywa status",
+      "kind": "subcommand",
+      "platform": "network-seam",
+      "json_contract": "receipt",
+      "payload": "mora.eywa.status"
+    },
+    {
       "path": "usage report",
       "kind": "subcommand",
       "platform": "all",
@@ -862,6 +925,55 @@
       "platform": "all",
       "json_contract": "exempt",
       "reason": "long-running JSON-RPC server; its protocol is the contract"
+    },
+    {
+      "path": "agents add",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "prints a new bearer token once; no two runs produce the same output, and a secret must never enter a golden document"
+    },
+    {
+      "path": "agents update",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "text-only confirmation of a profile-store change"
+    },
+    {
+      "path": "agents list",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "profile rows carry creation times that differ on every run; its --json output is not yet a published payload"
+    },
+    {
+      "path": "agents revoke",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "text-only confirmation of a profile-store change"
+    },
+    {
+      "path": "agents rotate",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "prints a new bearer token once; no two runs produce the same output, and a secret must never enter a golden document"
+    },
+    {
+      "path": "agents log",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "receipt lines carry call times that differ on every run; its --json output is not yet a published payload"
+    },
+    {
+      "path": "mcp serve-http",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "long-running Streamable HTTP server; its protocol is the contract"
     },
     {
       "path": "serve http",
@@ -1205,6 +1317,20 @@
       "platform": "native-seam",
       "json_contract": "receipt",
       "payload": "mora.integrations.disconnect"
+    },
+    {
+      "path": "remote",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "path": "remote expose",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "print-only tunnel helper; its mora.remote.expose receipt is pinned by TestRemoteExposePrintsTunnelCommands and the no-exec property by TestRemoteExposeDoesNotRunTunnels"
     }
   ]
 }

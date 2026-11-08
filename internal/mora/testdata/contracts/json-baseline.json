@@ -16,6 +16,34 @@
     "status": "static_only"
   },
   {
+    "path": "agents",
+    "status": "empty"
+  },
+  {
+    "path": "agents add",
+    "status": "flag_error"
+  },
+  {
+    "path": "agents list",
+    "status": "parses"
+  },
+  {
+    "path": "agents log",
+    "status": "empty"
+  },
+  {
+    "path": "agents revoke",
+    "status": "empty"
+  },
+  {
+    "path": "agents rotate",
+    "status": "empty"
+  },
+  {
+    "path": "agents update",
+    "status": "flag_error"
+  },
+  {
     "path": "backup",
     "status": "parses"
   },
@@ -96,7 +124,15 @@
     "status": "empty"
   },
   {
+    "path": "confirm",
+    "status": "static_only"
+  },
+  {
     "path": "connect",
+    "status": "static_only"
+  },
+  {
+    "path": "connect eywa",
     "status": "static_only"
   },
   {
@@ -162,6 +198,22 @@
   {
     "path": "entities",
     "status": "parses"
+  },
+  {
+    "path": "eywa",
+    "status": "empty"
+  },
+  {
+    "path": "eywa preview",
+    "status": "empty"
+  },
+  {
+    "path": "eywa push",
+    "status": "static_only"
+  },
+  {
+    "path": "eywa status",
+    "status": "static_only"
   },
   {
     "path": "forget",
@@ -292,6 +344,10 @@
     "status": "static_only"
   },
   {
+    "path": "mcp serve-http",
+    "status": "empty"
+  },
+  {
     "path": "merge",
     "status": "empty"
   },
@@ -325,6 +381,14 @@
   },
   {
     "path": "reingest",
+    "status": "parses"
+  },
+  {
+    "path": "remote",
+    "status": "empty"
+  },
+  {
+    "path": "remote expose",
     "status": "parses"
   },
   {
@@ -516,6 +580,10 @@
     "status": "static_only"
   },
   {
+    "path": "sync eywa",
+    "status": "static_only"
+  },
+  {
     "path": "sync filesystem",
     "status": "parses"
   },
@@ -626,6 +694,10 @@
   {
     "path": "think",
     "status": "empty"
+  },
+  {
+    "path": "undo",
+    "status": "static_only"
   },
   {
     "path": "unforget",

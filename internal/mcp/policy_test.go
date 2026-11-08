@@ -6,14 +6,15 @@ import (
 )
 
 func TestNormalizeWritePolicy(t *testing.T) {
-	// An unset policy must fail safe: it resolves to propose, never open.
-	if DefaultWritePolicy != WritePolicyPropose {
-		t.Fatalf("DefaultWritePolicy=%q, want propose", DefaultWritePolicy)
+	// An unset policy resolves to tentative: low-risk agent writes save at once
+	// with a label, and the rest wait for the owner.
+	if DefaultWritePolicy != WritePolicyTentative {
+		t.Fatalf("DefaultWritePolicy=%q, want tentative", DefaultWritePolicy)
 	}
-	if got := NormalizeWritePolicy(""); got != WritePolicyPropose {
-		t.Fatalf("empty=%q, want propose", got)
+	if got := NormalizeWritePolicy(""); got != WritePolicyTentative {
+		t.Fatalf("empty=%q, want tentative", got)
 	}
-	for _, p := range []string{WritePolicyOpen, WritePolicyPropose, WritePolicyReadonly, "future"} {
+	for _, p := range []string{WritePolicyOpen, WritePolicyPropose, WritePolicyReadonly, WritePolicyTentative, "future"} {
 		if got := NormalizeWritePolicy(p); got != p {
 			t.Errorf("%q=%q", p, got)
 		}
@@ -28,6 +29,10 @@ func TestInstructionsAgreeWithPolicy(t *testing.T) {
 	if strings.Contains(propose, OpenWriteInstruction) || !strings.Contains(propose, "pending proposal queue") || !strings.Contains(propose, "delete_memory is unavailable") {
 		t.Fatalf("propose=%q", propose)
 	}
+	tentative := InstructionsFor(WritePolicyTentative)
+	if strings.Contains(tentative, OpenWriteInstruction) || !strings.Contains(tentative, "saves at once as tentative") || !strings.Contains(tentative, "delete_memory is unavailable") {
+		t.Fatalf("tentative=%q", tentative)
+	}
 	readonly := InstructionsFor(WritePolicyReadonly)
 	if strings.Contains(readonly, OpenWriteInstruction) || !strings.Contains(readonly, "read-only") || !strings.Contains(readonly, "both will refuse") {
 		t.Fatalf("readonly=%q", readonly)
@@ -37,7 +42,7 @@ func TestInstructionsAgreeWithPolicy(t *testing.T) {
 	}
 }
 func TestMutationAction(t *testing.T) {
-	cases := []struct{ policy, tool, action, errContains string }{{WritePolicyOpen, "write_memory", ActionExecute, ""}, {WritePolicyOpen, "delete_memory", ActionExecute, ""}, {WritePolicyPropose, "write_memory", ActionPropose, ""}, {WritePolicyPropose, "delete_memory", ActionRefuse, "never stages destructive deletes"}, {WritePolicyReadonly, "write_memory", ActionRefuse, "mcp_write_policy=readonly"}, {WritePolicyReadonly, "delete_memory", ActionRefuse, "mcp_write_policy=readonly"}, {WritePolicyReadonly, "search_memory", ActionExecute, ""}, {"unknown", "write_memory", ActionExecute, ""}}
+	cases := []struct{ policy, tool, action, errContains string }{{WritePolicyOpen, "write_memory", ActionExecute, ""}, {WritePolicyOpen, "delete_memory", ActionExecute, ""}, {WritePolicyPropose, "write_memory", ActionPropose, ""}, {WritePolicyPropose, "delete_memory", ActionRefuse, "never stages destructive deletes"}, {WritePolicyTentative, "write_memory", ActionTentative, ""}, {WritePolicyTentative, "delete_memory", ActionRefuse, "never runs destructive deletes"}, {WritePolicyReadonly, "write_memory", ActionRefuse, "mcp_write_policy=readonly"}, {WritePolicyReadonly, "delete_memory", ActionRefuse, "mcp_write_policy=readonly"}, {WritePolicyReadonly, "search_memory", ActionExecute, ""}, {"unknown", "write_memory", ActionExecute, ""}}
 	for _, tc := range cases {
 		action, err := MutationAction(tc.policy, tc.tool)
 		if action != tc.action {

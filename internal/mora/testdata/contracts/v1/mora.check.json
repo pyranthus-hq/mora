@@ -60,6 +60,8 @@
     "baseline_pairs": 0,
     "baseline_rate": null,
     "baseline_repeated": 0,
+    "baseline_shape_rate": null,
+    "baseline_shape_repeated": 0,
     "eligible": 0,
     "rate": null,
     "same_command": 0,

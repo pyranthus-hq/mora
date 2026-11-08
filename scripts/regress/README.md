@@ -62,6 +62,14 @@ directly and loudly skips only the release identity/notarization section. The
 production installer is not used for that binary because it correctly refuses
 anything outside Mora's signed/notarized release identity.
 
+## FDA continuity canary (#167)
+
+`fda-continuity-canary.sh` pins public N/N+1 `checksums-app.txt` hashes/commits
+(Linux OK) and prints the signed-host handoff commands for protected-source
+continuity across a signed `Mora.app` upgrade. It never claims a green live FDA
+result. Share the Darwin session with #294. See
+`docs/architecture/10-distribution-and-ops.md`.
+
 ## Out of scope (needs credentials)
 
 The Gmail/Calendar OAuth ingest path needs a dedicated test Google account — run

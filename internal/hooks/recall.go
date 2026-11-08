@@ -42,6 +42,13 @@ func FormatRecallContext(mems []memory.Memory, threshold float64, now time.Time)
 // row whose Score is above threshold is skipped; callers must hand it BM25
 // costs (lower is better), not fused scores.
 func FormatRecallContextFor(mems []memory.Memory, query string, threshold float64, now time.Time) string {
+	body, _ := FormatRecallContextCount(mems, query, threshold, now)
+	return body
+}
+
+// FormatRecallContextCount is FormatRecallContextFor that also reports how
+// many memories made it into the rendered context.
+func FormatRecallContextCount(mems []memory.Memory, query string, threshold float64, now time.Time) (string, int) {
 	var b strings.Builder
 	count := 0
 	for _, m := range mems {
@@ -72,7 +79,20 @@ func FormatRecallContextFor(mems []memory.Memory, query string, threshold float6
 		b.WriteString(line)
 		count++
 	}
-	return b.String()
+	return b.String(), count
+}
+
+// SteppedInLine is the one line shown to the user (not the model) when recall
+// put n memories into the agent's context. It is empty when n is zero.
+func SteppedInLine(n int) string {
+	switch {
+	case n <= 0:
+		return ""
+	case n == 1:
+		return "Mora stepped in · 1 lesson"
+	default:
+		return fmt.Sprintf("Mora stepped in · %d lessons", n)
+	}
 }
 
 // RecallLine is RecallLineFor with no query: the preview is the head of the body.
