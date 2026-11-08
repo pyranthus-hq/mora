@@ -7,7 +7,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"github.com/pyranthus-hq/mora/internal/config"
 )
 
@@ -31,6 +33,131 @@ func writeJournal(t *testing.T, cfg config.Config, key, body string) {
 		t.Fatal(err)
 	}
 }
+func snapshot(t *testing.T, cfg config.Config) map[string]os.FileInfo {
+	t.Helper()
+	s, err := SnapshotJournals(cfg, recoverySeams(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// A rewrite after listing appends a line for a path the listing already holds.
+func TestJournalLineAfterListingSurvives(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	dir := t.TempDir()
+	early, late := filepath.Join(dir, "early.md"), filepath.Join(dir, "late.md")
+	for _, p := range []string{early, late} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	header := "run r_abc 2026-01-01T00:00:00Z\n"
+	writeJournal(t, cfg, "gmail", header+early+"\n")
+	seen := snapshot(t, cfg)
+	if err := atomicio.AppendFile(JournalPath(cfg, "gmail"), late+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := RecoverJournals(cfg, []string{early, late}, seen, recoverySeams(false))
+	if err != nil || len(got.RetiredRunIDs) != 0 {
+		t.Fatalf("recovery=(%+v,%v)", got, err)
+	}
+	b, err := os.ReadFile(JournalPath(cfg, "gmail"))
+	if err != nil || string(b) != header+late+"\n" {
+		t.Fatalf("journal=%q err=%v, want the early line retired and the late line kept", b, err)
+	}
+	got, err = RecoverJournals(cfg, []string{early, late}, snapshot(t, cfg), recoverySeams(false))
+	if err != nil || len(got.RetiredRunIDs) != 1 {
+		t.Fatalf("next rebuild recovery=(%+v,%v)", got, err)
+	}
+}
+
+func TestJournalOutsideSnapshotStays(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "m.md")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := "run r_abc 2026-01-01T00:00:00Z\n" + file + "\n"
+	t.Run("created after the snapshot", func(t *testing.T) {
+		cfg := config.Config{StateDir: t.TempDir()}
+		seen := snapshot(t, cfg)
+		writeJournal(t, cfg, "gmail", body)
+		if got, err := RecoverJournals(cfg, []string{file}, seen, recoverySeams(false)); err != nil || len(got.RetiredRunIDs) != 0 {
+			t.Fatalf("recovery=(%+v,%v)", got, err)
+		}
+		if b, err := os.ReadFile(JournalPath(cfg, "gmail")); err != nil || string(b) != body {
+			t.Fatalf("journal=%q err=%v", b, err)
+		}
+	})
+	t.Run("replaced after the snapshot", func(t *testing.T) {
+		cfg := config.Config{StateDir: t.TempDir()}
+		writeJournal(t, cfg, "gmail", body+body)
+		seen := snapshot(t, cfg)
+		if err := atomicio.Write(JournalPath(cfg, "gmail"), []byte(body+body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := RecoverJournals(cfg, []string{file}, seen, recoverySeams(false)); err != nil || len(got.RetiredRunIDs) != 0 {
+			t.Fatalf("recovery=(%+v,%v)", got, err)
+		}
+		if _, err := os.Stat(JournalPath(cfg, "gmail")); err != nil {
+			t.Fatalf("journal retired: %v", err)
+		}
+	})
+}
+
+// A connector appends while compaction is between its read and its remove.
+func TestCompactionKeepsConcurrentAppend(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	file := filepath.Join(t.TempDir(), "m.md")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeJournal(t, cfg, "gmail", "run r_abc 2026-01-01T00:00:00Z\n"+file+"\n")
+	seen := snapshot(t, cfg)
+	seams := recoverySeams(false)
+	appended := make(chan struct{})
+	seams.LeaseHeld = func(config.Config, string) bool {
+		go func() {
+			RecordPublishedPath(cfg, "gmail", file, testPublishSeams())
+			close(appended)
+		}()
+		select {
+		case <-appended: // no guard: the line landed inside compaction's window
+		case <-time.After(200 * time.Millisecond):
+		}
+		return false
+	}
+	if _, err := RecoverJournals(cfg, []string{file}, seen, seams); err != nil {
+		t.Fatal(err)
+	}
+	<-appended
+	if _, n, present := ScanJournal(JournalPath(cfg, "gmail")); !present || n != 1 {
+		t.Fatalf("journal present=%v lines=%d, want the concurrent line kept", present, n)
+	}
+}
+
+// An ingest still running at the snapshot can publish at any moment, so its
+// journal waits for a rebuild that starts after the run ended.
+func TestJournalDeferredWhileIngestActive(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	file := filepath.Join(t.TempDir(), "m.md")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := "run r_abc 2026-01-01T00:00:00Z\n" + file + "\n"
+	writeJournal(t, cfg, "gmail", body)
+	seen, err := SnapshotJournals(cfg, recoverySeams(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := RecoverJournals(cfg, []string{file}, seen, recoverySeams(false)); err != nil || len(got.RetiredRunIDs) != 0 {
+		t.Fatalf("recovery=(%+v,%v)", got, err)
+	}
+	if b, err := os.ReadFile(JournalPath(cfg, "gmail")); err != nil || string(b) != body {
+		t.Fatalf("journal=%q err=%v, want it untouched", b, err)
+	}
+}
+
 func TestRecoverRetiresCoveredJournalAndRun(t *testing.T) {
 	cfg := config.Config{StateDir: t.TempDir()}
 	file := filepath.Join(t.TempDir(), "m.md")
@@ -38,7 +165,7 @@ func TestRecoverRetiresCoveredJournalAndRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeJournal(t, cfg, "gmail", "run r_abc 2026-01-01T00:00:00Z\n"+file+"\n")
-	got, err := RecoverJournals(cfg, []string{file}, recoverySeams(false))
+	got, err := RecoverJournals(cfg, []string{file}, snapshot(t, cfg), recoverySeams(false))
 	if err != nil || len(got.RetiredRunIDs) != 1 || got.RetiredRunIDs[0] != "r_abc" {
 		t.Fatalf("recovery=(%+v,%v)", got, err)
 	}
@@ -49,7 +176,7 @@ func TestRecoverRetiresCoveredJournalAndRun(t *testing.T) {
 func TestCompactKeepsHeaderWhileLeaseHeld(t *testing.T) {
 	cfg := config.Config{StateDir: t.TempDir()}
 	writeJournal(t, cfg, "gmail", "run r_abc 2026-01-01T00:00:00Z\n/gone\n")
-	retired, err := CompactJournal(cfg, "gmail", map[string]bool{}, recoverySeams(true))
+	retired, err := CompactJournal(cfg, "gmail", map[string]bool{}, nil, recoverySeams(true))
 	if err != nil || retired != "" {
 		t.Fatalf("compact=(%q,%v)", retired, err)
 	}
@@ -65,7 +192,7 @@ func TestCompactKeepsUncoveredExistingPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeJournal(t, cfg, "gmail", "run r_abc now\n"+file+"\n/gone\n")
-	retired, err := CompactJournal(cfg, "gmail", map[string]bool{}, recoverySeams(false))
+	retired, err := CompactJournal(cfg, "gmail", map[string]bool{}, nil, recoverySeams(false))
 	if err != nil || retired != "" {
 		t.Fatalf("compact=(%q,%v)", retired, err)
 	}
@@ -76,14 +203,14 @@ func TestCompactKeepsUncoveredExistingPaths(t *testing.T) {
 }
 func TestRecoveryMissingAndRemovalError(t *testing.T) {
 	cfg := config.Config{StateDir: t.TempDir()}
-	got, err := RecoverJournals(cfg, nil, recoverySeams(false))
+	got, err := RecoverJournals(cfg, nil, snapshot(t, cfg), recoverySeams(false))
 	if err != nil || len(got.RetiredRunIDs) != 0 {
 		t.Fatalf("missing=(%+v,%v)", got, err)
 	}
 	writeJournal(t, cfg, "gmail", "run r_abc now\n")
 	seams := recoverySeams(false)
 	seams.Remove = func(string) error { return errors.New("remove") }
-	if _, err = RecoverJournals(cfg, nil, seams); err == nil || !strings.Contains(err.Error(), "retiring ingest journal") {
+	if _, err = RecoverJournals(cfg, nil, snapshot(t, cfg), seams); err == nil || !strings.Contains(err.Error(), "retiring ingest journal") {
 		t.Fatalf("error=%v", err)
 	}
 }
@@ -120,7 +247,7 @@ func TestCompactJournalCaseInsensitive(t *testing.T) {
 	if err := AppendDurable(path, "run test-run 2026-09-11\n"+upper+"\n"); err != nil {
 		t.Fatal(err)
 	}
-	id, err := CompactJournal(cfg, "filesystem@Pyranthus", map[string]bool{lower: true}, RecoverySeams{
+	id, err := CompactJournal(cfg, "filesystem@Pyranthus", map[string]bool{lower: true}, nil, RecoverySeams{
 		CleanPath: filepath.Clean, LeaseHeld: func(config.Config, string) bool { return false },
 		Remove: os.Remove, ValidToken: func(s string) bool { return s == "test-run" },
 	})
@@ -156,12 +283,38 @@ func TestCompactJournalCaseFoldDistinctFiles(t *testing.T) {
 	}
 	cfg := config.Config{StateDir: t.TempDir()}
 	writeJournal(t, cfg, "filesystem@test", "run r_test now\n"+upper+"\n")
-	id, err := CompactJournal(cfg, "filesystem@test", map[string]bool{lower: true}, recoverySeams(false))
+	id, err := CompactJournal(cfg, "filesystem@test", map[string]bool{lower: true}, nil, recoverySeams(false))
 	if err != nil || id != "" {
 		t.Fatalf("distinct file retired: %q, %v", id, err)
 	}
 	body, err := os.ReadFile(JournalPath(cfg, "filesystem@test"))
 	if err != nil || !strings.Contains(string(body), upper) {
 		t.Fatalf("uncovered path lost: %s, %v", body, err)
+	}
+}
+
+func TestUncoveredRunIDsDistinguishesCoveredFromUncovered(t *testing.T) {
+	cfg := config.Config{StateDir: t.TempDir()}
+	covered := filepath.Join(t.TempDir(), "covered.md")
+	uncovered := filepath.Join(t.TempDir(), "uncovered.md")
+	for _, p := range []string{covered, uncovered} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeJournal(t, cfg, "gmail", "run r_cover 2026-01-01T00:00:00Z\n"+covered+"\n")
+	writeJournal(t, cfg, "filesystem", "run r_open 2026-01-01T00:00:00Z\n"+uncovered+"\n")
+	writeJournal(t, cfg, "empty", "run r_gone 2026-01-01T00:00:00Z\n/no/such/path.md\n")
+
+	seams := recoverySeams(false)
+	if _, err := CompactJournal(cfg, "gmail", map[string]bool{seams.CleanPath(covered): true}, nil, seams); err != nil {
+		t.Fatal(err)
+	}
+	got, err := UncoveredRunIDs(cfg, seams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["r_cover"] || got["r_gone"] || !got["r_open"] || len(got) != 1 {
+		t.Fatalf("uncovered = %#v", got)
 	}
 }

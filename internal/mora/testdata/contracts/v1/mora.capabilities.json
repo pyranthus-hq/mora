@@ -9,12 +9,36 @@
       "reason": "human help text is a deliberate, tested contract (C5)"
     },
     {
+      "json_contract": "result",
+      "kind": "alias",
+      "path": "--version",
+      "payload": "mora.version",
+      "platform": "all",
+      "reason": ""
+    },
+    {
       "json_contract": "exempt",
       "kind": "alias",
       "path": "-h",
       "payload": "",
       "platform": "all",
       "reason": "human help text is a deliberate, tested contract (C5)"
+    },
+    {
+      "json_contract": "result",
+      "kind": "alias",
+      "path": "-v",
+      "payload": "mora.version",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "agents",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "json_contract": "exempt",
@@ -65,12 +89,84 @@
       "reason": "text-only confirmation of a profile-store change"
     },
     {
+      "json_contract": "receipt",
+      "kind": "verb",
+      "path": "backup",
+      "payload": "mora.backup",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "brief",
+      "payload": "mora.brief",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "brief correct",
+      "payload": "mora.brief.correct",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "capabilities",
+      "payload": "mora.capabilities",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "check",
+      "payload": "mora.check",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "companion",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "companion context",
+      "payload": "mora.companion.context",
+      "platform": "all",
+      "reason": ""
+    },
+    {
       "json_contract": "exempt",
       "kind": "subcommand",
       "path": "companion expose",
       "payload": "",
       "platform": "all",
       "reason": "the success document names the devices a publication is for, so it carries a per-install device id and a per-install pairing-window expiry and no two runs produce the same document; the mora.companion.expose receipt envelope is pinned by TestCompanionExposePrintsTheExactTailscaleCommands and its bootstrap branch, including the confirm URL and the window deadline, by TestCompanionExposeRefusesOnlyWhenNothingCouldEverAuthenticate"
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "companion health",
+      "payload": "mora.companion.health",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "companion list",
+      "payload": "mora.companion.list",
+      "platform": "all",
+      "reason": ""
     },
     {
       "json_contract": "exempt",
@@ -97,338 +193,26 @@
       "reason": "long-running loopback listener; it serves the companion routes until the process ends and has no document to emit"
     },
     {
-      "json_contract": "exempt",
+      "json_contract": "result",
       "kind": "subcommand",
-      "path": "connect google",
-      "payload": "",
-      "platform": "network-seam",
-      "reason": "browser OAuth handoff"
+      "path": "companion status",
+      "payload": "mora.companion.status",
+      "platform": "all",
+      "reason": ""
     },
     {
-      "json_contract": "exempt",
+      "json_contract": "result",
       "kind": "subcommand",
-      "path": "connectors setup",
-      "payload": "",
-      "platform": "native-seam",
-      "reason": "interactive menu"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "subcommand",
-      "path": "hook install",
-      "payload": "",
-      "platform": "native-seam",
-      "reason": "host mutation with no result payload; receipts are out of scope for #416"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "subcommand",
-      "path": "hook recall",
-      "payload": "",
+      "path": "companion today",
+      "payload": "mora.companion.today",
       "platform": "all",
-      "reason": "Claude Code owns this stdout: the command emits Claude Code's hookSpecificOutput envelope, not a Mora payload, and injects nothing at all on its silent paths"
+      "reason": ""
     },
     {
-      "json_contract": "exempt",
-      "kind": "subcommand",
-      "path": "hook session-start",
-      "payload": "",
-      "platform": "all",
-      "reason": "Claude Code owns this stdout: the command emits Claude Code's hookSpecificOutput envelope, not a Mora payload, and injects nothing at all on its silent paths"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "subcommand",
-      "path": "hook uninstall",
-      "payload": "",
-      "platform": "native-seam",
-      "reason": "host mutation with no result payload; receipts are out of scope for #416"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "subcommand",
-      "path": "mcp serve",
-      "payload": "",
-      "platform": "all",
-      "reason": "long-running JSON-RPC server; its protocol is the contract"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "subcommand",
-      "path": "mcp serve-http",
-      "payload": "",
-      "platform": "all",
-      "reason": "long-running Streamable HTTP server; its protocol is the contract"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "subcommand",
-      "path": "remote expose",
-      "payload": "",
-      "platform": "all",
-      "reason": "print-only tunnel helper; its mora.remote.expose receipt is pinned by TestRemoteExposePrintsTunnelCommands and the no-exec property by TestRemoteExposeDoesNotRunTunnels"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "subcommand",
-      "path": "schedule install",
-      "payload": "",
-      "platform": "native-seam",
-      "reason": "host mutation with no result payload; receipts are out of scope for #416"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "subcommand",
-      "path": "schedule uninstall",
-      "payload": "",
-      "platform": "native-seam",
-      "reason": "host mutation with no result payload; receipts are out of scope for #416"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "subcommand",
-      "path": "serve http",
-      "payload": "",
-      "platform": "loopback-seam",
-      "reason": "long-running loopback HTTP server"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "subcommand",
-      "path": "teach consent",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "subcommand",
-      "path": "teach identity",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "subcommand",
-      "path": "usage queries",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "exempt",
+      "json_contract": "result",
       "kind": "verb",
-      "path": "agents",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "companion",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "connect",
-      "payload": "",
-      "platform": "all",
-      "reason": "browser OAuth handoff"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "connectors",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "disconnect",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "help",
-      "payload": "",
-      "platform": "all",
-      "reason": "human help text is a deliberate, tested contract (C5)"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "hook",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "ingest",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "init",
-      "payload": "",
-      "platform": "all",
-      "reason": "interactive first-run wizard; prompts on stdin"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "integrations",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "loop",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "mcp",
-      "payload": "",
-      "platform": "all",
-      "reason": "long-running JSON-RPC server; its protocol is the contract"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "merge",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "prep",
-      "payload": "",
-      "platform": "all",
-      "reason": "removed in #137; tombstone row retained so the dispatch drift test still pins the token"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "remote",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "retention",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "schedule",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "serve",
-      "payload": "",
-      "platform": "all",
-      "reason": "long-running loopback HTTP server"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "setup",
-      "payload": "",
-      "platform": "all",
-      "reason": "human reconciliation; stable machine status is mora setup status --json"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "share",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "sources",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "sync",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "tasks",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "teach",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "upgrade",
-      "payload": "",
-      "platform": "all",
-      "reason": "self-replacing binary; the process is gone before it could emit"
-    },
-    {
-      "json_contract": "exempt",
-      "kind": "verb",
-      "path": "usage",
-      "payload": "",
-      "platform": "all",
-      "reason": "dispatch-only group; a bare invocation is a usage error"
-    },
-    {
-      "json_contract": "receipt",
-      "kind": "subcommand",
-      "path": "brief correct",
-      "payload": "mora.brief.correct",
+      "path": "config",
+      "payload": "mora.config",
       "platform": "all",
       "reason": ""
     },
@@ -466,6 +250,30 @@
     },
     {
       "json_contract": "receipt",
+      "kind": "verb",
+      "path": "confirm",
+      "payload": "mora.confirm",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "connect",
+      "payload": "",
+      "platform": "all",
+      "reason": "browser OAuth handoff"
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "connect eywa",
+      "payload": "mora.connect.eywa",
+      "platform": "network-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
       "kind": "subcommand",
       "path": "connect filesystem",
       "payload": "mora.connect.filesystem",
@@ -481,12 +289,28 @@
       "reason": ""
     },
     {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "connect google",
+      "payload": "",
+      "platform": "network-seam",
+      "reason": "browser OAuth handoff"
+    },
+    {
       "json_contract": "receipt",
       "kind": "subcommand",
       "path": "connect imessage",
       "payload": "mora.connect.imessage",
       "platform": "darwin-seam",
       "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "connectors",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "json_contract": "receipt",
@@ -505,6 +329,46 @@
       "reason": ""
     },
     {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "connectors list",
+      "payload": "mora.connectors.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "connectors setup",
+      "payload": "",
+      "platform": "native-seam",
+      "reason": "interactive menu"
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "context",
+      "payload": "mora.context",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
+      "path": "delete",
+      "payload": "mora.delete",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "disconnect",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
       "json_contract": "receipt",
       "kind": "subcommand",
       "path": "disconnect google",
@@ -513,12 +377,196 @@
       "reason": ""
     },
     {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "doctor",
+      "payload": "mora.doctor.report",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "doctor check",
+      "payload": "mora.doctor.check",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "entities",
+      "payload": "mora.entities",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "eywa",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "eywa preview",
+      "payload": "",
+      "platform": "all",
+      "reason": "human-auditable full-text preview of exactly what a push would send; sends nothing"
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "eywa push",
+      "payload": "mora.eywa.push",
+      "platform": "network-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "eywa status",
+      "payload": "mora.eywa.status",
+      "platform": "network-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
+      "path": "forget",
+      "payload": "mora.forget",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "forget list",
+      "payload": "mora.forget.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "graph",
+      "payload": "mora.graph",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "help",
+      "payload": "",
+      "platform": "all",
+      "reason": "human help text is a deliberate, tested contract (C5)"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "hook",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "hook install",
+      "payload": "",
+      "platform": "native-seam",
+      "reason": "host mutation with no result payload; receipts are out of scope for #416"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "hook pre-tool-use",
+      "payload": "",
+      "platform": "all",
+      "reason": "Claude Code owns this stdout: the command emits Claude Code's hookSpecificOutput envelope, not a Mora payload, prints nothing on its silent paths, and always exits 0"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "hook recall",
+      "payload": "",
+      "platform": "all",
+      "reason": "Claude Code owns this stdout: the command emits Claude Code's hookSpecificOutput envelope, not a Mora payload, and injects nothing at all on its silent paths"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "hook session-start",
+      "payload": "",
+      "platform": "all",
+      "reason": "Claude Code owns this stdout: the command emits Claude Code's hookSpecificOutput envelope, not a Mora payload, and injects nothing at all on its silent paths"
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "hook status",
+      "payload": "mora.hook.status",
+      "platform": "native-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "hook uninstall",
+      "payload": "",
+      "platform": "native-seam",
+      "reason": "host mutation with no result payload; receipts are out of scope for #416"
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
+      "path": "index",
+      "payload": "mora.index",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "index rebuild",
+      "payload": "mora.index.rebuild",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "ingest",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
       "json_contract": "receipt",
       "kind": "subcommand",
       "path": "ingest run",
       "payload": "mora.ingest.run",
       "platform": "all",
       "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "init",
+      "payload": "",
+      "platform": "all",
+      "reason": "interactive first-run wizard; prompts on stdin"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "integrations",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "json_contract": "receipt",
@@ -535,6 +583,38 @@
       "payload": "mora.integrations.disconnect",
       "platform": "native-seam",
       "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "integrations list",
+      "payload": "mora.integrations.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "lint",
+      "payload": "mora.lint.report",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "list",
+      "payload": "mora.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "loop",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "json_contract": "receipt",
@@ -561,6 +641,14 @@
       "reason": ""
     },
     {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "loop list",
+      "payload": "mora.loop.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
       "json_contract": "receipt",
       "kind": "subcommand",
       "path": "loop register",
@@ -569,10 +657,66 @@
       "reason": ""
     },
     {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "loop status",
+      "payload": "mora.loop.status",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "mcp",
+      "payload": "",
+      "platform": "all",
+      "reason": "long-running JSON-RPC server; its protocol is the contract"
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "mcp proposals",
+      "payload": "mora.mcp.proposals",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "mcp serve",
+      "payload": "",
+      "platform": "all",
+      "reason": "long-running JSON-RPC server; its protocol is the contract"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "mcp serve-http",
+      "payload": "",
+      "platform": "all",
+      "reason": "long-running Streamable HTTP server; its protocol is the contract"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "merge",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
       "json_contract": "receipt",
       "kind": "subcommand",
       "path": "merge confirm",
       "payload": "mora.merge.confirm",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "merge list",
+      "payload": "mora.merge.list",
       "platform": "all",
       "reason": ""
     },
@@ -591,6 +735,62 @@
       "payload": "mora.merge.undo",
       "platform": "all",
       "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "prep",
+      "payload": "",
+      "platform": "all",
+      "reason": "removed in #137; tombstone row retained so the dispatch drift test still pins the token"
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "pulse",
+      "payload": "mora.pulse",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "read",
+      "payload": "mora.read",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
+      "path": "reingest",
+      "payload": "mora.reingest",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "remote",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "remote expose",
+      "payload": "",
+      "platform": "all",
+      "reason": "print-only tunnel helper; its mora.remote.expose receipt is pinned by TestRemoteExposePrintsTunnelCommands and the no-exec property by TestRemoteExposeDoesNotRunTunnels"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "retention",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "json_contract": "receipt",
@@ -617,6 +817,102 @@
       "reason": ""
     },
     {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "retention report",
+      "payload": "mora.retention.report",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "retention verify",
+      "payload": "mora.retention.integrity",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "rules",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "rules add",
+      "payload": "",
+      "platform": "all",
+      "reason": "writes one vault rule file and prints a text confirmation; the rule stays inactive until approved"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "rules approve",
+      "payload": "",
+      "platform": "all",
+      "reason": "interactive approval at a person's own terminal; non-interactive and agent-session callers are refused"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "rules compile",
+      "payload": "",
+      "platform": "all",
+      "reason": "state rebuild with a text confirmation; it can only drop rules, never add one"
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "rules list",
+      "payload": "mora.rules.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "rules off",
+      "payload": "",
+      "platform": "all",
+      "reason": "interactive approval at a person's own terminal; non-interactive and agent-session callers are refused"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "rules test",
+      "payload": "",
+      "platform": "all",
+      "reason": "prints hit or miss as text for one command and never logs"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "schedule",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "schedule install",
+      "payload": "",
+      "platform": "native-seam",
+      "reason": "host mutation with no result payload; receipts are out of scope for #416"
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "schedule list",
+      "payload": "mora.schedule.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
       "json_contract": "receipt",
       "kind": "subcommand",
       "path": "schedule run",
@@ -625,10 +921,50 @@
       "reason": ""
     },
     {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "schedule uninstall",
+      "payload": "",
+      "platform": "native-seam",
+      "reason": "host mutation with no result payload; receipts are out of scope for #416"
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "search",
+      "payload": "mora.search",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "serve",
+      "payload": "",
+      "platform": "all",
+      "reason": "long-running loopback HTTP server"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "serve http",
+      "payload": "",
+      "platform": "loopback-seam",
+      "reason": "long-running loopback HTTP server"
+    },
+    {
       "json_contract": "receipt",
       "kind": "subcommand",
       "path": "serve http install",
       "payload": "mora.serve.http.install",
+      "platform": "native-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "serve http status",
+      "payload": "mora.serve.http.status",
       "platform": "native-seam",
       "reason": ""
     },
@@ -641,10 +977,34 @@
       "reason": ""
     },
     {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "setup",
+      "payload": "",
+      "platform": "all",
+      "reason": "human reconciliation; stable machine status is mora setup status --json"
+    },
+    {
       "json_contract": "receipt",
       "kind": "subcommand",
       "path": "setup status",
       "payload": "mora.setup.status",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "share",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "share fingerprint",
+      "payload": "mora.share.fingerprint",
       "platform": "all",
       "reason": ""
     },
@@ -673,6 +1033,22 @@
       "reason": ""
     },
     {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "share list",
+      "payload": "mora.share.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "share preview",
+      "payload": "mora.share.preview",
+      "platform": "all",
+      "reason": ""
+    },
+    {
       "json_contract": "receipt",
       "kind": "subcommand",
       "path": "share pull",
@@ -697,6 +1073,14 @@
       "reason": ""
     },
     {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "share storage-limit",
+      "payload": "mora.share.storage-limit",
+      "platform": "all",
+      "reason": ""
+    },
+    {
       "json_contract": "receipt",
       "kind": "subcommand",
       "path": "share subscribe",
@@ -705,10 +1089,26 @@
       "reason": ""
     },
     {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "sources",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
       "json_contract": "receipt",
       "kind": "subcommand",
       "path": "sources add",
       "payload": "mora.sources.add",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "sources list",
+      "payload": "mora.sources.list",
       "platform": "all",
       "reason": ""
     },
@@ -721,11 +1121,27 @@
       "reason": ""
     },
     {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "sync",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
       "json_contract": "receipt",
       "kind": "subcommand",
       "path": "sync applecalendar",
       "payload": "mora.sync.applecalendar",
       "platform": "darwin-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "sync eywa",
+      "payload": "mora.sync.eywa",
+      "platform": "network-seam",
       "reason": ""
     },
     {
@@ -769,12 +1185,28 @@
       "reason": ""
     },
     {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "sync status",
+      "payload": "mora.sync.status",
+      "platform": "all",
+      "reason": ""
+    },
+    {
       "json_contract": "receipt",
       "kind": "subcommand",
       "path": "sync whatsapp",
       "payload": "mora.sync.whatsapp",
       "platform": "darwin-seam",
       "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "tasks",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "json_contract": "receipt",
@@ -793,6 +1225,14 @@
       "reason": ""
     },
     {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "tasks list",
+      "payload": "mora.tasks.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
       "json_contract": "receipt",
       "kind": "subcommand",
       "path": "tasks sync",
@@ -801,12 +1241,28 @@
       "reason": ""
     },
     {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "teach",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
       "json_contract": "receipt",
       "kind": "subcommand",
       "path": "teach commitment",
       "payload": "mora.teach.commitment",
       "platform": "all",
       "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "teach consent",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "json_contract": "receipt",
@@ -825,10 +1281,50 @@
       "reason": ""
     },
     {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "teach consent status",
+      "payload": "mora.teach.consent.status",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "teach examples",
+      "payload": "mora.teach.examples",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "teach history",
+      "payload": "mora.teach.history",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "teach identity",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
       "json_contract": "receipt",
       "kind": "subcommand",
       "path": "teach identity confirm",
       "payload": "mora.teach.identity.confirm",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "teach identity list",
+      "payload": "mora.teach.identity.list",
       "platform": "all",
       "reason": ""
     },
@@ -865,6 +1361,46 @@
       "reason": ""
     },
     {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "think",
+      "payload": "mora.think",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
+      "path": "undo",
+      "payload": "mora.undo",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
+      "path": "unforget",
+      "payload": "mora.unforget",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "upgrade",
+      "payload": "",
+      "platform": "all",
+      "reason": "self-replacing binary; the process is gone before it could emit"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "usage",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
       "json_contract": "receipt",
       "kind": "subcommand",
       "path": "usage off",
@@ -879,6 +1415,14 @@
       "payload": "mora.usage.on",
       "platform": "all",
       "reason": ""
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "usage queries",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "json_contract": "receipt",
@@ -897,318 +1441,6 @@
       "reason": ""
     },
     {
-      "json_contract": "receipt",
-      "kind": "verb",
-      "path": "backup",
-      "payload": "mora.backup",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "receipt",
-      "kind": "verb",
-      "path": "delete",
-      "payload": "mora.delete",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "receipt",
-      "kind": "verb",
-      "path": "forget",
-      "payload": "mora.forget",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "receipt",
-      "kind": "verb",
-      "path": "index",
-      "payload": "mora.index",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "receipt",
-      "kind": "verb",
-      "path": "reingest",
-      "payload": "mora.reingest",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "receipt",
-      "kind": "verb",
-      "path": "unforget",
-      "payload": "mora.unforget",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "receipt",
-      "kind": "verb",
-      "path": "write",
-      "payload": "mora.write",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "alias",
-      "path": "--version",
-      "payload": "mora.version",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "alias",
-      "path": "-v",
-      "payload": "mora.version",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "companion context",
-      "payload": "mora.companion.context",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "companion health",
-      "payload": "mora.companion.health",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "companion list",
-      "payload": "mora.companion.list",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "companion status",
-      "payload": "mora.companion.status",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "companion today",
-      "payload": "mora.companion.today",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "connectors list",
-      "payload": "mora.connectors.list",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "doctor check",
-      "payload": "mora.doctor.check",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "forget list",
-      "payload": "mora.forget.list",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "hook status",
-      "payload": "mora.hook.status",
-      "platform": "native-seam",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "index rebuild",
-      "payload": "mora.index.rebuild",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "integrations list",
-      "payload": "mora.integrations.list",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "loop list",
-      "payload": "mora.loop.list",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "loop status",
-      "payload": "mora.loop.status",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "mcp proposals",
-      "payload": "mora.mcp.proposals",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "merge list",
-      "payload": "mora.merge.list",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "retention report",
-      "payload": "mora.retention.report",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "retention verify",
-      "payload": "mora.retention.integrity",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "schedule list",
-      "payload": "mora.schedule.list",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "serve http status",
-      "payload": "mora.serve.http.status",
-      "platform": "native-seam",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "share fingerprint",
-      "payload": "mora.share.fingerprint",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "share list",
-      "payload": "mora.share.list",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "share preview",
-      "payload": "mora.share.preview",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "share storage-limit",
-      "payload": "mora.share.storage-limit",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "sources list",
-      "payload": "mora.sources.list",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "sync status",
-      "payload": "mora.sync.status",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "tasks list",
-      "payload": "mora.tasks.list",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "teach consent status",
-      "payload": "mora.teach.consent.status",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "teach examples",
-      "payload": "mora.teach.examples",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "teach history",
-      "payload": "mora.teach.history",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "subcommand",
-      "path": "teach identity list",
-      "payload": "mora.teach.identity.list",
-      "platform": "all",
-      "reason": ""
-    },
-    {
       "json_contract": "result",
       "kind": "subcommand",
       "path": "usage report",
@@ -1219,112 +1451,16 @@
     {
       "json_contract": "result",
       "kind": "verb",
-      "path": "brief",
-      "payload": "mora.brief",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "verb",
-      "path": "capabilities",
-      "payload": "mora.capabilities",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "verb",
-      "path": "config",
-      "payload": "mora.config",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "verb",
-      "path": "context",
-      "payload": "mora.context",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "verb",
-      "path": "doctor",
-      "payload": "mora.doctor.report",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "verb",
-      "path": "entities",
-      "payload": "mora.entities",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "verb",
-      "path": "graph",
-      "payload": "mora.graph",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "verb",
-      "path": "lint",
-      "payload": "mora.lint.report",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "verb",
-      "path": "list",
-      "payload": "mora.list",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "verb",
-      "path": "pulse",
-      "payload": "mora.pulse",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "verb",
-      "path": "read",
-      "payload": "mora.read",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "verb",
-      "path": "search",
-      "payload": "mora.search",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "verb",
-      "path": "think",
-      "payload": "mora.think",
-      "platform": "all",
-      "reason": ""
-    },
-    {
-      "json_contract": "result",
-      "kind": "verb",
       "path": "version",
       "payload": "mora.version",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
+      "path": "write",
+      "payload": "mora.write",
       "platform": "all",
       "reason": ""
     }
@@ -1402,6 +1538,19 @@
         "repair": "unsupported"
       },
       "ingesting": true,
+      "label": "Company memory",
+      "name": "Eywa (company memory)",
+      "needs_auth": false,
+      "type": "eywa",
+      "upcoming": false
+    },
+    {
+      "features": {
+        "deep_link": "unsupported",
+        "incremental_sync": "unsupported",
+        "repair": "unsupported"
+      },
+      "ingesting": true,
       "label": "Texts",
       "name": "iMessage",
       "needs_auth": false,
@@ -1428,7 +1577,7 @@
       "code": "connector.empty",
       "error_class": "empty",
       "exit_code": 1,
-      "meaning": "A source was read successfully and returned zero items — distinct from fresh-with-data and from failed. Defined here; emitted on a live per-source receipt in Phase 2 (ISO-02).",
+      "meaning": "A source was read successfully and returned zero items \u2014 distinct from fresh-with-data and from failed. Defined here; emitted on a live per-source receipt in Phase 2 (ISO-02).",
       "retryable": false
     },
     {
@@ -1452,7 +1601,7 @@
       "code": "connector.unauthorized",
       "error_class": "unauthorized",
       "exit_code": 1,
-      "meaning": "A connector was refused by an authentication or permission failure Mora DIRECTLY OBSERVED — an expired token, a refused credential. Never an inference from an error string.",
+      "meaning": "A connector was refused by an authentication or permission failure Mora DIRECTLY OBSERVED \u2014 an expired token, a refused credential. Never an inference from an error string.",
       "retryable": false
     },
     {
@@ -1667,6 +1816,10 @@
       "version": 1
     },
     {
+      "name": "mora.check",
+      "version": 1
+    },
+    {
       "name": "mora.companion.context",
       "version": 1
     },
@@ -1704,6 +1857,14 @@
     },
     {
       "name": "mora.config.mmr",
+      "version": 1
+    },
+    {
+      "name": "mora.confirm",
+      "version": 1
+    },
+    {
+      "name": "mora.connect.eywa",
       "version": 1
     },
     {
@@ -1756,6 +1917,14 @@
     },
     {
       "name": "mora.entities",
+      "version": 1
+    },
+    {
+      "name": "mora.eywa.push",
+      "version": 1
+    },
+    {
+      "name": "mora.eywa.status",
       "version": 1
     },
     {
@@ -1883,6 +2052,10 @@
       "version": 1
     },
     {
+      "name": "mora.rules.list",
+      "version": 1
+    },
+    {
       "name": "mora.schedule.list",
       "version": 1
     },
@@ -1968,6 +2141,10 @@
     },
     {
       "name": "mora.sync.applecalendar",
+      "version": 1
+    },
+    {
+      "name": "mora.sync.eywa",
       "version": 1
     },
     {
@@ -2064,6 +2241,10 @@
     },
     {
       "name": "mora.think",
+      "version": 1
+    },
+    {
+      "name": "mora.undo",
       "version": 1
     },
     {

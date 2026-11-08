@@ -3,17 +3,13 @@ package loopbackhttp
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,32 +49,7 @@ type route struct {
 	Method, Pattern string
 	Handler         http.HandlerFunc
 }
-type httpConfig struct {
-	Token string `json:"token"`
-}
 
-func LoadOrCreateToken(configDir string) (string, error) {
-	path := filepath.Join(configDir, "http.json")
-	if b, err := os.ReadFile(path); err == nil {
-		var hc httpConfig
-		if json.Unmarshal(b, &hc) == nil && hc.Token != "" {
-			return hc.Token, nil
-		}
-	}
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return "", err
-	}
-	token := hex.EncodeToString(raw)
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		return "", err
-	}
-	b, _ := json.MarshalIndent(httpConfig{Token: token}, "", "  ")
-	if err := os.WriteFile(path, b, 0o600); err != nil {
-		return "", err
-	}
-	return token, nil
-}
 func (s *Server) hostGuard(next http.Handler) http.Handler {
 	allowed := map[string]bool{
 		net.JoinHostPort("127.0.0.1", strconv.Itoa(s.port)): true,
@@ -95,7 +66,7 @@ func (s *Server) hostGuard(next http.Handler) http.Handler {
 }
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" || r.URL.Path == "/" {
+		if r.URL.Path == "/healthz" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -326,8 +297,7 @@ func (s *Server) Serve(ctx context.Context, stdout io.Writer) error {
 		_ = hs.Shutdown(c)
 	}()
 	fmt.Fprintf(stdout, "mora serve http listening on http://%s/  (loopback only)\n", addr)
-	fmt.Fprintf(stdout, "  token: %s\n", s.token)
-	fmt.Fprintf(stdout, "  open  http://%s/  in the browser you want to connect (token is embedded there as window.__MORA_TOKEN)\n", addr)
+	fmt.Fprintln(stdout, "  retrieve the bearer token with: mora serve http --print-token")
 	if err := hs.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

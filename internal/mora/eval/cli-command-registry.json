@@ -99,6 +99,20 @@
       "payload": "mora.delete"
     },
     {
+      "path": "undo",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.undo"
+    },
+    {
+      "path": "confirm",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.confirm"
+    },
+    {
       "path": "forget",
       "kind": "verb",
       "platform": "all",
@@ -246,6 +260,13 @@
       "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
+      "path": "eywa",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
       "path": "reingest",
       "kind": "verb",
       "platform": "all",
@@ -310,6 +331,20 @@
     },
     {
       "path": "hook",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "path": "check",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.check"
+    },
+    {
+      "path": "rules",
       "kind": "verb",
       "platform": "all",
       "json_contract": "exempt",
@@ -668,6 +703,13 @@
       "payload": "mora.connect.github"
     },
     {
+      "path": "connect eywa",
+      "kind": "subcommand",
+      "platform": "network-seam",
+      "json_contract": "receipt",
+      "payload": "mora.connect.eywa"
+    },
+    {
       "path": "connect imessage",
       "kind": "subcommand",
       "platform": "darwin-seam",
@@ -701,6 +743,13 @@
       "platform": "network-seam",
       "json_contract": "receipt",
       "payload": "mora.sync.github"
+    },
+    {
+      "path": "sync eywa",
+      "kind": "subcommand",
+      "platform": "network-seam",
+      "json_contract": "receipt",
+      "payload": "mora.sync.eywa"
     },
     {
       "path": "sync filesystem",
@@ -815,6 +864,27 @@
       "payload": "mora.share.storage-limit"
     },
     {
+      "path": "eywa push",
+      "kind": "subcommand",
+      "platform": "network-seam",
+      "json_contract": "receipt",
+      "payload": "mora.eywa.push"
+    },
+    {
+      "path": "eywa preview",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "human-auditable full-text preview of exactly what a push would send; sends nothing"
+    },
+    {
+      "path": "eywa status",
+      "kind": "subcommand",
+      "platform": "network-seam",
+      "json_contract": "receipt",
+      "payload": "mora.eywa.status"
+    },
+    {
       "path": "usage report",
       "kind": "subcommand",
       "platform": "all",
@@ -927,6 +997,13 @@
       "reason": "Claude Code owns this stdout: the command emits Claude Code's hookSpecificOutput envelope, not a Mora payload, and injects nothing at all on its silent paths"
     },
     {
+      "path": "hook pre-tool-use",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "Claude Code owns this stdout: the command emits Claude Code's hookSpecificOutput envelope, not a Mora payload, prints nothing on its silent paths, and always exits 0"
+    },
+    {
       "path": "hook install",
       "kind": "subcommand",
       "platform": "native-seam",
@@ -946,6 +1023,48 @@
       "platform": "native-seam",
       "json_contract": "result",
       "payload": "mora.hook.status"
+    },
+    {
+      "path": "rules add",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "writes one vault rule file and prints a text confirmation; the rule stays inactive until approved"
+    },
+    {
+      "path": "rules test",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "prints hit or miss as text for one command and never logs"
+    },
+    {
+      "path": "rules approve",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "interactive approval at a person's own terminal; non-interactive and agent-session callers are refused"
+    },
+    {
+      "path": "rules off",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "interactive approval at a person's own terminal; non-interactive and agent-session callers are refused"
+    },
+    {
+      "path": "rules list",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.rules.list"
+    },
+    {
+      "path": "rules compile",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "state rebuild with a text confirmation; it can only drop rules, never add one"
     },
     {
       "path": "loop begin",

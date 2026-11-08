@@ -4,8 +4,7 @@
 
 # Mora
 
-**Search your mail, messages, calendars, files, and GitHub issues from one place
-on your computer.**
+**Mora makes the AI agents you use follow the corrections you have already given them.**
 
 [![CI](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml/badge.svg)](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/pyranthus-hq/mora?color=2fbf9a)](https://github.com/pyranthus-hq/mora/releases)
@@ -20,35 +19,75 @@ on your computer.**
 > It has not been tested on many other people's real data. Read the cited source
 > before you act on a result. A failed or old sync can make the local copy stale.
 
-Mora reads the sources you choose and saves copies as Markdown files on your
-computer. You can search them yourself or let an AI agent search them through
-MCP (a way for an agent to call local tools). Mora supports:
+## Warn an agent when it repeats a mistake
 
-- Gmail
-- Google Calendar
-- iMessage on macOS
-- WhatsApp Desktop on macOS
-- Apple Calendar on macOS
-- folders and files that you choose
+You correct your agent, and the next session makes the same mistake. Putting the
+rule in CLAUDE.md does not fix it: the agent has the rule and still breaks it.
+
+A Mora rule checks every Bash call in Claude Code. When a call matches a rule you
+approved, the agent gets your message with the result of that command and changes
+what it does next. Rules are plain files on your computer.
+
+After you [install Mora](#install):
+
+```bash
+mora rules add --id no-sudo --match '^\s*sudo\b' --message "Do not use sudo here."
+mora rules approve no-sudo --mode warn   # run this in your own terminal
+mora hook install --pre-tool
+```
+
+Today this is opt-in and covers Bash calls in Claude Code on one device. It warns
+and never blocks. Rules drafted from your corrections, a read-only `mora check`
+and the same warning in Codex are being built. See
+[Bash warning rules](docs/guide.md#bash-warning-rules).
+
+In a pre-registered test on the founder's machine, Oct 18 to 21, a prototype of
+this hook ran across 63 Claude Code sessions, split at random. 17% of shell
+commands repeated the mistake in warned sessions, and 65% in silent ones. That is
+one developer and one habit. Outside tests are next.
+
+## What Mora does
+
+Mora copies the sources you choose into plain text files on your computer. By
+default nothing is uploaded: backup and sharing are separate choices you turn on
+yourself. You can then search everything in one place, or let an AI agent such
+as Claude Code or Codex search it for you.
+
+Mora can read:
+
+- Gmail and Google Calendar
+- iMessage, WhatsApp Desktop, and Apple Calendar on macOS
+- folders and files that you choose, including PDF and Word files
 - GitHub Issues from repositories that you choose
 
-The source connectors do not change the original mail, messages, events, or
-issues. Mora builds a SQLite index on your computer so searches are fast.
-Claude Code, Codex, and other MCP clients can use the same saved data.
+Mora only reads these sources. It does not change or delete your mail,
+messages, events, or issues.
 
-Mora does not call an AI model by default. It finds source records and builds
-briefs that link back to them. Your agent can then write an answer from that
-evidence. If you want, a local Ollama model can improve search.
+You, or an agent working for you, can also save notes and decisions into Mora.
+The simplest way is the `mora write` command, which saves at once. See
+[Save a memory](#save-a-memory).
 
-**Jump to:** [Install](#start-on-macos) · [Add a source](#add-your-first-source) ·
-[Connect an agent](#connect-an-ai-agent) · [Update](#keep-mora-up-to-date) ·
+What Mora does **not** do:
+
+- It does not call an AI model when it saves or searches. An optional local
+  Ollama model can improve search.
+- It does not record your conversations with an agent. Only things you or an
+  agent choose to save are saved.
+- It does not learn from you over time, build a personal model, or check that
+  your corrections still hold. These ideas are **Planned**, not built.
+
+**Jump to:** [Install](#install) · [Add a source](#add-your-first-source) ·
+[Save a memory](#save-a-memory) · [Connect an agent](#connect-an-ai-agent) ·
+[Agent write policy](#agent-write-policy) · [Update](#keep-mora-up-to-date) ·
 [Privacy](#privacy-boundary)
 
 <p align="center">
   <img src="docs/assets/architecture.svg" width="760" alt="Read-only sources flow into a local Markdown vault and SQLite index, then into any MCP client. Backup and sharing are optional network paths."/>
 </p>
 
-## Start on macOS
+## Install
+
+### macOS
 
 You need macOS and [Homebrew](https://brew.sh/) for this route. The Cask
 installs the signed `Mora.app` and adds the `mora` command:
@@ -77,16 +116,20 @@ If you do not use Homebrew, install the same signed app directly in
 ```
 
 The direct installer checks the release and links `mora` to the app. Neither
-install method sets up connectors or a daily update job. See
-[Keep Mora up to date](#keep-mora-up-to-date) when you are ready.
+install method sets up connectors, agent hooks, an agent write policy, or a
+daily update job. See [Keep Mora up to date](#keep-mora-up-to-date) when you
+are ready.
 
-### Other systems
+### Linux and Windows
 
-Linux and older standalone installs can use:
+Linux and older standalone macOS installs can use:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pyranthus-hq/mora/main/install.sh | sh
 ```
+
+This installer runs `mora init` and prints the commands that connect Claude
+Code and Codex. It does not run them for you.
 
 Windows users should see the [Windows guide](docs/windows.md). To build from
 source with Go 1.25 or later:
@@ -96,7 +139,8 @@ go install github.com/pyranthus-hq/mora/cmd/mora@latest
 ```
 
 Source builds report version `dev`. They do not update themselves. Google also
-needs your own OAuth client when you build from source.
+needs your own OAuth client when you build from source
+(set `MORA_GOOGLE_CREDENTIALS`; see the [guide](docs/guide.md)).
 
 ## Add your first source
 
@@ -108,11 +152,6 @@ mora init
 mora connect filesystem ~/Documents/notes
 mora search "a project or person"
 ```
-
-After you connect a source, try searching for a decision or asking your agent
-“What is on my calendar next week?” Search reads saved data. Writing a new
-memory is a separate action controlled by your
-[MCP write policy](#control-writes-from-mcp).
 
 Then add only the sources you want:
 
@@ -131,6 +170,9 @@ mora connectors enable applecalendar
 mora ingest run --source applecalendar
 ```
 
+`mora connect github` without `--repo` uses a built-in default list of
+repositories. Pass `--repo` (repeatable) to choose your own.
+
 Setup commands do different jobs:
 
 | Command | What it does |
@@ -140,7 +182,57 @@ Setup commands do different jobs:
 | `ingest run` | Reads enabled sources and writes their current data into the vault. Use it for a first load or a backfill. |
 | `sync` | Refreshes a source that is already set up. |
 
+Connector data is saved as soon as it is read. It never waits for approval.
+Long items are cut to keep the index lean, keeping the start of each item:
+
+| Source | What Mora keeps |
+| --- | --- |
+| Gmail, Google Calendar, iMessage, WhatsApp, Apple Calendar | The first 16 KB of each item's text. |
+| GitHub Issues | The first 64 KB of each issue. |
+| Files and folders | Whole files; a file with more than 512 KB of text is skipped. |
+
+## Save a memory
+
+The main way to save a note, fact, or decision is the `mora write` command. It
+saves straight into your vault, with no approval step:
+
+```bash
+mora write --scope project:acme --type decision \
+  --title "OAuth" --text "Use PKCE."
+```
+
+`--title` and `--text` are required. `--scope` defaults to `global` and
+`--type` to `insight`. The command prints the new memory's ID.
+
+Agents that can run shell commands, such as Claude Code and Codex, can use the
+same command. Ask them directly:
+
+```text
+When we make a decision in this session, save it with Mora, for example:
+mora write --scope project:acme --type decision --title "<short title>" --text "<the decision and why>"
+Show me the memory ID it prints.
+```
+
+To make this a standing rule, put the same instruction in the project's
+`CLAUDE.md` (Claude Code) or `AGENTS.md` (Codex).
+
+Everything that saves into Mora, and whether it waits:
+
+| How it is saved | Waits for your approval? |
+| --- | --- |
+| `mora write` | No. Saved at once. |
+| Connectors (mail, calendar, messages, files, PDF, GitHub) | No. Saved at once. |
+| `mora tasks add` | No. Saved at once. |
+| `mora teach ... --yes` corrections | No. Saved at once, and reversible with `mora teach undo`. |
+| An agent's `write_memory` call over MCP | Depends on the [agent write policy](#agent-write-policy). |
+| Claude Code hooks | Nothing is saved. Hooks only add context. |
+
+No AI model is called on any of these paths.
+
 ## Connect an AI agent
+
+Agents can search Mora through MCP (a standard way for an agent to call local
+tools). Connect Claude Code or Codex with:
 
 ```bash
 claude mcp add mora -s user -- mora mcp serve
@@ -157,14 +249,136 @@ Other MCP clients can start the same command:
 }
 ```
 
-MCP tools cover search, reading, writing, briefs, meetings, and people. The
-command line also handles setup and maintenance.
+MCP tools cover search, reading, briefs, meetings, and people. There is also a
+`write_memory` tool for agents that cannot run `mora write`; it follows the
+[agent write policy](#agent-write-policy). The command line also handles setup
+and maintenance.
 
 Mora also publishes an experimental [Agent Plugins 1.0 package](plugins/mora/README.md)
 that bundles the stdio MCP declaration with portable Agent Skills. It does not
 install Mora, grant source permissions, or sandbox the client. Enabling it may
-auto-start the local MCP server, so review the client's data policy and choose
-`mora config mcp-write-policy propose` or `readonly` before first use.
+auto-start the local MCP server, so review the client's data policy before first
+use. Its writes follow the same [agent write policy](#agent-write-policy).
+
+## Agent write policy
+
+This section covers only the MCP `write_memory` tool (and `delete_memory`). It
+does not affect `mora write`, connectors, tasks, or teach corrections.
+
+**Default: `tentative`.** A low-risk agent write saves at once and carries a
+`mora-tentative` tag. Low risk means type `insight` or `fact`, a `project:*`
+scope, and no secret, money, sensitive or agent-aimed text. Every other write
+waits in the proposal queue, and the reply says why (`held_because`).
+
+A tentative memory shows in search, read, list and context with a label. It
+does not reach the recall hook, the digest, the brief, commitments or share.
+Run `mora confirm --list` to see them. Run `mora confirm <id>` to keep one.
+Run `mora undo <id>` to remove an agent write. Under this policy
+`delete_memory` is refused, and phone captures go to the queue.
+
+The hold filter is coarse. It does not stop a false claim written in plain
+words. An agent with a shell can run `mora confirm` or
+`mora mcp proposals approve`, so this is not a sandbox.
+
+`open`, `propose` and `readonly` stay explicit choices. v0.15.3 defaulted to
+`propose`. v0.15.2 and earlier defaulted to `open`.
+
+The setting is the `mcp_write_policy` key in `~/.config/mora/config.toml`.
+`mora init` and the installers never write this key, so an install without it
+uses the code default.
+
+Set it with one command:
+
+```bash
+mora config mcp-write-policy tentative # default: low-risk writes save with a tag; the rest wait
+mora config mcp-write-policy open      # agent writes save at once; deletes allowed
+mora config mcp-write-policy propose   # agent writes wait for approval; deletes refused
+mora config mcp-write-policy readonly  # agent writes and deletes refused
+```
+
+This writes the same key you can set by hand:
+
+```toml
+mcp_write_policy = "open"
+```
+
+`mora config` shows the policy in force. A running `mora mcp serve` reads the
+setting on each call, so no restart is needed. A policy you set explicitly is
+always kept across upgrades. The same policy applies to the loopback HTTP
+server (`mora serve http`) and to captures from a paired phone.
+
+Review a pending write locally before deciding:
+
+```bash
+mora mcp proposals list
+mora mcp proposals show <proposal-id>
+# After reviewing the full content and scope, explicitly choose:
+mora mcp proposals approve <proposal-id> [<proposal-id>...]
+# or: mora mcp proposals reject <proposal-id>
+```
+
+`show` is read-only. It prints the full staged arguments and effective scope,
+type, and source as JSON; `--json` prints the same receipt. Common credential
+patterns are masked without changing the pending file. If `redacted` is true,
+reject and resubmit a proposal without credentials rather than approving the
+masked view. Pattern matching cannot identify every secret.
+
+Approval and rejection are serialized per proposal. Repeating a decision returns
+a conflict, including after the published memory is deleted. An interrupted
+decision remains blocked for manual reconciliation; `show` and `list` display its
+recorded status and memory ID while a pending file remains. Keep the decision
+records in Mora's state directory. See the [guide](docs/guide.md) for the
+recovery limitations.
+
+To give one agent its own limits, use an agent profile: the scopes it can read,
+whether it can see connector evidence, and its own write policy.
+`mora mcp serve --profile <name>` applies a profile to a local agent, and
+`mora mcp serve-http` serves cloud agents through a tunnel that you run.
+`mora remote expose` prints tunnel commands and executes none; Doctor names
+profiles that loosen remote defaults. See
+[Agent profiles](docs/guide.md#agent-profiles).
+
+## Claude Code hooks
+
+Hooks let Claude Code pull in Mora context without being asked. They are
+optional and only for Claude Code; Codex and other agents get Mora through MCP
+search instead. Neither `mora init` nor the installers add them.
+
+```bash
+mora hook install
+mora hook status
+```
+
+- The `SessionStart` hook adds the latest Mora brief when a session starts. It
+  does not search.
+- The `UserPromptSubmit` hook searches Mora for each prompt and adds up to three
+  short matching memories. It skips prompts under 12 characters and slash
+  commands, and gives up after 0.7 seconds.
+
+Both hooks only read. They save nothing, and Mora has no hook that records the
+conversation. Mora keeps existing valid Claude hooks. It refuses to rewrite a
+settings file that it cannot parse.
+
+For corrections scoped to one project, run this from that project's root:
+
+```bash
+mora hook install --project --scope project:my-app
+mora hook status --project
+```
+
+This installs recall in `.claude/settings.local.json`, includes only the exact
+`project:my-app` scope, and omits the global brief. Save corrections with the same
+`--scope`. It requires Claude's hook `cwd` to be inside the installed directory;
+missing or outside directories inject nothing. Remove it from that root with
+`mora hook uninstall --project`. If global Mora hooks are installed, the project
+installer asks you to remove them first with `mora hook uninstall`.
+Project hook commands reject `CLAUDE_CONFIG_DIR`, linked worktrees, and symlinked
+Claude settings. In a Git repository, run them from the main checkout root.
+Duplicate managed local hooks are refused without writing. The binding covers the
+directory subtree, including nested repositories; moving the root requires a new
+installation. Adding global hooks later can reintroduce context from other scopes.
+The plain global install still reads across scopes. These hook settings do not
+restrict MCP tools or memories an agent has already read.
 
 ## Check health and add a schedule
 
@@ -235,21 +449,10 @@ Useful flows:
 - Search for a person, project, issue, or decision with `mora search`.
 - Use `mora think` when the answer needs several pieces of evidence.
 - Save a note, fact, decision, or insight that you want agents to remember with
-  `mora write`.
+  `mora write`. It saves at once.
 - Use `mora brief --event-id <id>` before a meeting.
 - Capture and close small local tasks with `mora tasks add`, `list`, and `done`.
 - Run `mora doctor` when results look old or incomplete.
-
-Mora can install Claude Code hooks too:
-
-```bash
-mora hook install
-mora hook status
-```
-
-The `SessionStart` hook adds the brief. The `UserPromptSubmit` hook adds a small
-set of related memories for each prompt. Mora keeps existing valid Claude
-hooks. It refuses to rewrite a settings file that it cannot parse.
 
 ## Correct or remove memory
 
@@ -292,11 +495,11 @@ Mora offers three different paths:
 | Path | Leaves this computer? | Encryption added by Mora? | Use |
 | --- | --- | --- | --- |
 | `mora backup` | No | No | Make a local `.tar.gz` copy in Mora's state directory. |
-| `mora sync git` | Yes, if the remote is off-device | No | Push the plaintext vault to a private git remote you control. |
-| `mora share` | Yes | Yes, with age | Send only authored memories from one scope through private git or your S3/R2 bucket. |
+| `mora sync git` | Yes, if the remote is off-device | No | Push the plaintext vault to a git remote you control. |
+| `mora share` | Yes | Yes, with age | Send only authored memories from one scope through a git remote or an S3-compatible bucket you control. |
 
-The vault contains plaintext. A private git remote is private by access rules,
-not by Mora encryption. `mora share` encrypts before upload, but the remote can
+The vault contains plaintext. A git remote is protected only by its access
+rules, not by Mora encryption. `mora share` encrypts before upload, but the remote can
 still reveal file sizes and update timing. A person who already downloaded a
 share keeps that copy.
 
@@ -318,28 +521,6 @@ It binds only to `127.0.0.1`, uses a bearer token, and does not enable CORS.
 Loopback means this computer only. It is still a local security boundary: any
 process that gets the token can call the allowed routes. The generic HTTP call
 route does not expose `delete_memory`.
-
-## Control writes from MCP
-
-```bash
-mora config mcp-write-policy open
-mora config mcp-write-policy propose
-mora config mcp-write-policy readonly
-```
-
-- `open` lets the connected agent write and delete. This is the default.
-- `propose` stores write proposals for local approval. It refuses deletes.
-- `readonly` refuses writes and deletes.
-
-Review proposals with `mora mcp proposals list`, `approve`, and `reject`.
-
-To give one agent its own limits, use an agent profile: the scopes it can read,
-whether it can see connector evidence, and its own write policy.
-`mora mcp serve --profile <name>` applies a profile to a local agent, and
-`mora mcp serve-http` serves cloud agents through a tunnel that you run.
-`mora remote expose` prints the tunnel commands and executes none of them; Doctor
-names any profile that loosens the remote defaults. See
-[Agent profiles](docs/guide.md#agent-profiles).
 
 ## Durable loops
 
@@ -423,7 +604,10 @@ absolute vault path for one process. It does not change `config.toml`.
   plus SQLite `query_only(1)` so it can read the live write-ahead log safely.
 - The vault, index, tokens, sync state, and usage log stay local by default.
 - Mora uses the network for source APIs, GitHub release checks, and any backup
-  or share target that you choose.
+  or share target that you choose. Pushing authored memories to a company
+  memory service (`mora eywa push`) is off until you enable it and asks first.
+- No AI model is called when Mora saves or searches. The default embedder is
+  `static`, which runs no model.
 - Optional Ollama embeddings are allowed only on a loopback address.
 - Mora's local usage log leaves out query text by default. Turn it off with
   `mora usage off` or `DO_NOT_TRACK=1`.
@@ -461,11 +645,11 @@ link. Trace events never contain source content or local paths.
 
 ## More
 
-- [Guide](docs/guide.md) — commands, connectors, and upkeep.
-- [Architecture](docs/architecture/00-overview.md) — current design and code map.
-- [Contributing](CONTRIBUTING.md) — build and review rules.
-- [Security](SECURITY.md) — report a problem privately. Never paste vault data
-  or credentials into a public issue.
+- [Guide](docs/guide.md): commands, connectors, and upkeep.
+- [Architecture](docs/architecture/00-overview.md): current design and code map.
+- [Contributing](CONTRIBUTING.md): build and review rules.
+- [Security](SECURITY.md): how to report a security problem. Never paste vault
+  data or credentials into a public issue.
 
 ---
 
