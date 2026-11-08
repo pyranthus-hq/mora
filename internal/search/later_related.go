@@ -75,7 +75,7 @@ func AnnotateLaterRelatedEvidence(results, pool []memory.Memory) []memory.Memory
 		var newestAt string
 		var newestInstant = rowAt
 		for _, candidate := range pool {
-			if skip[candidate.ID] || candidate.Scope != results[i].Scope || !stronglyRelatedTitles(results[i].Title, candidate.Title) {
+			if skip[candidate.ID] || memory.IsTentative(candidate) || candidate.Scope != results[i].Scope || !stronglyRelatedTitles(results[i].Title, candidate.Title) {
 				continue
 			}
 			candidateInstant, ok := recency.IngestTime(candidate)

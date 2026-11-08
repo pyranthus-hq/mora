@@ -31,22 +31,29 @@ jq -e --arg tag "$tag" '.tag_name == $tag and .draft == false and .prerelease ==
 release_id=$(jq -r '.id' <<< "$metadata")
 # GitHub can return an empty embedded .assets list for a published release.
 # The release assets endpoint is the authority for the complete, paginated list.
-asset_pages=$(gh api --paginate --slurp "repos/$repo/releases/$release_id/assets?per_page=100") \
+# --paginate emits one JSON array per page. Pipe through jq -s so gh <2.48
+# (no --slurp) and newer runners both yield a flat asset list. Do not require
+# --slurp: Debian/ubuntu packaged gh 2.46 rejects the flag and aborts the handoff.
+asset_pages=$(gh api --paginate "repos/$repo/releases/$release_id/assets?per_page=100") \
   || die "release $tag assets could not be read"
-jq -e 'type == "array" and all(.[]; type == "array")' <<< "$asset_pages" >/dev/null \
-  || die "release $tag assets response is invalid"
+assets_json=$(jq -c -s '
+  if length == 0 then []
+  elif all(.[]; type == "array") then [.[][]]
+  else error("expected paginated arrays of release assets")
+  end
+' <<< "$asset_pages") || die "release $tag assets response is invalid"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 for asset in "${assets[@]}"; do
   expected_url="https://github.com/$repo/releases/download/$tag/$asset"
   asset_size=$(jq -er --arg name "$asset" --arg url "$expected_url" '
-    [.[][] | select(.name == $name)] |
+    [.[] | select(.name == $name)] |
     if length == 1 and .[0].state == "uploaded" and
        (.[0].size | type == "number" and . > 0 and floor == .) and
        .[0].browser_download_url == $url
     then .[0].size else empty end
-  ' <<< "$asset_pages") || die "release $tag lacks exactly one valid uploaded $asset"
+  ' <<< "$assets_json") || die "release $tag lacks exactly one valid uploaded $asset"
   [[ -n $asset_size ]] || die "release $tag lacks exactly one valid uploaded $asset"
   curl --fail --location --silent --show-error --retry 3 --retry-all-errors \
     --proto '=https' --proto-redir '=https' --output "$work/$asset" "$expected_url" \

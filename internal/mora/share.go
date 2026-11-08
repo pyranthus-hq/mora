@@ -183,7 +183,7 @@ func collectShareMemories(cfg Config, scope string) ([]Memory, error) {
 		if perr != nil {
 			return nil // unparseable files have no attributable scope; nothing leaves
 		}
-		if m.Scope != scope || m.DeletedAt != "" || m.Provider != "" {
+		if m.Scope != scope || m.DeletedAt != "" || m.Provider != "" || memory.IsTentative(m) {
 			return nil
 		}
 		if !governance.memoryVisible(m.ID) {

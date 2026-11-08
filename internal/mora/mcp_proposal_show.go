@@ -91,7 +91,7 @@ func showMCPWriteProposal(cfg Config, id string, stdout io.Writer) error {
 		if inspection.Notice != "" {
 			inspection.Notice += " "
 		}
-		inspection.Notice += "A decision has already been attempted. Do not approve again; reconcile the recorded memory ID manually if unresolved."
+		inspection.Notice += "A decision has already been attempted. Do not approve again; if it is unresolved, run `mora mcp proposals recover " + id + "`."
 	}
 	var encoded bytes.Buffer
 	if err := emitReceipt(&encoded, "mora.mcp.proposals", 1, mcpProposalsPayload{Proposals: []mcpProposalRow{}, Inspection: &inspection}); err != nil {
