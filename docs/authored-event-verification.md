@@ -5,9 +5,9 @@ Baseline: remote `main` verified by `git ls-remote` as
 Implementation is on `codex/pyr-69-authored-event-time` in an isolated worktree.
 No shared checkout switch, UI changes, or existing test assertion/golden edits.
 
-## Behavior and evidence
+## Original implementation evidence (September 2026)
 
-| Requirement | Fresh execution evidence |
+| Requirement | Original execution evidence |
 | --- | --- |
 | Reproduce before editing | Built baseline CLI; `write` saved a synthetic note, ordinary list returned one, event list returned `memories: null` (zero records). |
 | Explicit opt-in and distinct source | Candidate CLI returned one authored record only with `--include-authored-writes`, `event_source: authored_write`, and event time equal to stored creation instant. MCP parity and alias tests passed. |
@@ -36,7 +36,10 @@ python3 scripts/verify-authored-events.py "$EVIDENCE_DIR/mora-before" "$EVIDENCE
 `EVIDENCE_DIR` must be an existing private scratch directory. The script creates
 only synthetic records in an isolated configuration root and runs real binaries;
 it prints assertions and the evidence directory. No live owner vault is used.
-The SHA-256 varies with the synthetic timestamps/path; the equality must hold.
+The SHA-256 varies with the synthetic timestamps/path. The current script compares
+parsed receipts after removing only `window_from` and `window_to`, since separate
+CLI processes read different clocks. Go receipt tests pin the clock and enforce
+byte equality including those bounds.
 
 Executed checks (all passed):
 
@@ -64,3 +67,16 @@ resync re-dating/default guard, and native rebuild stability.
 - No full repository suite, live connector accounts, or physical macOS testing
   was performed. Gate owns independent review and any required broader checks;
   Adit owns merge approval. Nothing is merged.
+
+## November 8 cleanup verification
+
+Refreshed against main `b7f0ce1`. The merge retains tentative-memory exclusion
+before sorting/limiting MCP event lists. Added regression tests for tentative
+records and scoped agent profiles with the authored opt-in enabled. CLI owner
+inspection remains distinct from agent retrieval; this flag grants no extra
+agent scope or access to tentative records.
+
+The real CLI comparison script now accounts for independently sampled window
+bounds as described above, rather than comparing two different clock readings
+byte-for-byte. The original evidence and runner limitations above are historical,
+not claims about the current cleanup run.

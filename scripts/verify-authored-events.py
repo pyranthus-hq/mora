@@ -25,6 +25,16 @@ def rows(raw):
     return json.loads(raw).get("memories") or []
 
 
+def stable_receipt(raw):
+    # Separate processes legitimately read different current times. Compare every
+    # receipt field except those two clock-derived bounds; in-process Go tests
+    # pin one clock and enforce the exact byte contract including bounds.
+    value = json.loads(raw)
+    for key in ("window_from", "window_to"):
+        value.pop(key, None)
+    return value
+
+
 def instant(value):
     return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
 
@@ -35,11 +45,11 @@ run(baseline, "write", "--title", "Synthetic authored probe", "--text", "Synthet
 assert len(rows(run(baseline, "list", "--limit", "5", "--json"))) == 1
 before = run(baseline, *window)
 assert len(rows(before)) == 0
-assert before == run(candidate, *window)
+assert stable_receipt(before) == stable_receipt(run(candidate, *window))
 on = rows(run(candidate, *window, "--include-authored-writes"))
 assert len(on) == 1 and on[0]["event_source"] == "authored_write"
 assert instant(on[0]["event_at"]) == instant(on[0]["created_at"])
-print("PASS: baseline gap=0; opt-in=1 authored_write; default bytes identical")
+print("PASS: baseline gap=0; opt-in=1 authored_write; default receipt fields match except clock bounds")
 
 # Add a synthetic connector record so the byte comparison is nonempty too.
 now = datetime.datetime.now(datetime.timezone.utc)
@@ -51,9 +61,9 @@ connector.write_text('---\nid: "calendar_event/probe"\nscope: "global"\ntype: "e
                      'created_at: "' + at + '"\nmeta: {"occurred_at": "' + at + '"}\n---\nSynthetic event\n')
 before = run(baseline, *window)
 assert len(rows(before)) == 1
-assert before == run(candidate, *window)
-assert before == run(candidate, *window, "--include-authored-writes=false")
-print("PASS: nonempty connector receipt byte-identical; sha256=" + hashlib.sha256(before).hexdigest())
+assert stable_receipt(before) == stable_receipt(run(candidate, *window))
+assert stable_receipt(before) == stable_receipt(run(candidate, *window, "--include-authored-writes=false"))
+print("PASS: nonempty connector receipt fields match except clock bounds; sha256=" + hashlib.sha256(before).hexdigest())
 limited = rows(run(candidate, "list", "--event-since-hours", "24", "--include-authored-writes", "--limit", "1", "--json"))
 assert len(limited) == 1 and limited[0]["event_source"] == "authored_write"
 

@@ -140,3 +140,51 @@ func sameAuthoredInstant(t *testing.T, a, b string) bool {
 	}
 	return left.Equal(right)
 }
+
+// Opting into authored event time must not opt into unconfirmed memory. The
+// tentative filter must precede the event limit so confirmed rows remain visible.
+func TestAuthoredEventsExcludeTentativeBeforeLimit(t *testing.T) {
+	useShippedWritePolicyDefault(t)
+	withTempHome(t)
+	run(t, "init")
+	run(t, "write", "--scope", "project:demo", "--type", "fact", "--title", "Confirmed event", "--text", "Confirmed note.")
+	cfg := mustConfig(t)
+	for i := 0; i < 3; i++ {
+		tentativeMemoryID(t, tentativeServe(t, map[string]any{
+			"title": "Draft " + strings.Repeat("x", i+1), "text": "agent draft", "type": "fact", "scope": "project:demo",
+		}))
+	}
+	res, err := mcpListMemory(testCtx(t), cfg, map[string]any{
+		"scope": "project:demo", "limit": float64(1), "event_since_hours": 24, "include_authored_writes": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := res.(map[string]any)["memories"].([]Memory)
+	if len(rows) != 1 || rows[0].Title != "Confirmed event" || rows[0].EventSource != "authored_write" {
+		t.Fatalf("authored event list admitted drafts or lost confirmed row: %+v", rows)
+	}
+}
+
+func TestAuthoredEventsRespectAgentProfile(t *testing.T) {
+	seedAgentFixture(t)
+	now := time.Date(2026, time.September, 5, 0, 0, 0, 0, time.UTC)
+	oldClock := briefClock
+	briefClock = func() time.Time { return now }
+	t.Cleanup(func() { briefClock = oldClock })
+	got, err := callMCPTool(withAgentProfile(testCtx(t), museProfile()), "list_memory", map[string]any{
+		"event_since_hours": 120, "include_authored_writes": true, "limit": 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := mustJSON(t, got)
+	if !strings.Contains(body, "mem_granted") {
+		t.Fatalf("missing granted authored event: %s", body)
+	}
+	for _, leak := range []string{"mem_personal", "personalsecret", "rawsecret", "eywasecret", "gmail_thread/raw1", "eywa/session/raw2"} {
+		if strings.Contains(body, leak) {
+			t.Fatalf("authored events leaked %q: %s", leak, body)
+		}
+	}
+}
