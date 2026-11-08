@@ -8,7 +8,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -264,12 +263,15 @@ func command(ctx context.Context, bin string, args ...string) ([]byte, error) {
 	c := exec.CommandContext(ctx, bin, args...)
 	cancelProcessTree(c)
 	c.WaitDelay = time.Second
-	var out bounded
+	var out, stderr bounded
 	c.Stdout = &out
-	c.Stderr = io.Discard
+	c.Stderr = &stderr
 	e := c.Run()
 	if out.overflow {
 		return nil, errors.New("command output exceeded limit")
+	}
+	if e != nil {
+		e = &commandFailure{cause: e, reason: safeCommandReason(stderr.String())}
 	}
 	return out.Bytes(), e
 }
@@ -674,13 +676,47 @@ func acquireJobLock(path string) (func(), error) {
 	}
 	return func() { _ = leasefile.Unlock(f); _ = f.Close() }, nil
 }
+
+// Only fixed diagnostics escape stderr; remote output can contain credentials or content.
+type commandFailure struct {
+	cause  error
+	reason string
+}
+
+func (e *commandFailure) Error() string { return e.cause.Error() }
+func (e *commandFailure) Unwrap() error { return e.cause }
+func safeCommandReason(stderr string) string {
+	text := strings.ToLower(stderr)
+	for _, marker := range []string{"could not resolve host", "could not resolve hostname", "temporary failure in name resolution"} {
+		if strings.Contains(text, marker) {
+			return "DNS lookup failed"
+		}
+	}
+	for _, marker := range []string{"network is unreachable", "no route to host", "failed to connect", "connection timed out", "connection reset by peer"} {
+		if strings.Contains(text, marker) {
+			return "network connection failed"
+		}
+	}
+	for _, marker := range []string{"authentication failed", "could not read username", "permission denied (publickey)", "terminal prompts disabled"} {
+		if strings.Contains(text, marker) {
+			return "authentication unavailable"
+		}
+	}
+	return ""
+}
+
 func commandReason(ctx context.Context, err error) string {
 	if ctx.Err() != nil {
 		return "cancelled or timed out"
 	}
 	var x *exec.ExitError
 	if errors.As(err, &x) {
-		return fmt.Sprintf("exit %d", x.ExitCode())
+		reason := fmt.Sprintf("exit %d", x.ExitCode())
+		var failure *commandFailure
+		if errors.As(err, &failure) && failure.reason != "" {
+			reason += "; " + failure.reason
+		}
+		return reason
 	}
 	return "could not complete command"
 }
