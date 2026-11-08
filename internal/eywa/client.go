@@ -75,10 +75,16 @@ func NewClient(cfg Config, opts ClientOptions) (*Client, error) {
 	if cfg.ClientSecret == "" {
 		return nil, fmt.Errorf("eywa: %s is not set — export the agent's client secret for this command; Mora never stores it", SecretEnv)
 	}
-	c := &Client{http: opts.HTTP, cfg: cfg, now: opts.Now, sleep: opts.Sleep, maxRetryWait: opts.MaxRetryWait, version: opts.Version}
-	if c.http == nil {
-		c.http = &http.Client{Timeout: 60 * time.Second}
+	hc := http.Client{Timeout: 60 * time.Second}
+	if opts.HTTP != nil {
+		hc = *opts.HTTP // copy, so the caller's client keeps its own redirect policy
 	}
+	// Never follow a redirect: a 307/308 would resend the memory body and the
+	// credentials to whatever URL the response names, past ValidateEndpoints.
+	hc.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+		return fmt.Errorf("eywa: refusing redirect to %s; set the final endpoint URL instead", req.URL.Redacted())
+	}
+	c := &Client{http: &hc, cfg: cfg, now: opts.Now, sleep: opts.Sleep, maxRetryWait: opts.MaxRetryWait, version: opts.Version}
 	if c.now == nil {
 		c.now = time.Now
 	}
