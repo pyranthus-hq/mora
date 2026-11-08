@@ -174,7 +174,9 @@ func TestRejectForgedAndOutOfScopeReplies(t *testing.T) {
 			r, s, j := fixture(t)
 			j.State = "submitted"
 			j.MessageID = msgID
-			saveJSON(jobPath(r, j.ID), j)
+			if err := saveJSON(jobPath(r, j.ID), j); err != nil {
+				t.Fatal(err)
+			}
 			m := reply(j, "done")
 			switch mode {
 			case "sender":
@@ -201,7 +203,9 @@ func TestDoneCannotRegressInSameBatch(t *testing.T) {
 	r, s, j := fixture(t)
 	j.State = "submitted"
 	j.MessageID = msgID
-	saveJSON(jobPath(r, j.ID), j)
+	if err := saveJSON(jobPath(r, j.ID), j); err != nil {
+		t.Fatal(err)
+	}
 	done := reply(j, "done")
 	working := reply(j, "working")
 	working.ID = "01J00000000000000000000003"
@@ -228,7 +232,9 @@ func TestExpiredRetryAndScopeTamperingFailClosed(t *testing.T) {
 			} else {
 				j.Scope = "personal"
 			}
-			saveJSON(jobPath(r, j.ID), j)
+			if err := saveJSON(jobPath(r, j.ID), j); err != nil {
+				t.Fatal(err)
+			}
 			f := fakeRN{s: s, ready: true}
 			if _, err := poll(r, s, f.call); err == nil {
 				t.Fatal("accepted unsafe job")
@@ -243,7 +249,9 @@ func TestOnlyOneOutstandingTask(t *testing.T) {
 	r, s, j := fixture(t)
 	second := j
 	second.ID = "job_" + strings.Repeat("b", 32)
-	saveJSON(jobPath(r, second.ID), second)
+	if err := saveJSON(jobPath(r, second.ID), second); err != nil {
+		t.Fatal(err)
+	}
 	f := fakeRN{s: s, ready: true}
 	for i := 0; i < 2; i++ {
 		if _, err := poll(r, s, f.call); err != nil {
@@ -259,7 +267,9 @@ func TestNoSymlinkOrGroupDestination(t *testing.T) {
 	if err := os.Remove(jobPath(r, j.ID)); err != nil {
 		t.Fatal(err)
 	}
-	os.Symlink("/dev/null", jobPath(r, j.ID))
+	if err := os.Symlink("/dev/null", jobPath(r, j.ID)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := loadJobs(r, s); err == nil {
 		t.Fatal("accepted symlink")
 	}
