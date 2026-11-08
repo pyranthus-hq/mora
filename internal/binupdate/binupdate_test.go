@@ -79,7 +79,7 @@ func TestUpgradeOldSavePathWindows(t *testing.T) {
 	}
 }
 func TestUpgradeOldSavePathNonWindowsUsesLibraryDefault(t *testing.T) {
-	if got := OldSavePath("/Users/adit/.local/bin/mora", "darwin"); got != "" {
+	if got := OldSavePath("/Users/alex/.local/bin/mora", "darwin"); got != "" {
 		t.Fatalf("upgradeOldSavePath on darwin = %q, want empty library default", got)
 	}
 }

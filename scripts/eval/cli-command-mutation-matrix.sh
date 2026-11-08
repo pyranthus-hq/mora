@@ -66,6 +66,7 @@ families = {
     "mcp": ("internal/mora/mcp.go", "cmdMCP"),
     "serve": ("internal/mora/serve_http.go", "cmdServe"),
     "hook": ("internal/mora/hook.go", "cmdHook"),
+    "rules": ("internal/mora/rules_cmd.go", "cmdRules"),
     "loop": ("internal/mora/loop.go", "cmdLoop"),
 }
 deep_families = {

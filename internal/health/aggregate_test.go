@@ -132,3 +132,40 @@ func TestBannerPrivateEmptyAndSkipBranches(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// TestRefreshingIndexIsNotAnAlarm pins the refreshing contract: search is current,
+// so neither the personal index nor a subscription mid-pull may turn the
+// aggregate unhealthy, render an alarm banner, or point an agent at a rebuild.
+func TestRefreshingIndexIsNotAnAlarm(t *testing.T) {
+	running := []operation.Activity{{State: operation.Running, Kind: operation.KindIndexRebuild, Phase: "graph"}}
+	cases := []struct {
+		name string
+		h    Health
+	}{
+		{"projections pending", Health{Sources: []Source{{Key: "gmail", State: Fresh}}, Index: Index{State: IndexRefreshing, PendingOps: 2, DirtySince: "2026-10-15T12:00:00Z"}}},
+		{"live rebuild self-op", Health{Index: Index{State: IndexRefreshing, PendingOps: 1}, Activities: running}},
+		{"share pull in progress", Health{Index: Index{State: IndexFresh, Shares: []Index{{State: IndexRefreshing}}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := AggregateState(tc.h); got != Healthy {
+				t.Fatalf("AggregateState=%q, want %q", got, Healthy)
+			}
+			if got := BannerAll(tc.h); got != "" {
+				t.Fatalf("BannerAll=%q, want no alarm while refreshing", got)
+			}
+			tc.h.State = AggregateState(tc.h)
+			if c := ProjectCompact(tc.h); c.State != Healthy || c.Banner != "" {
+				t.Fatalf("compact=%+v, want healthy with no banner", c)
+			}
+		})
+	}
+	// A refreshing personal index must never hide a real alarm in another arm.
+	h := Health{Index: Index{State: IndexRefreshing, PendingOps: 1, Shares: []Index{{State: IndexFailed, LastError: "digest"}}}}
+	if got := AggregateState(h); got != Unhealthy {
+		t.Fatalf("refreshing index masked a failed share: aggregate=%q", got)
+	}
+	if got := BannerAll(h); !strings.Contains(got, "subscription index FAILED") {
+		t.Fatalf("refreshing index masked a failed share banner: %q", got)
+	}
+}

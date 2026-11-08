@@ -235,7 +235,10 @@ func pruneDeadOwnerRecordsLocked(cfg config.Config, kind Kind, now time.Time, li
 		}
 		activity := classifyOperationRecord(rec, kind, runID, now, live)
 		heartbeat, err := time.Parse(time.RFC3339Nano, rec.HeartbeatAt)
-		if err != nil || activity.State != Stalled || now.Sub(heartbeat) <= HeartbeatTTL || live(rec.OwnerPID) {
+		// A dead rebuild owner is enough: its receipt is no evidence. Ingest keeps the
+		// heartbeat wait because issue #498 needs those receipts.
+		recent := kind != KindIndexRebuild && now.Sub(heartbeat) <= HeartbeatTTL
+		if err != nil || activity.State != Stalled || recent || live(rec.OwnerPID) {
 			continue
 		}
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {

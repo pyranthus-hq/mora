@@ -13,7 +13,7 @@ import (
 // owed_by_self. These invented notes exercise that rule without borrowing frozen
 // fixture wording, plus the "concrete future action" near-miss boundary.
 
-func TestWindowDigestSurfacesManualPromiseOnly(t *testing.T) {
+func TestWindowDigestSurfacesManualPromiseAheadOfNearMiss(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
@@ -48,21 +48,35 @@ func TestWindowDigestSurfacesManualPromiseOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	var surfaced []string
-	var promiseItem *DigestItem
+	var promiseItem, nearMiss *DigestItem
+	promisePos, nearPos := -1, -1
 	for _, section := range digest.Sections {
 		for i := range section.Items {
 			item := section.Items[i]
 			surfaced = append(surfaced, item.ID)
-			if item.ID == "invented-note-promise" {
-				promiseItem = &item
+			switch item.ID {
+			case "invented-note-promise":
+				promiseItem, promisePos = &item, i
+			case "invented-note-past-report":
+				nearMiss, nearPos = &item, i
 			}
+		}
+		if promiseItem != nil && nearMiss != nil {
+			break
 		}
 	}
 	if !containsStringFold(surfaced, "invented-note-promise") {
 		t.Fatalf("clear manual promise did not reach DAILY: %v", surfaced)
 	}
-	if containsStringFold(surfaced, "invented-note-past-report") {
-		t.Fatalf("past-completion near miss reached DAILY: %v", surfaced)
+	// The near miss may surface as plain evidence, but never as a commitment,
+	// and it must rank after the real promise in the same section.
+	if nearMiss != nil {
+		if nearMiss.Direction != "" || len(nearMiss.Obligations) != 0 {
+			t.Fatalf("past-completion near miss rendered as a commitment: %+v", *nearMiss)
+		}
+		if nearPos < promisePos {
+			t.Fatalf("near miss (pos %d) ranks before promise (pos %d): %v", nearPos, promisePos, surfaced)
+		}
 	}
 	if promiseItem == nil || promiseItem.CounterpartyLabel != "Jordan" ||
 		!strings.Contains(renderDigestItemLine(*promiseItem), "counterparty=Jordan") {

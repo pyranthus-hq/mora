@@ -5,7 +5,18 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
+
+// labelledTitle marks an unconfirmed agent note so a plain listing cannot pass
+// it off as a confirmed one.
+func labelledTitle(m Memory) string {
+	if memory.IsTentative(m) {
+		return "[tentative] " + ownedTitle(m)
+	}
+	return ownedTitle(m)
+}
 
 func emit(w io.Writer, v any, jsonOut bool) error {
 	if jsonOut {
@@ -19,10 +30,10 @@ func emit(w io.Writer, v any, jsonOut bool) error {
 	sty := newStyler(w, jsonOut)
 	switch x := v.(type) {
 	case Memory:
-		fmt.Fprintf(w, "%s\t%s\t%s\n", sty.dim(x.ID), sty.dim(x.Scope), ownedTitle(x))
+		fmt.Fprintf(w, "%s\t%s\t%s\n", sty.dim(x.ID), sty.dim(x.Scope), labelledTitle(x))
 	case []Memory:
 		for _, m := range x {
-			fmt.Fprintf(w, "%s\t%s\t%s\n", sty.dim(m.ID), sty.dim(m.Scope), ownedTitle(m))
+			fmt.Fprintf(w, "%s\t%s\t%s\n", sty.dim(m.ID), sty.dim(m.Scope), labelledTitle(m))
 		}
 	case []catalogRow:
 		for _, r := range x {
