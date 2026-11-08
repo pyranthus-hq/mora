@@ -31,6 +31,7 @@ const (
 	healthUnhealthy = healthpkg.Unhealthy
 	idxFresh        = healthpkg.IndexFresh
 	idxDirty        = healthpkg.IndexDirty
+	idxRefreshing   = healthpkg.IndexRefreshing
 	idxFailed       = healthpkg.IndexFailed
 	idxDegraded     = healthpkg.IndexDegraded
 	idxNever        = healthpkg.IndexNever
@@ -122,7 +123,10 @@ func indexHealthOf(cfg Config, now time.Time) indexHealth {
 		h.Blocked = true
 		return h
 	}
-	// Rule 4: any pending op OR any non-empty ingest journal -> dirty.
+	// Rule 4: any pending op OR any non-empty ingest journal -> dirty, except the
+	// markers whose search state is already current (refreshingPendingOp). Those
+	// read refreshing, and only after rules 5 and 6 have had their say, so a real
+	// embedder or projection-lag alarm still wins.
 	ops, operr := listPendingOps(cfg)
 	if operr != nil {
 		h.State = idxFailed
@@ -135,7 +139,8 @@ func indexHealthOf(cfg Config, now time.Time) indexHealth {
 		h.LastError = jerr.Error()
 		return h
 	}
-	if len(ops) > 0 || journalDirty {
+	refreshing, dirty := partitionPendingOps(cfg, ops, now)
+	if len(dirty) > 0 || journalDirty {
 		h.State = idxDirty
 		h.PendingOps = len(ops) + journalPaths
 		h.DirtySince = oldestPendingStamp(ops, journalOldest)
@@ -157,15 +162,78 @@ func indexHealthOf(cfg Config, now time.Time) indexHealth {
 		return h
 	}
 	// Rule 6: projection lag as a RELATION (fts_indexed_at − graph_indexed_at).
+	// While refreshing markers are present they account for the lag, and each one
+	// already turns dirty past the same threshold (partitionPendingOps). Without
+	// that exemption, the first write after six idle hours would read dirty for
+	// the whole reconcile, because the relation measures the age of the last full
+	// rebuild, not how long the graph has trailed this write.
 	lag := projectionLagHours(h.Projections)
 	h.Projections.GraphLagHours = lag
-	if time.Duration(lag)*time.Hour > indexProjectionLagThreshold {
+	if len(refreshing) == 0 && time.Duration(lag)*time.Hour > indexProjectionLagThreshold {
 		h.State = idxDirty
+		return h
+	}
+	// Rule 4, deferred half: only refreshing markers remain. Search is current, so
+	// this is not an alarm; PendingOps and DirtySince still report the lag.
+	if len(refreshing) > 0 {
+		h.State = idxRefreshing
+		h.PendingOps = len(refreshing)
+		h.DirtySince = oldestPendingStamp(refreshing, "")
 		return h
 	}
 	// Rule 7: fresh.
 	h.State = idxFresh
 	return h
+}
+
+// partitionPendingOps splits the pending ledger into markers that leave search
+// current (refreshing) and markers that mean the index does not reflect the
+// vault (dirty). A marker is refreshing only when Mora can prove that state:
+//
+//   - an authored write whose FTS upsert committed (the marker's FTS-committed
+//     form) and whose marker is younger than indexProjectionLagThreshold. Its
+//     graph, vector and commitment projections are owed by the coalesced
+//     reconcile or the next scheduled rebuild. A marker older than the threshold
+//     means that catch-up stopped, so it reads dirty.
+//   - a rebuild's own self-op whose operation receipt is live and running. A
+//     self-op from a rebuild that failed, stalled or lost its receipt reads dirty.
+//
+// Everything else (a write whose FTS row never committed, a delete, a governance
+// rebuild, a corrupt marker) is dirty. Activity receipts are read only when a
+// self-op needs them.
+func partitionPendingOps(cfg Config, ops []pendingOp, now time.Time) (refreshing, dirty []pendingOp) {
+	var activities []operationActivity
+	activitiesLoaded := false
+	for _, op := range ops {
+		switch {
+		case op.Kind == opKindWrite && op.FTSCommitted:
+			marked, err := time.Parse(time.RFC3339, op.MarkedAt)
+			if err == nil && now.Sub(marked) <= indexProjectionLagThreshold {
+				refreshing = append(refreshing, op)
+				continue
+			}
+		case op.Kind == opKindRebuild && op.RunID != "":
+			if !activitiesLoaded {
+				activities = operationActivities(cfg, now, operationProcessAlive)
+				activitiesLoaded = true
+			}
+			if rebuildRunning(activities, op.RunID) {
+				refreshing = append(refreshing, op)
+				continue
+			}
+		}
+		dirty = append(dirty, op)
+	}
+	return refreshing, dirty
+}
+
+func rebuildRunning(activities []operationActivity, runID string) bool {
+	for _, a := range activities {
+		if a.Kind == operationKindIndexRebuild && a.RunID == runID && a.State == operationRunning {
+			return true
+		}
+	}
+	return false
 }
 
 // readIndexMeta loads the whole index_meta key/value table into a map. A query

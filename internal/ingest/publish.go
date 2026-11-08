@@ -7,6 +7,7 @@ import (
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"github.com/pyranthus-hq/mora/internal/config"
+	"github.com/pyranthus-hq/mora/internal/leasefile"
 )
 
 // PublishSeams supplies composition-owned identity, time, path, and process facts.
@@ -24,16 +25,18 @@ func EnsureJournalHeader(cfg config.Config, sourceKey string, seams PublishSeams
 		return err
 	}
 	jp := JournalPath(cfg, sourceKey)
-	if _, err := os.Stat(jp); err == nil {
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	runID := cfg.OperationRunID()
-	if !seams.ValidToken(runID) {
-		runID = seams.NewID()
-	}
-	return AppendDurable(jp, "run "+runID+" "+seams.Clock().UTC().Format(time.RFC3339)+"\n")
+	return leasefile.WithGuard(jp, func() error {
+		if _, err := os.Stat(jp); err == nil {
+			return nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		runID := cfg.OperationRunID()
+		if !seams.ValidToken(runID) {
+			runID = seams.NewID()
+		}
+		return AppendDurable(jp, "run "+runID+" "+seams.Clock().UTC().Format(time.RFC3339)+"\n")
+	})
 }
 
 // RecordPublishedPath best-effort records a file after publication; the durable header is the correctness signal.
@@ -41,5 +44,6 @@ func RecordPublishedPath(cfg config.Config, sourceKey, path string, seams Publis
 	if ValidateStateRoot(cfg) != nil {
 		return
 	}
-	_ = atomicio.AppendFile(JournalPath(cfg, sourceKey), seams.CleanPath(path)+"\n")
+	jp := JournalPath(cfg, sourceKey)
+	_ = leasefile.WithGuard(jp, func() error { return atomicio.AppendFile(jp, seams.CleanPath(path)+"\n") })
 }

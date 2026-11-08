@@ -83,7 +83,7 @@ part, a numeric offset, and a lowercase `z`.
 | Fingerprint | `sha256:<64 lowercase hex>` | `Fingerprint(text)` is the published derivation: SHA-256 over the exact UTF-8 bytes. A client computes it and **the kernel recomputes it over the text it received**: a capture whose `payload_fingerprint` does not cover its own `text` is rejected, syntax notwithstanding. |
 | Source key | at most 64 bytes, `[A-Za-z0-9_.:-]` | Applies to `freshness[].key` and `evidence[].source`. A freshness row rides inside the 4 KiB operation envelope, so an unbounded key is a way to push content through it. |
 | Public key | `<alg>:<base64 of 32 bytes>`, `alg` ∈ `ed25519`, `x25519` | Both key types a paired device presents are 32 bytes, so a truncated or invented key fails at the boundary rather than at first use. |
-| Scope | `personal` or `project:<name>` | Nothing else. A device cannot name a source. |
+| Scope | `personal` or `project:<name>` | `<name>` must be nonempty, contain no `:`, `/`, or `\`, and cannot be `.` or `..`. Nested `project:a:b` is rejected. A device cannot name a source. |
 
 `payload_fingerprint` is what makes idempotency answerable: same key with the same fingerprint
 returns the same receipt; **same key with a different fingerprint is `idempotency_conflict`**, never
@@ -275,7 +275,7 @@ packaging choice.
 
 | | `mora serve http` | `mora companion serve` |
 |---|---|---|
-| Credential | one shared token in `~/.config/mora/http.json`, embedded in a web page | a per-device token from `mora companion pair`, revocable one device at a time |
+| Credential | one shared token in `~/.config/mora/http.json`, available on the landing page only after bearer authentication | a per-device token from `mora companion pair`, revocable one device at a time |
 | Surface | a `/call` escape hatch plus eight convenience routes, including `write` | three read routes |
 | Audience | a sandboxed AI browser on the same Mac | a paired phone |
 
@@ -350,6 +350,7 @@ listener must collapse it exactly this way rather than inventing a mapping:
 | Kernel index state | `HealthState` | Why |
 |---|---|---|
 | `fresh` | `healthy` | The index matches the vault. |
+| `refreshing` | `healthy` | Search is current. Derived projections (graph, vectors, commitments) are catching up after a write or during a rebuild, and the state turns `dirty` if that stops. |
 | `dirty` | `degraded` | The index is behind the vault. Results are usable and incomplete, which is precisely `degraded`. |
 | `degraded` | `degraded` | Straight through. |
 | `failed` | `unhealthy` | The index could not be opened or does not match this build. |
@@ -657,7 +658,8 @@ would be a record of nothing in particular.
 
 The kernel stamps the provenance: `source` is `companion`, the type is an insight, and the title is
 derived from the text. `scope` is the device's, because the schema already restricts it to `personal`
-or `project:<name>`.
+or `project:<name>`. The project name must be nonempty, contain no `:`, `/`, or `\`,
+and cannot be `.` or `..`; nested scopes such as `project:a:b` are rejected.
 
 ### Durable before it is claimed
 

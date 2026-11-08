@@ -141,3 +141,31 @@ func TestRecallCompositionEdges(t *testing.T) {
 		t.Fatalf("additional rows=%d want 3", got)
 	}
 }
+
+func TestRecallLineForCentersOnQueryMatch(t *testing.T) {
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	body := strings.Repeat("filler words about nothing in particular here ", 10) + "the lockbox code is zephyrine and it changes monthly"
+	m := Memory{ID: "m1", Title: "Notes", Source: "test", CreatedAt: now.Format(time.RFC3339), Text: body}
+	if got := RecallLine(m, now); strings.Contains(got, "zephyrine") {
+		t.Fatalf("RecallLine without a query keeps the head, got %q", got)
+	}
+	got := RecallLineFor(m, "what is the zephyrine code", now)
+	if !strings.Contains(got, "zephyrine") {
+		t.Fatalf("RecallLineFor should center on the match, got %q", got)
+	}
+	if !strings.Contains(got, "…") {
+		t.Fatalf("a centered window should mark the elided head, got %q", got)
+	}
+}
+
+func TestRecallLineForKeepsHeadWithoutBodyMatch(t *testing.T) {
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	body := strings.Repeat("abcdefghij ", 40)
+	m := Memory{ID: "m1", Title: "Notes", Source: "test", CreatedAt: now.Format(time.RFC3339), Text: body}
+	if got, want := RecallLineFor(m, "unrelated question words", now), RecallLine(m, now); got != want {
+		t.Fatalf("no body match should keep the head clip:\n got %q\nwant %q", got, want)
+	}
+	if got, want := RecallLineFor(m, "", now), RecallLine(m, now); got != want {
+		t.Fatalf("empty query must equal RecallLine:\n got %q\nwant %q", got, want)
+	}
+}
