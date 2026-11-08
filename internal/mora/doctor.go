@@ -14,7 +14,9 @@ import (
 
 	doctorpkg "github.com/pyranthus-hq/mora/internal/doctor"
 	"github.com/pyranthus-hq/mora/internal/google"
+	healthpkg "github.com/pyranthus-hq/mora/internal/health"
 	"github.com/pyranthus-hq/mora/internal/imessage"
+	"github.com/pyranthus-hq/mora/internal/operation"
 	"github.com/pyranthus-hq/mora/internal/whatsapp"
 )
 
@@ -58,6 +60,13 @@ type doctorReport struct {
 	Repairable    bool                 `json:"repairable"`
 	RepairPlan    []doctorRepairAction `json:"repair_plan"`
 	Verification  []doctorVerification `json:"verification"`
+	// AgentRelaxations lists active agent profiles that loosen the remote
+	// defaults (raw sources on, write open, deletion allowed). Always a
+	// non-null array — `[]` when no profile relaxes. Non-critical checks
+	// `agent_remote_defaults:<name>` accompany each entry. Overlap note:
+	// #548/#554 also edit doctor.go (auth history / orphaned receipts);
+	// this field and its checks are additive on the agent-profiles branch.
+	AgentRelaxations []agentRemoteRelaxation `json:"agent_relaxations"`
 	// PendingMCPProposals counts propose-mode writes still waiting for
 	// `mora mcp proposals approve` (for example, left over from v0.15.3, whose
 	// default staged every agent write). Additive; omitted when zero.
@@ -87,10 +96,13 @@ type doctorRepairAction struct {
 }
 
 type doctorVerification struct {
-	ActionID string `json:"action_id"`
-	Before   string `json:"before"`
-	After    string `json:"after"`
-	Verified bool   `json:"verified"`
+	ActionID         string                      `json:"action_id"`
+	Before           string                      `json:"before"`
+	After            string                      `json:"after"`
+	Verified         bool                        `json:"verified"`
+	Retirements      []operation.Retirement      `json:"retirements,omitempty"`
+	Acknowledgements []operation.Acknowledgement `json:"acknowledgements,omitempty"`
+	Detail           string                      `json:"detail,omitempty"`
 }
 
 func buildDoctorDiagnostics(checks []doctorCheck, sources []sourceHealth, now time.Time) ([]doctorObservation, []doctorDiagnosis) {
@@ -140,8 +152,8 @@ func doctorCheckFailed(checks []doctorCheck, name string) bool {
 	return false
 }
 
-func planDoctorRepairs(checks []doctorCheck, cfg Config, tokenDir string) []doctorRepairAction {
-	actions := make([]doctorRepairAction, 0, 3)
+func planDoctorRepairs(checks []doctorCheck, cfg Config, tokenDir string, now time.Time) []doctorRepairAction {
+	actions := make([]doctorRepairAction, 0, 4)
 	if doctorCheckFailed(checks, "tokens_disjoint_from_vault") {
 		actions = append(actions, doctorRepairAction{
 			ID: "relocate_token_dir", Mutation: "relocate_outside_vault", Target: tokenDir,
@@ -156,6 +168,42 @@ func planDoctorRepairs(checks []doctorCheck, cfg Config, tokenDir string) []doct
 			})
 		}
 	}
+	// Orphaned ingest receipts: expired heartbeat + confirmed-dead owner. Rebuild-only
+	// does not prune them (#478 is same-kind Begin). Plan names exact run ids; apply
+	// never invents completion and retains uncovered journal evidence as failed.
+	uncovered, coverageErr := uncoveredIngestRunIDs(cfg)
+	if abandoned, err := listAbandonedDeadOwners(cfg, operationKindIngest, now, operationProcessAlive); err == nil && coverageErr == nil && len(abandoned) > 0 {
+		runs := make([]string, 0, len(abandoned))
+		for _, r := range abandoned {
+			disposition := operation.RetirementRemoved
+			if uncovered[r.RunID] {
+				disposition = operation.RetirementFailedUncovered
+			}
+			runs = append(runs, r.RunID+"="+disposition)
+		}
+		actions = append(actions, doctorRepairAction{
+			ID: "retire_abandoned_ingest", Mutation: "retire_dead_owner_receipts",
+			Target: strings.Join(runs, ","),
+			Safe:   true, ApprovalRequired: true,
+		})
+	}
+	// The terminal owner_abandoned receipts that action retains are red forever:
+	// no writer, rebuild, or age-based prune can ever clear one (#498). An explicit
+	// named acknowledgement is the operator's only exit. It is planned separately
+	// from the retirement above, and off this run's pre-retirement state, so a
+	// receipt is never acknowledged in the same breath that created it.
+	if reviewed, err := listUnacknowledgedAbandoned(cfg, operationKindIngest, now); err == nil && len(reviewed) > 0 {
+		runs := make([]string, 0, len(reviewed))
+		for _, r := range reviewed {
+			runs = append(runs, r.RunID)
+		}
+		actions = append(actions, doctorRepairAction{
+			ID: "acknowledge_abandoned_ingest", Mutation: "acknowledge_abandoned_receipts",
+			Target: strings.Join(runs, ","),
+			Safe:   true, ApprovalRequired: true,
+		})
+	}
+	// Retire before rebuild can compact journals or complete their header runs.
 	if doctorCheckFailed(checks, "index_db") || doctorCheckFailed(checks, "index_fresh") || doctorCheckFailed(checks, "index_matches_vault") {
 		actions = append(actions, doctorRepairAction{
 			ID: "rebuild_index", Mutation: "rebuild_derived_index", Target: dbPath(cfg),
@@ -176,6 +224,7 @@ func hasSafeDoctorRepair(actions []doctorRepairAction) bool {
 
 func applyDoctorRepairs(ctx context.Context, cfg Config, actions []doctorRepairAction) ([]doctorVerification, error) {
 	verification := make([]doctorVerification, 0, len(actions))
+	var repairErrors []error
 	for _, action := range actions {
 		if !action.Safe {
 			continue
@@ -191,7 +240,77 @@ func applyDoctorRepairs(ctx context.Context, cfg Config, actions []doctorRepairA
 		case "rebuild_index":
 			_, err = rebuildIndex(ctx, cfg)
 			if err == nil {
-				_, err = os.Stat(action.Target)
+				err = verifyDoctorIndexRepair(cfg)
+			}
+		case "retire_abandoned_ingest":
+			planned := map[string]string{}
+			for _, target := range strings.Split(action.Target, ",") {
+				id, disposition, ok := strings.Cut(target, "=")
+				if !ok || !validOperationToken(id) || (disposition != operation.RetirementRemoved && disposition != operation.RetirementFailedUncovered) {
+					err = fmt.Errorf("invalid retirement target %q; re-plan repair", target)
+					break
+				}
+				planned[id] = disposition
+			}
+			if err != nil {
+				break
+			}
+			var uncovered map[string]bool
+			uncovered, err = uncoveredIngestRunIDs(cfg)
+			if err == nil {
+				result.Retirements, err = retireAbandonedDeadOwners(cfg, operationKindIngest, doctorClock(), operationProcessAlive, uncovered, planned)
+				if err == nil {
+					actual := map[string]string{}
+					for _, retired := range result.Retirements {
+						actual[retired.RunID] = retired.Action
+					}
+					var skipped []string
+					for id, disposition := range planned {
+						if actual[id] != disposition {
+							skipped = append(skipped, id)
+						}
+					}
+					sort.Strings(skipped)
+					if len(skipped) > 0 {
+						err = fmt.Errorf("skipped %s: receipt no longer eligible or publication evidence changed; re-plan repair", strings.Join(skipped, ","))
+					}
+				}
+			}
+		case "acknowledge_abandoned_ingest":
+			var planned []string
+			for _, target := range strings.Split(action.Target, ",") {
+				if !validOperationToken(target) {
+					err = fmt.Errorf("invalid acknowledgement target %q; re-plan repair", target)
+					break
+				}
+				planned = append(planned, target)
+			}
+			if err != nil {
+				break
+			}
+			result.Acknowledgements, err = acknowledgeAbandoned(cfg, operationKindIngest, doctorClock(), planned)
+			if err == nil {
+				// Verify against the after state, not the returned rows: every planned
+				// receipt must have left the unacknowledged set. A receipt that changed
+				// shape under us (or could not be stamped) is reported, never glossed.
+				var remaining []operation.AbandonedReceipt
+				remaining, err = listUnacknowledgedAbandoned(cfg, operationKindIngest, doctorClock())
+				if err == nil {
+					stillRed := map[string]bool{}
+					for _, r := range remaining {
+						stillRed[r.RunID] = true
+					}
+					var skipped []string
+					for _, id := range planned {
+						if stillRed[id] {
+							skipped = append(skipped, id)
+						}
+					}
+					sort.Strings(skipped)
+					if len(skipped) > 0 {
+						err = fmt.Errorf("skipped %s: receipt is no longer a reviewable abandoned ingest receipt; re-plan repair", strings.Join(skipped, ","))
+					}
+				}
 			}
 		default:
 			err = fmt.Errorf("unknown doctor repair action %q", action.ID)
@@ -200,12 +319,39 @@ func applyDoctorRepairs(ctx context.Context, cfg Config, actions []doctorRepairA
 			result.After = "passed"
 			result.Verified = true
 		}
+		if err != nil {
+			result.Detail = err.Error()
+		}
 		verification = append(verification, result)
 		if err != nil {
-			return verification, fmt.Errorf("doctor repair %s: %w", action.ID, err)
+			repairErrors = append(repairErrors, fmt.Errorf("doctor repair %s: %w", action.ID, err))
 		}
 	}
-	return verification, nil
+	return verification, errors.Join(repairErrors...)
+}
+
+// verifyDoctorIndexRepair re-evaluates the predicates that can plan a rebuild.
+// A committed database alone does not prove that pending journals were covered.
+func verifyDoctorIndexRepair(cfg Config) error {
+	var failed []string
+	if _, err := os.Stat(dbPath(cfg)); err != nil {
+		failed = append(failed, "index_db: "+err.Error())
+	}
+	idx := indexHealthOf(cfg, doctorClock())
+	if idx.State != idxFresh && idx.State != idxRefreshing {
+		detail := fmt.Sprintf("index_fresh: state=%s, pending_ops=%d", idx.State, idx.PendingOps)
+		if idx.LastError != "" {
+			detail += ": " + idx.LastError
+		}
+		failed = append(failed, detail)
+	}
+	if ok, _ := indexMatchesVault(cfg); !ok {
+		failed = append(failed, "index_matches_vault: committed manifest does not match the vault")
+	}
+	if len(failed) == 0 {
+		return nil
+	}
+	return fmt.Errorf("rebuild completed but verification failed (%s); doctor will re-plan while index checks fail; inspect pending operations and ingest journals for active runs or paths the vault rebuild cannot cover before retrying", strings.Join(failed, "; "))
 }
 
 // doctorClock is the wall clock doctor's freshness checks (and --pulse) resolve
@@ -219,6 +365,67 @@ var doctorClock = time.Now
 // runner; tests swap it (t.Cleanup-restore, never t.Parallel) to capture argv
 // without spawning a process, mirroring notify_test.go's recordingRunner.
 var doctorNotifyRunner notifyRunner = osascriptRunner
+
+// operationActivityHealthy decides whether one activity keeps
+// operation_healthy:<kind>:<run> green. An acknowledged owner_abandoned receipt
+// is the single exception: the state is still a truthful terminal failure and
+// the receipt stays visible, but the operator has reviewed it, so it no longer
+// holds the check red forever (#498). Nothing else can be acknowledged.
+func operationActivityHealthy(a operationActivity) bool {
+	if a.State == operationStalled {
+		return false
+	}
+	return a.State != operationFailed || a.Acknowledged()
+}
+
+// abandonedIngestRecoveryLines is the operator recovery guidance for a retained
+// terminal failed / owner_abandoned ingest receipt (#498). Every other
+// permanently-red doctor condition names its remedy and the exact command; this
+// one used to print a bare field dump with no resolving action at all.
+//
+// The recovery is deliberately specific about what the data state actually is.
+// RecordPublishedPath journals a vault path only AFTER the file is published, so
+// files this run already wrote are durable in the vault — it is the derived index
+// that has not covered them, and `mora index rebuild` is what covers a journaled
+// path (recovery.CompactJournal runs from the rebuild). Whatever the dead run had
+// not fetched yet is a different gap, and only re-running that source's sync can
+// close it. Receipts carry no source identity, so the source is named as a
+// placeholder; `mora sync` takes a source TYPE from a fixed vocabulary, not an
+// instance name, so the guidance points at its usage rather than inventing a name.
+//
+// The published count is Counts.Materialized, never Counts.Files: Files is an
+// index_rebuild field (len(files) in the vault) and no ingest writer sets it, so
+// printing it reported 0 published items on every real receipt — the exact
+// opposite of why the receipt was retained. Materialized is what ingest records as
+// published (Items mirrors it), and it is still 0 when the owner died before the
+// awaiting_rebuild heartbeat reported counts. Retention itself proves work landed
+// (UncoveredRunIDs needs an uncovered journal PATH line, not just a header), so the
+// zero-count case says the count is unknown rather than claiming nothing landed.
+//
+// `mora doctor --repair` requires `--json`, so the printed commands include it.
+func abandonedIngestRecoveryLines(a operationActivity) []string {
+	if a.Acknowledged() {
+		return []string{fmt.Sprintf("acknowledged %s by an operator — retained as evidence and now subject to ordinary terminal retention", a.AcknowledgedAt)}
+	}
+	lines := []string{
+		"the ingest owner process died mid-run (heartbeat expired, owner gone); no writer, rebuild, or",
+		"prune will ever clear this receipt, so it is intentionally red until you act on it",
+	}
+	if n := a.Counts.Materialized; n > 0 {
+		lines = append(lines,
+			fmt.Sprintf("data impact: the %d item(s) this run had already published are in the vault but no", n),
+			"rebuild has indexed them, and anything it had not fetched yet never arrived")
+	} else {
+		lines = append(lines,
+			"data impact: this run died before it reported counts; whatever it had already published is in",
+			"the vault but no rebuild has indexed it, and anything it had not fetched yet never arrived")
+	}
+	return append(lines,
+		"this run's work is incomplete — recover: `mora index rebuild` to index what landed, then",
+		"`mora sync <source-type>` (run `mora sync` for the list) to refetch the rest; once reviewed,",
+		"`mora doctor --repair --dry-run --json` to preview and `mora doctor --repair --yes --json` to acknowledge",
+	)
+}
 
 // sourceHealthDetailLine renders one unhealthy source's human-readable line,
 // e.g. "gmail        FAILED — last success 52h ago — database or disk is full (13)".
@@ -424,8 +631,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	checks = append(checks, doctorCheck{Name: "index_embedder", OK: idxH.Embedder.Match, Critical: true})
 	activities := operationActivities(cfg, now, operationProcessAlive)
 	for _, a := range activities {
-		ok := a.State != operationStalled && a.State != operationFailed
-		checks = append(checks, doctorCheck{Name: "operation_healthy:" + string(a.Kind) + ":" + a.RunID, OK: ok, Critical: true})
+		checks = append(checks, doctorCheck{Name: "operation_healthy:" + string(a.Kind) + ":" + a.RunID, OK: operationActivityHealthy(a), Critical: true})
 	}
 	// ▸R per source TYPE with a corpus but no ENABLED instance: the zero-sources
 	// case is the extreme; the realistic one is disabling ONE connector and silently
@@ -471,6 +677,19 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 	idxH.Shares = shareIndexHealthAll(cfg, now)
 
+	// Agent profile remote-default relaxations (#539): advisory only. Loosening
+	// raw_sources / write=open / delete_memory is intentional, but Doctor must
+	// name every active profile that does so. A missing agents.json is fine
+	// (no profiles); a corrupt store is a non-critical warn.
+	agentRelax, agentStoreErr := collectAgentRemoteRelaxations(cfg)
+	if agentStoreErr != nil {
+		agentRelax = []agentRemoteRelaxation{}
+		checks = append(checks, doctorCheck{Name: "agents_store_readable", OK: false, Critical: false})
+	}
+	for _, r := range agentRelax {
+		checks = append(checks, doctorCheck{Name: "agent_remote_defaults:" + r.Name, OK: false, Critical: false})
+	}
+
 	// Whole-product storage accountant (Packet H3b): doctor's storage_status and
 	// share admission measure the same footprint. A walk/stat failure is a critical
 	// `unknown`, never a silent undercount. This MUST precede the `healthy` collapse
@@ -505,7 +724,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		verification := []doctorVerification{}
 		var repairErr error
 		if *repair {
-			repairPlan = planDoctorRepairs(checks, cfg, tokenDir)
+			repairPlan = planDoctorRepairs(checks, cfg, tokenDir, now)
 			if !*dryRun {
 				verification, repairErr = applyDoctorRepairs(ctx, cfg, repairPlan)
 			}
@@ -532,6 +751,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			Producers: prodHealth,
 			Observed:  observed, Diagnosis: diagnoses,
 			Repairable: hasSafeDoctorRepair(repairPlan), RepairPlan: repairPlan, Verification: verification,
+			AgentRelaxations:    agentRelax,
 			PendingMCPProposals: pendingProposals,
 		}
 		if rec, present, _ := readBlockRecord(cfg); present {
@@ -577,6 +797,17 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		fmt.Fprintf(stdout, "     operation %-13s %-9s run=%s phase=%s started=%s heartbeat=%s items=%d files=%d errors=%d\n",
 			a.Kind, a.State, a.RunID, a.Phase, a.StartedAt, a.LastHeartbeat,
 			a.Counts.Items, a.Counts.Files, a.Counts.Errors)
+		// A permanently-red owner_abandoned receipt gets the same treatment as every
+		// other unresolvable condition in this file: cause, data impact, and the exact
+		// command that resolves it. Printing is read-only; nothing here mutates.
+		// Terminal failed only — no production path pairs owner_abandoned with a
+		// running/stalled state, and a hand-edited record must not be told its owner
+		// died when the receipt still claims to be live.
+		if a.State == operationFailed && a.FailureCode == operation.FailureOwnerAbandoned {
+			for _, line := range abandonedIngestRecoveryLines(a) {
+				fmt.Fprintf(stdout, "     %s\n", line)
+			}
+		}
 	}
 	if rec, present, _ := readBlockRecord(cfg); present {
 		fmt.Fprintf(stdout, "%s index_rebuild BLOCKED (%s; vault %s, index held %d) — fix vault_dir in config.toml then `mora index rebuild`; `--force` only if the current vault is correct (it discards the %d indexed memories)\n",
@@ -604,6 +835,15 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			sty.warn("warn"), p.Name, p.Scope, len(p.Recipients))
 		fmt.Fprintln(stdout, "     ciphertext only, but keep the remote PRIVATE + user-controlled.")
 	}
+	// Agent profile remote-default relaxations (#539): name every active profile
+	// that loosens hide-raw / propose-writes / deny-deletion. Advisory only.
+	if agentStoreErr != nil {
+		fmt.Fprintf(stdout, "%s agents store unreadable: %v\n", sty.warn("warn"), agentStoreErr)
+	}
+	for _, r := range agentRelax {
+		fmt.Fprintf(stdout, "%s agent profile %q relaxes remote defaults: %s\n",
+			sty.warn("warn"), r.Name, strings.Join(r.Relaxations, ", "))
+	}
 	// Google auth recency: tokens last weeks so a reauth is rare and invisible —
 	// surface "last authed / how long ago" per connected account so the user can
 	// tell at a glance when they last signed in.
@@ -630,7 +870,14 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 // last completed an auth/reauth (recorded by google.SaveToken). Connected
 // accounts are the token files in the tokens dir — one per account, the same
 // derivation google.LastAuth uses (filename minus ".json", with "google" being
-// the default/legacy account). Additive and non-fatal: any error is swallowed.
+// the default/legacy account).
+//
+// A missing auth-history row is NOT the same as a broken credential: tokens
+// created before auth-history recording can still authorize successful syncs.
+// When history is absent, doctor looks at same-account source activity and
+// distinguishes "legacy credential with observed activity" from "no evidence"
+// and from a real authorization failure — without inventing an interactive-auth
+// timestamp or treating token-file presence alone as proof of authorization.
 func printGoogleAuthRecency(cfg Config, stdout io.Writer, now time.Time) {
 	tokenDir := filepath.Join(cfg.ConfigDir, "tokens")
 	entries, err := os.ReadDir(tokenDir)
@@ -648,17 +895,139 @@ func printGoogleAuthRecency(cfg Config, stdout io.Writer, now time.Time) {
 	sort.Strings(accounts) // deterministic order
 	sty := newStyler(stdout, false)
 	for _, account := range accounts {
-		at, ok, err := google.LastAuth(tokenDir, account)
-		if err != nil {
+		lineOK, msg := googleAuthRecencyStatus(cfg, tokenDir, account, now)
+		prefix := sty.warn("warn")
+		if lineOK {
+			prefix = sty.ok("ok  ")
+		}
+		fmt.Fprintf(stdout, "%s google auth (%s): %s\n", prefix, account, msg)
+	}
+}
+
+// googleSourceAccountFromTokenAccount maps a token-basename account
+// ("google", "google-work") to the Source.Account label ("", "work"). ok is
+// false when the basename is not a known Google token naming — prefer unknown
+// over inventing a cross-account mapping.
+func googleSourceAccountFromTokenAccount(tokenAccount string) (string, bool) {
+	if tokenAccount == "google" {
+		return "", true
+	}
+	if strings.HasPrefix(tokenAccount, "google-") {
+		label := strings.TrimPrefix(tokenAccount, "google-")
+		if label == "" {
+			return "", false
+		}
+		return label, true
+	}
+	return "", false
+}
+
+// googleAuthEvidence is same-account sync evidence consulted when auth-history
+// has no row (or is unreadable). It never fabricates an interactive-auth time.
+type googleAuthEvidence struct {
+	unauthorized   bool
+	freshSuccessAt time.Time
+	staleSuccessAt time.Time
+}
+
+// observeGoogleAuthEvidence inspects gmail/calendar SyncStatus rows whose
+// Source.Account matches the token account. One account never validates another.
+// A recent LastSuccessAt within the connector freshness window counts as
+// observable activity even when a later non-auth error marked the source failed;
+// connector.unauthorized still wins as a real auth failure.
+func observeGoogleAuthEvidence(cfg Config, tokenAccount string, now time.Time) googleAuthEvidence {
+	label, mapped := googleSourceAccountFromTokenAccount(tokenAccount)
+	if !mapped {
+		return googleAuthEvidence{}
+	}
+	sources, err := loadSources(cfg)
+	if err != nil {
+		// Prefer unknown over false healthy when the source registry is unreadable.
+		return googleAuthEvidence{}
+	}
+	var ev googleAuthEvidence
+	var bestFresh, bestAny time.Time
+	for _, s := range sources {
+		if (s.Type != "gmail" && s.Type != "calendar") || s.Account != label {
 			continue
 		}
-		if !ok {
-			fmt.Fprintf(stdout, "%s google auth (%s): no recorded auth yet (run `mora connect google`)\n",
-				sty.warn("warn"), account)
+		h := sourceHealthFor(cfg, s, healthInstanceKeyForSource(s), now)
+		if h.ErrorCode == errCodeConnectorUnauthorized {
+			ev.unauthorized = true
+		}
+		if h.LastSuccessAt == "" {
 			continue
 		}
-		fmt.Fprintf(stdout, "%s google auth (%s): last authed %s (%s)\n",
-			sty.ok("ok  "), account, at.Format(time.RFC3339), humanizeAgo(now.Sub(at)))
+		t, perr := time.Parse(time.RFC3339, h.LastSuccessAt)
+		if perr != nil {
+			continue
+		}
+		if t.After(bestAny) {
+			bestAny = t
+		}
+		age := now.Sub(t)
+		if age < 0 {
+			age = 0
+		}
+		if age <= healthpkg.Threshold(s.Type) && t.After(bestFresh) {
+			bestFresh = t
+		}
+	}
+	if !bestFresh.IsZero() {
+		ev.freshSuccessAt = bestFresh
+	} else if !bestAny.IsZero() {
+		ev.staleSuccessAt = bestAny
+	}
+	return ev
+}
+
+// googleAuthRecencyStatus returns whether the doctor line is ok (vs warn) and
+// the message body after "google auth (<account>):". Pure over cfg/tokenDir/now
+// so tests can pin the clock and fixtures without live OAuth.
+func googleAuthRecencyStatus(cfg Config, tokenDir, account string, now time.Time) (ok bool, msg string) {
+	at, found, err := google.LastAuthStrict(tokenDir, account)
+	ev := observeGoogleAuthEvidence(cfg, account, now)
+
+	if err != nil {
+		// History present but unreadable: tell the truth; do not invent an auth
+		// time and do not push reauth solely because the ledger could not be read.
+		switch {
+		case ev.unauthorized:
+			return false, "auth history unreadable; authorization failed — run `mora connect google`"
+		case !ev.freshSuccessAt.IsZero():
+			return false, fmt.Sprintf("auth history unreadable; recent successful sync observed %s (credential appears active)",
+				humanizeAgo(now.Sub(ev.freshSuccessAt)))
+		case !ev.staleSuccessAt.IsZero():
+			return false, fmt.Sprintf("auth history unreadable; last successful sync was %s (stale)",
+				humanizeAgo(now.Sub(ev.staleSuccessAt)))
+		default:
+			return false, "auth history unreadable; credential state unknown"
+		}
+	}
+
+	if found && ev.unauthorized {
+		return false, fmt.Sprintf("last authed %s (%s); authorization failed — run `mora connect google`", at.Format(time.RFC3339), humanizeAgo(now.Sub(at)))
+	}
+	if found {
+		return true, fmt.Sprintf("last authed %s (%s)", at.Format(time.RFC3339), humanizeAgo(now.Sub(at)))
+	}
+
+	// No recorded auth event for this account.
+	switch {
+	case ev.unauthorized:
+		return false, "no recorded auth history; authorization failed — run `mora connect google`"
+	case !ev.freshSuccessAt.IsZero():
+		// Legacy credential: history unavailable, but same-account sync provides
+		// recent activity evidence, not a live authorization probe. Do NOT advise reauthorization.
+		return true, fmt.Sprintf("no recorded auth history (legacy credential); recent successful sync observed %s",
+			humanizeAgo(now.Sub(ev.freshSuccessAt)))
+	case !ev.staleSuccessAt.IsZero():
+		return false, fmt.Sprintf("no recorded auth history; last successful sync was %s (stale) — run `mora sync google` to verify",
+			humanizeAgo(now.Sub(ev.staleSuccessAt)))
+	default:
+		// Token file present is not proof of authorization, and inventing an
+		// interactive-auth date is forbidden. Stay distinct from auth_failed.
+		return false, "no recorded auth history; no successful sync observed for this account"
 	}
 }
 

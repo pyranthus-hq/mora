@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 const (
@@ -46,7 +47,12 @@ type ActiveRule struct {
 	Unless  string `json:"unless"`
 	Context string `json:"context"`
 	Message string `json:"message"`
+	Expires string `json:"expires,omitempty"`
 }
+
+// Expired reports whether a rule's grant has run out. The hook checks this on
+// every call, because active.json is only rebuilt by a compile.
+func (r ActiveRule) Expired(now time.Time) bool { return expiredAt(r.Expires, now) }
 
 // Spec rebuilds the rule spec, so the hook compiles it with NewMatcher.
 func (r ActiveRule) Spec() Spec {

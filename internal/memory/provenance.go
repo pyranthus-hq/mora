@@ -45,6 +45,7 @@ var connectorIDPrefixes = []string{
 	// internal/githubissues/github.go overrides the stable id to this shape,
 	// so "github_issue/" would never match a real record.
 	"github:",
+	"eywa_fact/",
 }
 
 // agentNoteSources are the filesystem sources known to mirror an agent's own

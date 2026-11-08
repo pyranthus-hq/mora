@@ -39,6 +39,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"filippo.io/age"
@@ -1244,11 +1245,65 @@ func searchShareIndex(ctx context.Context, db *sql.DB, owner, corpusDir, query, 
 	return out, nil
 }
 
+// shareSearchConcurrency bounds simultaneous digest reads and SQLite handles.
+// Repairs are deliberately excluded: they take the global storage lease and
+// must retain the registry-ordered, serial publication behavior.
+const shareSearchConcurrency = 4
+
+type shareSearchResult struct {
+	memories []Memory
+	repair   bool
+}
+
+// searchShareSubscription only reads one published generation. A failed open
+// requests a later serial repair; no worker can publish or acquire write leases.
+func searchShareSubscription(ctx context.Context, cfg Config, sub shareSubscription, query, scope string, limit int, filters ...searchFilters) shareSearchResult {
+	commit, ok, err := resolvePublishedCommit(cfg, sub.Name)
+	if err != nil || !ok {
+		return shareSearchResult{}
+	}
+	db, err := openShareIndexRO(ctx, shareGenIndexPath(cfg, sub.Name, commit.Gen), commit.IndexDigest)
+	if err != nil {
+		return shareSearchResult{repair: true}
+	}
+	defer db.Close()
+	res, err := searchShareIndex(ctx, db, sub.Name, shareGenCorpusDir(cfg, sub.Name, commit.Gen), query, scope, limit, filters...)
+	if err != nil {
+		return shareSearchResult{}
+	}
+	return shareSearchResult{memories: res}
+}
+
+// searchSharedSubscriptions overlaps independent read-only corpora without
+// spawning one goroutine per subscription. Each worker owns distinct slots;
+// joining before aggregation preserves registry order regardless of completion
+// order, and leaves no background reads after the caller returns.
+func searchSharedSubscriptions(subs []shareSubscription, search func(shareSubscription) shareSearchResult) []shareSearchResult {
+	results := make([]shareSearchResult, len(subs))
+	workers := min(shareSearchConcurrency, len(subs))
+	if workers <= 1 {
+		for i, sub := range subs {
+			results[i] = search(sub)
+		}
+		return results
+	}
+	var wg sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		wg.Add(1)
+		go func(start int) {
+			defer wg.Done()
+			for i := start; i < len(subs); i += workers {
+				results[i] = search(subs[i])
+			}
+		}(worker)
+	}
+	wg.Wait()
+	return results
+}
+
 // searchSharedCorpora queries every subscription's index and returns one
-// ranked list per corpus. A never-pulled subscription (no index yet) is
-// silently skipped — that's a normal state, visible in `mora share list`. An
-// index that EXISTS but cannot be opened or has the wrong schema fails the
-// whole search loudly: honest-failure over silent partial results.
+// ranked list per corpus. Invalid artifacts are suppressed per subscription;
+// a read-only caller's refusal to repair is returned alongside healthy results.
 func searchSharedCorpora(ctx context.Context, cfg Config, query, scope string, limit int, filters ...searchFilters) ([][]Memory, error) {
 	sf, err := loadShares(cfg)
 	if err != nil {
@@ -1257,53 +1312,30 @@ func searchSharedCorpora(ctx context.Context, cfg Config, query, scope string, l
 	if len(sf.Subscriptions) == 0 {
 		return nil, nil
 	}
+	search := func(sub shareSubscription) shareSearchResult {
+		return searchShareSubscription(ctx, cfg, sub, query, scope, limit, filters...)
+	}
+	results := searchSharedSubscriptions(sf.Subscriptions, search)
 	var out [][]Memory
-	// refused records a read-only caller's refusal to heal. It is the ONE heal
-	// error that must not be swallowed: every other failure means "this share
-	// cannot be served and the operator will hear about it from doctor", while
-	// this one means "this share COULD be served, and you told me not to do the
-	// work". A companion request that quietly dropped a subscription would show
-	// a phone a confident answer built from part of the corpus.
 	var refused error
-	for _, sub := range sf.Subscriptions {
-		commit, ok, rerr := resolvePublishedCommit(cfg, sub.Name)
-		if rerr != nil || !ok {
-			continue // no valid artifact to serve on THIS surface; surfaced by doctor
-		}
-		db, err := openShareIndexRO(ctx, shareGenIndexPath(cfg, sub.Name, commit.Gen), commit.IndexDigest)
-		if err != nil {
-			// The published index.db won't open / fails its integrity digest. Heal
-			// re-cuts a repair generation from the head's OWN frozen corpus (never
-			// unverified files) and commits it; then re-resolve and reopen. If heal
-			// cannot re-cut, exclude THIS subscription from search only (per-artifact
-			// suppression) — a corrupt share index never takes down local recall.
+	for i, sub := range sf.Subscriptions {
+		result := results[i]
+		if result.repair {
+			// Keep repair generations serial and under the existing write policy,
+			// storage lease and per-subscription import lease. A corrupt share
+			// never suppresses healthy corpora, but read-only refusal stays visible.
 			if healErr := healShareIndex(ctx, cfg, sub.Name); healErr != nil {
 				if errors.Is(healErr, ErrReadOnlyRepairNeeded) {
 					refused = healErr
 				}
 				continue
 			}
-			commit, ok, rerr = resolvePublishedCommit(cfg, sub.Name)
-			if rerr != nil || !ok {
-				continue
-			}
-			if db, err = openShareIndexRO(ctx, shareGenIndexPath(cfg, sub.Name, commit.Gen), commit.IndexDigest); err != nil {
-				continue
-			}
+			result = search(sub) // re-resolve the newly published generation
 		}
-		res, qerr := searchShareIndex(ctx, db, sub.Name, shareGenCorpusDir(cfg, sub.Name, commit.Gen), query, scope, limit, filters...)
-		_ = db.Close()
-		if qerr != nil {
-			continue
-		}
-		if len(res) > 0 {
-			out = append(out, res)
+		if len(result.memories) > 0 {
+			out = append(out, result.memories)
 		}
 	}
-	// The refusal is returned AFTER the loop, so every healthy subscription is
-	// still searched and the caller can see both what was found and that the
-	// result is incomplete. Non-companion callers never set the marker, so
-	// refused is nil for them and this returns exactly what it always did.
 	return out, refused
 }
 

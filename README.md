@@ -330,6 +330,14 @@ recorded status and memory ID while a pending file remains. Keep the decision
 records in Mora's state directory. See the [guide](docs/guide.md) for the
 recovery limitations.
 
+To give one agent its own limits, use an agent profile: the scopes it can read,
+whether it can see connector evidence, and its own write policy.
+`mora mcp serve --profile <name>` applies a profile to a local agent, and
+`mora mcp serve-http` serves cloud agents through a tunnel that you run.
+`mora remote expose` prints tunnel commands and executes none; Doctor names
+profiles that loosen remote defaults. See
+[Agent profiles](docs/guide.md#agent-profiles).
+
 ## Claude Code hooks
 
 Hooks let Claude Code pull in Mora context without being asked. They are
@@ -596,7 +604,8 @@ absolute vault path for one process. It does not change `config.toml`.
   plus SQLite `query_only(1)` so it can read the live write-ahead log safely.
 - The vault, index, tokens, sync state, and usage log stay local by default.
 - Mora uses the network for source APIs, GitHub release checks, and any backup
-  or share target that you choose.
+  or share target that you choose. Pushing authored memories to a company
+  memory service (`mora eywa push`) is off until you enable it and asks first.
 - No AI model is called when Mora saves or searches. The default embedder is
   `static`, which runs no model.
 - Optional Ollama embeddings are allowed only on a loopback address.
