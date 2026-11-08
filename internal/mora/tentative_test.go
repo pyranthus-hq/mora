@@ -131,7 +131,7 @@ func TestTentativeStaysOutOfAuthoritativeSurfacesUntilConfirmed(t *testing.T) {
 		}
 		return out.String()
 	}
-	if got := recall(); strings.Contains(got, "quokka") {
+	if got := recall(); strings.Contains(got, "quokka") || strings.Contains(got, "systemMessage") {
 		t.Fatalf("tentative memory reached recall:\n%s", got)
 	}
 	rows, err := collectShareMemories(cfg, "project:demo")
@@ -157,7 +157,7 @@ func TestTentativeStaysOutOfAuthoritativeSurfacesUntilConfirmed(t *testing.T) {
 	if want := strings.Replace(string(before), memory.TentativeTag, "", 1); string(after) != want {
 		t.Fatalf("confirm changed more than the tag:\n--- before\n%s\n--- after\n%s", before, after)
 	}
-	if got := recall(); !strings.Contains(got, "quokka") {
+	if got := recall(); !strings.Contains(got, "quokka") || !strings.Contains(got, `"systemMessage":"Mora stepped in · 1 lesson"`) {
 		t.Fatalf("confirmed memory missing from recall:\n%s", got)
 	}
 	if rows, err = collectShareMemories(cfg, "project:demo"); err != nil || len(rows) != 1 {
