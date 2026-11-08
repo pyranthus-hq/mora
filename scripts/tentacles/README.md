@@ -82,3 +82,8 @@ matching shares explicitly registered by the owner). They do not create subscrip
 recipients or shares. `--yes` retains existing unattended publication behavior.
 The Mac vault backup cadence is 15 minutes despite its historical `git-daily` name;
 a dedicated mac-backup receipt now replaces inference from that job's old log tail.
+
+## Grok project mailbox
+
+The separate [Reason Network inbox/outbox pilot](MAILBOX.md) sends explicitly queued
+Mora tasks and archives results on the Mac. It does not approve memory proposals.

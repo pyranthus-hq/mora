@@ -49,15 +49,17 @@ type Counts struct {
 
 // Repeat holds sections 3.8 to 3.12 of the spec. Rates are null with no data.
 type Repeat struct {
-	Scored           int      `json:"scored"`
-	Eligible         int      `json:"eligible"`
-	SameCommand      int      `json:"same_command"`
-	SameShape        int      `json:"same_shape"`
-	Rate             *float64 `json:"rate"`
-	ShapeRate        *float64 `json:"shape_rate"`
-	BaselinePairs    int      `json:"baseline_pairs"`
-	BaselineRepeated int      `json:"baseline_repeated"`
-	BaselineRate     *float64 `json:"baseline_rate"`
+	Scored            int      `json:"scored"`
+	Eligible          int      `json:"eligible"`
+	SameCommand       int      `json:"same_command"`
+	SameShape         int      `json:"same_shape"`
+	Rate              *float64 `json:"rate"`
+	ShapeRate         *float64 `json:"shape_rate"`
+	BaselinePairs     int      `json:"baseline_pairs"`
+	BaselineRepeated  int      `json:"baseline_repeated"`
+	BaselineRate      *float64 `json:"baseline_rate"`
+	BaselineShape     int      `json:"baseline_shape_repeated"`
+	BaselineShapeRate *float64 `json:"baseline_shape_rate"`
 }
 
 // Pattern is one shape that came back.
@@ -501,27 +503,31 @@ func (t *timeline) repeats(scored map[scoredRef]scoredRow) (Repeat, []Pattern) {
 // baseline is section 3.12 of the spec: the same question for commands nobody
 // rejected or interrupted.
 func (c *Corpus) baseline(t *timeline, corrected map[Key]bool, rep *Repeat) {
-	pairs := map[scoredRef]int64{}
+	pairs := map[scoredRef]scoredRow{}
 	for _, r := range c.calls {
 		seg, named := c.primary(r)
 		if r.old || !named || corrected[seg.key] {
 			continue
 		}
 		ref := scoredRef{r.session, seg.key}
-		if at, ok := pairs[ref]; !ok || r.ts < at {
-			pairs[ref] = r.ts
+		if held, ok := pairs[ref]; !ok || r.ts < held.at {
+			pairs[ref] = scoredRow{r.ts, seg.shape}
 		}
 	}
-	for ref, at := range pairs {
-		if !t.hasLater(ref.session, at) {
+	for ref, row := range pairs {
+		if !t.hasLater(ref.session, row.at) {
 			continue
 		}
 		rep.BaselinePairs++
-		if anyLater(t, t.byKey, ref.key, ref.session, at) {
+		if anyLater(t, t.byKey, ref.key, ref.session, row.at) {
 			rep.BaselineRepeated++
+		}
+		if row.shape != 0 && anyLater(t, t.byShape, row.shape, ref.session, row.at) {
+			rep.BaselineShape++
 		}
 	}
 	rep.BaselineRate = rate(rep.BaselineRepeated, rep.BaselinePairs)
+	rep.BaselineShapeRate = rate(rep.BaselineShape, rep.BaselinePairs)
 }
 
 func rate(n, d int) *float64 {

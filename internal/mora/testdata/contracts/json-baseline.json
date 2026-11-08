@@ -16,6 +16,34 @@
     "status": "static_only"
   },
   {
+    "path": "agents",
+    "status": "empty"
+  },
+  {
+    "path": "agents add",
+    "status": "flag_error"
+  },
+  {
+    "path": "agents list",
+    "status": "parses"
+  },
+  {
+    "path": "agents log",
+    "status": "empty"
+  },
+  {
+    "path": "agents revoke",
+    "status": "empty"
+  },
+  {
+    "path": "agents rotate",
+    "status": "empty"
+  },
+  {
+    "path": "agents update",
+    "status": "flag_error"
+  },
+  {
     "path": "backup",
     "status": "parses"
   },
@@ -104,6 +132,10 @@
     "status": "static_only"
   },
   {
+    "path": "connect eywa",
+    "status": "static_only"
+  },
+  {
     "path": "connect filesystem",
     "status": "empty"
   },
@@ -166,6 +198,22 @@
   {
     "path": "entities",
     "status": "parses"
+  },
+  {
+    "path": "eywa",
+    "status": "empty"
+  },
+  {
+    "path": "eywa preview",
+    "status": "empty"
+  },
+  {
+    "path": "eywa push",
+    "status": "static_only"
+  },
+  {
+    "path": "eywa status",
+    "status": "static_only"
   },
   {
     "path": "forget",
@@ -296,6 +344,10 @@
     "status": "static_only"
   },
   {
+    "path": "mcp serve-http",
+    "status": "empty"
+  },
+  {
     "path": "merge",
     "status": "empty"
   },
@@ -329,6 +381,14 @@
   },
   {
     "path": "reingest",
+    "status": "parses"
+  },
+  {
+    "path": "remote",
+    "status": "empty"
+  },
+  {
+    "path": "remote expose",
     "status": "parses"
   },
   {
@@ -372,6 +432,14 @@
     "status": "flag_error"
   },
   {
+    "path": "rules grant",
+    "status": "flag_error"
+  },
+  {
+    "path": "rules import",
+    "status": "flag_error"
+  },
+  {
     "path": "rules list",
     "status": "parses"
   },
@@ -382,6 +450,10 @@
   {
     "path": "rules test",
     "status": "empty"
+  },
+  {
+    "path": "rules verify",
+    "status": "flag_error"
   },
   {
     "path": "schedule",
@@ -505,6 +577,10 @@
   },
   {
     "path": "sync applecalendar",
+    "status": "static_only"
+  },
+  {
+    "path": "sync eywa",
     "status": "static_only"
   },
   {

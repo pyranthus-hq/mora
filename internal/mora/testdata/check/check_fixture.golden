@@ -15,8 +15,9 @@ Repeat after correction
   Commands rejected or interrupted: 5
   With a later session: 4
   Ran again in a later session, same command: 2 of 4 (50.0%)
+  Baseline, same command, never rejected or interrupted: 4 of 9 (44.4%)
   Ran again in a later session, same shape: 3 of 4 (75.0%)
-  Baseline, commands never rejected or interrupted: 4 of 9 (44.4%)
+  Baseline, same shape, never rejected or interrupted: 4 of 9 (44.4%)
   Small sample: read these as counts, not as a rate.
 
 Top repeated patterns (same command / same shape)

@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"github.com/pyranthus-hq/mora/internal/activity"
 	"github.com/pyranthus-hq/mora/internal/memory"
 	"github.com/pyranthus-hq/mora/internal/segments"
 	"time"
@@ -8,8 +9,8 @@ import (
 
 // Explicit source event dates only: recently re-imported old mail must not
 // displace old threads with new replies. This lists evidence, not obligations.
-func recentSourceEvents(items []Memory, now time.Time, hours, limit int) []Memory {
-	out := selectActivityEvents(items, now, hours, limit)
+func recentSourceEvents(items []Memory, now time.Time, hours, limit int, options ...activity.Options) []Memory {
+	out := selectActivityEvents(items, now, hours, limit, options...)
 	for i := range out {
 		if out[i].Provider != "gmail" {
 			continue
