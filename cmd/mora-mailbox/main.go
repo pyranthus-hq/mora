@@ -310,7 +310,10 @@ func readRegular(path string, max int64) ([]byte, error) {
 	return b, err
 }
 func readJSON(path string, v any) error {
-	b, err := readRegular(path, 1<<20)
+	return readJSONLimit(path, v, 1<<20)
+}
+func readJSONLimit(path string, v any, max int64) error {
+	b, err := readRegular(path, max)
 	if err != nil {
 		return err
 	}
@@ -545,7 +548,9 @@ func receive(root string, s Settings, m Message) error {
 	// Persist before acknowledging transport. Unknown/malformed replies stay quarantined, never instructions.
 	archive := filepath.Join(root, "outbox", m.ID+".json")
 	var old Message
-	if err := readJSON(archive, &old); err == nil {
+	// The socket accepts up to 4 MiB frames. Invalid replies must remain
+	// replayable after a lost acknowledgement, even when larger than a job.
+	if err := readJSONLimit(archive, &old, 8<<20); err == nil {
 		a, _ := json.Marshal(old)
 		b, _ := json.Marshal(m)
 		if string(a) != string(b) {
