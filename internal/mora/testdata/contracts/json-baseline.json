@@ -432,6 +432,14 @@
     "status": "flag_error"
   },
   {
+    "path": "rules grant",
+    "status": "flag_error"
+  },
+  {
+    "path": "rules import",
+    "status": "flag_error"
+  },
+  {
     "path": "rules list",
     "status": "parses"
   },
@@ -442,6 +450,10 @@
   {
     "path": "rules test",
     "status": "empty"
+  },
+  {
+    "path": "rules verify",
+    "status": "flag_error"
   },
   {
     "path": "schedule",

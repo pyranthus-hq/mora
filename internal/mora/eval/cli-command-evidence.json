@@ -500,13 +500,13 @@
     },
     {
       "name": "warning rules",
-      "paths": ["rules", "rules add", "rules test", "rules approve", "rules off", "rules list", "rules compile"],
+      "paths": ["rules", "rules add", "rules test", "rules approve", "rules off", "rules list", "rules compile", "rules grant", "rules verify", "rules import"],
       "evidence": {
-        "success": {"status": "test", "tests": ["TestRulesAddWritesFileAndRefusesDuplicate", "TestRulesApproveCompilesActive", "TestRulesTestHitAndMiss", "TestRulesOffRemovesFromActive"]},
+        "success": {"status": "test", "tests": ["TestRulesAddWritesFileAndRefusesDuplicate", "TestRulesApproveCompilesActive", "TestRulesTestHitAndMiss", "TestRulesOffRemovesFromActive", "TestRulesGrantVerifyImportRoundTrip"]},
         "json": {"status": "test", "tests": ["TestRulesListJSON"], "reason": "list --json emits mora.rules.list; the other rules commands print text."},
-        "state": {"status": "test", "tests": ["TestRulesApproveCompilesActive", "TestRulesEditedFileShowsChangedAndCompileDrops", "TestRulesOffRemovesFromActive"]},
-        "error": {"status": "test", "tests": ["TestRulesAddRejectsPythonOnlySyntax", "TestRulesApproveWrongIDRefuses"]},
-        "refusal": {"status": "test", "tests": ["TestRulesApproveRefusesNonInteractive", "TestRulesApproveRefusesInsideAgentSession"]}
+        "state": {"status": "test", "tests": ["TestRulesApproveCompilesActive", "TestRulesEditedFileShowsChangedAndCompileDrops", "TestRulesOffRemovesFromActive", "TestRulesImportRefusesReplayAfterOff"]},
+        "error": {"status": "test", "tests": ["TestRulesAddRejectsPythonOnlySyntax", "TestRulesApproveWrongIDRefuses", "TestRulesVerifyRefusesTamperedGrant"]},
+        "refusal": {"status": "test", "tests": ["TestRulesApproveRefusesNonInteractive", "TestRulesApproveRefusesInsideAgentSession", "TestRulesGrantRefusesInsideAgentSession", "TestRulesImportNeedsAPersonWhenSignersAreWritable"]}
       }
     },
     {

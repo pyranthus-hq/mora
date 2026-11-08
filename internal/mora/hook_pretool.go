@@ -101,6 +101,10 @@ func hookPreToolWork(ctx context.Context, stdin io.Reader, deps hookPreToolDeps)
 	matchers := make([]*rules.Matcher, 0, len(set.Rules))
 	byID := map[string]rules.ActiveRule{}
 	for _, r := range set.Rules {
+		if r.Expired(deps.now()) {
+			notes = append(notes, "rule_expired:"+r.ID)
+			continue
+		}
 		m, merr := rules.NewMatcher(r.ID, r.Spec())
 		if merr != nil || rules.ValidateMode(r.Mode) != nil || r.Mode == rules.ModeOff {
 			notes = append(notes, "rule_invalid:"+r.ID)

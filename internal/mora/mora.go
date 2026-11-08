@@ -339,6 +339,9 @@ USAGE:
   mora rules list [--json]
   mora rules off <id>
   mora rules compile
+  mora rules grant <id> --to SCOPE --as NAME --key PATH   # sign a rule for a wider scope, in your own terminal only
+  mora rules verify <grant-file> [--signers PATH] [--scope SCOPE]
+  mora rules import <grant-file> --scope SCOPE [--signers PATH]
   mora check [--since 30d] [--json]   # read-only count of rejected or interrupted commands
   mora upgrade                     # manually self-update to the latest release
   mora upgrade --check             # check + cache published stable release availability

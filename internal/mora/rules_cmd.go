@@ -17,10 +17,11 @@ import (
 	"unicode"
 
 	"github.com/mattn/go-isatty"
+	"github.com/pyranthus-hq/mora/internal/leasefile"
 	"github.com/pyranthus-hq/mora/internal/rules"
 )
 
-const rulesUsage = "usage: mora rules add|test|approve|off|list|compile"
+const rulesUsage = "usage: mora rules add|test|approve|off|list|compile|grant|verify|import"
 
 // rulesRefusal is printed when approve or off runs where an agent could have
 // typed it. Only a person at their own terminal may change what warns.
@@ -60,6 +61,12 @@ func cmdRules(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		return rulesList(ctx, args[1:], stdout)
 	case "compile":
 		return rulesCompile(ctx, args[1:], stdout)
+	case "grant":
+		return rulesGrant(ctx, args[1:], stdout, stdin)
+	case "verify":
+		return rulesVerify(ctx, args[1:], stdout)
+	case "import":
+		return rulesImport(ctx, args[1:], stdout, stdin)
 	default:
 		return fmt.Errorf("unknown rules command %q; %s", args[0], rulesUsage)
 	}
@@ -306,13 +313,18 @@ func rulesApprove(ctx context.Context, args []string, stdout io.Writer, stdin io
 	}); err != nil {
 		return err
 	}
-	if err := rules.AppendApproval(cfg.StateDir, rules.Approval{RuleID: id, RuleHash: hash, Mode: *mode, Holdout: *holdout, Via: "cli-tty"}); err != nil {
+	var set rules.ActiveSet
+	err = leasefile.WithGuard(filepath.Join(rules.Dir(cfg.StateDir), "mutation.lock"), func() error {
+		if err := rules.AppendApproval(cfg.StateDir, rules.Approval{RuleID: id, RuleHash: hash, Mode: *mode, Holdout: *holdout, Via: "cli-tty"}); err != nil {
+			return err
+		}
+		set, err = rules.Compile(cfg.VaultDir, cfg.StateDir)
 		return err
-	}
-	set, err := rules.Compile(cfg.VaultDir, cfg.StateDir)
+	})
 	if err != nil {
 		return err
 	}
+
 	label := *mode
 	if *holdout {
 		label += ", holdout"
@@ -350,13 +362,18 @@ func rulesOff(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 	if err := rulesConfirm(stdout, stdin, id, [][2]string{{"rule", id}, {"mode", a.Mode + " -> off"}}); err != nil {
 		return err
 	}
-	if err := rules.AppendApproval(cfg.StateDir, rules.Approval{RuleID: id, RuleHash: a.RuleHash, Mode: rules.ModeOff, Via: "cli-tty"}); err != nil {
+	var set rules.ActiveSet
+	err = leasefile.WithGuard(filepath.Join(rules.Dir(cfg.StateDir), "mutation.lock"), func() error {
+		if err := rules.AppendApproval(cfg.StateDir, rules.Approval{RuleID: id, RuleHash: a.RuleHash, Mode: rules.ModeOff, Via: "cli-tty"}); err != nil {
+			return err
+		}
+		set, err = rules.Compile(cfg.VaultDir, cfg.StateDir)
 		return err
-	}
-	set, err := rules.Compile(cfg.VaultDir, cfg.StateDir)
+	})
 	if err != nil {
 		return err
 	}
+
 	fmt.Fprintf(stdout, "turned off %s. Active rules: %d\n", id, len(set.Rules))
 	return nil
 }
@@ -466,7 +483,12 @@ func rulesCompile(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	set, err := rules.Compile(cfg.VaultDir, cfg.StateDir)
+	var set rules.ActiveSet
+	err = leasefile.WithGuard(filepath.Join(rules.Dir(cfg.StateDir), "mutation.lock"), func() error {
+		var err error
+		set, err = rules.Compile(cfg.VaultDir, cfg.StateDir)
+		return err
+	})
 	if err != nil {
 		return err
 	}
