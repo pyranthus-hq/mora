@@ -217,6 +217,7 @@ func hasSafeDoctorRepair(actions []doctorRepairAction) bool {
 
 func applyDoctorRepairs(ctx context.Context, cfg Config, actions []doctorRepairAction) ([]doctorVerification, error) {
 	verification := make([]doctorVerification, 0, len(actions))
+	var repairErrors []error
 	for _, action := range actions {
 		if !action.Safe {
 			continue
@@ -232,7 +233,7 @@ func applyDoctorRepairs(ctx context.Context, cfg Config, actions []doctorRepairA
 		case "rebuild_index":
 			_, err = rebuildIndex(ctx, cfg)
 			if err == nil {
-				_, err = os.Stat(action.Target)
+				err = verifyDoctorIndexRepair(cfg)
 			}
 		case "retire_abandoned_ingest":
 			planned := map[string]string{}
@@ -316,10 +317,34 @@ func applyDoctorRepairs(ctx context.Context, cfg Config, actions []doctorRepairA
 		}
 		verification = append(verification, result)
 		if err != nil {
-			return verification, fmt.Errorf("doctor repair %s: %w", action.ID, err)
+			repairErrors = append(repairErrors, fmt.Errorf("doctor repair %s: %w", action.ID, err))
 		}
 	}
-	return verification, nil
+	return verification, errors.Join(repairErrors...)
+}
+
+// verifyDoctorIndexRepair re-evaluates the predicates that can plan a rebuild.
+// A committed database alone does not prove that pending journals were covered.
+func verifyDoctorIndexRepair(cfg Config) error {
+	var failed []string
+	if _, err := os.Stat(dbPath(cfg)); err != nil {
+		failed = append(failed, "index_db: "+err.Error())
+	}
+	idx := indexHealthOf(cfg, doctorClock())
+	if idx.State != idxFresh && idx.State != idxRefreshing {
+		detail := fmt.Sprintf("index_fresh: state=%s, pending_ops=%d", idx.State, idx.PendingOps)
+		if idx.LastError != "" {
+			detail += ": " + idx.LastError
+		}
+		failed = append(failed, detail)
+	}
+	if ok, _ := indexMatchesVault(cfg); !ok {
+		failed = append(failed, "index_matches_vault: committed manifest does not match the vault")
+	}
+	if len(failed) == 0 {
+		return nil
+	}
+	return fmt.Errorf("rebuild completed but verification failed (%s); doctor will re-plan while index checks fail; inspect pending operations and ingest journals for active runs or paths the vault rebuild cannot cover before retrying", strings.Join(failed, "; "))
 }
 
 // doctorClock is the wall clock doctor's freshness checks (and --pulse) resolve
