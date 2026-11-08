@@ -209,3 +209,59 @@ func compactJournal(cfg config.Config, sourceKey string, listed map[string]bool,
 	}
 	return "", nil
 }
+
+// UncoveredRunIDs reports ingest run ids whose journals still have publication
+// evidence remaining after rebuild journal compaction: existing path lines.
+// Header-only journals and paths that no longer exist are omitted — those can be
+// retired by CompactJournal once no live lease remains. Callers that cannot prove
+// committed coverage must retain failure evidence for these runs rather than
+// inventing completion or erasing the receipt to silence health.
+// Headers identify only the first writer: later runs may append to the same
+// journal. The empty key represents uncovered evidence without a valid header.
+// A nonempty result therefore cannot prove that any other receipt is safe to erase.
+func UncoveredRunIDs(cfg config.Config, seams RecoverySeams) (map[string]bool, error) {
+	out := map[string]bool{}
+	entries, err := os.ReadDir(JournalRoot(cfg))
+	if errors.Is(err, os.ErrNotExist) {
+		return out, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		path := JournalPath(cfg, e.Name())
+		b, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		var header string
+		uncovered := false
+		for _, raw := range strings.Split(string(b), "\n") {
+			line := strings.TrimSpace(raw)
+			if line == "" {
+				continue
+			}
+			if strings.HasPrefix(line, "run ") {
+				header = line
+				continue
+			}
+			p := seams.CleanPath(line)
+			if _, statErr := os.Stat(p); errors.Is(statErr, os.ErrNotExist) {
+				continue
+			}
+			uncovered = true
+			break
+		}
+		if !uncovered {
+			continue
+		}
+		out[HeaderRunID(header, seams.ValidToken)] = true
+	}
+	return out, nil
+}
