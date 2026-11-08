@@ -71,7 +71,7 @@ func BenchmarkIndexUpsertWithMarking1k(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		op, err := markIndexDirty(ctx, cfg, pendingOp{
 			Kind:     opKindWrite,
-			Path:     memoryPath(cfg, m),
+			Path:     mustMemoryPath(b, cfg, m),
 			MemoryID: m.ID,
 		})
 		if err != nil {

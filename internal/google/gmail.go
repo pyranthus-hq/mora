@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	gmail "google.golang.org/api/gmail/v1"
@@ -63,22 +64,24 @@ func (f *LiveFetcher) fetchGmailPageContext(ctx context.Context, w FetchWindow, 
 	if err != nil {
 		return Page{}, err
 	}
-	var items []Item
-	for _, th := range res.Threads {
-		full, err := f.getGmailThread(ctx, th.Id)
-		if err != nil {
-			if ctx.Err() != nil {
-				return Page{}, ctx.Err()
-			}
-			// A thread deleted between list and get is expected. Other failures
-			// must not advance the snapshot cursor and report missing mail fresh.
-			var apiErr *googleapi.Error
-			if errors.As(err, &apiErr) && apiErr.Code == 404 {
-				continue
-			}
-			return Page{}, fmt.Errorf("gmail snapshot thread read failed: %w", err)
+	ids := make([]string, len(res.Threads))
+	for i, th := range res.Threads {
+		ids[i] = th.Id
+	}
+	threads, err := f.getGmailThreads(ctx, ids)
+	if err != nil {
+		if ctx.Err() != nil {
+			return Page{}, ctx.Err()
 		}
-		items = append(items, gmailThreadToItem(full))
+		return Page{}, fmt.Errorf("gmail snapshot thread read failed: %w", err)
+	}
+	var items []Item
+	for _, full := range threads {
+		// A thread deleted between list and get is expected. Other failures
+		// must not advance the snapshot cursor and report missing mail fresh.
+		if full != nil {
+			items = append(items, gmailThreadToItem(full))
+		}
 	}
 	return Page{Items: items, NextCursor: res.NextPageToken, SyncCursor: syncCursor}, nil
 }
@@ -124,18 +127,18 @@ func (f *LiveFetcher) fetchGmailHistoryPage(ctx context.Context, w FetchWindow, 
 		}
 	}
 	sort.Strings(ids)
+	threads, err := f.getGmailThreads(ctx, ids)
+	if err != nil {
+		return Page{}, err
+	}
 	items := make([]Item, 0, len(ids))
-	for _, id := range ids {
-		full, getErr := f.getGmailThread(ctx, id)
-		if getErr == nil {
+	for i, full := range threads {
+		if full == nil {
+			items = append(items, Item{Kind: KindGmailThread, ProviderID: ids[i], Deleted: true, Tags: []string{"gmail"}})
+		} else if !gmailThreadExcluded(full, w.Labels) {
+			// Apply the snapshot's rule (-category:promotions/social, configured labels).
 			items = append(items, gmailThreadToItem(full))
-			continue
 		}
-		if apiErr, ok := getErr.(*googleapi.Error); ok && apiErr.Code == 404 {
-			items = append(items, Item{Kind: KindGmailThread, ProviderID: id, Deleted: true, Tags: []string{"gmail"}})
-			continue
-		}
-		return Page{}, getErr
 	}
 	syncCursor := ""
 	if res.NextPageToken == "" {
@@ -144,16 +147,109 @@ func (f *LiveFetcher) fetchGmailHistoryPage(ctx context.Context, w FetchWindow, 
 	return Page{Items: items, NextCursor: res.NextPageToken, SyncCursor: syncCursor}, nil
 }
 
-func (f *LiveFetcher) getGmailThread(ctx context.Context, id string) (*gmail.Thread, error) {
-	// threads.get costs 40 units against a 6,000-unit/minute/user budget.
-	// Two reads/sec leaves room for listing, history and other client work.
-	// https://developers.google.com/workspace/gmail/api/reference/quota
-	if f.gmailWait != nil {
-		if err := f.gmailWait(ctx, 500*time.Millisecond); err != nil {
-			return nil, err
+// gmailThreadConcurrency bounds outstanding reads, not request rate. The
+// per-fetcher pacing gate below separately preserves the two-reads/sec budget.
+const gmailThreadConcurrency = 4
+
+// getGmailThreads overlaps independent network reads within a page. Slots retain
+// list/history order regardless of completion order. A nil slot is a 404: the
+// snapshot skips it while history emits a tombstone. On any other failure all
+// workers are cancelled and joined before the caller can advance a checkpoint.
+func (f *LiveFetcher) getGmailThreads(ctx context.Context, ids []string) ([]*gmail.Thread, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	threads := make([]*gmail.Thread, len(ids))
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	var firstErr error
+	var fail sync.Once
+	for range min(gmailThreadConcurrency, len(ids)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				full, err := f.getGmailThread(ctx, ids[i])
+				if err != nil {
+					var apiErr *googleapi.Error
+					if ctx.Err() == nil && errors.As(err, &apiErr) && apiErr.Code == 404 {
+						continue
+					}
+					fail.Do(func() { firstErr = err; cancel() })
+					return
+				}
+				threads[i] = full
+			}
+		}()
+	}
+schedule:
+	for i := range ids {
+		select {
+		case jobs <- i:
+		case <-ctx.Done():
+			break schedule
 		}
 	}
-	return gmailRequest(ctx, f.gmailWait, f.gmail.Users.Threads.Get("me", id).Format("full").Context(ctx).Do)
+	close(jobs)
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return threads, nil
+}
+
+func (f *LiveFetcher) getGmailThread(ctx context.Context, id string) (*gmail.Thread, error) {
+	call := f.gmail.Users.Threads.Get("me", id).Format("full").Context(ctx)
+	return gmailRequest(ctx, f.gmailWait, func(opts ...googleapi.CallOption) (*gmail.Thread, error) {
+		// threads.get costs 40 units against a 6,000-unit/minute/user budget.
+		// Serialize only pacing, not HTTP latency. Independent worker sleeps
+		// would multiply the rate by the worker count. Retries use this same
+		// gate after their existing bounded backoff.
+		// https://developers.google.com/workspace/gmail/api/reference/quota
+		f.gmailThreadPace.Lock()
+		err := ctx.Err()
+		if err == nil && f.gmailWait != nil {
+			err = f.gmailWait(ctx, 500*time.Millisecond)
+		}
+		f.gmailThreadPace.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		return call.Do(opts...)
+	})
+}
+
+// gmailThreadExcluded mirrors the snapshot query on the history path: skip a
+// thread when every message is Promotions/Social, or when labels are
+// configured and no single message carries ALL of them (threads.list LabelIds
+// is an AND filter; per-message matching is our reading of it at thread level).
+// w.Labels are label IDs. shortcut: the Since/Query filters are not re-applied.
+func gmailThreadExcluded(th *gmail.Thread, labels []string) bool {
+	if len(th.Messages) == 0 {
+		return false
+	}
+	allBulk, labelHit := true, len(labels) == 0
+	for _, msg := range th.Messages {
+		have := map[string]bool{}
+		for _, id := range msg.LabelIds {
+			have[id] = true
+		}
+		allBulk = allBulk && (have["CATEGORY_PROMOTIONS"] || have["CATEGORY_SOCIAL"])
+		all := true
+		for _, l := range labels {
+			all = all && have[l]
+		}
+		labelHit = labelHit || all
+	}
+	return allBulk || !labelHit
 }
 
 func buildGmailQuery(w FetchWindow) string {

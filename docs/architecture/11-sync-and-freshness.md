@@ -26,7 +26,7 @@ data as a product invariant and always shows it.
 
 ## The honest-snapshot model
 
-**Sync is snapshot-based, with provider-native incrementality where verified.** Gmail and Google Calendar perform one initial windowed snapshot, commit a provider cursor only after clean completion, and request only changed records thereafter. Expired cursors cause one bounded full snapshot. Other connectors still re-pull their configured window. Freshness remains measured and surfaced rather than inferred.
+**Sync is snapshot-based, with provider-native incrementality where verified.** Gmail and Google Calendar perform one initial windowed snapshot, commit a provider cursor only after clean completion, and request only changed records thereafter. The Eywa connector does the same with its change-feed cursor (`changes_since`; see [24 — Eywa connector](./24-connectors-eywa.md)). Expired cursors cause one bounded full snapshot. Other connectors still re-pull their configured window. Freshness remains measured and surfaced rather than inferred.
 
 Concretely, each `Ingest` run:
 

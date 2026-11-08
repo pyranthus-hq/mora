@@ -583,8 +583,8 @@ func TestIssue219NearNamesBecomeCandidates(t *testing.T) {
 	cases := []struct {
 		handle, phoneName, email, emailName string
 	}{
-		{"+14155550123", "Dan Rachev", "daniel.rachev@example.com", "Daniel Rachev"},
-		{"+14155550124", "Samika", "samika.karode@example.com", "Samika Karode"},
+		{"+14155550123", "Dan Hollis", "daniel.hollis@example.com", "Daniel Hollis"},
+		{"+14155550124", "Odessa", "odessa.varden@example.com", "Odessa Varden"},
 	}
 	for _, tc := range cases {
 		mems := []Memory{
@@ -602,8 +602,8 @@ func TestIssue219NearNamesBecomeCandidates(t *testing.T) {
 }
 func TestIssue219NearNameStillRequiresEmailSignature(t *testing.T) {
 	mems := []Memory{
-		imsgNamed("c1", "+14155550123", "Dan Rachev"),
-		senderEmail("t1", "dr42@example.com", "Daniel Rachev", "me@x.com"),
+		imsgNamed("c1", "+14155550123", "Dan Hollis"),
+		senderEmail("t1", "dh42@example.com", "Daniel Hollis", "me@x.com"),
 	}
 	if got := buildGraphResult(mems, nil).candidates; len(got) != 0 {
 		t.Fatalf("near-name proposal without an address signature must refuse-to-gap: %+v", got)

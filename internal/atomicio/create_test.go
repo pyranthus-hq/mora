@@ -3,8 +3,10 @@ package atomicio
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -280,5 +282,107 @@ func TestAtomicCreateSurfacesRealLinkError(t *testing.T) {
 	}
 	if names := dirBaseNames(t, dir); len(names) != 0 {
 		t.Fatalf("orphan temp left after real link error: %v", names)
+	}
+}
+
+// Readers may miss the file or see the Unix fallback's empty placeholder, but
+// must never accept complete frontmatter followed by a truncated body.
+func TestAtomicCreateFallbackReadVisibility(t *testing.T) {
+	forceLinkUnsupported(t)
+	body := append([]byte("---\nid: read-visibility\n---\n"), bytes.Repeat([]byte("complete body\n"), 1<<18)...)
+	for iter := 0; iter < 10; iter++ {
+		path := filepath.Join(t.TempDir(), "mem.md")
+		done := make(chan struct{})
+		result := make(chan error, 1)
+		go func() {
+			result <- atomicCreate(path, body, 0o644)
+			close(done)
+		}()
+		var readErr error
+	reading:
+		for {
+			got, err := os.ReadFile(path)
+			if err == nil && len(got) != 0 && !bytes.Equal(got, body) {
+				readErr = fmt.Errorf("observed partial body: %d of %d bytes", len(got), len(body))
+				break
+			}
+			if err != nil && !errors.Is(err, os.ErrNotExist) && !SharingViolationRetryable(err) {
+				readErr = err
+				break
+			}
+			select {
+			case <-done:
+				break reading
+			default:
+				runtime.Gosched()
+			}
+		}
+		if err := <-result; err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(got, body) {
+			t.Fatalf("final body: %d bytes, error %v", len(got), err)
+		}
+	}
+}
+
+func TestCreateExclusiveSyncFailureLeavesNoFile(t *testing.T) {
+	boom := errors.New("sync boom")
+	old := MarkerSyncFn
+	MarkerSyncFn = func(*os.File) error { return boom }
+	defer func() { MarkerSyncFn = old }()
+	dir := t.TempDir()
+	if err := atomicCreate(filepath.Join(dir, "m.md"), []byte("x"), 0o644); !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want sync error", err)
+	}
+	if names := dirBaseNames(t, dir); len(names) != 0 {
+		t.Fatalf("leftover files after sync failure: %v", names)
+	}
+}
+
+func TestCreateExclusiveDirSyncFailureAfterPublishIsIgnored(t *testing.T) {
+	old := SyncDirFn
+	SyncDirFn = func(string) error { return errors.New("dir sync boom") }
+	defer func() { SyncDirFn = old }()
+	path := filepath.Join(t.TempDir(), "m.md")
+	if err := atomicCreate(path, []byte("x"), 0o644); err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("published file missing: %v", err)
+	}
+}
+
+func TestAtomicCreateFallbackSyncsBeforeAndAfterPublication(t *testing.T) {
+	forceLinkUnsupported(t)
+	path := filepath.Join(t.TempDir(), "memory.md")
+	body := []byte("complete synced body")
+	oldFile, oldDir := MarkerSyncFn, SyncDirFn
+	t.Cleanup(func() { MarkerSyncFn, SyncDirFn = oldFile, oldDir })
+	fileSynced, dirSynced := false, false
+	MarkerSyncFn = func(f *os.File) error {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("name published before file sync: %v", err)
+		}
+		fileSynced = true
+		return f.Sync()
+	}
+	SyncDirFn = func(dir string) error {
+		got, err := os.ReadFile(path)
+		if !fileSynced || dir != filepath.Dir(path) || err != nil || !bytes.Equal(got, body) {
+			t.Fatalf("directory sync before complete publication: synced=%v dir=%s body=%q err=%v", fileSynced, dir, got, err)
+		}
+		dirSynced = true
+		return errors.New("directory sync failed after publication")
+	}
+	if err := atomicCreate(path, body, 0o644); err != nil {
+		t.Fatalf("published file must not invite retry: %v", err)
+	}
+	if !fileSynced || !dirSynced {
+		t.Fatalf("missing sync: file=%v directory=%v", fileSynced, dirSynced)
 	}
 }

@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	hookspkg "github.com/pyranthus-hq/mora/internal/hooks"
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 func TestHookSessionStart(t *testing.T) {
@@ -474,5 +477,72 @@ func TestHookInstallUnparseableSettingsFailsClosed(t *testing.T) {
 				t.Fatalf("unparseable settings file was rewritten\nbefore:\n%s\nafter:\n%s", before, after)
 			}
 		})
+	}
+}
+
+func TestHookRecallShowsSteppedInLine(t *testing.T) {
+	cfg := seedRecallMemories(t, 2)
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	input := `{"prompt":"What did we decide about eelpout recall token alpha?"}`
+	if err := cmdHook(testCtx(t), []string{"recall"}, &out, testStderr, strings.NewReader(input)); err != nil {
+		t.Fatal(err)
+	}
+	got := decodeHookOutput(t, out.String())
+	ctx := got.HookSpecificOutput.AdditionalContext
+	n := strings.Count(ctx, "\n- ")
+	if n == 0 {
+		t.Fatalf("expected recalled lines, got:\n%s", ctx)
+	}
+	if want := hookspkg.SteppedInLine(n); got.SystemMessage != want {
+		t.Fatalf("systemMessage = %q, want %q (context has %d lines)", got.SystemMessage, want, n)
+	}
+	if strings.Contains(ctx, "stepped in") {
+		t.Fatalf("the user-visible line must not be added to the model context:\n%s", ctx)
+	}
+}
+
+func TestHookRecallBannerOnlyHasNoSteppedInLine(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	enableSources(t, cfg, "gmail")
+	seedSyncStatusFull(t, cfg, "gmail", &memory.SyncStatus{
+		Source: "gmail", LastAttemptAt: time.Now().UTC().Format(time.RFC3339),
+		LastError: "synthetic sync failure",
+	})
+	if banner := healthBannerFrom(healthOf(cfg, hookNow())); banner == "" {
+		t.Fatal("fixture must have an unhealthy banner")
+	}
+
+	var out bytes.Buffer
+	input := `{"prompt":"zzzznomatch uniquely absent query terms"}`
+	if err := cmdHook(testCtx(t), []string{"recall"}, &out, testStderr, strings.NewReader(input)); err != nil {
+		t.Fatal(err)
+	}
+	got := decodeHookOutput(t, out.String())
+	if got.HookSpecificOutput.AdditionalContext == "" {
+		t.Fatal("expected the health banner in context")
+	}
+	if strings.Contains(out.String(), "systemMessage") {
+		t.Fatalf("no memory was recalled, so systemMessage must be absent, got %s", out.String())
+	}
+}
+
+func TestHookSessionStartHasNoSteppedInLine(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	restore := stubHookBrief(t, "today's local brief")
+	defer restore()
+
+	var out bytes.Buffer
+	if err := cmdHook(testCtx(t), []string{"session-start"}, &out, testStderr, strings.NewReader(`{"hook_event_name":"SessionStart"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "systemMessage") {
+		t.Fatalf("session start injects the brief, not recalled lessons; got %s", out.String())
 	}
 }
