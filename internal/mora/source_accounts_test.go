@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/pyranthus-hq/mora/internal/google"
 	"github.com/pyranthus-hq/mora/internal/memory"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -174,5 +175,27 @@ func TestCanonicalizedAccountGmailHashSkipsExistingMarkdown(t *testing.T) {
 	}
 	if string(after) != string(before) {
 		t.Fatal("hash-skipped account Gmail changed Markdown")
+	}
+}
+
+func TestGoogleIdentityNetworkFailurePreservesRetryCauseWithoutSecrets(t *testing.T) {
+	cause := &net.DNSError{Err: "private provider diagnostic", Name: "sensitive.example", IsTimeout: true}
+	err := googleIdentityError(cause)
+	if !errors.Is(err, cause) || connectorErrorCode(err) != errCodeConnectorUnavailable || !retryableForErrorCode(connectorErrorCode(err)) {
+		t.Fatalf("lost retryable network cause: %v", err)
+	}
+	if strings.Contains(err.Error(), "sensitive") || strings.Contains(err.Error(), "private") || !strings.Contains(err.Error(), "DNS lookup failed") {
+		t.Fatalf("unsafe or uninformative diagnostic: %v", err)
+	}
+	statusPath := filepath.Join(t.TempDir(), "status.json")
+	st := &memory.SyncStatus{}
+	_ = persistSyncStatus(nil, statusPath, st, err)
+	receipt, readErr := os.ReadFile(statusPath)
+	if readErr != nil || strings.Contains(string(receipt), "sensitive") || strings.Contains(string(receipt), "private") {
+		t.Fatalf("unsafe persisted error or read failure: %v", readErr)
+	}
+	unknown := googleIdentityError(errors.New("secret credential detail"))
+	if connectorErrorCode(unknown) != errCodeConnectorUnclassified || strings.Contains(unknown.Error(), "secret") {
+		t.Fatal(unknown)
 	}
 }

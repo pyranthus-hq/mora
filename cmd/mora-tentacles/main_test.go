@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -283,4 +284,46 @@ func TestJobLockRecoversAfterProcessDeath(t *testing.T) {
 		t.Fatal("dead process wedged lock", e)
 	}
 	r()
+}
+
+func TestCommandFailureDiagnosticDoesNotExposeStderr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture")
+	}
+	ctx := context.Background()
+	_, err := command(ctx, "/bin/sh", "-c", "echo 'fatal: unable to access https://private:credential@example.test: Could not resolve host: example.test' >&2; exit 1")
+	reason := commandReason(ctx, err)
+	if reason != "exit 1; DNS lookup failed" {
+		t.Fatalf("got %q", reason)
+	}
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+		t.Fatal("lost exit cause")
+	}
+	for _, text := range []string{"secret unclassified error", "private content"} {
+		if safeCommandReason(text) != "" {
+			t.Fatal("unknown stderr leaked")
+		}
+	}
+}
+
+func TestCommandStderrLimitDoesNotFailSuccessfulChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture")
+	}
+	out, err := command(context.Background(), "/bin/sh", "-c", "dd if=/dev/zero bs=65536 count=20 >&2 2>/dev/null; printf ok")
+	if err != nil || string(out) != "ok" {
+		t.Fatalf("bounded stderr changed success: %q %v", out, err)
+	}
+}
+func TestSafeCommandReasons(t *testing.T) {
+	for input, want := range map[string]string{
+		"Network is unreachable: private host":         "network connection failed",
+		"fatal: Authentication failed for private URL": "authentication unavailable",
+		"unclassified private output":                  "",
+	} {
+		if got := safeCommandReason(input); got != want {
+			t.Fatalf("got %q want %q", got, want)
+		}
+	}
 }
