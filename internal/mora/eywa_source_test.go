@@ -474,10 +474,36 @@ func TestEywaStatusRepollsPendingUpdates(t *testing.T) {
 	if f.count("get_memory") != 2 {
 		t.Fatalf("get_memory(write_id) calls = %d, want one per read", f.count("get_memory"))
 	}
-	// A decided update is not polled again.
+	// in_review can still change: a later curator decision reaches Mora.
+	wid := eywaDestRecords(t)[id].WriteID
+	f.writes[wid] = "admitted"
 	run(t, "eywa", "status")
-	if f.count("get_memory") != 2 {
-		t.Fatal("status re-polled an update that already had a final status")
+	if got := eywaDestRecords(t)[id].Status; got != "admitted" || f.count("get_memory") != 3 {
+		t.Fatalf("after curator approval: status = %q, get_memory calls = %d; want admitted, 3", got, f.count("get_memory"))
+	}
+	// A settled update is not polled again.
+	run(t, "eywa", "status")
+	if f.count("get_memory") != 3 {
+		t.Fatal("status re-polled an update that can no longer change")
+	}
+}
+
+func TestEywaStatusPicksUpHeldAndReviewTransitions(t *testing.T) {
+	f := setupEywaPush(t)
+	reviewID := writeAuthored(t, "global", "Acme terms", "Acme Corp pays on net 45.")
+	heldID := writeAuthored(t, "global", "Beta terms", "Beta Corp pays on net 30.")
+	run(t, "eywa", "push", "enable")
+	run(t, "eywa", "push", "--scope", "global", "--yes", "--wait", "0s")
+	recs := eywaDestRecords(t)
+	f.writes[recs[reviewID].WriteID] = "in_review"
+	f.writes[recs[heldID].WriteID] = "held"
+	run(t, "eywa", "status")
+	f.writes[recs[reviewID].WriteID] = "rejected"
+	f.writes[recs[heldID].WriteID] = "admitted"
+	run(t, "eywa", "status")
+	recs = eywaDestRecords(t)
+	if recs[reviewID].Status != "rejected" || recs[heldID].Status != "admitted" {
+		t.Fatalf("in_review→rejected and held→admitted not picked up: %+v / %+v", recs[reviewID], recs[heldID])
 	}
 }
 

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -333,6 +335,53 @@ func TestRememberSendsLineageAndPollsInReview(t *testing.T) {
 	}
 	if FinalStatus("received") {
 		t.Fatal("received is pending, not final")
+	}
+	for _, st := range []string{"received", "in_review", "held"} {
+		if Settled(st) {
+			t.Fatalf("%s can still change; status must keep re-reading it", st)
+		}
+	}
+	for _, st := range []string{"admitted", "admitted-unchanged", "rejected", "no-fact"} {
+		if !Settled(st) {
+			t.Fatalf("%s cannot change; status must stop re-reading it", st)
+		}
+	}
+}
+
+// A redirect from either endpoint must not forward the token request or a
+// memory body anywhere: the client refuses it and the target sees nothing.
+func TestRedirectsAreRefused(t *testing.T) {
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { targetHits.Add(1) }))
+	t.Cleanup(target.Close)
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(redirect.Close)
+	f := newFakeService(t)
+
+	for name, cfg := range map[string]Config{
+		"token": func() Config { c := f.config(); c.TokenURL = redirect.URL + "/oauth2/token"; return c }(),
+		"mcp":   func() Config { c := f.config(); c.Endpoint = redirect.URL + "/mcp"; return c }(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			// The caller's client follows redirects by default; NewClient must override that.
+			c, err := NewClient(cfg, ClientOptions{HTTP: &http.Client{}, Sleep: func(context.Context, time.Duration) error { return nil }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			u, err := BuildUpdate("agt_TEST", "mem_01ABC", "", "Acme Corp pays on net 45.")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = c.Remember(context.Background(), "payments", u)
+			if err == nil || !strings.Contains(err.Error(), "refusing redirect") {
+				t.Fatalf("err = %v, want a refused redirect", err)
+			}
+			if n := targetHits.Load(); n != 0 {
+				t.Fatalf("redirect target received %d request(s)", n)
+			}
+		})
 	}
 }
 

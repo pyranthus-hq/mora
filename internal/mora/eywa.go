@@ -878,7 +878,7 @@ func eywaPush(ctx context.Context, cfg Config, args []string, stdout, stderr io.
 			sent[it.Update.MemoryID] = true
 		}
 	}
-	rows, pollErr := pollEywaStatuses(ctx, cfg, client, &st, dest, sent, *wait)
+	rows, pollErr := pollEywaStatuses(ctx, cfg, client, &st, dest, sent, *wait, eywa.FinalStatus)
 	receipt.Updates = append(receipt.Updates, rows...)
 	for _, r := range rows {
 		if !eywa.FinalStatus(r.Status) {
@@ -909,16 +909,18 @@ func eywaPush(ctx context.Context, cfg Config, args []string, stdout, stderr io.
 }
 
 // pollEywaStatuses polls get_memory(write_id) until every selected write of
-// one destination has a final status or the wait elapses, and records what it
-// read. The caller holds the ledger lock and a client for that destination.
-func pollEywaStatuses(ctx context.Context, cfg Config, client *eywa.Client, st *eywaPushState, dest *eywaPushDestination, ids map[string]bool, wait time.Duration) ([]eywaPushRow, error) {
+// one destination satisfies done or the wait elapses, and records what it
+// read. Push passes eywa.FinalStatus (stop waiting once decided); status
+// passes eywa.Settled (re-read in_review and held, which a curator may still
+// change). The caller holds the ledger lock and a client for that destination.
+func pollEywaStatuses(ctx context.Context, cfg Config, client *eywa.Client, st *eywaPushState, dest *eywaPushDestination, ids map[string]bool, wait time.Duration, done func(string) bool) ([]eywaPushRow, error) {
 	deadline := time.Now().Add(wait)
 	var pollErr error
 	for {
 		open := 0
 		for id := range ids {
 			rec := dest.Records[id]
-			if eywa.FinalStatus(rec.Status) {
+			if done(rec.Status) {
 				continue
 			}
 			ws, err := client.GetWriteStatus(ctx, rec.WriteID)
@@ -928,7 +930,7 @@ func pollEywaStatuses(ctx context.Context, cfg Config, client *eywa.Client, st *
 			}
 			rec.Status, rec.Reason, rec.CheckedAt = ws.Status, ws.Reason, time.Now().UTC().Format(time.RFC3339)
 			dest.Records[id] = rec
-			if !eywa.FinalStatus(ws.Status) {
+			if !done(ws.Status) {
 				open++
 			}
 		}
@@ -1040,7 +1042,7 @@ func eywaStatus(ctx context.Context, cfg Config, args []string, stdout, stderr i
 		for id, rec := range dest.Records {
 			if rec.WriteID != "" {
 				ids[id] = true
-				if !eywa.FinalStatus(rec.Status) {
+				if !eywa.Settled(rec.Status) {
 					needs = true
 				}
 			}
@@ -1051,7 +1053,7 @@ func eywaStatus(ctx context.Context, cfg Config, args []string, stdout, stderr i
 				return err
 			}
 			// One pass, no waiting.
-			_, pollErr = pollEywaStatuses(ctx, cfg, client, &st, dest, ids, 0)
+			_, pollErr = pollEywaStatuses(ctx, cfg, client, &st, dest, ids, 0, eywa.Settled)
 		}
 		for id := range ids {
 			rec := dest.Records[id]

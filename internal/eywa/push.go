@@ -177,3 +177,15 @@ func FinalStatus(status string) bool {
 		return false
 	}
 }
+
+// Settled reports whether an update's status can no longer change. in_review
+// and held are final for a push (it stops waiting), but a curator may still
+// admit or reject them later, so `mora eywa status` keeps re-reading them.
+func Settled(status string) bool {
+	switch status {
+	case "admitted", "admitted-unchanged", "rejected", "no-fact":
+		return true
+	default:
+		return false
+	}
+}
