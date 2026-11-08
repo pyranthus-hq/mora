@@ -376,6 +376,7 @@ func (k *companionReader) searchContext(ctx context.Context, req companion.Conte
 	if err != nil {
 		return nil, nil, err
 	}
+	mems = withoutTentative(mems)
 	// BasicGaps is the pure half of the think gap analysis: staleness, evidence
 	// density, coverage holes. Search gets the honest floor rather than nothing,
 	// because a bundle with no gaps array is a claim that nothing is missing.
@@ -674,7 +675,7 @@ func (w *companionWriter) verifyPublication(cfg Config, c companion.Capture, id 
 // fact and lets it decide.
 func (w *companionWriter) integrityFailure(cfg Config, id companion.CaptureIdentity) companion.WriteOutcome {
 	return companion.WriteOutcome{
-		Policy: companion.WritePolicy(configMCPWritePolicy(cfg)),
+		Policy: companionWritePolicy(cfg),
 		State:  companion.ReceiptRejected,
 		Reason: companion.ReasonInternal,
 		IntegrityDetail: fmt.Sprintf("the vault holds a memory at %s that is not this capture (device %s)",
@@ -757,7 +758,7 @@ func (w *companionWriter) Publish(ctx context.Context, c companion.Capture, id c
 			Reason: companion.ReasonPolicy,
 		}, nil
 	}
-	policy := configMCPWritePolicy(cfg)
+	policy := string(companionWritePolicy(cfg))
 	out := companion.WriteOutcome{Policy: companion.WritePolicy(policy)}
 
 	// The usage trace and the invocation below are the SAME ones invokeMCPTool
@@ -805,7 +806,7 @@ func (w *companionWriter) Publish(ctx context.Context, c companion.Capture, id c
 			}
 			return companion.WriteOutcome{}, claimErr
 		}
-		value, writeErr = mcpWriteMemoryWith(traced, cfg, args, withExplicitMemoryID(id.MemoryID))
+		value, writeErr = mcpWriteMemoryWith(withAgentCaller(traced, "companion"), cfg, args, withExplicitMemoryID(id.MemoryID))
 	}
 	// Some handlers, mutations included, have no tool-specific structural counts.
 	// They still get one content-free event and an honest envelope size — the
@@ -1313,8 +1314,15 @@ func companionIndexState(state string) companion.HealthState {
 	return companion.HealthUnhealthy
 }
 
+// companionWritePolicy keeps the phone protocol on its three published values:
+// a capture under the tentative policy goes to the proposal queue, because a
+// phone receipt has no way to say "saved but unconfirmed".
 func companionWritePolicy(cfg Config) companion.WritePolicy {
-	return companion.WritePolicy(configMCPWritePolicy(cfg))
+	policy := configMCPWritePolicy(cfg)
+	if policy == mcppkg.WritePolicyTentative {
+		policy = mcpWritePolicyPropose
+	}
+	return companion.WritePolicy(policy)
 }
 
 // companionMemoryCount counts indexed memories WITHOUT the auto-heal paths.
@@ -2079,12 +2087,9 @@ func captureClaimTokenIsStale(token string, now time.Time) (bool, error) {
 // than writing a second one keeps one definition of "that process is gone" in
 // the product.
 //
-// Its POSIX half answers false for a process this user cannot signal. That is
-// the wrong direction in general and the right one here: the published store
-// lives in a 0700 directory under this user's own home, so every token in it was
-// written by this user, and a pid that cannot be signalled is a pid that has
-// been recycled onto somebody else's program — a corpse by another name. The
-// takeover window covers the case either way.
+// Its POSIX half answers true for a process this user cannot signal. A pid
+// recycled onto somebody else's program therefore reads as alive until the
+// takeover window expires, which only delays a takeover.
 var captureProcessAlive = processAlive
 
 // capturePublicationLockDir is where the published store's cross-process guards

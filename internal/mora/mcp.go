@@ -41,10 +41,44 @@ func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin 
 	if len(args) == 1 && args[0] == "serve" {
 		return serveMCP(ctx, stdout, stdin)
 	}
+	if len(args) == 3 && args[0] == "serve" && args[1] == "--profile" {
+		return serveMCPProfile(ctx, args[2], stdout, stdin)
+	}
+	if len(args) >= 1 && args[0] == "serve-http" {
+		return cmdMCPServeHTTP(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) >= 2 && args[0] == "proposals" {
 		return cmdMCPProposals(ctx, args[1:], stdout, stderr)
 	}
-	return errors.New("usage: mora mcp serve | mora mcp proposals <list|show ID|approve ID|reject ID>")
+	return errors.New("usage: mora mcp serve [--profile NAME] | mora mcp serve-http [--port N] [--allow-host HOST] | mora mcp proposals <list|show ID|approve ID|reject ID>")
+}
+
+// serveMCPProfile is `mora mcp serve --profile NAME`: stdio MCP bound to one
+// agent profile for the whole session (#539). The profile is resolved once at
+// start; a revoked or unknown profile refuses to serve rather than falling
+// back to the unprofiled server.
+func serveMCPProfile(ctx context.Context, name string, stdout io.Writer, stdin io.Reader) error {
+	cfg, err := loadConfigFor(ctx)
+	if err != nil {
+		return err
+	}
+	store, err := loadAgentsStore(cfg)
+	if err != nil {
+		return err
+	}
+	profile, err := store.active(name)
+	if err != nil {
+		return err
+	}
+	ctx = withAgentProfile(ctx, profile)
+	// Same lifecycle as serveMCP: exit when the client dies, and let a rebuild
+	// the session triggered finish first.
+	defer watchParent(os.Stderr)()
+	err = mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, func(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
+		return handleAgentMCP(ctx, profile, req)
+	})
+	waitForAuthoredReconciles(5 * time.Minute)
+	return err
 }
 
 // Seams for the parent-death watchdog.
@@ -75,6 +109,8 @@ func watchParent(stderr io.Writer) func() {
 			case <-t.C:
 				if getppid() != orig {
 					fmt.Fprintln(stderr, "mora mcp serve: client process exited; shutting down")
+					// Exiting mid-rebuild would leave a dead receipt; bounded like serveMCP's drain.
+					waitForAuthoredReconciles(5 * time.Minute)
 					exitFn(0)
 					return
 				}
@@ -86,7 +122,16 @@ func watchParent(stderr io.Writer) func() {
 
 func serveMCP(ctx context.Context, stdout io.Writer, stdin io.Reader) error {
 	defer watchParent(os.Stderr)()
-	err := mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, handleMCP)
+	// The audit log names the client that wrote, from initialize's clientInfo.
+	caller := "mcp-stdio"
+	err := mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, func(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
+		if req.Method == "initialize" {
+			if name := mcpClientName(req.Params); name != "" {
+				caller = "mcp-stdio/" + name
+			}
+		}
+		return handleMCP(withAgentCaller(ctx, caller), req)
+	})
 	// The client is gone, but a rebuild it triggered may be mid-flight; exiting
 	// now would kill it and leave a stalled receipt. Bounded so a stuck rebuild
 	// cannot turn this into a zombie server.
@@ -288,6 +333,13 @@ func mcpWriteMemoryWith(ctx context.Context, cfg Config, args map[string]any, op
 			return map[string]any{"memory": m, "already_published": true, "health": compactHealthOf(cfg, now)}, nil
 		}
 		return nil, err
+	}
+	// Audit: every agent write that reaches the vault leaves one line in
+	// agent-writes.log, so it can be reviewed and reversed with `mora undo`.
+	// The memory is already durable; a failed append warns, never fails the
+	// write (a retry would mint a duplicate).
+	if lerr := appendAgentWriteLog(cfg, now, "write", m, agentCallerFrom(ctx)); lerr != nil {
+		fmt.Fprintf(os.Stderr, "warn: memory %s saved, but %s could not be appended: %v\n", m.ID, agentWriteLogName, lerr)
 	}
 	m = decorateDecision(m, now)
 	// The vault write succeeded (vault is truth; the index is a derived
@@ -920,7 +972,7 @@ func mcpDeleteMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	// after the file is gone would keep serving the deleted content; the pending
 	// op both reddens the index and suppresses the id on every read path (B4),
 	// so serving-deleted-content is impossible even while the rebuild is broken.
-	op, merr := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindDelete, Path: m.Path, MemoryID: m.ID})
+	op, merr := markIndexDirty(ctx, cfg, deleteOp(m))
 	if merr != nil {
 		return nil, merr
 	}
@@ -928,6 +980,7 @@ func mcpDeleteMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 		_ = unmarkIndexDirty(cfg, op.OpID)
 		return nil, err
 	}
+	markDeleteUnlinked(cfg, op)
 	// A failed index update after a delete is worse than after a write: search
 	// keeps SERVING the deleted content as if it still existed. Delete is the
 	// privacy path, so the failure stays a LOUD error and the pending-delete

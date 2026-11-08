@@ -26,3 +26,8 @@ internal/mora/testdata/contracts/**/*.json text eol=lf
 # json.MarshalIndent output, which emits LF everywhere. Windows checkout
 # conversion would rewrite these to CRLF and fail every golden.
 internal/companion/testdata/v1/*.json text eol=lf
+
+# Transcript fixtures hold exact bytes, including a torn last line and a
+# zero-byte file. Keep line-ending conversion out of them on every OS.
+internal/sessions/testdata/** -text
+internal/corrections/testdata/** -text

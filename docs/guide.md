@@ -204,8 +204,8 @@ memories. `mora forget` is the lasting local removal tool.
 
 ## Connect data
 
-Mora has seven connectors: Gmail, Google Calendar, filesystem, iMessage,
-WhatsApp, Apple Calendar, and GitHub Issues.
+Mora has eight connectors: Gmail, Google Calendar, filesystem, iMessage,
+WhatsApp, Apple Calendar, GitHub Issues, and Eywa (company memory).
 
 See their state with:
 
@@ -395,6 +395,88 @@ reopen updates the same stable issue memory.
 A failed or partial GitHub sync is shown in `mora sync status`. Old indexed data
 stays searchable and may be stale.
 
+### Eywa (company memory)
+
+Eywa is a governed company memory service with an agent MCP API. Your company
+runs it and registers Mora as an agent. The registration gives you an MCP
+endpoint, an OAuth2 token URL, a client id and a client secret, and, for push,
+an agent id and a scope topic. Mora has no default for any of these.
+
+```bash
+export MORA_EYWA_CLIENT_SECRET=...   # read at run time, never saved
+mora connect eywa \
+  --endpoint https://eywa.example.com/mcp \
+  --token-url https://auth.eywa.example.com/oauth2/token \
+  --client-id <client-id> \
+  --oauth-scope <scope-if-required> \
+  --agent-id <agent-id> --topic <topic>   # needed only for push
+mora sync eywa
+```
+
+`connect eywa` saves the non-secret settings on the `eywa` source, enables it,
+and pulls once when the secret is set (`--no-sync` skips the pull).
+`mora connectors enable eywa` works after that; before it, it only explains how
+to configure the connector.
+A scheduled sync (`mora schedule install …`) needs the secret in the
+scheduler's environment too; without it the eywa sync fails and says so in
+`mora sync status`.
+
+**Pull.** Each sync reads the service's change feed from the cursor the last
+sync stored in the state directory (the first sync looks back `since_days`,
+at most 35 days). Every admitted fact version becomes one read-only record,
+`eywa_fact/<version_id>`, with the entity, attribute, value, valid and recorded
+times, status, and a citation line `Citation: <source URI> @ <version id>`
+followed by the cited excerpt. When the service replaces a version, the old
+record is kept and marked `status: replaced` with `replaced_by`; it is never
+deleted. Pulled records are evidence: search, think and context cite them like
+any other connector, and filter them with `source: "eywa"`. If a fact cannot be
+read or written, the sync fails and keeps the feed position at the first failed
+change, so the next sync retries it instead of skipping it.
+
+**Push (off by default).** Push sends one scope of your authored memories to
+the service as agent updates. It never sends connector records, including
+pulled facts, and it is not an MCP tool, so no agent can start it under any
+`mcp_write_policy`.
+
+```bash
+mora eywa push enable                        # explicit opt-in
+mora eywa preview --scope project:acme       # full text of every update; sends nothing
+mora eywa push --scope project:acme          # list, confirm, send, then poll the outcome
+mora eywa push --scope project:acme --yes    # non-interactive (after reviewing the preview)
+mora eywa status                             # re-check updates still waiting
+mora eywa push disable
+```
+
+Each update carries `text` (title and body, at most 8000 characters; longer
+memories are listed and not sent), the configured `topic`, and lineage:
+`source_uri` = `eywa-run://<agent-id>/mora/<memory-id>`, the text as the
+`excerpt`, and its SHA-256 `content_hash` (NFC, trimmed). Mora records each
+returned `write_id` in the state directory (ids, hashes and statuses only, never
+text) and polls for the final status for `--wait` (default 10s).
+
+A memory Mora refuses to send (empty, or over 8000 characters) is listed in the
+preview and in the receipt with a reason code (`empty_text`, `too_long`), and
+the push exits non-zero even when every other update was sent.
+
+The push record is kept per destination: the endpoint, client id, agent id and
+topic. Changing any of them with `mora connect eywa` makes the next push send
+again to the new destination, and `mora eywa status` only re-checks updates
+sent to the configured one. Two pushes, or a push and `mora eywa status`, never
+run against the record at the same time: the second waits for the first, up to
+30 seconds, then stops with a message saying another command is running.
+
+The service governs every update. It may be `admitted`, sent to curator review
+(`in_review`, not served until a curator approves it), or `held` (for example
+a lineage or content check failed). Mora reports the decision; it does not make
+it. An unchanged memory is not re-sent.
+
+**Errors.** A refused secret or client (`401`), a revoked or out-of-scope agent
+(`403` or Forbidden), and a rate limit (`429`, with the service's `Retry-After`)
+fail the sync or push with a clear message and show in `mora sync status` and
+`mora doctor`. Mora waits once for a `Retry-After` of 30 seconds or less. A
+fact or update the service refuses on its own is reported by id, and the run
+exits non-zero.
+
 ### iMessage
 
 ```bash
@@ -565,23 +647,59 @@ command, error code, or schema that the binary does not have.
 Choose how much authority the agent gets:
 
 ```bash
+mora config mcp-write-policy tentative
 mora config mcp-write-policy open
 mora config mcp-write-policy propose
 mora config mcp-write-policy readonly
 ```
 
-- `open` allows `write_memory` and `delete_memory`.
+- `tentative` is the default whenever `config.toml` has no `mcp_write_policy`
+  line, however Mora was started (`mora init`, `mora setup`, or `mora mcp serve`
+  on a machine that was never initialized). A low-risk write saves at once with
+  the tag `mora-tentative`. Low risk means type `insight` or `fact`, a
+  `project:*` scope, and no secret, money, sensitive or agent-aimed text. Any
+  other write goes to the proposal queue, and the result has `held_because`. It
+  refuses deletes. Phone captures go to the queue.
+- `open` allows `write_memory` and `delete_memory`. You must choose it.
 - `propose` stores write proposals in the local config directory. It does not
-  add them to the vault before approval. It refuses deletes. This is the
-  default whenever `config.toml` has no `mcp_write_policy` line, however Mora
-  was started (`mora init`, `mora setup`, or `mora mcp serve` on a machine that
-  was never initialized).
+  add them to the vault before approval. It refuses deletes.
 - `readonly` refuses writes and deletes.
 
-An explicit policy is never changed. An install created before this default
-changed that never set a policy has no `mcp_write_policy` line, so after
-upgrading it runs in `propose` too. Run `mora config mcp-write-policy open` to
-go back to direct writes.
+An explicit policy is never changed. v0.15.3 resolved an unset policy to
+`propose`. v0.15.2 and earlier resolved it to `open`. Writes still queued from
+v0.15.3 stay queued: `mora doctor` prints how many are pending, and
+`mora mcp proposals approve <id>` publishes one.
+
+A tentative memory shows in search, read, list and context with a
+`"trust":"tentative"` label. It does not reach the recall hook, the digest, the
+brief, commitments or share. List them and keep one like this:
+
+```bash
+mora confirm --list            # tentative memories
+mora confirm <memory-id>       # remove the tag; the memory becomes normal
+```
+
+`mora confirm` has no MCP tool, and it logs a `confirm` line. Both commands
+accept `--json`.
+
+The hold filter is coarse. It does not stop a false claim written in plain
+words. An agent with a shell can run `mora confirm` or
+`mora mcp proposals approve`, so tentative is a review aid, not a sandbox.
+
+Every agent write that reaches the vault (MCP stdio, the loopback HTTP
+`/call` route, companion captures, and approved proposals) appends one line to
+`<vault>/agent-writes.log`: timestamp, `write`, memory id, scope, source,
+caller (for example `mcp-stdio/claude-code` or `http`) and the title. The log
+holds no body text. To reverse one:
+
+```bash
+mora undo <memory-id>          # agent-written memories only
+mora undo --force <memory-id>  # any memory
+```
+
+`mora undo` uses the same delete path as `mora delete`, updates the index, and
+appends an `undo` line to the log. It refuses a memory an agent did not write
+unless you pass `--force`.
 
 Review staged writes locally:
 
@@ -628,7 +746,89 @@ retry or recovery command for an interrupted decision. These guarantees require
 all deciding processes to use this version and the same retained state directory;
 older binaries and manually deleted state can bypass them.
 
+### Agent profiles
 
+A profile gives one agent its own limits. Without a profile, an agent can read
+the whole vault and gets the vault-wide write policy. With a profile, Mora
+enforces the limits at its tool gate, not in the agent's prompt:
+
+- `--read-scopes`: the scopes the agent can read, for example
+  `project:acme,global`. Use `all` for every scope.
+- `--raw-sources`: show connector evidence (mail, messages, calendar entries,
+  copied files). It is off by default, so the agent sees only memories that you
+  or your agents wrote.
+- `--write`: `propose` (the default), `readonly`, or `open`. This replaces the
+  vault-wide policy for this agent only. A profile cannot use `tentative`.
+- `--tools`: the tools the agent can call. The default is `search_memory`,
+  `read_memory`, `list_memory`, and `write_memory`. Mora can filter the results
+  of these four record by record. Any other tool, `delete_memory` included,
+  needs `--read-scopes all` and `--raw-sources`. `delete_memory` also needs
+  `--write open`.
+
+```bash
+mora agents add grok --read-scopes project:acme,global
+mora agents list
+mora agents update grok --write readonly
+mora agents log grok --since 168h
+mora agents rotate grok
+mora agents revoke grok
+```
+
+`add` and `rotate` print a new token once. Mora keeps only the token's SHA-256
+hash, in `<config_dir>/agents.json` with file mode `0600`. `update` keeps the
+current token. `revoke` stops the profile at once.
+
+Run a local agent under a profile:
+
+```bash
+claude mcp add mora-grok -s user -- mora mcp serve --profile grok
+```
+
+A record the profile cannot read acts as if it does not exist: search and list
+leave it out, and `read_memory` answers "not found". A profile that writes with
+`propose` adds its writes to the same queue as the vault-wide `propose` policy,
+marked with the agent's name, and an approved memory gets the source
+`agent:<name>`.
+
+Each call adds one line to `<state_dir>/agents/<name>.jsonl`: the tool, what
+the agent asked for (its query, the ID it read, or the title it wrote, cut to
+200 characters), the result (`read`, `proposed`, `wrote`, or `refused`), and
+the IDs and scopes of the records the agent received. The line never contains
+the text of a record the agent received. `mora agents log` prints these lines.
+
+### Remote MCP for cloud agents
+
+Cloud agents, for example Grok Bot and Muse, run on the vendor's computers and
+cannot start a process on yours. `mora mcp serve-http` serves the same tools
+over Streamable HTTP, with one profile for each token:
+
+```bash
+mora mcp serve-http --port 7780 --allow-host <your-machine>.<tailnet>.ts.net
+```
+
+- The server binds only to `127.0.0.1`. To reach it from the internet, run a
+  tunnel that you control. `mora remote expose` prints the Tailscale Funnel and
+  Cloudflare tunnel commands (and the matching `mora mcp serve-http --allow-host`
+  line) and executes none of them. Mora never opens a public port itself.
+- Each request needs `Authorization: Bearer <token>`. The token selects exactly
+  one profile, and no request argument can widen that profile.
+- The server does not start when no profile is active.
+- It answers `POST /mcp` with plain JSON. It has no SSE stream (`GET` returns
+  405), accepts no batches, and refuses any request that has an `Origin` header,
+  because its callers are servers, not browsers.
+- `--allow-host` names the public host names that your tunnel forwards. Other
+  `Host` headers get 403.
+- The `initialize` reply tells the agent which scopes it can read, so that it
+  reads an empty result as "nothing matched here", not "nothing exists".
+
+Remote defaults for every profile are: hide raw sources, propose writes, and
+deny deletion. If a profile loosens any of those (`--raw-sources`, `--write open`,
+or `delete_memory` on the allowlist), `mora doctor` names the profile and the
+relaxations in both human and `--json` output (`agent_relaxations`, plus
+non-critical `agent_remote_defaults:<name>` checks).
+
+When a cloud agent reads a result, that result is under the vendor's data rules.
+Give a cloud agent only the scopes that you would give to that vendor.
 
 ### Loopback HTTP
 
@@ -750,6 +950,159 @@ hooks filter automatic recall only: MCP reads still use their existing scope
 arguments, other hooks may inject context, and previously read context remains
 in an agent's session. This installer supports Claude Code; Codex can use MCP
 but has no automatic Mora hook route.
+
+### Bash warning rules
+
+A rule warns a Claude Code agent when it runs a Bash command that matches a
+pattern. The hook never blocks a command. It is off until you add a rule,
+approve it in your own terminal and install the hook.
+
+```bash
+mora rules add --template compound-cd
+mora rules test compound-cd -- 'cd /tmp && ls'      # prints hit or miss
+mora rules approve compound-cd --mode warn --holdout
+mora hook install --pre-tool
+mora rules list
+```
+
+`rules add` writes `rules/<id>.md` in your vault. The rule stays inactive
+until you approve it. You can also write your own rule:
+
+```bash
+mora rules add --id no-sudo --match '^\s*sudo\b' --message "Do not use sudo here."
+```
+
+Patterns are Go RE2. Lookahead, lookbehind and backreferences are refused
+with a hint: put text that must be absent in `--unless`, which is checked
+against the rest of the same simple command, or remove it first with
+`--exclude`. Only the first 64 matches in a command are checked against
+`--unless`, so a very long command stays fast. `\b` and `\w` are ASCII only. Unicode spaces count as plain
+spaces.
+
+Approval happens only in your own terminal. `rules approve` and `rules off`
+refuse to run when stdin is not a terminal or when they run inside a Claude
+Code or Codex session (`CLAUDECODE`, `CODEX_SANDBOX`,
+`CODEX_SANDBOX_NETWORK_DISABLED`, `CODEX_THREAD_ID`, `CODEX_CI` or
+`CODEX_MANAGED_BY_NPM` is set).
+Codex settings that you export yourself, such as `CODEX_HOME`, do not count.
+They show the rule and ask you to type its id. An approval is bound to the
+rule's content hash and is stored per device in
+`~/.local/state/mora/rules/approvals.jsonl`, outside the vault. If the rule
+file changes later, `rules list` shows `changed since approval` and the next
+`mora rules compile` drops it until you approve it again. No MCP tool can add,
+approve or change a rule.
+
+This check stops an agent from turning on a rule by accident or in passing.
+It does not stop a determined process that runs as you: anything that can
+write to `~/.local/state/mora/rules` can change what warns.
+
+Modes:
+
+- `warn` sends the rule's message to the agent.
+- `shadow` logs matches but never sends anything.
+- `--holdout` sends the warning to only half of the sessions, picked by a hash
+  of the session id, so you can compare the warned and silent groups.
+
+`mora hook install --pre-tool` adds one `PreToolUse` entry for Bash to
+`~/.claude/settings.json`. `mora hook uninstall --pre-tool` removes only that
+entry, and `mora hook status` shows a `PreToolUse` line. The warning reaches
+the agent with the result of the command, not before the command runs, so it
+shapes the next call rather than stopping this one.
+
+The hook fails open: on any error, timeout or crash it prints nothing and the
+command goes ahead. Set `MORA_PRETOOL_OFF=1` to turn it off without
+uninstalling it. While a rule is active, each Bash call adds one line to
+`~/.local/state/mora/rules/hook.jsonl` with the time, session and tool call
+ids, the group, and which rules matched and warned. The log never contains
+the command text, the working folder, the prompt or the transcript path.
+
+### Rejected or interrupted commands
+
+`mora check` counts the commands you rejected or interrupted, and tells you
+whether an agent tried them again in a later session. It reads your local
+Claude Code and Codex transcripts and writes nothing.
+
+```bash
+mora check
+mora check --since 30d       # also 24h or 2026-11-01
+mora check --json
+```
+
+The output is safe to paste. It holds counts, dates and fixed table text only:
+no command, argument, path, prompt, host name or session id. By default it
+reads every transcript on disk. It opens only the transcript files and uses no
+network. It never follows a symlink to a transcript file or folder. A link such
+as `~/.codex` is followed only when it stays inside your home folder. Anything
+skipped shows up as `Symlinks skipped`.
+
+A correction here means one of two things that Claude Code records in a typed
+field: you said no at a permission prompt, or you pressed Esc while a tool ran.
+Mora never reads what you typed. These do not count, and each has its own line
+in the output:
+
+- a block from a rule, a hook or auto mode;
+- a sibling call that was cancelled when another call was interrupted;
+- an interrupt inside a subagent, because a parent or a task stop can end one;
+- an interrupt from a shutdown or just before a turn that a person did not start.
+
+Edit and other tools are counted but not scored, because rules cover Bash only.
+
+Two numbers answer "did it come back?". `same command` means the later command
+matches after names, numbers, hashes and free text are smoothed out, so
+`rm -rf /tmp/a/build` and `rm -rf build` match but `rm -rf dist` does not.
+`same shape` compares the short public name, such as `rm -rf`, so all three
+match. A later session is a different conversation that started after the
+rejection. A fork or a resume of the same conversation does not count, and
+neither does a session that was already running. A later call counts whether
+it ran, was rejected again or was blocked, because the number is about what
+the agent tried.
+
+With `--since`, Mora still looks at older records in the files it opens, to see
+when a session began and which commands were already rejected. It does not open
+a file last written before the cut, which has two effects. A rejection in such a
+file is unseen, so its command can land in the baseline. And a session resumed
+from such a file looks as if it began before the cut, because Mora cannot see
+that its first calls are copies. Its new work then does not count as later, so
+`--since` can show fewer repeats than a full run. Under `Sessions read`, the
+session counts cover the files Mora opened, while the call counts cover the
+window.
+
+The baseline asks the same question about commands nobody rejected or
+interrupted, once for `same command` and once for `same shape`. Compare each
+rate with its own baseline. Most shapes come back anyway, so a high `same shape`
+rate means little alone. A rate close to its baseline means the correction
+changed nothing that can be seen. Under 10 commands with a later session, Mora
+tells you to read the numbers as counts. With none, it prints no rate at all.
+
+Read these numbers with care:
+
+- A rejection does not always mean the command was wrong. The timing may have
+  been off, or you may have wanted another step first.
+- An interrupt can mean you ran out of patience with a slow command.
+- The later run may be exactly what you asked for. Mora cannot see that.
+- In auto or bypass mode you rarely see a prompt, so few commands can be
+  rejected at all. A small count comes from the mode. It does not show good
+  behavior.
+- Common commands come back anyway. Always read the rate beside the baseline.
+- `same command` merges different files that have the same name, and it misses
+  the same action on a different target. The `same shape` number shows that
+  second case.
+- One big session can dominate. In the data this was built on, one session held
+  1,113 of 1,587 calls.
+- Recent commands have no later session yet, so `With a later session` trails
+  `Commands rejected or interrupted`.
+- One rejection of parallel calls marks every call in the group. `User actions
+  behind these` shows how many separate agent messages were involved.
+- A program that answers permission prompts through the SDK looks the same as
+  a person.
+- A Claude Code session started from inside an agent's shell may save no
+  transcript, so Mora cannot see it.
+- Mora reads this machine's files only, so a repeat on another machine is
+  invisible. Claude Code also deletes old transcripts by default, after
+  `cleanupPeriodDays`.
+- Codex does not record a rejection in a form Mora can trust, so Codex prints
+  `no rejection signal`, not a zero. Codex can only repeat a command you
+  rejected in Claude Code.
 
 ## Companion
 
@@ -927,8 +1280,16 @@ The JSON report separates raw `observed` probe results from typed `diagnosis`.
 When Mora cannot prove a cause, it reports `cause_unverified`; it does not infer
 a permission problem from connector error prose. `--repair --dry-run --json`
 returns the exact safe mutation plan without changing state. Applying that plan
-requires `--yes`, records before/after verification for every action, and is
-idempotent. Doctor never applies unsafe or destructive repairs.
+requires `--yes` and records before/after verification for every action. An index
+rebuild is verified only when `index_db`, `index_fresh`, and
+`index_matches_vault` pass afterward. If a check remains failed, repair exits
+with an error and reports `verified: false` with a `detail` explaining the
+unresolved condition and why another repair would be planned. For example, a
+journal path outside the vault cannot be covered by rebuilding; its evidence
+is preserved for investigation. Successful repairs are not planned again while
+their checks remain healthy. `doctor --repair --yes` also exits 1 during a
+legitimate in-flight ingest if pending operations or non-empty journals keep the
+index dirty after repair. Doctor never applies unsafe or destructive repairs.
 
 `mora doctor --json` emits the `mora.doctor.report` v1 receipt — the same report
 it always printed, now with `schema` and `schema_version` beside its existing
@@ -1150,6 +1511,7 @@ Refresh data:
 mora sync status
 mora sync google
 mora sync github
+mora sync eywa
 mora sync filesystem
 mora sync imessage
 mora sync applecalendar
@@ -1477,6 +1839,7 @@ Ollama embedder.
 | `MORA_CONFIG_DIR` | Move the whole Mora setup root for an isolated run. Defaults for vault, data, and state move under it. |
 | `MORA_GOOGLE_CREDENTIALS` | Path to your Google installed-app OAuth client JSON. |
 | `MORA_GITHUB_TOKEN` | Read-only GitHub token. Mora does not save it. |
+| `MORA_EYWA_CLIENT_SECRET` | OAuth2 client secret of the Eywa agent. Mora does not save it. |
 | `MORA_EMBEDDER` | `static` or `ollama`. A set value overrides config. |
 | `MORA_OLLAMA_URL` | Ollama URL. Mora refuses a non-loopback address. |
 | `MORA_OLLAMA_MODEL` | Ollama embedding model name. |
@@ -1600,7 +1963,7 @@ live under the named `entities` key alongside `schema` and `schema_version`.
 The exact boundary is:
 
 - Mora reads enabled sources. It does not write to Gmail, calendars, iMessage,
-  WhatsApp, files, or GitHub Issues.
+  WhatsApp, files, or GitHub Issues. Eywa pull is read-only.
 - Google uses read-only OAuth scopes. GitHub Issues uses read-only API calls.
 - iMessage and WhatsApp use SQLite `mode=ro`. Apple Calendar uses `mode=ro` plus
   `query_only(1)` and reads the live write-ahead log.
@@ -1610,6 +1973,9 @@ The exact boundary is:
 - `mora sync git` sends plaintext to the remote you choose.
 - `mora share` sends age-encrypted authored notes to the private git or bucket
   target you choose. Cloud storage still sees sizes and timing.
+- `mora eywa push` is off until you enable it. Each run previews and asks before
+  it sends one scope of authored notes, over HTTPS, to the company memory
+  service you configured. The service decides whether each update is admitted.
 - `mora serve http` is loopback-only, but its bearer token must still be kept
   private.
 - Optional Ollama requests are loopback-only.

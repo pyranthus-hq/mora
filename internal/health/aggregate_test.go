@@ -29,6 +29,13 @@ func TestAggregateStateWorstOfAllArms(t *testing.T) {
 		{"share degraded", Health{Index: Index{State: IndexFresh, Shares: []Index{{State: IndexDegraded}}}}, Degraded}, {"share never", Health{Index: Index{State: IndexFresh, Shares: []Index{{State: IndexNever}}}}, Unhealthy}, {"share failed", Health{Index: Index{State: IndexFresh, Shares: []Index{{State: IndexFailed}}}}, Unhealthy}, {"share dirty", Health{Index: Index{State: IndexFresh, Shares: []Index{{State: IndexDirty}}}}, Unhealthy},
 		{"producer stale", Health{Producers: []Producer{{State: ProducerStale}}}, Degraded}, {"producer never", Health{Producers: []Producer{{State: ProducerNever}}}, Degraded}, {"producer failed", Health{Producers: []Producer{{State: ProducerFailed}}}, Degraded}, {"ledger", Health{Producers: []Producer{{Subject: ProducerSubjectLedger, State: ProducerFresh}}}, Unhealthy},
 		{"activity stalled", Health{Activities: []operation.Activity{{State: operation.Stalled}}}, Unhealthy}, {"activity failed", Health{Activities: []operation.Activity{{State: operation.Failed}}}, Unhealthy}, {"activity running", Health{Activities: []operation.Activity{{State: operation.Running}}}, Healthy},
+		// #498: an operator-reviewed owner_abandoned receipt stops convicting health.
+		// Only that failure code can be acknowledged, so an ordinary failure and a
+		// stalled run stay red no matter what the stamp says.
+		{"activity abandoned unacknowledged", Health{Activities: []operation.Activity{{State: operation.Failed, FailureCode: operation.FailureOwnerAbandoned}}}, Unhealthy},
+		{"activity abandoned acknowledged", Health{Sources: []Source{{State: Fresh}}, Index: Index{State: IndexFresh}, Activities: []operation.Activity{{State: operation.Failed, FailureCode: operation.FailureOwnerAbandoned, AcknowledgedAt: "2026-09-29T15:00:00Z"}}}, Healthy},
+		{"other failure not silenceable", Health{Activities: []operation.Activity{{State: operation.Failed, FailureCode: "disk_full", AcknowledgedAt: "2026-09-29T15:00:00Z"}}}, Unhealthy},
+		{"stalled not silenceable", Health{Activities: []operation.Activity{{State: operation.Stalled, FailureCode: operation.FailureOwnerAbandoned, AcknowledgedAt: "2026-09-29T15:00:00Z"}}}, Unhealthy},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -84,6 +91,9 @@ func TestAggregateBannerProducerActivityAndPriority(t *testing.T) {
 		{"ledger", Health{Producers: []Producer{{Subject: ProducerSubjectLedger, LastError: "bad\nledger"}}}, "producer ledger unreadable — bad ledger"}, {"producer never", Health{Producers: []Producer{{Name: "digest", State: ProducerNever}}}, "digest has never been produced"}, {"producer stale", Health{Producers: []Producer{{Name: "brief", State: ProducerStale, AgeHours: 9}}}, "brief has not been produced for 9h"}, {"older producer tie", Health{Producers: []Producer{{Name: "young", State: ProducerStale, AgeHours: 2}, {Name: "old", State: ProducerStale, AgeHours: 8}}}, "old has not been produced"},
 		{"failed operation", Health{Activities: []operation.Activity{{State: operation.Failed, Kind: operation.KindIndexRebuild, FailureCode: "disk_full"}}}, "index rebuild operation FAILED (disk_full)"}, {"stalled operation", Health{Activities: []operation.Activity{{State: operation.Stalled, Kind: operation.KindIngest, Phase: "fetching\nmail"}}}, "ingest operation STALLED (phase unknown)"}, {"source never", Health{Sources: []Source{{Key: "calendar", State: Never}}}, "calendar"},
 		{"source stale", Health{Sources: []Source{{Key: "mail", State: Stale, AgeHours: 9}}}, "mail"},
+		// #498: an acknowledged receipt must not keep shouting a banner the operator
+		// already acted on; the still-stale source is what the banner should report.
+		{"acknowledged operation yields", Health{Sources: []Source{{Key: "mail", State: Stale, AgeHours: 9}}, Activities: []operation.Activity{{State: operation.Failed, Kind: operation.KindIngest, FailureCode: operation.FailureOwnerAbandoned, AcknowledgedAt: "2026-09-29T15:00:00Z"}}}, "mail"},
 		{"source unknown", Health{Sources: []Source{{Key: "oddsource", State: "odd"}}}, "oddsource"},
 		{"producer failed", Health{Producers: []Producer{{Name: "digest", State: ProducerFailed, AgeHours: 4}}}, "digest has not been produced"},
 		{"producer unknown", Health{Producers: []Producer{{Name: "odd", State: "odd", AgeHours: 1}}}, "odd has not been produced"},
