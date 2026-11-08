@@ -241,8 +241,8 @@ func TestDoctorRetireAbandonedIngestDryRunApplyAndIdempotent(t *testing.T) {
 	}
 
 	var applyOut bytes.Buffer
-	if err := cmdDoctor(testCtx(t), []string{"--repair", "--yes", "--json"}, &applyOut, io.Discard); err != nil {
-		t.Fatal(err)
+	if err := cmdDoctor(testCtx(t), []string{"--repair", "--yes", "--json"}, &applyOut, io.Discard); err == nil || !strings.Contains(err.Error(), "index_fresh") {
+		t.Fatalf("uncovered journal must fail rebuild verification: %v", err)
 	}
 	var applied doctorReport
 	if err := json.Unmarshal(applyOut.Bytes(), &applied); err != nil {
@@ -269,8 +269,8 @@ func TestDoctorRetireAbandonedIngestDryRunApplyAndIdempotent(t *testing.T) {
 	}
 
 	var rerunOut bytes.Buffer
-	if err := cmdDoctor(testCtx(t), []string{"--repair", "--yes", "--json"}, &rerunOut, io.Discard); err != nil {
-		t.Fatal(err)
+	if err := cmdDoctor(testCtx(t), []string{"--repair", "--yes", "--json"}, &rerunOut, io.Discard); err == nil || !strings.Contains(err.Error(), "index_fresh") {
+		t.Fatalf("uncovered journal must remain an unresolved rebuild: %v", err)
 	}
 	var rerun doctorReport
 	if err := json.Unmarshal(rerunOut.Bytes(), &rerun); err != nil {
@@ -411,7 +411,7 @@ func TestDoctorRetirementPlanScopeAndRebuildOrder(t *testing.T) {
 			}
 			publish := func() {
 				t.Helper()
-				file := filepath.Join(cfg.VaultDir, "review-fixture.md")
+				file := filepath.Join(memoriesRoot(cfg), "review-fixture.md")
 				if err := os.WriteFile(file, []byte("---\nid: review-fixture\ntitle: Review fixture\ntype: note\n---\nFixture body.\n"), 0600); err != nil {
 					t.Fatal(err)
 				}

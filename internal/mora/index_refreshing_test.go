@@ -475,6 +475,9 @@ func TestDoctorIndexFreshPassesWhileRefreshing(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &rep); err != nil {
 		t.Fatalf("doctor --json: %v\n%s", err, out)
 	}
+	if err := verifyDoctorIndexRepair(cfg); err != nil {
+		t.Fatalf("repair verifier disagrees with healthy refreshing index: %v", err)
+	}
 	if rep.Index.State != idxRefreshing || rep.Index.PendingOps != 1 {
 		t.Fatalf("doctor index arm = %+v, want refreshing with the one pending write", rep.Index)
 	}
