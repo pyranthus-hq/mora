@@ -36,7 +36,8 @@ check(sourceSnapshot.sources?.count == 2, "enabled source list decoded")
 check(sourceSnapshot.sources?[0].lastSuccessAt != nil, "source timestamp decoded")
 check(sourceSnapshot.sources?[1].state == "provider-paused", "unknown source state is preserved")
 check(sourceSnapshot.sourcesSummary == "2 enabled · 1 fresh · 1 unknown", "source summary stays compact and honest")
-check(sourceSnapshot.aggregate == .unknown, "source health does not override device health")
+check(sourceSnapshot.deviceAggregate == .unknown, "device aggregate stays independent of source health")
+check(sourceSnapshot.sourceAggregate == .unknown, "unknown source health stays unknown")
 
 let failedSourcesJSON = #"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"id":"mac","name":"This Mac","connection":"connected","channels":[]}],"sources":[],"sources_error":"Mora doctor is unavailable."}"#
 let failedSources = try StatusSnapshot.decode(Data(failedSourcesJSON.utf8))
@@ -49,5 +50,20 @@ check(malformedSources.devices[0].connection == .connected, "malformed source he
 check(malformedSources.sourcesSummary == "Unavailable", "malformed source health is shown unavailable")
 let staleSources = try StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T08:00:00Z","devices":[],"sources":[{"key":"gmail","state":"stale"}]}"#.utf8))
 check(staleSources.sourcesSummary == "1 enabled · 1 stale", "stale source is visible in compact summary")
-let failedSource = try StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T08:00:00Z","devices":[],"sources":[{"key":"gmail","state":"failed"}]}"#.utf8))
+check(staleSources.aggregate == .stale && staleSources.menuNeedsAttention, "stale source affects overall and menu status")
+let failedSource = try StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"id":"mac","name":"This Mac","connection":"connected","channels":[{"name":"Sync","state":"healthy"}]}],"sources":[{"key":"gmail","state":"failed"}]}"#.utf8))
 check(failedSource.sourcesSummary == "1 enabled · 1 failed", "failed source is visible in compact summary")
+check(failedSource.aggregate == .failed && failedSource.menuNeedsAttention, "failed source affects overall and menu status")
+check(failedSource.deviceAggregate == .healthy, "source failure does not change the device aggregate")
+let healthySourcesJSON = #"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"id":"mac","name":"This Mac","connection":"connected","channels":[{"name":"Sync","state":"healthy"}]}],"sources":[{"key":"gmail","state":"fresh","last_success_at":"2026-11-08T07:45:00Z"}]}"#
+let healthySources = try StatusSnapshot.decode(Data(healthySourcesJSON.utf8))
+check(healthySources.aggregate == .healthy && !healthySources.menuNeedsAttention, "fresh source does not alarm")
+check(StatusSnapshot.combine(.stale, .failed) == .failed, "failed state outranks stale")
+check(StatusSnapshot.combine(.healthy, .stale) == .stale, "stale source cannot be hidden by healthy device checks")
+let mixedSourceJSON = #"{"generated_at":"2026-11-08T08:00:00Z","devices":[],"sources":[{"key":"gmail","state":"running"},{"key":"calendar","state":"provider-paused"}]}"#
+let mixedSources = try StatusSnapshot.decode(Data(mixedSourceJSON.utf8))
+check(mixedSources.sourceAggregate == .unknown, "unknown source state outranks a running peer")
+let malformedFreshJSON = #"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"id":"mac","name":"This Mac","connection":"connected","channels":[{"name":"Sync","state":"healthy"}]}],"sources":[{"key":"gmail","state":"fresh","last_success_at":"not-a-timestamp"}]}"#
+let malformedFresh = try StatusSnapshot.decode(Data(malformedFreshJSON.utf8))
+check(malformedFresh.sources?.first?.state == "unknown", "fresh source with malformed timestamp is demoted to unknown")
+check(malformedFresh.deviceAggregate == .healthy && malformedFresh.aggregate == .unknown, "malformed source timestamp cannot hide healthy device checks")

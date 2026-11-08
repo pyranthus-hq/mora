@@ -30,7 +30,26 @@ struct StatusSnapshot: Decodable {
         return result
     }
 
-    var aggregate: ChannelState { Self.aggregate(devices: devices) }
+    var deviceAggregate: ChannelState { Self.aggregate(devices: devices) }
+    var aggregate: ChannelState { Self.combine(deviceAggregate, sourceAggregate) }
+
+    var sourceAggregate: ChannelState {
+        guard sourcesError == nil, let sources, !sources.isEmpty else { return .unknown }
+        if sources.contains(where: { $0.normalizedState == "failed" }) { return .failed }
+        if sources.contains(where: { $0.normalizedState == "stale" }) { return .stale }
+        if sources.contains(where: { !["fresh", "running"].contains($0.normalizedState) }) { return .unknown }
+        if sources.contains(where: { $0.normalizedState == "running" }) { return .running }
+        return .healthy
+    }
+
+    static func combine(_ first: ChannelState, _ second: ChannelState) -> ChannelState {
+        for state in [ChannelState.failed, .stale, .unknown, .running] where first == state || second == state {
+            return state
+        }
+        return .healthy
+    }
+
+    var menuNeedsAttention: Bool { [.failed, .stale, .unknown].contains(aggregate) }
 
     static func aggregate(devices: [DeviceStatus]) -> ChannelState {
         let channels = devices.flatMap(\.channels)
@@ -74,10 +93,11 @@ struct SourceStatus: Decodable, Identifiable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         key = try c.decode(String.self, forKey: .key)
-        state = try c.decode(String.self, forKey: .state)
+        let rawState = try c.decode(String.self, forKey: .state)
         if let text = try c.decodeIfPresent(String.self, forKey: .lastSuccessAt) {
             lastSuccessAt = StatusSnapshot.date(text)
         } else { lastSuccessAt = nil }
+        state = rawState.lowercased() == "fresh" && lastSuccessAt == nil ? "unknown" : rawState
         detail = try c.decodeIfPresent(String.self, forKey: .detail)
     }
 
@@ -143,7 +163,7 @@ enum ChannelState: String, Decodable {
         switch self {
         case .healthy: "Checks passed"
         case .failed: "Needs attention"
-        case .stale: "Sync overdue"
+        case .stale: "Not fully current"
         case .unknown: "Checks incomplete"
         case .running: "In progress"
         }

@@ -7,10 +7,12 @@ each sync channel's reported state. It never changes sync state.
 The menu bar, panel, and app icon share a monochrome eye-and-tentacles mark.
 Its native 20×18pt menu image keeps a fixed footprint, including its attention dot.
 The 320pt panel opens with one compact row per device. Select a row to expand
-channel receipts and explanations; only one device expands at a time. Details
-retains the collector status response. A separate Sources row stays collapsed by
-default and expands to show enabled connectors, freshness, last recorded source sync,
-and health detail. This is independent of device connectivity.
+channel receipts and explanations; only one device expands at a time. A separate
+Sources row stays collapsed by default and expands to show enabled connectors,
+freshness, last recorded source sync, and health detail. Device rows keep their own
+aggregate; the overall status and menu icon also reflect source health and the local
+search index. A dirty index is labelled stale because its last committed snapshot may
+not include current source data. Details retains the collector status response.
 
 ## Build
 

@@ -122,13 +122,13 @@ func TestSourceHealthAcceptsUnhealthyDoctorExit2AndPreservesUnknownState(t *test
 		t.Skip("POSIX shell fixture")
 	}
 	bin := filepath.Join(t.TempDir(), "mora")
-	output := `{"schema":"mora.doctor.report","schema_version":1,"sources":[{"key":"gmail:work","state":"failed","last_success_at":"2026-11-08T07:12:00Z","last_error":"PRIVATE_FOREIGN_ACCOUNT /private/other-project","error_code":"connector.unavailable"},{"key":"calendar","state":"paused-by-policy"}]}`
+	output := `{"schema":"mora.doctor.report","schema_version":1,"sources":[{"key":"gmail:work","state":"failed","last_success_at":"2026-11-08T07:12:00Z","last_error":"PRIVATE_FOREIGN_ACCOUNT /private/other-project","error_code":"connector.unavailable"},{"key":"calendar","state":"paused-by-policy"}],"index":{"state":"dirty","indexed_at":"2026-11-08T06:54:30Z","pending_ops":46}}`
 	script := "#!/bin/sh\nprintf '%s\\n' '" + output + "'\nexit 2\n"
 	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("MORA_BIN", bin)
-	sources, detail := sourceHealth()
+	sources, detail, index := sourceHealth()
 	if detail != "" || len(sources) != 2 {
 		t.Fatalf("doctor unhealthy report was rejected: sources=%+v detail=%q", sources, detail)
 	}
@@ -141,6 +141,9 @@ func TestSourceHealthAcceptsUnhealthyDoctorExit2AndPreservesUnknownState(t *test
 	if sources[1].State != "paused-by-policy" {
 		t.Fatalf("unknown state was normalized or treated as healthy: %+v", sources[1])
 	}
+	if index.State != "stale" || index.LastSuccess != "2026-11-08T06:54:30Z" || !strings.Contains(index.Detail, "46 operations") {
+		t.Fatalf("index status was lost or overclaimed: %+v", index)
+	}
 }
 
 func TestSourceHealthMalformedAndUnavailableAreExplicit(t *testing.T) {
@@ -152,12 +155,38 @@ func TestSourceHealthMalformedAndUnavailableAreExplicit(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("MORA_BIN", bin)
-	if sources, detail := sourceHealth(); len(sources) != 0 || detail == "" {
+	if sources, detail, index := sourceHealth(); len(sources) != 0 || detail == "" || index.State != "unknown" {
 		t.Fatalf("malformed response was not marked unavailable: %+v, %q", sources, detail)
 	}
 	t.Setenv("MORA_BIN", filepath.Join(t.TempDir(), "missing"))
-	if sources, detail := sourceHealth(); len(sources) != 0 || detail == "" {
+	if sources, detail, index := sourceHealth(); len(sources) != 0 || detail == "" || index.State != "unknown" {
 		t.Fatalf("missing helper was not marked unavailable: %+v, %q", sources, detail)
+	}
+}
+
+func TestIndexChannelUsesFreshnessWithoutOverclaimingDirtySnapshots(t *testing.T) {
+	fresh := indexChannel(&doctorIndex{State: "fresh", IndexedAt: "2026-11-08T08:54:30Z"})
+	if fresh.State != "healthy" || fresh.LastSuccess != "2026-11-08T08:54:30Z" {
+		t.Fatalf("valid fresh index not represented: %+v", fresh)
+	}
+	malformed := indexChannel(&doctorIndex{State: "fresh", IndexedAt: "not-a-time"})
+	if malformed.State != "unknown" {
+		t.Fatalf("fresh index with malformed timestamp overclaims health: %+v", malformed)
+	}
+	dirty := indexChannel(&doctorIndex{State: "dirty", IndexedAt: "2026-11-08T08:54:30Z", PendingOps: 46})
+	if dirty.State != "stale" || !strings.Contains(dirty.Detail, "last committed snapshot") || !strings.Contains(dirty.Detail, "46 operations") {
+		t.Fatalf("dirty index is not visibly stale: %+v", dirty)
+	}
+	for _, index := range []*doctorIndex{{State: "failed"}, {State: "fresh", Blocked: true}} {
+		if got := indexChannel(index); got.State != "failed" {
+			t.Fatalf("failed or blocked index not reported as failed: %+v", got)
+		}
+	}
+	if got := indexChannel(nil); got.State != "unknown" {
+		t.Fatalf("missing index not unknown: %+v", got)
+	}
+	if got := indexChannel(&doctorIndex{State: "refreshing"}); got.State != "unknown" {
+		t.Fatalf("unrecognized index state was normalized: %+v", got)
 	}
 }
 
@@ -209,6 +238,9 @@ func TestAggregatedWindowsDropsUnverifiedReturnButStandaloneKeepsIt(t *testing.T
 	}
 	if got := aggregateRemoteChannels("devbox", channels); len(got) != 2 {
 		t.Fatalf("standalone/non-Windows status was changed: %+v", got)
+	}
+	if got := aggregateRemoteDetail("windows", "WSL backend · archive and gateway are separate"); got != "Personal archive pull + scoped gateway; full Windows-origin return not configured." {
+		t.Fatalf("Windows detail overstates return coverage: %q", got)
 	}
 }
 
