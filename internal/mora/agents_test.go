@@ -22,6 +22,7 @@ func seedAgentFixture(t *testing.T) Config {
 	for _, m := range []Memory{
 		{ID: "mem_granted", Scope: "project:widget", Type: "fact", Source: "mcp", Title: "Widget plan", Text: "widgetrun granted alpha", CreatedAt: "2026-09-01T00:00:00Z"},
 		{ID: "gmail_thread/raw1", Scope: "project:widget", Type: "email", Source: "raw1", Provider: "gmail", ProviderID: "raw1", Title: "Widget mail", Text: "widgetrun rawsecret mail body", CreatedAt: "2026-09-02T00:00:00Z"},
+		{ID: "eywa/session/raw2", Scope: "project:widget", Type: "fact", Source: "eywa", Provider: "eywa", ProviderID: "raw2", Title: "Widget Eywa", Text: "widgetrun eywasecret", CreatedAt: "2026-09-04T00:00:00Z"},
 		{ID: "mem_personal", Scope: "personal", Type: "fact", Source: "mcp", Title: "Personal note", Text: "widgetrun personalsecret", CreatedAt: "2026-09-03T00:00:00Z"},
 	} {
 		if err := writeMemory(cfg, m); err != nil {
@@ -56,7 +57,7 @@ func TestAgentProfileNeverReturnsRawSourcesOrForeignScopes(t *testing.T) {
 		tool string
 		args map[string]any
 	}{
-		{"search_memory", map[string]any{"query": "widgetrun"}},
+		{"search_memory", map[string]any{"query": "widgetrun", "confidence": true}},
 		{"list_memory", map[string]any{"limit": 50}},
 	} {
 		got, err := callMCPTool(ctx, tc.tool, tc.args)
@@ -64,7 +65,7 @@ func TestAgentProfileNeverReturnsRawSourcesOrForeignScopes(t *testing.T) {
 			t.Fatalf("%s: %v", tc.tool, err)
 		}
 		body := mustJSON(t, got)
-		for _, leak := range []string{"rawsecret", "personalsecret", "gmail_thread/raw1", "mem_personal", "Widget mail", "Personal note", "/vault/"} {
+		for _, leak := range []string{"rawsecret", "eywasecret", "eywa/session/raw2", "2026-09-04T00:00:00Z", "personalsecret", "gmail_thread/raw1", "mem_personal", "Widget mail", "Personal note", "/vault/"} {
 			if strings.Contains(body, leak) {
 				t.Fatalf("%s leaked %q to the profile: %s", tc.tool, leak, body)
 			}
@@ -74,7 +75,7 @@ func TestAgentProfileNeverReturnsRawSourcesOrForeignScopes(t *testing.T) {
 		}
 	}
 
-	for _, id := range []string{"gmail_thread/raw1", "mem_personal"} {
+	for _, id := range []string{"gmail_thread/raw1", "eywa/session/raw2", "mem_personal"} {
 		if got, err := callMCPTool(ctx, "read_memory", map[string]any{"id": id}); err == nil || !strings.Contains(err.Error(), "not found") {
 			t.Fatalf("read_memory(%s) = %v, %v; want not found", id, got, err)
 		}
@@ -108,14 +109,19 @@ func TestAgentFilterHidesPositionsAndCountsOfHiddenRows(t *testing.T) {
 			map[string]any{"evidence_id": "gmail_thread/raw1", "position": 1},
 			map[string]any{"evidence_id": "mem_granted", "position": 2},
 		},
-		"results_truncated": 3,
+		"results_truncated":       3,
+		"confidence":              map[string]any{"freshest_source_at": "hidden-date"},
+		"health":                  map[string]any{"state": "unhealthy", "index": "dirty", "per_source": map[string]any{"filesystem:secret": "failed"}, "sources_omitted": 2, "banner": "secret source failed"},
+		"excluded_by_disposition": 4,
+		"shares_unhealthy":        []any{map[string]any{"name": "secret-share"}},
+		"query_correlation_id":    "hidden-correlation",
 	}
 	got, kept, err := filterAgentResult(museProfile(), "search_memory", map[string]any{"query": "widgetrun"}, value)
 	if err != nil {
 		t.Fatal(err)
 	}
 	body := mustJSON(t, got)
-	if strings.Contains(body, "raw1") || strings.Contains(body, "results_truncated") {
+	if strings.Contains(body, "raw1") || strings.Contains(body, "results_truncated") || strings.Contains(body, "hidden") || strings.Contains(body, "secret") || strings.Contains(body, "excluded_by_disposition") || strings.Contains(body, "sources_omitted") {
 		t.Fatalf("filtered result still shows the hidden row: %s", body)
 	}
 	if ranking := mustJSON(t, got.(map[string]any)["ranking"]); ranking != `[{"evidence_id":"mem_granted","position":1}]` {
@@ -201,8 +207,8 @@ func TestAgentWritePreservesIndexWarningWithoutReceipt(t *testing.T) {
 		t.Fatalf("saved memory lost from write result: %v", result)
 	}
 	files, err := allMemoryFiles(cfg)
-	if err != nil || len(files) != 4 {
-		t.Fatalf("vault files after one write = %v, %v; want four", files, err)
+	if err != nil || len(files) != 5 {
+		t.Fatalf("vault files after one write = %v, %v; want five", files, err)
 	}
 }
 
@@ -227,8 +233,8 @@ func TestAgentFailedWriteIncludesReceiptError(t *testing.T) {
 		t.Fatalf("failed write returned a success value: %v", got)
 	}
 	files, err := allMemoryFiles(cfg)
-	if err != nil || len(files) != 3 {
-		t.Fatalf("vault files after failed write = %v, %v; want original three", files, err)
+	if err != nil || len(files) != 4 {
+		t.Fatalf("vault files after failed write = %v, %v; want original four", files, err)
 	}
 }
 
