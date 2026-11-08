@@ -112,7 +112,7 @@ func worstShareIndex(shares []Index) *Index {
 	worstRank := 99
 	for i := range shares {
 		s := &shares[i]
-		if s.State == IndexFresh {
+		if s.State == IndexFresh || s.State == IndexRefreshing {
 			continue
 		}
 		rank := indexBannerRank(s.State)
@@ -127,7 +127,7 @@ func worstShareIndex(shares []Index) *Index {
 // shareIndexBannerLine renders a subscription index alarm line.
 func shareIndexBannerLine(idx Index) string {
 	switch idx.State {
-	case IndexFresh, "":
+	case IndexFresh, IndexRefreshing, "":
 		return ""
 	case IndexNever:
 		return "🔴 MORA HEALTH: subscription index has never been built. Run: mora doctor"
@@ -146,10 +146,14 @@ func shareIndexBannerLine(idx Index) string {
 	}
 }
 
-// indexBannerLineWithActivity renders the index arm's alarm line, or "" when fresh.
+// indexBannerLineWithActivity renders the index arm's alarm line, or "" when
+// fresh or refreshing. The banner is an alarm channel: `doctor --pulse` exits 2
+// and posts a toast on any non-empty banner, and the recall hook prepends it to
+// every prompt. A refreshing index needs no action, so it renders nothing here;
+// health.index and the write response carry that state instead.
 func indexBannerLineWithActivity(idx Index, activities []operation.Activity) string {
 	switch idx.State {
-	case IndexFresh, "":
+	case IndexFresh, IndexRefreshing, "":
 		return ""
 	case IndexNever:
 		return "🔴 MORA HEALTH: search index has never been built. Run: mora index rebuild"

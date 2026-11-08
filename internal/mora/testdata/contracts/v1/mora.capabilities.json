@@ -75,6 +75,14 @@
     {
       "json_contract": "exempt",
       "kind": "subcommand",
+      "path": "hook pre-tool-use",
+      "payload": "",
+      "platform": "all",
+      "reason": "Claude Code owns this stdout: the command emits Claude Code's hookSpecificOutput envelope, not a Mora payload, prints nothing on its silent paths, and always exits 0"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
       "path": "hook recall",
       "payload": "",
       "platform": "all",
@@ -103,6 +111,46 @@
       "payload": "",
       "platform": "all",
       "reason": "long-running JSON-RPC server; its protocol is the contract"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "rules add",
+      "payload": "",
+      "platform": "all",
+      "reason": "writes one vault rule file and prints a text confirmation; the rule stays inactive until approved"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "rules approve",
+      "payload": "",
+      "platform": "all",
+      "reason": "interactive approval at a person's own terminal; non-interactive and agent-session callers are refused"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "rules compile",
+      "payload": "",
+      "platform": "all",
+      "reason": "state rebuild with a text confirmation; it can only drop rules, never add one"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "rules off",
+      "payload": "",
+      "platform": "all",
+      "reason": "interactive approval at a person's own terminal; non-interactive and agent-session callers are refused"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "rules test",
+      "payload": "",
+      "platform": "all",
+      "reason": "prints hit or miss as text for one command and never logs"
     },
     {
       "json_contract": "exempt",
@@ -260,6 +308,14 @@
       "json_contract": "exempt",
       "kind": "verb",
       "path": "retention",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "rules",
       "payload": "",
       "platform": "all",
       "reason": "dispatch-only group; a bare invocation is a usage error"
@@ -827,6 +883,14 @@
     {
       "json_contract": "receipt",
       "kind": "verb",
+      "path": "confirm",
+      "payload": "mora.confirm",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
       "path": "delete",
       "payload": "mora.delete",
       "platform": "all",
@@ -853,6 +917,14 @@
       "kind": "verb",
       "path": "reingest",
       "payload": "mora.reingest",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
+      "path": "undo",
+      "payload": "mora.undo",
       "platform": "all",
       "reason": ""
     },
@@ -1027,6 +1099,14 @@
     {
       "json_contract": "result",
       "kind": "subcommand",
+      "path": "rules list",
+      "payload": "mora.rules.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
       "path": "schedule list",
       "payload": "mora.schedule.list",
       "platform": "all",
@@ -1149,6 +1229,14 @@
       "kind": "verb",
       "path": "capabilities",
       "payload": "mora.capabilities",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "verb",
+      "path": "check",
+      "payload": "mora.check",
       "platform": "all",
       "reason": ""
     },
@@ -1587,6 +1675,10 @@
       "version": 1
     },
     {
+      "name": "mora.check",
+      "version": 1
+    },
+    {
       "name": "mora.companion.context",
       "version": 1
     },
@@ -1624,6 +1716,10 @@
     },
     {
       "name": "mora.config.mmr",
+      "version": 1
+    },
+    {
+      "name": "mora.confirm",
       "version": 1
     },
     {
@@ -1800,6 +1896,10 @@
     },
     {
       "name": "mora.retention.report",
+      "version": 1
+    },
+    {
+      "name": "mora.rules.list",
       "version": 1
     },
     {
@@ -1984,6 +2084,10 @@
     },
     {
       "name": "mora.think",
+      "version": 1
+    },
+    {
+      "name": "mora.undo",
       "version": 1
     },
     {

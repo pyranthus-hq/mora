@@ -277,4 +277,4 @@ jobs:
           VER=8.21.2
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" \
             | tar -xz gitleaks
-          ./gitleaks detect --source . --redact --no-banner --exit-code 1
+          ./gitleaks detect --source . --redact --no-banner --exit-code 1 -v
