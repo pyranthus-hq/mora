@@ -10,6 +10,8 @@ if [ -z "$COLLECTOR" ] || [ ! -x "$COLLECTOR" ]; then
   exit 2
 fi
 mkdir -p "$APP_DIR/Contents/MacOS"
+mkdir -p "$APP_DIR/Contents/Resources"
+go run ./cmd/genicns docs/assets/mora-eye.svg "$APP_DIR/Contents/Resources/Mora.icns"
 swiftc -O -target arm64-apple-macos13.0 -framework SwiftUI -framework AppKit \
   apps/mora-menubar/Sources/StatusData.swift apps/mora-menubar/Sources/MoraStatusApp.swift \
   -o "$APP_DIR/Contents/MacOS/Mora Status"
@@ -25,6 +27,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
   <key>LSUIElement</key><true/>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>CFBundleExecutable</key><string>Mora Status</string>
+  <key>CFBundleIconFile</key><string>Mora</string>
 </dict></plist>
 PLIST
 echo "Built $APP_DIR"

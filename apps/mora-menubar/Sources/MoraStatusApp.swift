@@ -10,14 +10,36 @@ struct MoraStatusApp: App {
 
     init() { _model = StateObject(wrappedValue: StatusModel(preview: CommandLine.arguments.contains("--preview"))) }
 
+    private var needsAttention: Bool {
+        model.error != nil || model.snapshot?.aggregate == .failed || model.snapshot?.aggregate == .stale
+    }
+
     var body: some Scene {
         MenuBarExtra {
             StatusPanel(model: model)
         } label: {
-            Label("Mora", systemImage: model.error != nil ? "exclamationmark.circle.fill" : (model.snapshot?.aggregate.symbol ?? "circle.dashed"))
-                .accessibilityLabel("Mora Status")
+            HStack(spacing: 4) {
+                MoraMark(size: 18)
+                Text("Mora")
+                if needsAttention {
+                    Image(systemName: "exclamationmark.circle.fill")
+                }
+            }
+            .accessibilityLabel(needsAttention ? "Mora Status, needs attention" : "Mora Status")
         }
         .menuBarExtraStyle(.window)
+    }
+}
+
+private struct MoraMark: View {
+    let size: CGFloat
+    private static let icon = NSImage(named: "Mora") ?? NSImage(systemSymbolName: "eye", accessibilityDescription: "Mora")!
+
+    var body: some View {
+        Image(nsImage: Self.icon).renderingMode(.original)
+            .resizable().interpolation(.none).scaledToFit()
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
     }
 }
 
@@ -144,6 +166,7 @@ struct StatusPanel: View {
                     .font(.system(size: 11, weight: .semibold)).foregroundStyle(.purple)
             }
             HStack(alignment: .center) {
+                MoraMark(size: 38)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Mora").font(.system(size: 19, weight: .semibold))
                     Label(headline, systemImage: headlineSymbol)
