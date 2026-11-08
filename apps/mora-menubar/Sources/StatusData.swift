@@ -18,9 +18,10 @@ struct StatusSnapshot: Decodable {
         let value = try c.decode(String.self, forKey: .generatedAt)
         generatedAt = Self.date(value)
         devices = try c.decode([DeviceStatus].self, forKey: .devices)
-        sources = try c.decodeIfPresent([SourceStatus].self, forKey: .sources)
-        let error = try c.decodeIfPresent(String.self, forKey: .sourcesError)
-        sourcesError = error?.isEmpty == true ? nil : error
+        do { sources = try c.decodeIfPresent([SourceStatus].self, forKey: .sources) }
+        catch { sources = nil }
+        let reportedError = try c.decodeIfPresent(String.self, forKey: .sourcesError)
+        sourcesError = reportedError ?? (sources == nil ? "Connector source health is unavailable." : nil)
     }
 
     static func decode(_ data: Data) throws -> StatusSnapshot {
@@ -29,42 +30,99 @@ struct StatusSnapshot: Decodable {
         return result
     }
 
-    var aggregate: ChannelState {
-        var states = devices.flatMap(\.channels).map(\.state) + (sources ?? []).map(\.state)
-        if devices.isEmpty || devices.flatMap(\.channels).isEmpty || sources == nil || sourcesError != nil {
-            states.append(.unknown)
-        }
-        guard !states.isEmpty else { return .unknown }
-        if states.contains(.failed) { return .failed }
-        if states.contains(.stale) { return .stale }
-        if states.contains(.unknown) { return .unknown }
-        if states.contains(.running) { return .running }
+    var deviceAggregate: ChannelState { Self.aggregate(devices: devices) }
+    var aggregate: ChannelState { Self.combine(deviceAggregate, sourceAggregate) }
+
+    var sourceAggregate: ChannelState {
+        guard sourcesError == nil, let sources, !sources.isEmpty else { return .unknown }
+        if sources.contains(where: { $0.normalizedState == "failed" }) { return .failed }
+        if sources.contains(where: { $0.normalizedState == "stale" }) { return .stale }
+        if sources.contains(where: { !["fresh", "running"].contains($0.normalizedState) }) { return .unknown }
+        if sources.contains(where: { $0.normalizedState == "running" }) { return .running }
         return .healthy
+    }
+
+    static func combine(_ first: ChannelState, _ second: ChannelState) -> ChannelState {
+        for state in [ChannelState.failed, .stale, .unknown, .running] where first == state || second == state {
+            return state
+        }
+        return .healthy
+    }
+
+    var menuNeedsAttention: Bool { [.failed, .stale, .unknown].contains(aggregate) }
+
+    static func aggregate(devices: [DeviceStatus]) -> ChannelState {
+        let channels = devices.flatMap(\.channels)
+        guard !devices.isEmpty, !channels.isEmpty else { return .unknown }
+        if channels.contains(where: { $0.state == .failed }) { return .failed }
+        if channels.contains(where: { $0.state == .stale }) { return .stale }
+        if channels.contains(where: { $0.state == .unknown }) { return .unknown }
+        if devices.contains(where: { $0.connection != .connected || $0.channels.isEmpty }) { return .unknown }
+        if channels.contains(where: { $0.state == .running }) { return .running }
+        return .healthy
+    }
+
+    var sourcesSummary: String {
+        guard sourcesError == nil, let sources else { return "Unavailable" }
+        guard !sources.isEmpty else { return "No enabled sources" }
+        let fresh = sources.filter { $0.normalizedState == "fresh" }.count
+        let stale = sources.filter { $0.normalizedState == "stale" }.count
+        let failed = sources.filter { $0.normalizedState == "failed" }.count
+        let never = sources.filter { $0.normalizedState == "never" }.count
+        let running = sources.filter { $0.normalizedState == "running" }.count
+        var parts = ["\(sources.count) enabled"]
+        if fresh > 0 { parts.append("\(fresh) fresh") }
+        if stale > 0 { parts.append("\(stale) stale") }
+        if failed > 0 { parts.append("\(failed) failed") }
+        if never > 0 { parts.append("\(never) never synced") }
+        if running > 0 { parts.append("\(running) running") }
+        let known = fresh + stale + failed + never + running
+        if known < sources.count { parts.append("\(sources.count - known) unknown") }
+        return parts.joined(separator: " · ")
     }
 }
 
 struct SourceStatus: Decodable, Identifiable {
     let key: String
-    let rawState: String
+    let state: String
+    let lastSuccessAt: Date?
     let detail: String?
-    let lastSuccessAt: String?
     var id: String { key }
-    var state: ChannelState {
-        switch rawState {
-        case "fresh": .healthy
-        case "failed": .failed
-        case "stale": .stale
-        case "running": .running
-        default: .unknown
+
+    enum CodingKeys: String, CodingKey { case key, state, lastSuccessAt = "last_success_at", detail }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        key = try c.decode(String.self, forKey: .key)
+        let rawState = try c.decode(String.self, forKey: .state)
+        if let text = try c.decodeIfPresent(String.self, forKey: .lastSuccessAt) {
+            lastSuccessAt = StatusSnapshot.date(text)
+        } else { lastSuccessAt = nil }
+        state = rawState.lowercased() == "fresh" && lastSuccessAt == nil ? "unknown" : rawState
+        detail = try c.decodeIfPresent(String.self, forKey: .detail)
+    }
+
+    var normalizedState: String { state.lowercased() }
+    var label: String {
+        switch normalizedState {
+        case "fresh": "Fresh"
+        case "stale": "Stale"
+        case "failed": "Failed"
+        case "never": "Never synced"
+        default: state.replacingOccurrences(of: "_", with: " ").capitalized
         }
     }
-    var lastSuccess: Date? { lastSuccessAt.flatMap(StatusSnapshot.date) }
-    enum CodingKeys: String, CodingKey {
-        case key, rawState = "state", detail, lastSuccessAt = "last_success_at"
+    var symbol: String {
+        switch normalizedState {
+        case "fresh": "checkmark.circle.fill"
+        case "stale": "clock.fill"
+        case "failed": "xmark.circle.fill"
+        default: "questionmark.circle.fill"
+        }
     }
 }
 
 struct DeviceStatus: Decodable, Identifiable {
+    var state: ChannelState { StatusSnapshot.aggregate(devices: [self]) }
     let id: String
     let name: String
     let connection: ConnectionState
@@ -101,6 +159,15 @@ enum ConnectionState: String, Decodable {
 
 enum ChannelState: String, Decodable {
     case healthy, failed, stale, unknown, running
+    var summary: String {
+        switch self {
+        case .healthy: "Checks passed"
+        case .failed: "Needs attention"
+        case .stale: "Not fully current"
+        case .unknown: "Checks incomplete"
+        case .running: "In progress"
+        }
+    }
     var label: String {
         switch self {
         case .healthy: "Healthy"

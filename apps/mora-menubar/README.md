@@ -2,13 +2,23 @@
 
 Standalone native macOS 13+ menu bar companion. It probes through the bundled
 `mora-tentacles` collector and displays connection reachability separately from
-each sync channel's reported state. The Connectors section shows local source health,
-last successful syncs and diagnostic codes. Connector failures affect the overall
-status; missing connector health is shown as unknown. It never changes sync state.
+each sync channel's reported state. It never changes sync state.
+
+The menu bar, panel, and app icon share a monochrome eye-and-tentacles mark.
+Its native 20×18pt menu image keeps a fixed footprint, including its attention dot.
+The 320pt panel opens with one compact row per device. Select a row to expand
+channel receipts and explanations; only one device expands at a time. A separate
+Sources row stays collapsed by default and expands to show enabled connectors,
+freshness, last recorded source sync, and health detail. Device rows keep their own
+aggregate; the overall status and menu icon also reflect source health and the local
+search index. A dirty index is labelled stale because its last committed snapshot may
+not include current source data. Details retains the collector status response.
 
 ## Build
 
 From the repository root, build after the collector is available:
+
+Requires macOS Swift command-line tools and iconutil. The bundle icon is rendered from the same vector drawing as the menu mark.
 
 ```sh
 ./apps/mora-menubar/build.sh ./path/to/mora-tentacles
@@ -41,4 +51,5 @@ Preview mode uses clearly labelled fixture data and does not run the collector.
 ```
 
 This exercises failed, stale, unknown, malformed, and independent connection
-states using the same Foundation parser as the app.
+states, source summaries, unknown source states, timestamps, and unavailable probes
+using the same Foundation parser as the app.

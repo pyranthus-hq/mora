@@ -1,3 +1,4 @@
+import Darwin
 import AppKit
 import SwiftUI
 
@@ -9,14 +10,32 @@ struct MoraStatusApp: App {
 
     init() { _model = StateObject(wrappedValue: StatusModel(preview: CommandLine.arguments.contains("--preview"))) }
 
+    private var needsAttention: Bool {
+        guard model.error == nil, let snapshot = model.snapshot else { return true }
+        return snapshot.menuNeedsAttention
+    }
+
     var body: some Scene {
         MenuBarExtra {
             StatusPanel(model: model)
         } label: {
-            Image(systemName: model.error != nil ? "exclamationmark.circle.fill" : (model.snapshot?.aggregate.symbol ?? "circle.dashed"))
-                .accessibilityLabel("Mora Status")
+            Image(nsImage: needsAttention ? MenuBarIcon.attention : MenuBarIcon.normal)
+            .accessibilityLabel(needsAttention ? "Mora Status, needs attention" : "Mora Status")
+            .help(needsAttention ? "Mora — needs attention" : "Mora")
         }
         .menuBarExtraStyle(.window)
+    }
+}
+
+private struct MoraMark: View {
+    let size: CGFloat
+    private static let icon = MenuBarIcon.normal
+
+    var body: some View {
+        Image(nsImage: Self.icon).renderingMode(.template)
+            .resizable().scaledToFit()
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
     }
 }
 
@@ -25,9 +44,11 @@ final class PreviewWindowDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard CommandLine.arguments.contains("--preview") else { return }
         let view = StatusPanel(model: StatusModel(preview: true), isPreview: true)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 360), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 300), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Mora Status Preview · fixture data"
-        window.contentView = NSHostingView(rootView: view)
+        let hosting = NSHostingView(rootView: view)
+        window.contentView = hosting
+        window.setContentSize(hosting.fittingSize)
         window.center()
         window.makeKeyAndOrderFront(nil)
         self.window = window
@@ -44,11 +65,13 @@ final class StatusModel: ObservableObject {
 
     private var timer: Timer?
     private let collector: URL
+    private let preview: Bool
 
     init(preview: Bool = false) {
+        self.preview = preview
         collector = Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("mora-tentacles")
         if preview {
-            snapshot = try? StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"id":"mac","name":"This Mac (sample)","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked.","last_success":"2026-11-08T07:45:00Z"},{"name":"Personal archive","state":"stale","detail":"Fixture data — displayed to demonstrate a stale channel.","last_success":"2026-11-07T07:45:00Z"}]}],"sources":[{"key":"gmail (sample)","state":"failed","detail":"Fixture data — example connector failure."}]}"#.utf8))
+            snapshot = try? StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"id":"mac","name":"This Mac","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked.","last_success":"2026-11-08T07:45:00Z"},{"name":"Personal archive","state":"stale","detail":"Fixture data — displayed to demonstrate a stale channel.","last_success":"2026-11-07T07:45:00Z"}]},{"id":"devbox","name":"Devbox","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked."}]},{"id":"windows","name":"Windows (WSL)","connection":"connected","channels":[{"name":"Windows → Mac","state":"unknown","detail":"Fixture data — return path not configured."}]}],"sources":[{"key":"gmail:work","state":"fresh","last_success_at":"2026-11-08T07:45:00Z","detail":"Fixture data — no source content was read."},{"key":"calendar","state":"stale","last_success_at":"2026-11-07T07:45:00Z","detail":"Fixture data — stale connector example."},{"key":"imessage","state":"provider-paused","detail":"Fixture data — unknown state example."}]}"#.utf8))
             lastUpdated = Date()
             detailText = "PREVIEW FIXTURE — no collector was run and no sync was checked."
             return
@@ -60,7 +83,7 @@ final class StatusModel: ObservableObject {
     }
 
     func refresh() async {
-        guard !isRefreshing else { return }
+        guard !preview, !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
         do {
@@ -82,16 +105,36 @@ final class StatusModel: ObservableObject {
         let process = Process()
         process.executableURL = url
         process.arguments = ["--config", NSString(string: "~/.config/mora-tentacles/config.json").expandingTildeInPath]
-        let stdout = Pipe(), stderr = Pipe()
+        // File-backed output avoids a full pipe blocking the collector before exit.
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let outURL = directory.appendingPathComponent("stdout")
+        let errURL = directory.appendingPathComponent("stderr")
+        FileManager.default.createFile(atPath: outURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        FileManager.default.createFile(atPath: errURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        let stdout = try FileHandle(forWritingTo: outURL), stderr = try FileHandle(forWritingTo: errURL)
+        defer { try? stdout.close(); try? stderr.close() }
         process.standardOutput = stdout
         process.standardError = stderr
         try process.run()
         let deadline = Date().addingTimeInterval(30)
         while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
-        if process.isRunning { process.terminate(); process.waitUntilExit(); throw StatusError.collector("Collector timed out after 30 seconds.") }
-        let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let error = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        return (output, error, process.terminationStatus)
+        if process.isRunning {
+            process.terminate()
+            let stopDeadline = Date().addingTimeInterval(1)
+            while process.isRunning && Date() < stopDeadline { Thread.sleep(forTimeInterval: 0.05) }
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            throw StatusError.collector("Collector timed out after 30 seconds.")
+        }
+        func boundedText(_ url: URL) throws -> String {
+            let file = try FileHandle(forReadingFrom: url)
+            defer { try? file.close() }
+            let data = try file.read(upToCount: 1_048_577) ?? Data()
+            guard data.count <= 1_048_576 else { throw StatusError.collector("Collector response exceeded the size limit.") }
+            return String(data: data, encoding: .utf8) ?? ""
+        }
+        return (try boundedText(outURL), try boundedText(errURL), process.terminationStatus)
     }
 }
 
@@ -99,147 +142,236 @@ struct StatusPanel: View {
     @ObservedObject var model: StatusModel
     var isPreview = false
     @State private var showDetails = false
+    @State private var expandedDevice: String?
+    @State private var expandedSources = false
 
     private var headline: String {
-        if model.isRefreshing && model.snapshot == nil { return "Checking" }
-        if model.error != nil && model.snapshot == nil { return "Unavailable" }
-        if model.error != nil { return "Showing previous result" }
-        return model.snapshot?.aggregate.label ?? "Unavailable"
+        if model.isRefreshing && model.snapshot == nil { return "Checking…" }
+        if model.error != nil { return model.snapshot == nil ? "Unavailable" : "Previous result" }
+        return model.snapshot?.aggregate.summary ?? "Checking…"
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 15) {
+        VStack(alignment: .leading, spacing: 12) {
             if isPreview {
-                Label("PREVIEW · fixture data", systemImage: "eye")
-                    .font(.system(size: 10, weight: .semibold)).foregroundStyle(.purple)
+                Text("PREVIEW · fixture data").font(.system(size: 10)).foregroundStyle(.secondary)
             }
-            HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Mora").font(.system(size: 19, weight: .semibold))
-                    Label(headline, systemImage: headlineSymbol)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(headlineColor)
+            HStack(spacing: 9) {
+                MoraMark(size: 26)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Mora").font(.system(size: 15, weight: .semibold))
+                    Text(headline).font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button { Task { await model.refresh() } } label: {
-                    Image(systemName: model.isRefreshing ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
+                    Image(systemName: "arrow.clockwise").font(.system(size: 12))
                 }
-                .buttonStyle(.borderless)
-                .disabled(model.isRefreshing)
-                .help("Refresh now")
+                .buttonStyle(.borderless).disabled(model.isRefreshing)
+                .accessibilityLabel("Refresh status").help("Refresh status")
             }
 
             if let error = model.error {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 11)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                Text(error).font(.system(size: 11)).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if let snapshot = model.snapshot {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(spacing: 0) {
                         ForEach(snapshot.devices) { device in
                             deviceRow(device)
-                            Divider()
+                            if device.id != snapshot.devices.last?.id { Divider() }
                         }
-                        Text("Connectors · This Mac").font(.system(size: 13, weight: .semibold))
-                        if let error = snapshot.sourcesError {
-                            Label(error, systemImage: ChannelState.unknown.symbol)
-                                .font(.system(size: 11)).foregroundStyle(.orange)
-                        }
-                        if let sources = snapshot.sources {
-                            if sources.isEmpty && snapshot.sourcesError == nil {
-                                Text("No connectors reported").font(.system(size: 11)).foregroundStyle(.secondary)
-                            }
-                            ForEach(sources) { source in
-                                statusRow(name: source.key, state: source.state, detail: source.detail, lastSuccess: source.lastSuccess)
-                            }
-                        } else {
-                            Label("Connector health unavailable", systemImage: ChannelState.unknown.symbol)
-                                .font(.system(size: 11)).foregroundStyle(.orange)
-                        }
+                        Divider()
+                        sourceRow(snapshot)
                     }
-                }.frame(maxHeight: 460)
-                if let lastUpdated = model.lastUpdated {
-                    Text("Updated \(lastUpdated.formatted(.relative(presentation: .named)))")
-                        .font(.system(size: 10)).foregroundStyle(.secondary)
-                }
+                }.frame(height: listHeight(snapshot.devices))
             } else if model.error == nil {
-                HStack { ProgressView().controlSize(.small); Text("Checking tentacles…").foregroundStyle(.secondary) }
-                    .font(.system(size: 12)).padding(.vertical, 12)
-            } else {
-                Text("No status data is available yet.").font(.system(size: 12)).foregroundStyle(.secondary)
+                ProgressView().controlSize(.small).padding(.vertical, 8)
             }
 
             Divider()
-            HStack {
-                Button("Open details") { showDetails = true }.buttonStyle(.link).font(.system(size: 11))
+            HStack(spacing: 12) {
+                if let lastUpdated = model.lastUpdated {
+                    HStack(spacing: 3) {
+                        Text("Checked")
+                        Text(lastUpdated, style: .relative)
+                        Text("ago")
+                    }.foregroundStyle(.secondary).accessibilityElement(children: .combine)
+                }
                 Spacer()
-                Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.borderless).font(.system(size: 11))
-            }
+                Button("Details") { showDetails = true }.buttonStyle(.borderless)
+                Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.borderless)
+            }.font(.system(size: 10))
         }
-        .padding(16)
-        .frame(width: 400)
+        .padding(14)
+        .frame(width: 320)
+        .fixedSize(horizontal: false, vertical: true)
         .sheet(isPresented: $showDetails) {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Collector details").font(.headline)
-                Text(model.detailText).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                ScrollView { Text(model.detailText).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .topLeading) }
                 HStack { Spacer(); Button("Done") { showDetails = false }.keyboardShortcut(.defaultAction) }
             }.padding(16).frame(width: 500, height: 330)
         }
     }
 
-    @ViewBuilder private func deviceRow(_ device: DeviceStatus) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 7) {
-                Image(systemName: device.connection == .connected ? "laptopcomputer" : "laptopcomputer.and.arrow.down")
-                    .foregroundStyle(device.connection == .connected ? Color.secondary : Color.orange)
-                Text(device.name).font(.system(size: 13, weight: .semibold))
-                Spacer()
-                Text(device.connection.rawValue.capitalized).font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            if let detail = device.detail, !detail.isEmpty {
-                Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            if device.channels.isEmpty {
-                Label("No channel data", systemImage: ChannelState.unknown.symbol)
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            ForEach(device.channels) { channel in
-                statusRow(name: channel.name, state: channel.state, detail: channel.detail, lastSuccess: channel.lastSuccess)
-                    .padding(.leading, 22)
-            }
-        }.padding(.vertical, 2)
-    }
-
-    private func statusRow(name: String, state: ChannelState, detail: String?, lastSuccess: Date?) -> some View {
-        HStack(alignment: .top, spacing: 7) {
-            Image(systemName: state.symbol).foregroundStyle(color(for: state)).frame(width: 14)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text(name).font(.system(size: 11, weight: .medium))
+    private func deviceRow(_ device: DeviceStatus) -> some View {
+        let expanded = expandedDevice == device.id
+        return VStack(alignment: .leading, spacing: 0) {
+            Button {
+                expandedDevice = expanded ? nil : device.id
+            } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: device.state.symbol)
+                        .foregroundStyle(color(for: device.state)).frame(width: 14)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(device.name).font(.system(size: 12, weight: .medium))
+                        Text(device.state.summary).font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
                     Spacer()
-                    Text(state.label).font(.system(size: 10)).foregroundStyle(color(for: state))
+                    Text(device.connection.rawValue.capitalized).font(.system(size: 10)).foregroundStyle(.secondary)
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+                }.frame(height: 52).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(device.name), \(device.connection.rawValue), \(device.state.summary)")
+            .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+            .accessibilityHint("Show or hide channel details")
+
+            if expanded {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if let detail = device.detail, !detail.isEmpty {
+                            Text(detail).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if device.connection != .connected {
+                            Text("Device unavailable; channel results may be cached.").foregroundStyle(.orange)
+                        }
+                        if device.channels.isEmpty { Text("No channel data").foregroundStyle(.secondary) }
+                        ForEach(device.channels) { channel in
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack {
+                                    Text(channel.name).fontWeight(.medium)
+                                    Spacer()
+                                    Text(channel.state.label).foregroundStyle(color(for: channel.state))
+                                }
+                                if let last = channel.lastSuccess {
+                                    Text("\(channel.name == "Search index" ? "Last indexed snapshot" : "Last success") \(last.formatted(.relative(presentation: .named)))")
+                                        .foregroundStyle(.secondary)
+                                }
+                                if let detail = channel.detail, !detail.isEmpty {
+                                    Text(detail).foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
+                    }.font(.system(size: 10)).frame(maxWidth: .infinity, alignment: .leading)
                 }
-                if let detail, !detail.isEmpty {
-                    Text(detail).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-                if let lastSuccess {
-                    Text("Last success \(lastSuccess.formatted(.relative(presentation: .named)))")
-                        .font(.system(size: 10)).foregroundStyle(.secondary)
-                }
+                .frame(height: channelHeight(device))
+                .padding(.leading, 23).padding(.bottom, 10)
             }
         }
     }
 
-    private var headlineSymbol: String {
-        if model.error != nil { return "exclamationmark.circle.fill" }
-        return model.snapshot?.aggregate.symbol ?? "questionmark.circle"
+    private func channelHeight(_ device: DeviceStatus) -> CGFloat {
+        min(240, CGFloat(max(1, device.channels.count)) * 82 + (device.detail == nil ? 0 : 30))
     }
-    private var headlineColor: Color {
-        if model.error != nil { return .orange }
-        return model.snapshot.map { color(for: $0.aggregate) } ?? .secondary
+
+    private func listHeight(_ devices: [DeviceStatus]) -> CGFloat {
+        let rows = CGFloat(devices.count * 52 + max(0, devices.count - 1))
+        let expanded = devices.first { $0.id == expandedDevice }.map { channelHeight($0) + 10 } ?? 0
+        let sourceHeight: CGFloat
+        if expandedSources, let snapshot = model.snapshot {
+            if let sourcesError = snapshot.sourcesError { sourceHeight = min(100, CGFloat(sourcesError.count / 45 + 50)) }
+            else { sourceHeight = min(220, CGFloat(max(1, snapshot.sources?.count ?? 0)) * 58) }
+        } else { sourceHeight = 0 }
+        return min(400, rows + 50 + expanded + sourceHeight)
     }
+
+    private func sourceRow(_ snapshot: StatusSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button { expandedSources.toggle() } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: sourceSummarySymbol(snapshot))
+                        .foregroundStyle(sourceSummaryColor(snapshot)).frame(width: 14)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Sources").font(.system(size: 12, weight: .medium))
+                        Text(model.error == nil ? snapshot.sourcesSummary : "Previous · \(snapshot.sourcesSummary)")
+                            .font(.system(size: 10)).foregroundStyle(model.error == nil ? Color.secondary : Color.orange)
+                    }
+                    Spacer()
+                    Image(systemName: expandedSources ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+                }.frame(height: 48).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Enabled connector sources, \(snapshot.sourcesSummary)")
+            .accessibilityValue(expandedSources ? "Expanded" : "Collapsed")
+            .accessibilityHint("Show or hide connector freshness details")
+
+            if expandedSources {
+                VStack(alignment: .leading, spacing: 9) {
+                    if model.error != nil {
+                        Text("Previous snapshot — source results may be stale.")
+                            .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let error = snapshot.sourcesError {
+                        Text(error).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    } else if let sources = snapshot.sources {
+                        if sources.isEmpty {
+                            Text("No enabled sources.").foregroundStyle(.secondary)
+                        }
+                        ForEach(sources) { source in
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: source.symbol).foregroundStyle(sourceColor(source))
+                                    Text(source.key).fontWeight(.medium)
+                                    Spacer()
+                                    Text(source.label).foregroundStyle(sourceColor(source))
+                                }
+                                if let last = source.lastSuccessAt {
+                                    Text("Last source sync \(last.formatted(.relative(presentation: .named)))")
+                                        .foregroundStyle(.secondary)
+                                }
+                                if let detail = source.detail, !detail.isEmpty {
+                                    Text(detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
+                    } else {
+                        Text("Source checks unavailable.").foregroundStyle(.secondary)
+                    }
+                }
+                .font(.system(size: 10)).frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 23).padding(.bottom, 10)
+            }
+        }
+    }
+
+    private func sourceColor(_ source: SourceStatus) -> Color {
+        switch source.normalizedState { case "fresh": .green; case "stale": .orange; case "failed": .red; default: .secondary }
+    }
+    private func sourceSummarySymbol(_ snapshot: StatusSnapshot) -> String {
+        if model.error != nil { return "questionmark.circle.fill" }
+        if snapshot.sourcesError != nil || snapshot.sources == nil { return "questionmark.circle.fill" }
+        if snapshot.sources?.contains(where: { $0.normalizedState == "failed" }) == true { return "xmark.circle.fill" }
+        if snapshot.sources?.contains(where: { $0.normalizedState == "stale" }) == true { return "clock.fill" }
+        if snapshot.sources?.isEmpty == false && snapshot.sources?.allSatisfy({ $0.normalizedState == "fresh" }) == true { return "checkmark.circle.fill" }
+        return "questionmark.circle.fill"
+    }
+    private func sourceSummaryColor(_ snapshot: StatusSnapshot) -> Color {
+        if model.error != nil { return .secondary }
+        if snapshot.sourcesError != nil || snapshot.sources == nil { return .secondary }
+        if snapshot.sources?.contains(where: { $0.normalizedState == "failed" }) == true { return .red }
+        if snapshot.sources?.contains(where: { $0.normalizedState == "stale" }) == true { return .orange }
+        if snapshot.sources?.isEmpty == false && snapshot.sources?.allSatisfy({ $0.normalizedState == "fresh" }) == true { return .green }
+        return .secondary
+    }
+
     private func color(for state: ChannelState) -> Color {
         switch state { case .healthy: .green; case .failed: .red; case .stale: .orange; case .unknown, .running: .secondary }
     }
