@@ -30,6 +30,7 @@ struct StatusSnapshot: Decodable {
         if channels.contains(where: { $0.state == .failed }) { return .failed }
         if channels.contains(where: { $0.state == .stale }) { return .stale }
         if channels.contains(where: { $0.state == .unknown }) { return .unknown }
+        if devices.contains(where: { $0.connection != .connected || $0.channels.isEmpty }) { return .unknown }
         if channels.contains(where: { $0.state == .running }) { return .running }
         return .healthy
     }

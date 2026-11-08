@@ -1,3 +1,4 @@
+import Darwin
 import AppKit
 import SwiftUI
 
@@ -13,7 +14,7 @@ struct MoraStatusApp: App {
         MenuBarExtra {
             StatusPanel(model: model)
         } label: {
-            Image(systemName: model.snapshot?.aggregate.symbol ?? "circle.dashed")
+            Label("Mora", systemImage: model.error != nil ? "exclamationmark.circle.fill" : (model.snapshot?.aggregate.symbol ?? "circle.dashed"))
                 .accessibilityLabel("Mora Status")
         }
         .menuBarExtraStyle(.window)
@@ -44,8 +45,10 @@ final class StatusModel: ObservableObject {
 
     private var timer: Timer?
     private let collector: URL
+    private let preview: Bool
 
     init(preview: Bool = false) {
+        self.preview = preview
         collector = Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("mora-tentacles")
         if preview {
             snapshot = try? StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"id":"mac","name":"This Mac (sample)","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked.","last_success":"2026-11-08T07:45:00Z"},{"name":"Personal archive","state":"stale","detail":"Fixture data — displayed to demonstrate a stale channel.","last_success":"2026-11-07T07:45:00Z"}]}]}"#.utf8))
@@ -60,7 +63,7 @@ final class StatusModel: ObservableObject {
     }
 
     func refresh() async {
-        guard !isRefreshing else { return }
+        guard !preview, !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
         do {
@@ -82,16 +85,36 @@ final class StatusModel: ObservableObject {
         let process = Process()
         process.executableURL = url
         process.arguments = ["--config", NSString(string: "~/.config/mora-tentacles/config.json").expandingTildeInPath]
-        let stdout = Pipe(), stderr = Pipe()
+        // File-backed output avoids a full pipe blocking the collector before exit.
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let outURL = directory.appendingPathComponent("stdout")
+        let errURL = directory.appendingPathComponent("stderr")
+        FileManager.default.createFile(atPath: outURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        FileManager.default.createFile(atPath: errURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        let stdout = try FileHandle(forWritingTo: outURL), stderr = try FileHandle(forWritingTo: errURL)
+        defer { try? stdout.close(); try? stderr.close() }
         process.standardOutput = stdout
         process.standardError = stderr
         try process.run()
         let deadline = Date().addingTimeInterval(30)
         while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
-        if process.isRunning { process.terminate(); process.waitUntilExit(); throw StatusError.collector("Collector timed out after 30 seconds.") }
-        let output = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let error = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        return (output, error, process.terminationStatus)
+        if process.isRunning {
+            process.terminate()
+            let stopDeadline = Date().addingTimeInterval(1)
+            while process.isRunning && Date() < stopDeadline { Thread.sleep(forTimeInterval: 0.05) }
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            throw StatusError.collector("Collector timed out after 30 seconds.")
+        }
+        func boundedText(_ url: URL) throws -> String {
+            let file = try FileHandle(forReadingFrom: url)
+            defer { try? file.close() }
+            let data = try file.read(upToCount: 1_048_577) ?? Data()
+            guard data.count <= 1_048_576 else { throw StatusError.collector("Collector response exceeded the size limit.") }
+            return String(data: data, encoding: .utf8) ?? ""
+        }
+        return (try boundedText(outURL), try boundedText(errURL), process.terminationStatus)
     }
 }
 
@@ -104,14 +127,21 @@ struct StatusPanel: View {
         if model.isRefreshing && model.snapshot == nil { return "Checking" }
         if model.error != nil && model.snapshot == nil { return "Unavailable" }
         if model.error != nil { return "Showing previous result" }
-        return model.snapshot?.aggregate.label ?? "Unavailable"
+        guard let state = model.snapshot?.aggregate else { return "Unavailable" }
+        switch state {
+        case .healthy: return "Recent checks passed"
+        case .failed: return "Needs attention"
+        case .stale: return "Sync overdue"
+        case .unknown: return "Checks incomplete"
+        case .running: return "Sync in progress"
+        }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 15) {
             if isPreview {
                 Label("PREVIEW · fixture data", systemImage: "eye")
-                    .font(.system(size: 10, weight: .semibold)).foregroundStyle(.purple)
+                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(.purple)
             }
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -135,13 +165,17 @@ struct StatusPanel: View {
             }
 
             if let snapshot = model.snapshot {
+                ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
                 ForEach(snapshot.devices) { device in
                     deviceRow(device)
                     if device.id != snapshot.devices.last?.id { Divider() }
                 }
+                }
+                }.frame(maxHeight: 470)
                 if let lastUpdated = model.lastUpdated {
                     Text("Updated \(lastUpdated.formatted(.relative(presentation: .named)))")
-                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
             } else if model.error == nil {
                 HStack { ProgressView().controlSize(.small); Text("Checking tentacles…").foregroundStyle(.secondary) }
@@ -162,8 +196,8 @@ struct StatusPanel: View {
         .sheet(isPresented: $showDetails) {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Collector details").font(.headline)
-                Text(model.detailText).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                ScrollView { Text(model.detailText).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading) }
                 HStack { Spacer(); Button("Done") { showDetails = false }.keyboardShortcut(.defaultAction) }
             }.padding(16).frame(width: 500, height: 330)
         }
@@ -192,14 +226,14 @@ struct StatusPanel: View {
                         HStack {
                             Text(channel.name).font(.system(size: 11, weight: .medium))
                             Spacer()
-                            Text(channel.state.label).font(.system(size: 10)).foregroundStyle(color(for: channel.state))
+                            Text(channel.state.label).font(.system(size: 11)).foregroundStyle(color(for: channel.state))
                         }
                         if let detail = channel.detail, !detail.isEmpty {
-                            Text(detail).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
                         if let last = channel.lastSuccess {
                             Text("Last success \(last.formatted(.relative(presentation: .named)))")
-                                .font(.system(size: 10)).foregroundStyle(.secondary)
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
                         }
                     }
                 }.padding(.leading, 22)

@@ -19,4 +19,8 @@ do {
     _ = try StatusSnapshot.decode(Data("not json".utf8))
     check(false, "malformed input must throw")
 } catch { }
+
+let disconnected = try StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"id":"off","name":"Offline","connection":"offline","channels":[{"name":"cached","state":"healthy"}]}]}"#.utf8))
+check(disconnected.aggregate == .unknown, "offline peer cannot make the overall state healthy")
+
 print("StatusData checks passed")
