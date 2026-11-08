@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/pyranthus-hq/mora/internal/config"
 	"os"
 	"path/filepath"
@@ -673,6 +674,45 @@ func TestBeginUnknownCoverageIsIngestOnly(t *testing.T) {
 			}
 			if !visible {
 				t.Fatal("newer success hid uncovered abandonment from health")
+			}
+		})
+	}
+}
+
+func TestBeginIngestProbesOnlyEligibleCandidatesOnce(t *testing.T) {
+	for _, candidateCount := range []int{0, 2} {
+		t.Run(fmt.Sprint(candidateCount), func(t *testing.T) {
+			cfg := config.Config{StateDir: t.TempDir()}
+			oldAlive := ProcessAlive
+			ProcessAlive = func(pid int) bool { return pid == 4343 }
+			t.Cleanup(func() { ProcessAlive = oldAlive })
+			for i := 0; i < 4+candidateCount; i++ {
+				rec := Record{SchemaVersion: SchemaVersion, Kind: KindIngest, State: Running, RunID: fmt.Sprintf("op_%d", i), OwnerPID: 4242, StartedAt: operationTestNow.Add(-time.Hour).Format(time.RFC3339Nano), HeartbeatAt: operationTestNow.Add(-time.Hour).Format(time.RFC3339Nano), Phase: "fetching"}
+				switch i {
+				case 0:
+					rec.OwnerPID = 4343 // Expired but live.
+				case 1:
+					rec.HeartbeatAt = operationTestNow.Format(time.RFC3339Nano)
+				case 2:
+					rec.State = Completed
+					rec.FinishedAt = operationTestNow.Format(time.RFC3339Nano)
+				case 3:
+					rec.SchemaVersion = SchemaVersion + 1
+				}
+				if err := SaveRecord(Path(cfg, KindIngest, rec.RunID), rec); err != nil {
+					t.Fatal(err)
+				}
+			}
+			calls := 0
+			if _, err := BeginIngest(cfg, "starting", operationTestNow, func() (UncoveredRuns, error) { calls++; return UncoveredRuns{}, nil }); err != nil {
+				t.Fatal(err)
+			}
+			want := 0
+			if candidateCount > 0 {
+				want = 1
+			}
+			if calls != want {
+				t.Fatalf("probe calls = %d, want %d", calls, want)
 			}
 		})
 	}
