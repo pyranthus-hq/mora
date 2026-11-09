@@ -1841,6 +1841,39 @@ func ingestIMessage(cfg Config, s Source, out io.Writer) (int, error) {
 	return result.Materialized, err
 }
 
+// writeIMessageConversation publishes a conversation and repairs missing PDF memories.
+func writeIMessageConversation(cfg Config, mm memory.MappedMemory) (bool, error) {
+	wrote, err := writeMappedMemoryDetailed(cfg, mm)
+	if err != nil {
+		return false, err
+	}
+	if !wrote {
+		missing := mm
+		missing.Attachments = nil
+		for _, a := range mm.Attachments {
+			if a.Path == "" || !isPDFAttachment(a) {
+				continue
+			}
+			derived := memory.MappedMemory{
+				StableID: "att_" + memory.ContentHash(mm.StableID+":"+a.Path),
+				Provider: mm.Provider,
+			}
+			info, err := os.Stat(ingestpkg.MappedTargetPath(cfg, derived))
+			if err != nil || !info.Mode().IsRegular() {
+				missing.Attachments = append(missing.Attachments, a)
+			}
+		}
+		if len(missing.Attachments) == 0 {
+			return false, nil
+		}
+		mm = missing
+	}
+	if _, err := writeAttachmentMemories(cfg, mm); err != nil {
+		return false, err
+	}
+	return wrote, nil
+}
+
 func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Writer) (sourceIngestResult, error) {
 	if runtimeGOOS() != "darwin" {
 		if out != nil {
@@ -1901,14 +1934,11 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 
 	prog := newProgress(out, s.Name, "conversations")
 	write := func(mm memory.MappedMemory) (bool, error) {
-		wrote, err := writeMappedMemoryDetailed(cfg, mm)
+		wrote, err := writeIMessageConversation(cfg, mm)
 		if err != nil {
 			return false, err
 		}
 		if wrote {
-			if _, err := writeAttachmentMemories(cfg, mm); err != nil {
-				return false, err
-			}
 			prog.tick()
 			if sink != nil {
 				sink.AddWritten()
