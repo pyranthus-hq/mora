@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pyranthus-hq/mora/internal/atomicio"
+
 	"golang.org/x/oauth2"
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/gmail/v1"
@@ -115,11 +117,7 @@ func saveTokenAt(path string, tok *oauth2.Token, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := atomicio.WriteDurable(path, b, 0o600); err != nil {
 		return err
 	}
 	// Best-effort: the account is the token filename minus ".json"

@@ -308,6 +308,7 @@ func TestGg_SaveTokenAtErrorPaths(t *testing.T) {
 	now := time.Date(2026, 6, 15, 8, 30, 0, 0, time.UTC)
 	tok := &oauth2.Token{AccessToken: "a", RefreshToken: "r"}
 
+	// AC-003.2: The parent creation error still propagates.
 	t.Run("mkdirall fails when a path component is a file", func(t *testing.T) {
 		dir := t.TempDir()
 		blocker := filepath.Join(dir, "blocker")
@@ -321,18 +322,22 @@ func TestGg_SaveTokenAtErrorPaths(t *testing.T) {
 		}
 	})
 
-	t.Run("writefile fails when temp path is a directory", func(t *testing.T) {
+	// AC-001.1 AC-001.2 AC-001.3 AC-003.1 AC-003.3
+	// This regression fails with the old fixed temporary filename.
+	t.Run("save succeeds when temp path is a directory", func(t *testing.T) {
 		dir := t.TempDir()
-		// Pre-create google.json.tmp as a DIRECTORY so the atomic-write step fails.
+		// A foreign directory at the old temporary path must not block saving.
 		if err := os.MkdirAll(filepath.Join(dir, "google.json.tmp"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		err := saveTokenAt(filepath.Join(dir, "google.json"), tok, now)
-		if err == nil {
-			t.Fatal("saveTokenAt must fail when the temp file path is a directory")
+		if err != nil {
+			t.Fatal("saveTokenAt failed with a directory at the old temporary path")
 		}
+		assertSavedToken(t, filepath.Join(dir, "google.json"), tok)
 	})
 
+	// AC-003.2: Publication onto a non-empty directory still fails.
 	t.Run("rename fails onto a non-empty directory", func(t *testing.T) {
 		dir := t.TempDir()
 		// Pre-create google.json as a NON-EMPTY directory: WriteFile(tmp) succeeds

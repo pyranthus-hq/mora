@@ -1,6 +1,7 @@
 package google
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -233,5 +234,73 @@ func TestOpenBrowserRejectsInvalidURLs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// assertSavedToken checks JSON and permissions without exposing token contents.
+func assertSavedToken(t *testing.T, path string, want *oauth2.Token) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got oauth2.Token
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal("saved token is not valid JSON")
+	}
+	if !reflect.DeepEqual(&got, want) {
+		t.Fatal("saved token does not match")
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("token permissions = %o, want 600", info.Mode().Perm())
+		}
+	}
+}
+
+func TestSaveTokenAtDurable(t *testing.T) {
+	now := time.Date(2026, 6, 15, 8, 30, 0, 0, time.UTC)
+	tok := &oauth2.Token{AccessToken: "fake-access", RefreshToken: "fake-refresh", TokenType: "Bearer", Expiry: now.Add(time.Hour)}
+	// AC-001.4 AC-002.1
+	t.Run("fresh directory", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "tokens", "google.json")
+		if err := saveTokenAt(path, tok, now); err != nil {
+			t.Fatal("saveTokenAt failed")
+		}
+		assertSavedToken(t, path, tok)
+		assertNoTokenTemps(t, filepath.Dir(path))
+	})
+	// AC-002.2
+	t.Run("replace existing token", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "google.json")
+		if err := saveTokenAt(path, &oauth2.Token{AccessToken: "fake-old"}, now); err != nil {
+			t.Fatal("initial saveTokenAt failed")
+		}
+		if err := saveTokenAt(path, tok, now); err != nil {
+			t.Fatal("replacement saveTokenAt failed")
+		}
+		assertSavedToken(t, path, tok)
+		assertNoTokenTemps(t, filepath.Dir(path))
+	})
+}
+
+func assertNoTokenTemps(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().IsRegular() && strings.HasSuffix(entry.Name(), ".tmp") {
+			t.Fatal("temporary file remains after save")
+		}
 	}
 }
