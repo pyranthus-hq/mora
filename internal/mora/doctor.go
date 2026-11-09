@@ -853,7 +853,12 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 	// iMessage readiness prints in a dedicated ORDERED block so the Full Disk
 	// Access guidance reads top-to-bottom (Surface 3).
-	printIMessageReadiness(cfg, stdout, false)
+	for _, source := range sources {
+		if source.Type == "imessage" && source.IsEnabled() {
+			printIMessageReadiness(cfg, stdout, false)
+			break
+		}
+	}
 	for _, source := range sources {
 		if source.Type == "whatsapp" && source.IsEnabled() {
 			printWhatsAppReadiness(cfg, stdout)
