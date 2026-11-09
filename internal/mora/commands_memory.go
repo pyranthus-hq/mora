@@ -396,6 +396,9 @@ func cmdDelete(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if err != nil {
 		return err
 	}
+	if err := refuseConnectorDelete(m); err != nil {
+		return err
+	}
 	reconcile, err := deleteMemoryFile(ctx, cfg, m)
 	if err != nil {
 		return err
@@ -417,6 +420,14 @@ func cmdDelete(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		}
 	}
 	return rerr
+}
+
+// refuseConnectorDelete keeps connector evidence intact and points to lasting suppression.
+func refuseConnectorDelete(m Memory) error {
+	if m.Provider != "" {
+		return fmt.Errorf("memory %s came from a connector; a later sync can restore it. Use mora forget --chat %s --yes", m.ID, m.ID)
+	}
+	return nil
 }
 
 // deleteMemoryFile removes one memory from the vault and the index. It is the

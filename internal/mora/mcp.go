@@ -1016,6 +1016,9 @@ func mcpDeleteMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	if err != nil {
 		return nil, err
 	}
+	if err := refuseConnectorDelete(m); err != nil {
+		return nil, err
+	}
 	// Mark the delete BEFORE removing the file (A5 row 5). A rebuild that fails
 	// after the file is gone would keep serving the deleted content; the pending
 	// op both reddens the index and suppresses the id on every read path (B4),
