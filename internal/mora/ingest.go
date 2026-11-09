@@ -2525,6 +2525,7 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 	manifestPath := filesystemManifestPath(cfg, s.Name)
 	priorManifest := loadFilesystemManifest(manifestPath)
 	nextManifest := make(map[string]filesystemManifestEntry, len(priorManifest))
+	var danglingErrors []error
 	ignore := map[string]bool{".git": true, "node_modules": true, "dist": true, "build": true, ".next": true, ".venv": true, "__pycache__": true, "site-packages": true, ".tox": true, "vendor": true, ".gradle": true, ".idea": true}
 	err = filepath.WalkDir(s.Path, func(path string, d fs.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
@@ -2557,7 +2558,15 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 		if d.Type()&os.ModeSymlink != 0 {
 			target, err := os.Stat(path)
 			if err != nil {
-				return fmt.Errorf("reading filesystem source %q symlink target %q metadata: %w", s.Name, path, err)
+				targetErr := fmt.Errorf("reading filesystem source %q symlink target %q metadata: %w", s.Name, path, err)
+				if !errors.Is(err, fs.ErrNotExist) {
+					return targetErr
+				}
+				if prior, ok := priorManifest[rel]; ok {
+					nextManifest[rel] = prior
+				}
+				danglingErrors = append(danglingErrors, targetErr)
+				return nil
 			}
 			if !target.Mode().IsRegular() {
 				return fmt.Errorf("filesystem source %q symlink target %q is not a regular file", s.Name, path)
@@ -2681,6 +2690,7 @@ func ingestFilesystemDetailed(ctx context.Context, cfg Config, s Source, out io.
 			err = fmt.Errorf("persist filesystem incremental manifest: %w", manifestErr)
 		}
 	}
+	err = errors.Join(append(danglingErrors, err)...)
 	// Record freshness so the brief/digest classifies this source by its real sync
 	// health (new/no-changes/stale) instead of "unavailable (sync error)". Filesystem
 	// has no fetcher Status of its own, so the walk persists one here — mirroring what
