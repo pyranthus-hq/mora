@@ -136,6 +136,7 @@ func TestSmokeMCPSearchRoundtrip(t *testing.T) {
 	}
 }
 
+// AC-002.1
 func TestDoctorReportsInjectedWindowsPlatform(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
@@ -155,6 +156,9 @@ func TestDoctorReportsInjectedWindowsPlatform(t *testing.T) {
 		t.Fatalf("doctor platform = %q, want windows", rep.Platform)
 	}
 
+	if err := saveSources(mustConfig(t), []Source{{Name: "imessage", Type: "imessage"}}); err != nil {
+		t.Fatal(err)
+	}
 	var text bytes.Buffer
 	if err := cmdDoctor(testCtx(t), nil, &text, testStderr); err != nil {
 		t.Fatal(err)
