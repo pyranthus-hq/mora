@@ -889,9 +889,10 @@ func createMemory(ctx context.Context, cfg Config, m Memory, opts ...createOptio
 		m.Trust = memory.TrustTentative
 	}
 	for attempt := 0; attempt < maxCreateAttempts; attempt++ {
-		m.ID = newIDFn()
 		if options.explicitID != "" {
 			m.ID = options.explicitID
+		} else {
+			m.ID = newIDFn()
 		}
 		body, err := renderMemory(m)
 		if err != nil {

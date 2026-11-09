@@ -280,7 +280,6 @@ func teachMemory(ctx context.Context, args []string, stdout io.Writer) error {
 			entry.Reason = "mora teach memory " + decision
 		}
 
-		var replacementOp pendingOp
 		if decision != teachMemoryRetract {
 			if *title == "" || *text == "" {
 				return errors.New("correct and supersede require --title and --text")
@@ -306,8 +305,8 @@ func teachMemory(ctx context.Context, args []string, stdout io.Writer) error {
 			if replacement.Type == "decision" {
 				replacement.Decision = decisionValidityFromFlags(replacement.CreatedAt, *asOf, *durability, *flip, *reviewBy)
 			}
-			replacement, replacementOp, err = createMemory(ctx, cfg, replacement)
-			if err != nil {
+			replacement.ID = newIDFn()
+			if _, err := memoryPath(cfg, replacement); err != nil {
 				return err
 			}
 			entry.ReplacementID = replacement.ID
@@ -315,14 +314,23 @@ func teachMemory(ctx context.Context, args []string, stdout io.Writer) error {
 
 		op, err := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindRebuild, MemoryID: entry.TargetID})
 		if err != nil {
-			return rollbackTeachReplacement(cfg, replacement, replacementOp, err)
+			return err
 		}
 		stored, err = appendGovernanceEntryLocked(cfg, governance, entry)
 		if err != nil {
 			if unmarkErr := unmarkIndexDirty(cfg, op.OpID); unmarkErr != nil {
 				err = errors.Join(err, fmt.Errorf("cannot clear abandoned Teach rebuild marker: %w", unmarkErr))
 			}
-			return rollbackTeachReplacement(cfg, replacement, replacementOp, err)
+			return err
+		}
+		if entry.ReplacementID != "" {
+			replacement, _, err = createMemory(ctx, cfg, replacement, withExplicitMemoryID(entry.ReplacementID))
+			if err != nil {
+				if _, revokeErr := governanceStore(cfg).RevokeLocked(stored.ID); revokeErr != nil {
+					return errors.Join(err, fmt.Errorf("cannot revoke failed Teach revision: %w", revokeErr))
+				}
+				return err
+			}
 		}
 		return nil
 

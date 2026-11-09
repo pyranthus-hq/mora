@@ -196,6 +196,11 @@ func (s Store) Revoke(id string) (bool, error) {
 		return false, err
 	}
 	defer release()
+	return s.RevokeLocked(id)
+}
+
+// RevokeLocked revokes an entry while the caller holds the governance lease.
+func (s Store) RevokeLocked(id string) (bool, error) {
 	g, err := s.Load()
 	if err != nil {
 		return false, err
