@@ -8,6 +8,8 @@ import (
 	"io"
 	"sort"
 	"strings"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 // cmdMerge implements `mora merge` — the P13 one-tap confirm-queue for cross-channel
@@ -342,7 +344,7 @@ func loadGraphMemories(cfg Config) ([]Memory, error) {
 		if err != nil {
 			continue
 		}
-		if governance.memoryVisible(m.ID) {
+		if governance.memoryVisible(m.ID) && !memory.IsTentative(m) {
 			out = append(out, m)
 		}
 	}
