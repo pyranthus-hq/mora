@@ -45,6 +45,13 @@ func givenLinesOf(t *testing.T, cfg Config) []givenLine {
 	return out
 }
 
+func gc(g givenLine) int {
+	if g.Count == nil {
+		return -1
+	}
+	return *g.Count
+}
+
 func sortedCopy(in []string) []string {
 	out := append([]string{}, in...)
 	sort.Strings(out)
@@ -68,7 +75,7 @@ func TestGivenSessionStartLogsExactEmittedIDs(t *testing.T) {
 	}
 	g := lines[0]
 	if g.Surface != "hook-session-start" || g.Kind != "project-brief" || g.Caller != "claude-code" || g.Scope != pbScope ||
-		g.Dir != filepath.Join(dir, "sub") || g.Count != 2 || g.More != 0 || !g.Written || !reflect.DeepEqual(sortedCopy(g.IDs), sortedCopy(wantIDs)) {
+		g.Dir != dir || gc(g) != 2 || *g.More != 0 || g.Written == nil || !*g.Written || !reflect.DeepEqual(sortedCopy(g.IDs), sortedCopy(wantIDs)) {
 		t.Fatalf("line = %+v, want ids %v", g, wantIDs)
 	}
 	if !strings.Contains(got, "Use pnpm") || !strings.Contains(got, "Tabs ban") || strings.Contains(got, "Private") {
@@ -81,7 +88,7 @@ func TestGivenSessionStartLogsExactEmittedIDs(t *testing.T) {
 	defer stubHookBrief(t, "daily brief body")()
 	pbHook(t, t.TempDir())
 	lines = givenLinesOf(t, cfg)
-	if len(lines) != 2 || lines[1].Kind != "daily-brief" || lines[1].Count != 0 || len(lines[1].IDs) != 0 || lines[1].Dir == "" {
+	if len(lines) != 2 || lines[1].Kind != "daily-brief" || gc(lines[1]) != 0 || len(lines[1].IDs) != 0 || lines[1].Dir == "" {
 		t.Fatalf("daily line = %+v", lines)
 	}
 	// A hook that prints nothing logs nothing.
@@ -100,7 +107,8 @@ func TestGivenRecallLogsOnlyPrintedIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	input := `{"prompt":"What did we decide about eelpout recall token alpha?","cwd":"/work/eelpout"}`
+	cwdDir := t.TempDir()
+	input := fmt.Sprintf(`{"prompt":"What did we decide about eelpout recall token alpha?","cwd":%q}`, cwdDir)
 	if err := cmdHook(testCtx(t), []string{"recall"}, &out, testStderr, strings.NewReader(input)); err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +121,7 @@ func TestGivenRecallLogsOnlyPrintedIDs(t *testing.T) {
 		t.Fatalf("printed %v, lines %+v", printed, lines)
 	}
 	g := lines[0]
-	if g.Surface != "hook-recall" || g.Kind != "recall" || g.Count != 3 || g.More != 0 || g.Dir != "/work/eelpout" || !reflect.DeepEqual(g.IDs, printed) {
+	if g.Surface != "hook-recall" || g.Kind != "recall" || gc(g) != 3 || *g.More != 0 || g.Dir != cwdDir || g.Written == nil || !*g.Written || !reflect.DeepEqual(g.IDs, printed) {
 		t.Fatalf("line = %+v, printed %v (6 candidates existed)", g, printed)
 	}
 	// A threshold that cuts every candidate prints nothing and logs nothing.
@@ -159,17 +167,17 @@ func TestGivenMCPReadToolsLogIDsFromPayload(t *testing.T) {
 			t.Fatalf("%s: want one new line, got %d -> %d", c.tool, before, len(lines))
 		}
 		g := lines[len(lines)-1]
-		if g.Surface != "mcp:"+c.tool || g.Kind != c.tool || g.Caller != "claude-code" || g.Count == 0 || !g.Written {
+		if g.Surface != "mcp:"+c.tool || g.Kind != c.tool || g.Caller != "claude-code" || g.Written != nil {
 			t.Fatalf("%s: line = %+v", c.tool, g)
 		}
 		if c.wantIDs == nil {
-			if len(g.IDs) != 0 {
+			if len(g.IDs) != 0 || g.Count != nil || g.More != nil || g.CountKnown == nil || *g.CountKnown {
 				t.Fatalf("%s: count-only tool logged ids %v", c.tool, g.IDs)
 			}
 			continue
 		}
-		if !reflect.DeepEqual(sortedCopy(g.IDs), sortedCopy(c.wantIDs)) || g.Count != len(c.wantIDs) {
-			t.Fatalf("%s: ids %v count %d, want %v", c.tool, g.IDs, g.Count, c.wantIDs)
+		if !reflect.DeepEqual(sortedCopy(g.IDs), sortedCopy(c.wantIDs)) || gc(g) != len(c.wantIDs) {
+			t.Fatalf("%s: ids %v count %d, want %v", c.tool, g.IDs, gc(g), c.wantIDs)
 		}
 	}
 	// search_memory: the ids are the ids in the returned payload.
@@ -312,7 +320,7 @@ func TestGivenEightProcessesAppendWholeLines(t *testing.T) {
 	seen := map[string]bool{}
 	for _, l := range lines {
 		var g givenLine
-		if err := json.Unmarshal([]byte(l), &g); err != nil || g.Count != 3 || len(g.IDs) != 3 {
+		if err := json.Unmarshal([]byte(l), &g); err != nil || gc(g) != 3 || len(g.IDs) != 3 {
 			t.Fatalf("torn line %q: %v", l, err)
 		}
 		seen[g.IDs[0]] = true
@@ -407,7 +415,7 @@ func TestGivenLineIsBounded(t *testing.T) {
 		t.Fatalf("line is %d bytes", len(b))
 	}
 	got := givenLinesOf(t, cfg)[0]
-	if got.Count != 50 || got.More != 50-len(got.IDs) || len(got.IDs) > givenMaxIDs {
+	if gc(got) != 50 || *got.More != 50-len(got.IDs) || len(got.IDs) > givenMaxIDs {
 		t.Fatalf("line = %+v", got)
 	}
 }
@@ -501,5 +509,105 @@ func TestGivenCallerNames(t *testing.T) {
 	}
 	if got := givenCaller("Weird/Name:One"); !regexp.MustCompile(`^[a-z0-9._-]+$`).MatchString(got) {
 		t.Errorf("caller %q has odd characters", got)
+	}
+}
+
+func TestGivenFreeTextDirNeverReachesLog(t *testing.T) {
+	cfg := seedRecallMemories(t, 3)
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	bad := "/nonexistent/DIRMARKERQX"
+	var out bytes.Buffer
+	in := fmt.Sprintf(`{"prompt":"What did we decide about eelpout recall token alpha?","cwd":%q}`, bad)
+	if err := cmdHook(testCtx(t), []string{"recall"}, &out, testStderr, strings.NewReader(in)); err != nil || out.Len() == 0 {
+		t.Fatalf("recall: %v %q", err, out.String())
+	}
+	defer stubHookBrief(t, "daily brief body")()
+	for _, cwd := range []string{bad, "relative/DIRMARKERQX", "DIRMARKERQX"} {
+		_ = cmdHook(testCtx(t), []string{"session-start"}, &out, testStderr, strings.NewReader(fmt.Sprintf(`{"cwd":%q}`, cwd)))
+	}
+	ctx := testCtx(t)
+	invokeMCPTool(ctx, "search_memory", map[string]any{"query": "eelpout", "project_dir": bad})
+	invokeMCPTool(ctx, "list_memory", map[string]any{"project_dir": bad})
+	invokeMCPTool(ctx, "brief", map[string]any{"project_dir": bad})
+	raw := readGivenRaw(t, cfg)
+	if len(givenLinesOf(t, cfg)) < 5 || strings.Contains(raw, "DIRMARKERQX") {
+		t.Fatalf("log:\n%s", raw)
+	}
+	for _, g := range givenLinesOf(t, cfg) {
+		if g.Dir != "" {
+			t.Fatalf("dir %q logged for a call with no real folder", g.Dir)
+		}
+	}
+}
+
+func TestGivenStatusWordsAndUnknownCount(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	hookDir := t.TempDir()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(appendGiven(cfg, givenLine{Surface: "hook-recall", Kind: "recall", Caller: "claude-code", Dir: hookDir, Written: boolPtr(true)}, []string{"a"}, 1))
+	must(appendGiven(cfg, givenLine{Surface: "hook-recall", Kind: "recall", Caller: "claude-code", Written: boolPtr(false)}, []string{"b"}, 1))
+	must(appendGiven(cfg, givenLine{Surface: "mcp:context_memory", Kind: "context_memory", Caller: "cursor"}, nil, -1))
+	out := run(t, "given")
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 3 || !strings.HasSuffix(lines[0], "count not known  ids: none  handed to transport") ||
+		!strings.HasSuffix(lines[1], "1 notes  ids: b  send failed") || !strings.HasSuffix(lines[2], "1 notes  ids: a  sent") {
+		t.Fatalf("output:\n%s", out)
+	}
+	raw := readGivenRaw(t, cfg)
+	last := strings.Split(strings.TrimSpace(raw), "\n")[2]
+	if strings.Contains(last, `"count"`) || strings.Contains(last, `"more"`) || strings.Contains(last, `"written"`) || !strings.Contains(last, `"count_known":false`) {
+		t.Fatalf("context line: %s", last)
+	}
+	if v := lastGiven(cfg); v == nil || v.Count != nil || v.Surface != "mcp:context_memory" {
+		t.Fatalf("last_given = %+v", v)
+	}
+}
+
+func TestGivenFourProcessesAcrossRotationLoseNothing(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{StateDir: dir}
+	// Pre-fill just under the limit so the 800 appends cross it once.
+	filler, _ := json.Marshal(givenLine{At: "2026-11-10T00:00:00Z", Surface: "hook-recall", Kind: "recall", Caller: "x", Dir: strings.Repeat("f", 200)})
+	filler = append(filler, '\n')
+	prefill := (givenLogMaxBytes - 60*1024) / len(filler)
+	if err := os.WriteFile(givenLogPath(cfg), bytes.Repeat(filler, prefill), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var cmds []*exec.Cmd
+	var outs []*bytes.Buffer
+	for p := 0; p < 4; p++ {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestGivenHelperProcess$")
+		cmd.Env = append(os.Environ(), givenEnvDir+"="+dir, "MORA_GIVEN_HELPER_N="+strconv.Itoa(p), "MORA_TEST_SUBPROCESS=1")
+		buf := &bytes.Buffer{}
+		cmd.Stdout, cmd.Stderr = buf, buf
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		cmds, outs = append(cmds, cmd), append(outs, buf)
+	}
+	for i, cmd := range cmds {
+		if err := cmd.Wait(); err != nil {
+			t.Fatalf("helper %d: %v\n%s", i, err, outs[i])
+		}
+	}
+	total := 0
+	for _, name := range []string{givenLogPath(cfg), givenLogPath(cfg) + ".1"} {
+		b, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("%s: %v (rotation did not happen?)", name, err)
+		}
+		total += bytes.Count(b, []byte("\n"))
+	}
+	if total != prefill+800 {
+		t.Fatalf("lines = %d, want %d", total, prefill+800)
 	}
 }

@@ -145,7 +145,7 @@ func hookSessionStart(ctx context.Context, stdout io.Writer, stdin io.Reader) er
 		if text != "" {
 			werr := writeHookOutput(stdout, "SessionStart", prependBannerLine(healthBannerFrom(healthOf(cfg, hookNow())), text))
 			if len(emitted) > 0 {
-				_ = appendGiven(cfg, givenLine{Surface: "hook-session-start", Kind: "project-brief", Caller: "claude-code", Dir: in.CWD, Scope: givenScope(scope), Written: werr == nil}, emitted, len(emitted))
+				_ = appendGiven(cfg, givenLine{Surface: "hook-session-start", Kind: "project-brief", Caller: "claude-code", Dir: root, Scope: givenScope(scope), Written: boolPtr(werr == nil)}, emitted, len(emitted))
 			}
 			return nil
 		}
@@ -172,7 +172,7 @@ func hookSessionStart(ctx context.Context, stdout io.Writer, stdin io.Reader) er
 	}
 	werr := writeHookOutput(stdout, "SessionStart", body)
 	// The daily brief is a digest, not a list of notes: no ids, count 0.
-	_ = appendGiven(cfg, givenLine{Surface: "hook-session-start", Kind: "daily-brief", Caller: "claude-code", Dir: in.CWD, Written: werr == nil}, nil, 0)
+	_ = appendGiven(cfg, givenLine{Surface: "hook-session-start", Kind: "daily-brief", Caller: "claude-code", Dir: givenHookDir(in.CWD), Written: boolPtr(werr == nil)}, nil, 0)
 	return nil
 }
 
@@ -227,7 +227,7 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 	}
 	werr := writeHookOutputWithMessage(stdout, "UserPromptSubmit", body, hookspkg.SteppedInLine(len(recalledIDs)))
 	if len(recalledIDs) > 0 {
-		_ = appendGiven(cfg, givenLine{Surface: "hook-recall", Kind: "recall", Caller: "claude-code", Dir: in.CWD, Scope: givenScope(opts.scope), Written: werr == nil}, recalledIDs, len(recalledIDs))
+		_ = appendGiven(cfg, givenLine{Surface: "hook-recall", Kind: "recall", Caller: "claude-code", Dir: givenHookDir(in.CWD), Scope: givenScope(opts.scope), Written: boolPtr(werr == nil)}, recalledIDs, len(recalledIDs))
 	}
 	return nil
 }

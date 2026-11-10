@@ -1111,17 +1111,21 @@ was handed over. Each line is JSON with these fields:
 - `surface`: `hook-session-start`, `hook-recall`, or `mcp:<tool>`.
 - `kind`: `project-brief`, `daily-brief`, `recall`, or the tool name.
 - `caller`: the client name from the MCP handshake, or `claude-code` for hooks.
-- `dir`: the folder the agent worked in, when known.
+- `dir`: a bound project root, or a hook folder that exists on disk. Empty
+  otherwise. Mora never copies an argument or path it cannot check.
 - `scope`: the project scope, when one applies.
 - `count`, `ids`, `more`: how many notes, the first 20 ids in order, and how
-  many ids are not listed. `context_memory` logs a count and no ids, and the
-  daily brief logs a count of 0, because both are text digests.
-- `written`: false when the hook could not write its output.
+  many ids are not listed. `context_memory` trims its notes to a budget, so it
+  logs `"count_known":false` with no `count`, `more` or ids. The daily brief
+  logs a count of 0, because it is a text digest.
+- `written`: for hooks, whether the hook output was written (`mora given` shows
+  "sent" or "send failed"). MCP lines omit it, because the transport writes
+  after Mora returns (`mora given` shows "handed to transport").
 
 The log holds ids and counts only: never a prompt, a query, a title or note
 text. It says "given", never "used": Mora cannot know whether the agent read the
-notes. The log is your local record, it stays on this machine, and it ignores
-`mora usage off`. Mora keeps at most 2 MB, then moves it to `given.log.1`. To
+notes. The log is your own record and it ignores `mora usage off`. It lives in
+Mora's state folder, so it follows that folder if you sync or link it. Mora keeps at most 2 MB, then moves it to `given.log.1`. To
 delete it, remove `given.log` and `given.log.1` from the state folder.
 
 ### Bash warning rules

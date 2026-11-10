@@ -81,7 +81,7 @@ type doctorReport struct {
 type doctorLastGiven struct {
 	At      string `json:"at"`
 	Surface string `json:"surface"`
-	Count   int    `json:"count"`
+	Count   *int   `json:"count,omitempty"`
 }
 
 type doctorObservation struct {

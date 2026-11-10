@@ -11,9 +11,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/pyranthus-hq/mora/internal/leasefile"
 )
 
 const (
@@ -29,17 +32,24 @@ const (
 // and counts only, never a prompt, a query, a title or note text. "Given" is
 // not "used": Mora cannot know whether the agent read the notes.
 type givenLine struct {
-	At      string   `json:"at"`
-	Surface string   `json:"surface"`
-	Kind    string   `json:"kind"`
-	Caller  string   `json:"caller"`
-	Dir     string   `json:"dir"`
-	Scope   string   `json:"scope"`
-	Count   int      `json:"count"`
-	IDs     []string `json:"ids"`
-	More    int      `json:"more"`
-	Written bool     `json:"written"`
+	At      string `json:"at"`
+	Surface string `json:"surface"`
+	Kind    string `json:"kind"`
+	Caller  string `json:"caller"`
+	Dir     string `json:"dir"`
+	Scope   string `json:"scope"`
+	// Count and More are omitted when the count cannot be stood behind
+	// (context_memory trims by budget); CountKnown is then false.
+	Count      *int     `json:"count,omitempty"`
+	CountKnown *bool    `json:"count_known,omitempty"`
+	IDs        []string `json:"ids"`
+	More       *int     `json:"more,omitempty"`
+	// Written is the real hook output result. MCP lines omit it: the
+	// transport writes after Mora returns.
+	Written *bool `json:"written,omitempty"`
 }
+
+func boolPtr(b bool) *bool { return &b }
 
 // The log is the owner's local record. It is independent of `mora usage off`
 // and never leaves the machine.
@@ -63,6 +73,19 @@ func givenCaller(raw string) string {
 	return c
 }
 
+// givenHookDir returns the hook cwd only when it is an absolute path to an
+// existing folder; anything else is free text and is not logged.
+func givenHookDir(cwd string) string {
+	cwd = filepath.Clean(cwd)
+	if !filepath.IsAbs(cwd) {
+		return ""
+	}
+	if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
+		return ""
+	}
+	return cwd
+}
+
 // givenScope keeps only a project scope; any other scope is not logged.
 func givenScope(s string) string {
 	if validProjectScope(s) != nil {
@@ -76,16 +99,21 @@ func givenScope(s string) string {
 func appendGiven(cfg Config, g givenLine, ids []string, count int) error {
 	g.At = hookNow().UTC().Format(time.RFC3339)
 	g.Caller = givenCaller(g.Caller)
-	g.Count = count
+	if count >= 0 {
+		c := count
+		g.Count = &c
+	} else {
+		g.CountKnown = boolPtr(false)
+	}
 	if len(ids) > givenMaxIDs {
 		ids = ids[:givenMaxIDs]
 	}
 	g.IDs = append([]string{}, ids...)
 	var line []byte
 	for {
-		g.More = count - len(g.IDs)
-		if g.More < 0 {
-			g.More = 0
+		if count >= 0 {
+			m := max(count-len(g.IDs), 0)
+			g.More = &m
 		}
 		var err error
 		if line, err = json.Marshal(g); err != nil {
@@ -108,18 +136,55 @@ func appendGiven(cfg Config, g givenLine, ids []string, count int) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	// shortcut: two processes can both rotate at once and drop one old file; fine for a 2 MB local log.
-	if info, err := os.Stat(path); err == nil && info.Size() > givenLogMaxBytes {
-		if err := os.Rename(path, path+".1"); err != nil {
-			return err
-		}
-	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
+	rotateGiven(path)
+	f, err := openGiven(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
+	if err != nil || f == nil {
 		return err
 	}
 	_, werr := f.Write(line)
 	return errors.Join(werr, f.Close())
+}
+
+// openGiven opens path without following a symlink or blocking, and returns
+// nil (no error) unless the opened file is a regular file. A file that already
+// exists with wider permissions is narrowed to 0600.
+func openGiven(path string, flag int) (*os.File, error) {
+	f, err := os.OpenFile(path, flag|givenOpenFlags, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, nil
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		if err := f.Chmod(0o600); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+	}
+	return f, nil
+}
+
+// rotateGiven moves an oversized log to given.log.1. A non-blocking lock keeps
+// two processes from rotating at once; a process that misses the lock appends.
+func rotateGiven(path string) {
+	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() || info.Size() <= givenLogMaxBytes {
+		return
+	}
+	lock, err := openGiven(path+".lock", os.O_CREATE|os.O_RDWR)
+	if err != nil || lock == nil {
+		return
+	}
+	defer lock.Close()
+	if leasefile.TryLock(lock) != nil {
+		return
+	}
+	defer func() { _ = leasefile.Unlock(lock) }()
+	if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() && info.Size() > givenLogMaxBytes {
+		_ = os.Rename(path, path+".1")
+	}
 }
 
 func clipUTF8(s string, n int) string {
@@ -149,7 +214,8 @@ func givenFromMCP(name string, args map[string]any, inv mcpToolInvocation) (ids 
 	}
 	switch name {
 	case "context_memory":
-		return nil, inv.trace.event.Results, true
+		// The text is trimmed to a budget, so no count can be stood behind.
+		return nil, -1, true
 	case "brief":
 		res, isProject := inv.value.(projectBriefResult)
 		if strArg(args, "project_dir", "") == "" || !isProject {
@@ -203,9 +269,11 @@ func logGivenMCP(ctx context.Context, name string, args map[string]any, inv mcpT
 	if !ok || count == 0 {
 		return
 	}
-	g := givenLine{Surface: "mcp:" + name, Kind: name, Caller: agentCallerFrom(ctx), Dir: strArg(args, "project_dir", ""), Written: true}
+	g := givenLine{Surface: "mcp:" + name, Kind: name, Caller: agentCallerFrom(ctx)}
 	if name == "brief" {
-		g.Scope = givenScope(inv.value.(projectBriefResult).Scope)
+		// Only the stored root of a binding the brief resolved, never the raw argument.
+		res := inv.value.(projectBriefResult)
+		g.Dir, g.Scope = res.Root, givenScope(res.Scope)
 	} else {
 		g.Scope = givenScope(strArg(args, "scope", ""))
 	}
@@ -287,14 +355,21 @@ func cmdGiven(ctx context.Context, args []string, stdout io.Writer) error {
 		if folder == "" {
 			folder = "-"
 		}
-		ids := "none"
+		ids, notes := "none", "count not known"
+		if g.Count != nil {
+			notes = fmt.Sprintf("%d notes", *g.Count)
+		}
 		if len(g.IDs) > 0 {
 			ids = strings.Join(g.IDs, ", ")
-			if g.More > 0 {
-				ids += fmt.Sprintf(" (+%d more)", g.More)
+			if g.More != nil && *g.More > 0 {
+				ids += fmt.Sprintf(" (+%d more)", *g.More)
 			}
 		}
-		if _, err := fmt.Fprintf(stdout, "%s  %s  %s  %s  %d notes  ids: %s\n", g.At, g.Surface, g.Caller, folder, g.Count, ids); err != nil {
+		status := "handed to transport"
+		if g.Written != nil {
+			status = map[bool]string{true: "sent", false: "send failed"}[*g.Written]
+		}
+		if _, err := fmt.Fprintf(stdout, "%s  %s  %s  %s  %s  ids: %s  %s\n", g.At, g.Surface, g.Caller, folder, notes, ids, status); err != nil {
 			return err
 		}
 	}
