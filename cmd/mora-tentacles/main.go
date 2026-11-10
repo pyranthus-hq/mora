@@ -192,9 +192,6 @@ func sourceHealth() ([]SourceHealth, string, Channel, *Review) {
 			ErrorCode     string `json:"error_code"`
 		} `json:"sources"`
 		Index *doctorIndex `json:"index"`
-		// Mora 0.16.0 and later; omitted when zero, never sent by 0.15.x.
-		TentativeMemories   int `json:"tentative_memories"`
-		PendingMCPProposals int `json:"pending_mcp_proposals"`
 	}
 	if json.Unmarshal(b, &report) != nil || report.Schema != "mora.doctor.report" || report.SchemaVersion != 1 || report.Sources == nil {
 		return []SourceHealth{}, "Mora doctor returned an invalid source health report.", unknownIndex, nil
@@ -210,7 +207,32 @@ func sourceHealth() ([]SourceHealth, string, Channel, *Review) {
 		}
 		sources = append(sources, SourceHealth{Key: source.Key, State: source.State, LastSuccessAt: source.LastSuccessAt, Detail: detail})
 	}
-	return sources, "", indexChannel(report.Index), &Review{Saved: report.TentativeMemories, Held: report.PendingMCPProposals}
+	return sources, "", indexChannel(report.Index), reviewCounts(b)
+}
+
+// reviewCounts reads the Mora 0.16.0 review fields in a separate pass, so a bad
+// value drops only the review object and never the health report. Nil when invalid.
+func reviewCounts(b []byte) *Review {
+	var raw struct {
+		Saved json.RawMessage `json:"tentative_memories"`
+		Held  json.RawMessage `json:"pending_mcp_proposals"`
+	}
+	if json.Unmarshal(b, &raw) != nil {
+		return nil
+	}
+	count := func(m json.RawMessage) (int, bool) {
+		if len(m) == 0 {
+			return 0, true // omitted when zero, never sent by 0.15.x
+		}
+		var n int
+		return n, json.Unmarshal(m, &n) == nil && n >= 0
+	}
+	saved, ok1 := count(raw.Saved)
+	held, ok2 := count(raw.Held)
+	if !ok1 || !ok2 {
+		return nil
+	}
+	return &Review{Saved: saved, Held: held}
 }
 
 func indexChannel(index *doctorIndex) Channel {

@@ -196,6 +196,40 @@ func TestSourceHealthReviewCounts(t *testing.T) {
 	}
 }
 
+func TestSourceHealthInvalidReviewCountsKeepHealth(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture")
+	}
+	run := func(output string) ([]SourceHealth, string, Channel, *Review) {
+		bin := filepath.Join(t.TempDir(), "mora")
+		if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' '"+output+"'\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("MORA_BIN", bin)
+		return sourceHealth()
+	}
+	const head = `{"schema":"mora.doctor.report","schema_version":1,"sources":[{"key":"gmail","state":"fresh","last_success_at":"2026-11-08T07:45:00Z"}],"index":{"state":"fresh","indexed_at":"2026-11-08T08:54:30Z"}`
+	wantSources, wantDetail, wantIndex, _ := run(head + `}`)
+	if wantDetail != "" || wantIndex.State != "healthy" {
+		t.Fatalf("baseline report not healthy: %q %+v", wantDetail, wantIndex)
+	}
+	for name, field := range map[string]string{
+		"string":         `"tentative_memories":"3"`,
+		"fractional":     `"tentative_memories":1.5`,
+		"overflow":       `"pending_mcp_proposals":99999999999999999999`,
+		"negative":       `"pending_mcp_proposals":-1`,
+		"negative saved": `"tentative_memories":-2,"pending_mcp_proposals":1`,
+	} {
+		sources, detail, index, review := run(head + "," + field + "}")
+		if review != nil {
+			t.Fatalf("%s: review must be omitted, got %+v", name, review)
+		}
+		if detail != wantDetail || index != wantIndex || len(sources) != len(wantSources) || sources[0] != wantSources[0] {
+			t.Fatalf("%s: health changed: %+v %q %+v", name, sources, detail, index)
+		}
+	}
+}
+
 func TestIndexChannelUsesFreshnessWithoutOverclaimingDirtySnapshots(t *testing.T) {
 	fresh := indexChannel(&doctorIndex{State: "fresh", IndexedAt: "2026-11-08T08:54:30Z"})
 	if fresh.State != "healthy" || fresh.LastSuccess != "2026-11-08T08:54:30Z" {

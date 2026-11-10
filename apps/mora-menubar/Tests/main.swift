@@ -80,3 +80,5 @@ check(ReviewCounts(saved: 3, held: 2).rowText == "3 agent notes to review, 2 hel
 check(ReviewCounts(saved: 1, held: 0).rowText == "1 agent note to review", "singular row text")
 check(ReviewCounts(saved: 0, held: 1).rowText == "1 agent note held", "singular held row text")
 check(ReviewCounts(saved: 0, held: 0).rowText == nil, "zero counts give no row")
+check(ReviewCounts(saved: -1, held: 2).rowText == nil, "negative saved gives no row")
+check(ReviewCounts(saved: 3, held: -1).rowText == nil, "negative held gives no row")

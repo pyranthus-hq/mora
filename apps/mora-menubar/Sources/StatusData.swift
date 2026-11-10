@@ -91,6 +91,7 @@ struct ReviewCounts: Decodable {
     /// One panel row for unreviewed agent notes; nil when there is nothing to review.
     var rowText: String? {
         func notes(_ n: Int) -> String { n == 1 ? "1 agent note" : "\(n) agent notes" }
+        guard saved >= 0, held >= 0 else { return nil }
         switch (saved > 0, held > 0) {
         case (true, true): return "\(notes(saved)) to review, \(held) held"
         case (true, false): return "\(notes(saved)) to review"
