@@ -49,6 +49,10 @@ func handoffPath(cfg Config, scope string) string {
 // blocking on a FIFO. It returns nil unless the opened file is a regular file.
 // It never changes the file mode: the transcript belongs to the user.
 func openRegularNoFollow(path string) (*os.File, os.FileInfo) {
+	// O_NOFOLLOW is zero on Windows, so refuse a symlink before opening.
+	if li, err := os.Lstat(path); err != nil || !li.Mode().IsRegular() {
+		return nil, nil
+	}
 	f, err := os.OpenFile(path, os.O_RDONLY|givenOpenFlags, 0)
 	if err != nil {
 		return nil, nil

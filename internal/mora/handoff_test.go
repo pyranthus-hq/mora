@@ -150,9 +150,7 @@ func TestHandoffWritesNothingOnBadInput(t *testing.T) {
 	good := hoTranscript(t, hoUser("a request"))
 	unbound := t.TempDir()
 	link := filepath.Join(filepath.Dir(good), "link.jsonl")
-	if err := os.Symlink(good, link); err != nil {
-		t.Skip("symlinks unavailable")
-	}
+	linkErr := os.Symlink(good, link) // may fail on Windows without privilege
 	half := filepath.Join(filepath.Dir(good), "half.jsonl")
 	if err := os.WriteFile(half, []byte(hoUser("never finished")[:20]), 0o600); err != nil {
 		t.Fatal(err)
@@ -160,7 +158,6 @@ func TestHandoffWritesNothingOnBadInput(t *testing.T) {
 	cases := map[string]func(){
 		"unbound cwd":        func() { hoEnd(t, unbound, good) },
 		"missing transcript": func() { hoEnd(t, dir, filepath.Join(t.TempDir(), "none.jsonl")) },
-		"symlink":            func() { hoEnd(t, dir, link) },
 		"half line":          func() { hoEnd(t, dir, half) },
 		"outside projects dir": func() {
 			out := filepath.Join(t.TempDir(), "x.jsonl")
@@ -176,7 +173,7 @@ func TestHandoffWritesNothingOnBadInput(t *testing.T) {
 			}
 			lnk := filepath.Join(filepath.Dir(good), "dirlink")
 			if err := os.Symlink(outside, lnk); err != nil {
-				t.Fatal(err)
+				return // symlinks unavailable: skip only this sub-case
 			}
 			hoEnd(t, dir, filepath.Join(lnk, "x.jsonl"))
 		},
@@ -187,6 +184,9 @@ func TestHandoffWritesNothingOnBadInput(t *testing.T) {
 			}
 			hoEnd(t, dir, good)
 		},
+	}
+	if linkErr == nil {
+		cases["symlink"] = func() { hoEnd(t, dir, link) }
 	}
 	for name, f := range cases {
 		f()
@@ -375,8 +375,15 @@ func TestHookInstallProjectOlderRecallOnlyGainsTwoHooks(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(local), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	old := fmt.Sprintf(`{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"'/x/mora' hook recall --scope 'project:demo' --project-dir '%s' #mora-managed:recall","timeout":10}]}]}}`, project)
-	if err := os.WriteFile(local, []byte(old), 0o600); err != nil {
+	oldJSON, err := json.Marshal(map[string]any{"hooks": map[string]any{"UserPromptSubmit": []any{map[string]any{"hooks": []any{map[string]any{
+		"type":    "command",
+		"command": "'/x/mora' hook recall --scope 'project:demo' --project-dir '" + project + "' #mora-managed:recall",
+		"timeout": 10,
+	}}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(local, oldJSON, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var st hookStatusPayload
