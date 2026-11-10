@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -308,75 +309,111 @@ func reviewHostileHeld(t *testing.T, cfg Config, id string) string {
 	return id
 }
 
-func TestReviewEscapesEveryPrintedLine(t *testing.T) {
-	cfg := reviewSetup(t)
-	reviewTerminal(t)
-	raw := func(s string) bool { return strings.ContainsAny(s, "\x1b\r\u202e") }
-
-	keepSaved := reviewSaved(t, "Keep me")
-	rejectSaved := reviewSaved(t, "Reject me")
-	reviewSetTitle(t, cfg, keepSaved, "K"+reviewHostile)
-	reviewSetTitle(t, cfg, rejectSaved, "R"+reviewHostile)
-	hostileID := reviewHostileHeld(t, cfg, "p_"+reviewHostile)
-
-	if list := run(t, "review", "--list"); raw(list) || strings.Count(list, `\x1b`) < 3 {
-		t.Fatalf("--list not escaped:\n%q", list)
-	}
-	order := strings.Split(strings.TrimSpace(run(t, "review", "--list")), "\n")
-	var script strings.Builder
-	for _, row := range order {
-		switch {
-		case strings.Contains(row, "\tsaved\t") && strings.Contains(row, `"K\x1b`):
-			script.WriteString("k\n")
-		case strings.Contains(row, "\tsaved\t"):
-			script.WriteString("r\n")
-		default:
-			script.WriteString("k\n")
-		}
-	}
-	_ = hostileID
-	out, err := reviewWalk(t, strings.NewReader(script.String()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if raw(out) {
-		t.Fatalf("raw control rune reached the screen:\n%q", out)
-	}
-	for _, want := range []string{"confirmed ", "undid "} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("no %q line:\n%s", want, out)
-		}
-	}
-	// Whatever the hostile held note's keep did (approve or error), it is escaped and shows its id.
-	if !strings.Contains(out, `"p_\x1b[2Jfake\rline \u202egnp"`) {
-		t.Fatalf("hostile proposal id not shown escaped:\n%s", out)
+// reviewSkipHostileID skips a case that needs a control rune in a proposal
+// file name. Windows refuses such a name, so the case cannot occur there.
+func reviewSkipHostileID(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("a control rune cannot be in a Windows file name, so a hostile proposal id cannot exist there")
 	}
 }
 
-func TestReviewRejectLineAndErrorLineAreEscaped(t *testing.T) {
-	cfg := reviewSetup(t)
-	reviewTerminal(t)
-	id := reviewHostileHeld(t, cfg, "p_"+reviewHostile)
-	out, err := reviewWalk(t, strings.NewReader("r\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.ContainsAny(out, "\x1b\r\u202e") || !strings.Contains(out, `Rejected "p_\x1b[2J`) {
-		t.Fatalf("reject line:\n%q", out)
-	}
-	_ = id
+func TestReviewEscapesEveryPrintedLine(t *testing.T) {
+	raw := func(s string) bool { return strings.ContainsAny(s, "\x1b\r\u202e") }
 
-	// An error line: the proposal vanishes after it was shown.
-	reviewHostileHeld(t, cfg, "p_2"+reviewHostile)
-	gone := filepath.Join(mcpProposalDir(cfg), "p_2"+reviewHostile+".json")
-	rm := &changeOnRead{mutate: func() { _ = os.Remove(gone) }, data: strings.NewReader("k\n")}
-	out, err = reviewWalk(t, rm)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.ContainsAny(out, "\x1b\r\u202e") || !strings.Contains(out, "error: ") || !strings.HasSuffix(out, "left 1\n") {
-		t.Fatalf("error line:\n%q", out)
-	}
+	subRun(t, "hostile title", func(t *testing.T) {
+		cfg := reviewSetup(t)
+		reviewTerminal(t)
+		keepSaved := reviewSaved(t, "Keep me")
+		rejectSaved := reviewSaved(t, "Reject me")
+		reviewSetTitle(t, cfg, keepSaved, "K"+reviewHostile)
+		reviewSetTitle(t, cfg, rejectSaved, "R"+reviewHostile)
+
+		list := run(t, "review", "--list")
+		if raw(list) || strings.Count(list, `\x1b`) < 2 {
+			t.Fatalf("--list not escaped:\n%q", list)
+		}
+		var script strings.Builder
+		for _, row := range strings.Split(strings.TrimSpace(list), "\n") {
+			if strings.Contains(row, `"K\x1b`) {
+				script.WriteString("k\n")
+			} else {
+				script.WriteString("r\n")
+			}
+		}
+		out, err := reviewWalk(t, strings.NewReader(script.String()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if raw(out) {
+			t.Fatalf("raw control rune reached the screen:\n%q", out)
+		}
+		for _, want := range []string{"confirmed ", "undid "} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("no %q line:\n%s", want, out)
+			}
+		}
+	})
+
+	subRun(t, "hostile proposal id", func(t *testing.T) {
+		reviewSkipHostileID(t)
+		cfg := reviewSetup(t)
+		reviewTerminal(t)
+		reviewHostileHeld(t, cfg, "p_"+reviewHostile)
+		list := run(t, "review", "--list")
+		if raw(list) || !strings.Contains(list, `"p_\x1b[2Jfake\rline \u202egnp"`) {
+			t.Fatalf("--list not escaped:\n%q", list)
+		}
+		out, err := reviewWalk(t, strings.NewReader("k\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if raw(out) || !strings.Contains(out, `"p_\x1b[2Jfake\rline \u202egnp"`) {
+			t.Fatalf("hostile proposal id not shown escaped:\n%q", out)
+		}
+	})
+}
+
+func TestReviewRejectLineAndErrorLineAreEscaped(t *testing.T) {
+	subRun(t, "error line", func(t *testing.T) {
+		cfg := reviewSetup(t)
+		reviewTerminal(t)
+		id := reviewHeld(t, "Vanishing")
+		gone := filepath.Join(mcpProposalDir(cfg), id+".json")
+		in := &changeOnRead{mutate: func() { _ = os.Remove(gone) }, data: strings.NewReader("k\n")}
+		out, err := reviewWalk(t, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.ContainsAny(out, "\x1b\r\u202e") || !strings.Contains(out, "error: ") || !strings.HasSuffix(out, "left 1\n") {
+			t.Fatalf("error line:\n%q", out)
+		}
+	})
+
+	subRun(t, "hostile proposal id", func(t *testing.T) {
+		reviewSkipHostileID(t)
+		cfg := reviewSetup(t)
+		reviewTerminal(t)
+		reviewHostileHeld(t, cfg, "p_"+reviewHostile)
+		out, err := reviewWalk(t, strings.NewReader("r\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.ContainsAny(out, "\x1b\r\u202e") || !strings.Contains(out, `Rejected "p_\x1b[2J`) {
+			t.Fatalf("reject line:\n%q", out)
+		}
+		// An error line: the proposal vanishes after it was shown.
+		reviewHostileHeld(t, cfg, "p_2"+reviewHostile)
+		gone := filepath.Join(mcpProposalDir(cfg), "p_2"+reviewHostile+".json")
+		in := &changeOnRead{mutate: func() { _ = os.Remove(gone) }, data: strings.NewReader("k\n")}
+		out, err = reviewWalk(t, in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.ContainsAny(out, "\x1b\r\u202e") || !strings.Contains(out, "error: ") {
+			t.Fatalf("error line:\n%q", out)
+		}
+	})
 }
 
 func TestReviewSavedActionsBindToTheShownBytes(t *testing.T) {
