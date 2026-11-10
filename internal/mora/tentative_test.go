@@ -468,3 +468,41 @@ func TestLoadGraphMemoriesLeavesOutTentative(t *testing.T) {
 		t.Fatalf("loadGraphMemories = %v, %v", got, err)
 	}
 }
+
+// Meeting prep and calendar_events pick their event from type event rows only,
+// and write_memory cannot save that type. A hand-tagged event file still must
+// not be picked, and the same event untagged must be, so the check is not vacuous.
+func TestTentativeEventIsNotPickedByMeetingPrepOrCalendarEvents(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
+	start := at.Add(2 * time.Hour).Format(time.RFC3339)
+	event := eventMem("calendar_event/tent-sync", "Tentative sync", start, "adit@example.com", "neil@example.com")
+	event.Tags = []string{memory.TentativeTag}
+	if err := writeMemory(cfg, event); err != nil {
+		t.Fatal(err)
+	}
+	picked := func() (prep, listed bool) {
+		brief, err := buildNextMeetingBrief(testCtx(t), cfg, at, nil, 0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := mcpCalendarEvents(testCtx(t), cfg, map[string]any{"start": "2026-07-10", "end": "2026-07-12", "timezone": "UTC"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := json.Marshal(res)
+		return brief.Event != nil, strings.Contains(string(b), "Tentative sync")
+	}
+	if prep, listed := picked(); prep || listed {
+		t.Fatalf("a tentative event was picked: meeting prep %v, calendar_events %v", prep, listed)
+	}
+	event.Tags = nil
+	if err := writeMemory(cfg, event); err != nil {
+		t.Fatal(err)
+	}
+	if prep, listed := picked(); !prep || !listed {
+		t.Fatalf("control: the untagged event must be picked: meeting prep %v, calendar_events %v", prep, listed)
+	}
+}

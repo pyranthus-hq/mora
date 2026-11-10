@@ -75,6 +75,8 @@ func reviewNoteFromMemory(m Memory) reviewNote {
 	return reviewNote{Kind: reviewKindSaved, ID: m.ID, Scope: m.Scope, Type: m.Type, Title: reviewTitle(m), Text: m.Text}
 }
 
+const reviewNoReason = "held under an earlier rule or write mode"
+
 func reviewNoteFromProposal(p mcpWriteProposal) (reviewNote, error) {
 	m, err := mcpMemoryFromArgs(p.Arguments, time.Now())
 	if err != nil {
@@ -86,6 +88,10 @@ func reviewNoteFromProposal(p mcpWriteProposal) (reviewNote, error) {
 	}
 	n := reviewNoteFromMemory(m)
 	n.Kind, n.ID, n.Reasons, n.Digest = reviewKindHeld, p.ID, tentativeHoldReasons(m), digest
+	if len(n.Reasons) == 0 {
+		// Held under an earlier rule, or staged by propose mode, which gives no reason.
+		n.Reasons = []string{reviewNoReason}
+	}
 	return n, nil
 }
 

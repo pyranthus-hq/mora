@@ -32,8 +32,10 @@ var tentativeHoldPatterns = []struct {
 // result means it may save at once as tentative. Type is an allow list, so a
 // new type is held until someone decides otherwise. A correction stays held
 // because it changes how other records are retrieved, and those readers do not
-// leave out tentative rows. Scope does not matter: every automatic reader
-// leaves out a tentative row of any type and scope.
+// leave out tentative rows. Scope does not matter. The named automatic readers
+// (see docs/guide.md, "MCP write policy") leave out a tentative row of any type
+// and scope. Vault sync (`mora sync git`) and `mora backup` carry the file, tag
+// included, so a saved tentative note can leave the machine that way.
 func tentativeHoldReasons(m Memory) []string {
 	var reasons []string
 	switch m.Type {
