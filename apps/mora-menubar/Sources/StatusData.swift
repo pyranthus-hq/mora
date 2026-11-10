@@ -6,8 +6,9 @@ struct StatusSnapshot: Decodable {
     let sources: [SourceStatus]?
     let sourcesError: String?
     let review: ReviewCounts?
+    let given: GivenInfo?
 
-    enum CodingKeys: String, CodingKey { case generatedAt = "generated_at", devices, sources, sourcesError = "sources_error", review }
+    enum CodingKeys: String, CodingKey { case generatedAt = "generated_at", devices, sources, sourcesError = "sources_error", review, given }
     static let iso8601 = ISO8601DateFormatter()
     static let fractionalISO8601: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f
@@ -22,6 +23,7 @@ struct StatusSnapshot: Decodable {
         do { sources = try c.decodeIfPresent([SourceStatus].self, forKey: .sources) }
         catch { sources = nil }
         review = try? c.decodeIfPresent(ReviewCounts.self, forKey: .review)
+        given = try? c.decodeIfPresent(GivenInfo.self, forKey: .given)
         let reportedError = try c.decodeIfPresent(String.self, forKey: .sourcesError)
         sourcesError = reportedError ?? (sources == nil ? "Connector source health is unavailable." : nil)
     }
@@ -97,6 +99,33 @@ struct ReviewCounts: Decodable {
         case (true, false): return "\(notes(saved)) to review"
         case (false, true): return "\(notes(held)) held"
         default: return nil
+        }
+    }
+}
+
+struct GivenInfo: Decodable {
+    let at: String
+    let surface: String
+    let count: Int?
+
+    /// "Last hand-over to an agent: 14:02, 3 notes"; nil when the time cannot be read.
+    func rowText(now: Date, timeZone: TimeZone) -> String? {
+        guard let date = StatusSnapshot.iso8601.date(from: at) ?? StatusSnapshot.fractionalISO8601.date(from: at) else { return nil }
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = timeZone
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = timeZone
+        f.dateFormat = calendar.isDate(date, inSameDayAs: now) ? "HH:mm" : "MMM d"
+        var text = "Last hand-over to an agent: \(f.string(from: date))"
+        if let n = count, n >= 0 { text += n == 1 ? ", 1 note" : ", \(n) notes" }
+        return text
+    }
+
+    /// Plain words for the surface; nil for an unknown surface.
+    var surfaceText: String? {
+        switch surface {
+        case "hook-session-start": return "At session start."
+        case "hook-recall": return "On a prompt."
+        default: return surface.hasPrefix("mcp:") ? "Through a tool call." : nil
         }
     }
 }

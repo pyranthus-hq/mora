@@ -48,6 +48,12 @@ with a hint to run `mora review` in a terminal. The count is information only:
 it does not change the health state or the icon, and no row appears when the
 counts are zero or the doctor report is unavailable.
 
+When Mora reports `last_given` in its doctor report, the panel shows one row
+under the review row, such as "Last hand-over to an agent: 14:02, 3 notes",
+with the surface in plain words and a hint to run `mora given` in a terminal.
+The row is information only: it does not change the health state or the icon,
+and no row appears when `last_given` is absent or invalid.
+
 Preview mode uses clearly labelled fixture data and does not run the collector.
 
 ## Checks

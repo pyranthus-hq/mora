@@ -128,7 +128,7 @@ func TestSourceHealthAcceptsUnhealthyDoctorExit2AndPreservesUnknownState(t *test
 		t.Fatal(err)
 	}
 	t.Setenv("MORA_BIN", bin)
-	sources, detail, index, _ := sourceHealth()
+	sources, detail, index, _, _ := sourceHealth()
 	if detail != "" || len(sources) != 2 {
 		t.Fatalf("doctor unhealthy report was rejected: sources=%+v detail=%q", sources, detail)
 	}
@@ -155,11 +155,11 @@ func TestSourceHealthMalformedAndUnavailableAreExplicit(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("MORA_BIN", bin)
-	if sources, detail, index, _ := sourceHealth(); len(sources) != 0 || detail == "" || index.State != "unknown" {
+	if sources, detail, index, _, _ := sourceHealth(); len(sources) != 0 || detail == "" || index.State != "unknown" {
 		t.Fatalf("malformed response was not marked unavailable: %+v, %q", sources, detail)
 	}
 	t.Setenv("MORA_BIN", filepath.Join(t.TempDir(), "missing"))
-	if sources, detail, index, _ := sourceHealth(); len(sources) != 0 || detail == "" || index.State != "unknown" {
+	if sources, detail, index, _, _ := sourceHealth(); len(sources) != 0 || detail == "" || index.State != "unknown" {
 		t.Fatalf("missing helper was not marked unavailable: %+v, %q", sources, detail)
 	}
 }
@@ -185,13 +185,13 @@ func TestSourceHealthReviewCounts(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Setenv("MORA_BIN", bin)
-		_, _, _, got := sourceHealth()
+		_, _, _, got, _ := sourceHealth()
 		if (got == nil) != (c.want == nil) || (got != nil && *got != *c.want) {
 			t.Fatalf("%s: got %+v want %+v", c.name, got, c.want)
 		}
 	}
 	t.Setenv("MORA_BIN", filepath.Join(t.TempDir(), "missing"))
-	if _, _, _, got := sourceHealth(); got != nil {
+	if _, _, _, got, _ := sourceHealth(); got != nil {
 		t.Fatalf("unavailable doctor must omit review: %+v", got)
 	}
 }
@@ -200,7 +200,7 @@ func TestSourceHealthInvalidReviewCountsKeepHealth(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell fixture")
 	}
-	run := func(output string) ([]SourceHealth, string, Channel, *Review) {
+	run := func(output string) ([]SourceHealth, string, Channel, *Review, *Given) {
 		bin := filepath.Join(t.TempDir(), "mora")
 		if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' '"+output+"'\n"), 0700); err != nil {
 			t.Fatal(err)
@@ -209,7 +209,7 @@ func TestSourceHealthInvalidReviewCountsKeepHealth(t *testing.T) {
 		return sourceHealth()
 	}
 	const head = `{"schema":"mora.doctor.report","schema_version":1,"sources":[{"key":"gmail","state":"fresh","last_success_at":"2026-11-08T07:45:00Z"}],"index":{"state":"fresh","indexed_at":"2026-11-08T08:54:30Z"}`
-	wantSources, wantDetail, wantIndex, _ := run(head + `}`)
+	wantSources, wantDetail, wantIndex, _, _ := run(head + `}`)
 	if wantDetail != "" || wantIndex.State != "healthy" {
 		t.Fatalf("baseline report not healthy: %q %+v", wantDetail, wantIndex)
 	}
@@ -220,7 +220,7 @@ func TestSourceHealthInvalidReviewCountsKeepHealth(t *testing.T) {
 		"negative":       `"pending_mcp_proposals":-1`,
 		"negative saved": `"tentative_memories":-2,"pending_mcp_proposals":1`,
 	} {
-		sources, detail, index, review := run(head + "," + field + "}")
+		sources, detail, index, review, _ := run(head + "," + field + "}")
 		if review != nil {
 			t.Fatalf("%s: review must be omitted, got %+v", name, review)
 		}
@@ -349,4 +349,48 @@ func TestJobLockRecoversAfterProcessDeath(t *testing.T) {
 		t.Fatal("dead process wedged lock", e)
 	}
 	r()
+}
+
+func TestSourceHealthLastGiven(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture")
+	}
+	const head = `{"schema":"mora.doctor.report","schema_version":1,"sources":[{"key":"gmail","state":"fresh","last_success_at":"2026-11-08T07:45:00Z"}],"index":{"state":"fresh","indexed_at":"2026-11-08T08:54:30Z"},"tentative_memories":3`
+	run := func(output string) ([]SourceHealth, string, Channel, *Review, *Given) {
+		bin := filepath.Join(t.TempDir(), "mora")
+		if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' '"+output+"'\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("MORA_BIN", bin)
+		return sourceHealth()
+	}
+	three := 3
+	cases := []struct {
+		name, field string
+		want        *Given
+	}{
+		{"valid with count", `"last_given":{"at":"2026-11-09T14:02:00Z","surface":"hook-session-start","count":3}`, &Given{"2026-11-09T14:02:00Z", "hook-session-start", &three}},
+		{"valid without count", `"last_given":{"at":"2026-11-09T14:02:00Z","surface":"mcp:search_memory"}`, &Given{"2026-11-09T14:02:00Z", "mcp:search_memory", nil}},
+		{"absent", `"x":1`, nil},
+		{"bad at", `"last_given":{"at":"yesterday","surface":"hook-recall","count":1}`, nil},
+		{"upper case surface", `"last_given":{"at":"2026-11-09T14:02:00Z","surface":"Hook-Recall"}`, nil},
+		{"space in surface", `"last_given":{"at":"2026-11-09T14:02:00Z","surface":"hook recall"}`, nil},
+		{"long surface", `"last_given":{"at":"2026-11-09T14:02:00Z","surface":"` + strings.Repeat("a", 200) + `"}`, nil},
+		{"negative count", `"last_given":{"at":"2026-11-09T14:02:00Z","surface":"hook-recall","count":-1}`, nil},
+		{"huge count", `"last_given":{"at":"2026-11-09T14:02:00Z","surface":"hook-recall","count":100001}`, nil},
+		{"string count", `"last_given":{"at":"2026-11-09T14:02:00Z","surface":"hook-recall","count":"3"}`, nil},
+	}
+	for _, c := range cases {
+		sources, detail, index, review, got := run(head + "," + c.field + "}")
+		if (got == nil) != (c.want == nil) || (got != nil && (got.At != c.want.At || got.Surface != c.want.Surface || (got.Count == nil) != (c.want.Count == nil) || (got.Count != nil && *got.Count != *c.want.Count))) {
+			t.Fatalf("%s: got %+v want %+v", c.name, got, c.want)
+		}
+		if detail != "" || index.State != "healthy" || len(sources) != 1 || review == nil || review.Saved != 3 {
+			t.Fatalf("%s: health or review lost: %+v %q %+v %+v", c.name, sources, detail, index, review)
+		}
+	}
+	b, _ := json.Marshal(Snapshot{Given: &Given{At: "2026-11-09T14:02:00Z", Surface: "hook-recall"}})
+	if !strings.Contains(string(b), `"given":{"at":"2026-11-09T14:02:00Z","surface":"hook-recall"}`) {
+		t.Fatalf("count must be omitted: %s", b)
+	}
 }

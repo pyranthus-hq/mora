@@ -82,3 +82,23 @@ check(ReviewCounts(saved: 0, held: 1).rowText == "1 agent note held", "singular 
 check(ReviewCounts(saved: 0, held: 0).rowText == nil, "zero counts give no row")
 check(ReviewCounts(saved: -1, held: 2).rowText == nil, "negative saved gives no row")
 check(ReviewCounts(saved: 3, held: -1).rowText == nil, "negative held gives no row")
+
+let givenJSON = #"{"generated_at":"2026-11-08T08:00:00Z","devices":[],"given":{"at":"2026-11-09T14:02:00Z","surface":"hook-recall","count":3}}"#
+let givenSnap = try StatusSnapshot.decode(Data(givenJSON.utf8))
+check(givenSnap.given?.count == 3 && givenSnap.given?.surface == "hook-recall", "given decoded")
+check(givenSnap.aggregate == .unknown, "given does not change the aggregate")
+check(unreviewed.given == nil, "absent given stays nil")
+let utc = TimeZone(identifier: "UTC")!
+let noon = StatusSnapshot.iso8601.date(from: "2026-11-09T20:00:00Z")!
+func given(_ surface: String = "hook-recall", count: Int? = 3, at: String = "2026-11-09T14:02:00Z") -> GivenInfo {
+    GivenInfo(at: at, surface: surface, count: count)
+}
+check(given().rowText(now: noon, timeZone: utc) == "Last hand-over to an agent: 14:02, 3 notes", "today row text")
+check(given(at: "2026-11-08T14:02:00Z").rowText(now: noon, timeZone: utc) == "Last hand-over to an agent: Nov 8, 3 notes", "other day row text")
+check(given(count: 1).rowText(now: noon, timeZone: utc) == "Last hand-over to an agent: 14:02, 1 note", "singular row text")
+check(given(count: nil).rowText(now: noon, timeZone: utc) == "Last hand-over to an agent: 14:02", "absent count row text")
+check(given(at: "bad").rowText(now: noon, timeZone: utc) == nil, "bad time gives no row")
+check(given("hook-session-start").surfaceText == "At session start.", "session start surface word")
+check(given("hook-recall").surfaceText == "On a prompt.", "recall surface word")
+check(given("mcp:search_memory").surfaceText == "Through a tool call.", "mcp surface word")
+check(given("other").surfaceText == nil, "unknown surface has no word")
