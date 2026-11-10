@@ -276,15 +276,17 @@ A tentative memory shows in search, read, list and context with a label. It
 does not reach the recall hook, the digest, the brief, commitments or share.
 It is a file in your vault, so `mora sync git` and `mora backup` carry it.
 
-While notes wait, Mora says so. Each `write_memory` reply, `mora brief`, the
-session-start hook and `mora doctor` show one line such as
-`Agent notes not reviewed: 2 saved, 1 held.`
+While notes wait, Mora says so. A `write_memory` reply, `mora brief`, the
+session-start hook and `mora doctor` add one line such as
+`Agent notes not reviewed: 2 saved, 1 held.` The line is left out when Mora
+cannot count the notes, for example while the index is busy, and when the
+session-start brief is empty.
 
 Run `mora review` in your own terminal to go through them. It shows each note
 in full, with every field an agent acts on, and asks keep, reject, skip or
 quit. A note you keep becomes owner-confirmed: agents see
 `"trust":"owner-confirmed"` and are told to treat it as your own statement. If
-the note changes later, that status drops. `mora review --list` prints the list
+one of the shown fields changes later, that status drops. `mora review --list` prints the list
 in any shell. `mora confirm <id>` keeps one note without that status, and
 `mora undo <id>` removes an agent write. Under this policy `delete_memory` is
 refused, and phone captures go to the queue.
