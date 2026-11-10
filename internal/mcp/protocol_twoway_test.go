@@ -107,7 +107,9 @@ func TestTwoWayReplyAndQueue(t *testing.T) {
 	s.send(request("first", "call"))
 	first := s.read()
 	var id string
-	json.Unmarshal(first["id"], &id)
+	if err := json.Unmarshal(first["id"], &id); err != nil {
+		t.Errorf("unmarshal: %v", err)
+	}
 	if !regexp.MustCompile(`^mora-[0-9]+$`).MatchString(id) {
 		t.Fatalf("id=%q", id)
 	}
@@ -127,7 +129,9 @@ func TestTwoWayReplyAndQueue(t *testing.T) {
 	s.send(result(json.RawMessage(`"unknown"`), nil))
 	s.send(result(first["id"], map[string]bool{"ok": true}))
 	second := s.read()
-	json.Unmarshal(second["id"], &id)
+	if err := json.Unmarshal(second["id"], &id); err != nil {
+		t.Errorf("unmarshal: %v", err)
+	}
 	if !regexp.MustCompile(`^mora-[0-9]+$`).MatchString(id) || id == ids[0] {
 		t.Fatalf("second id=%q", id)
 	}
@@ -162,7 +166,9 @@ func TestTwoWayTimeout(t *testing.T) {
 	call := s.read()
 	cancel := s.read()
 	var p map[string]json.RawMessage
-	json.Unmarshal(cancel["params"], &p)
+	if err := json.Unmarshal(cancel["params"], &p); err != nil {
+		t.Errorf("unmarshal: %v", err)
+	}
 	if string(cancel["method"]) != `"notifications/cancelled"` || string(p["requestId"]) != string(call["id"]) {
 		t.Fatalf("cancel=%s", cancel)
 	}
@@ -183,11 +189,14 @@ func TestTwoWayNoServe(t *testing.T) {
 	}
 }
 
+// twoWayCtxKey is a private context key for the shutdown test.
+type twoWayCtxKey struct{}
+
 func TestTwoWayShutdown(t *testing.T) {
 	// AC-003.1 AC-003.2 AC-003.3 AC-003.4
 	for _, ending := range []string{"eof", "read error", "oversized"} {
 		t.Run(ending, func(t *testing.T) {
-			ctx := context.WithValue(context.Background(), struct{}{}, "original")
+			ctx := context.WithValue(context.Background(), twoWayCtxKey{}, "original")
 			returned := make(chan struct{})
 			release := make(chan struct{})
 			s := startTwoWay(t, ctx, func(got context.Context, r Request) Response {
