@@ -1069,15 +1069,21 @@ change for that server, and only then:
    write the project scope is refused, as for any scope it lacks.
 2. `brief` with no `project_dir` returns the project brief. An explicit
    `project_dir` still wins. `brief` with `daily: true` returns the daily brief.
-3. The server instructions gain one sentence that names the project and its
-   folder and tells the client to call `brief` first. No note text goes into the
-   instructions.
+3. The server instructions gain one sentence that tells the client to call
+   `brief` first and names the project scope. The sentence never holds the
+   folder path or any note text. A scope that is not a plain name
+   (`project:` and up to 64 letters, digits, `.`, `_` or `-`) is left out and the
+   sentence says "one bound project folder" instead.
 
-When the folder is not bound, is not an absolute path, does not exist, or the
-bindings file cannot be read, the server starts and behaves exactly like
+When the folder is not bound, is not an absolute path, is not an existing
+directory (a missing path or a file counts), or the bindings file cannot be read, the server starts and behaves exactly like
 `mora mcp serve`. It prints one line on stderr and nothing on stdout. The
 server's own working directory never counts, and Mora does not guess a project
 from the client's roots.
+
+A running server keeps the project it found at start. If you unbind or rebind the
+folder, restart the client so the server starts again. A value that starts with
+`-` after `--project-dir` or `--profile` is a missing value and a usage error.
 
 This flag is for the stdio server. `mora mcp serve-http` does not take it.
 

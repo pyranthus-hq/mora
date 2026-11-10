@@ -4,13 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
+	"strings"
 
-	hookspkg "github.com/pyranthus-hq/mora/internal/hooks"
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 )
-
-const mcpProjectRootRunes = 200
 
 // mcpProject is the project a stdio server was started for with --project-dir.
 // It is resolved once and held for the life of the server.
@@ -38,6 +37,10 @@ func parseMCPServeArgs(args []string) (a mcpServeArgs, ok bool) {
 		if i+1 >= len(args) {
 			return a, false
 		}
+		// A value that starts with "-" is a flag, so the value is missing.
+		if strings.HasPrefix(args[i+1], "-") {
+			return a, false
+		}
 		switch {
 		case args[i] == "--profile" && !a.hasProfile:
 			a.profile, a.hasProfile = args[i+1], true
@@ -50,8 +53,8 @@ func parseMCPServeArgs(args []string) (a mcpServeArgs, ok bool) {
 	return a, true
 }
 
-// withMCPServeProject binds the server to DIR when DIR is an absolute path with
-// a project binding. Every other case serves as if no flag was given and says
+// withMCPServeProject binds the server to DIR when DIR is an existing absolute
+// directory with a project binding. Every other case serves as if no flag was given and says
 // so on stderr; stdout is the protocol stream. The working directory never counts.
 func withMCPServeProject(ctx context.Context, dir string, stderr io.Writer) context.Context {
 	unbound := func(why string) context.Context {
@@ -60,6 +63,9 @@ func withMCPServeProject(ctx context.Context, dir string, stderr io.Writer) cont
 	}
 	if !filepath.IsAbs(dir) {
 		return unbound("the path is not absolute")
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return unbound("the path is not an existing directory")
 	}
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
@@ -76,23 +82,23 @@ func withMCPServeProject(ctx context.Context, dir string, stderr io.Writer) cont
 }
 
 // withProjectInstruction appends the project sentence to the handshake
-// instructions. Scope and root are cleaned as the project brief cleans them.
+// instructions. Only the scope can appear, and only when it is a plain name.
 func withProjectInstruction(ctx context.Context, result map[string]any, configOK bool) map[string]any {
 	p, ok := mcpProjectFrom(ctx)
 	instr, isStr := result["instructions"].(string)
 	if !ok || !configOK || !isStr {
 		return result
 	}
-	root := hookspkg.ClipRunes(flatProjectBrief(p.root), mcpProjectRootRunes)
-	result["instructions"] = instr + " " + mcppkg.ProjectInstruction(clipProjectScope(p.scope), root)
+	result["instructions"] = instr + " " + mcppkg.ProjectInstruction(p.scope)
 	return result
 }
 
-// withProjectScope gives a write_memory call with no scope the server's
-// project scope. An explicit scope, including global, is left alone.
+// withProjectScope gives a write_memory call whose arguments have no scope key
+// the server's project scope. Any scope key, even empty, null or not a string,
+// is the client's and is left alone.
 func withProjectScope(ctx context.Context, name string, args map[string]any) map[string]any {
 	p, ok := mcpProjectFrom(ctx)
-	if !ok || name != "write_memory" || strArg(args, "scope", "") != "" {
+	if _, has := args["scope"]; !ok || name != "write_memory" || has {
 		return args
 	}
 	shaped := make(map[string]any, len(args)+1)
