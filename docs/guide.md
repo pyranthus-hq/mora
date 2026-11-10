@@ -1039,6 +1039,62 @@ line telling you to run `mora project list`. When the folder is bound but the
 brief cannot be built, it writes one line telling you to run `mora doctor`. With
 no `projects.json`, or no binding for the folder, the daily brief is unchanged.
 
+### Use Mora in one project
+
+A client with no hooks (Codex, or any MCP client) reaches the project brief
+through the MCP config. First bind the folder (`mora project bind`, above), then
+start the server with the folder's absolute path.
+
+Claude Code, in the project's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "mora": {
+      "command": "mora",
+      "args": ["mcp", "serve", "--project-dir", "/abs/path/to/my-app"]
+    }
+  }
+}
+```
+
+Codex, in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.mora]
+command = "mora"
+args = ["mcp", "serve", "--project-dir", "/abs/path/to/my-app"]
+```
+
+`--project-dir` also works with `--profile NAME`, in either order. Mora looks the
+folder up once, when the server starts. When the folder is bound, three things
+change for that server, and only then:
+
+1. `write_memory` with no `scope` saves to the project scope, not `global`. An
+   explicit `scope`, including `global`, always wins. Your write policy keeps its
+   meaning: `tentative` saves a labelled tentative note, `propose` queues a
+   proposal for that scope, `readonly` refuses. An agent profile that may not
+   write the project scope is refused, as for any scope it lacks.
+2. `brief` with no `project_dir` returns the project brief. An explicit
+   `project_dir` still wins. `brief` with `daily: true` returns the daily brief.
+3. The server instructions gain one sentence that tells the client to call
+   `brief` first and names the project scope. The sentence never holds the
+   folder path or any note text. A scope that is not a plain name
+   (`project:` and up to 64 letters, digits, `.`, `_` or `-`) is left out and the
+   sentence says "one bound project folder" instead.
+
+When the folder is not bound, is not an absolute path, is not an existing
+directory (a missing path or a file counts), or the bindings file cannot be read, the server starts and behaves exactly like
+`mora mcp serve`. It prints one line on stderr and nothing on stdout. The
+server's own working directory never counts, and Mora does not guess a project
+from the client's roots.
+
+A running server keeps the project it found at start. If you unbind or rebind the
+folder, restart the client so the server starts again. A value that starts with
+`-` after `--project-dir` or `--profile` is a missing value and a usage error.
+
+This flag is for the stdio server. `mora mcp serve-http` does not take it.
+
 ### Handoff of the last session
 
 When a Claude Code session ends in a bound folder, the `SessionEnd` hook keeps

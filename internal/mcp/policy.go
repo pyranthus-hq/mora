@@ -3,6 +3,7 @@ package mcp
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -70,4 +71,18 @@ func MutationAction(policy, tool string) (string, error) {
 	default:
 		return ActionExecute, nil
 	}
+}
+
+var projectInstructionScope = regexp.MustCompile(`^project:[A-Za-z0-9._-]{1,64}$`)
+
+// ProjectInstruction is the one sentence a server started for a bound project
+// folder adds to its instructions. The folder path never goes in. The scope goes
+// in, quoted, only when it is a plain project name; any other scope could read as
+// an instruction, so the sentence stays generic.
+func ProjectInstruction(scope string) string {
+	const rest = " Call brief first for the owner's rules of this project; write_memory without a scope saves to that project."
+	if projectInstructionScope.MatchString(scope) {
+		return `This server was started for project "` + scope + `".` + rest
+	}
+	return "This server was started for one bound project folder." + rest
 }

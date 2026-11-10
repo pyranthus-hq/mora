@@ -118,7 +118,7 @@ var toolCatalog = []ToolDefinition{
 		},
 	},
 	{
-		Name: "brief", Description: "Return the latest what-changed/what-matters brief for session start — the same budgeted, cited, source-grouped daily brief as `digest`, resolved to the freshest available; call this FIRST at the start of a session. Opt into `envelope` for a synthesis_prompt to compose a grounded, cited brief. Pass `project_dir` (the folder you work in) to get that project's owner rules instead; it errors when the folder is not bound.",
+		Name: "brief", Description: "Return the latest what-changed/what-matters brief for session start — the same budgeted, cited, source-grouped daily brief as `digest`, resolved to the freshest available; call this FIRST at the start of a session. Opt into `envelope` for a synthesis_prompt to compose a grounded, cited brief. Pass `project_dir` (the folder you work in) to get that project's owner rules instead; it errors when the folder is not bound. A server started for a bound project folder returns that project's rules when `project_dir` is omitted; pass `daily: true` for the daily brief instead.",
 		Params: []Param{
 			{"max_tokens", "integer", "Approximate token budget for the brief (default ~6000, max ~20000)", false},
 			{"project_dir", "string", "Absolute path of the folder you work in. When it is bound to a project (`mora project bind`), return that project's owner rules instead of the daily brief; error when it is not bound.", false},
@@ -126,6 +126,7 @@ var toolCatalog = []ToolDefinition{
 			{"entity", "string", `Filter the brief to memories referencing one person (display name or email/handle). A no-match or ambiguous name returns an error. Preview-only.`, false},
 			{"scope", "string", `Filter the brief to one memory scope/namespace, e.g. "project:acme". Preview-only.`, false},
 			{"since_days", "integer", "Additional look-back: only memories created in the last N days (negative = no filter). Preview-only.", false},
+			{"daily", "boolean", "Return the daily brief even when this server was started for a project folder (default false)", false},
 		},
 	},
 	{
