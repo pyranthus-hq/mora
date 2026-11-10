@@ -120,3 +120,25 @@ let actOK = try JSONDecoder().decode(ReviewActResult.self, from: Data(#"{"ok":tr
 let actFail = try JSONDecoder().decode(ReviewActResult.self, from: Data(#"{"ok":false,"error":"Mora could not complete the action."}"#.utf8))
 check(actOK.ok && actFail.ok == false && actFail.error != nil, "review act result decoded")
 print("Review list checks passed")
+
+let flagged = try JSONDecoder().decode(ReviewList.self, from: Data(#"{"notes":[{"id":"p_1","kind":"held","scope":"g","type":"t","title":"a","text":"token: [REDACTED]","redacted":true},{"id":"m_2","kind":"saved","scope":"g","type":"t","title":"b","text":"x","truncated":true,"hidden_chars":5100},{"id":"m_3","kind":"saved","scope":"g","type":"t","title":"c","text":"","unreadable":true},{"id":"m_4","kind":"saved","scope":"g","type":"t","title":"d","text":"ok"}],"more":0}"#.utf8))
+check(flagged.notes[0].redacted && flagged.notes[1].truncated && flagged.notes[1].hiddenChars == 5100 && flagged.notes[2].unreadable, "review flags decoded")
+check(!flagged.notes[0].canKeep && !flagged.notes[1].canKeep && !flagged.notes[2].canKeep && flagged.notes[3].canKeep, "canKeep is false for redacted, truncated and unreadable notes")
+check(flagged.notes[3].keepWarning == nil && flagged.notes[3].redacted == false && flagged.notes[3].hiddenChars == 0, "plain note has no warning and defaults")
+check(flagged.notes[1].keepWarning == "Text cut: 5100 more characters are not shown. Discard it, or look at it with mora review in a terminal.", "truncated warning line")
+check(flagged.notes[0].keepWarning?.hasPrefix("This note holds a value that looks like a credential.") == true, "redacted warning line")
+
+var gate = ReviewGate()
+let first = gate.beginFetch()
+check(first == 0 && !gate.canAct && !gate.canRefresh, "buttons are disabled while a fetch runs")
+check(gate.beginFetch() == nil && !gate.beginAction(), "no second fetch and no action during a fetch")
+check(gate.finishFetch(0) && gate.canAct && gate.canRefresh, "current fetch is accepted and buttons return")
+check(gate.beginAction() && !gate.canRefresh && gate.beginFetch() == nil, "refresh is disabled while an action runs")
+gate.endAction(succeeded: false)
+check(gate.generation == 0 && gate.canRefresh, "failed action keeps the generation")
+let stale = gate.beginFetch()!
+gate.endAction(succeeded: true) // an action that finished while the fetch ran
+check(gate.generation == 1, "successful action increments the generation")
+check(!gate.finishFetch(stale), "fetch started before an action is dropped")
+check(gate.beginFetch() == 1 && gate.finishFetch(1), "the new fetch is accepted")
+print("Review gate checks passed")

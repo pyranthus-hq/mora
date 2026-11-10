@@ -49,6 +49,14 @@ Click the row ("Click to review.") to open one window, "Agent notes to review".
 The count does not change the health state or the icon, and no row appears when
 the counts are zero or the doctor report is unavailable.
 
+Keep is allowed only when the window showed the whole text that will be saved;
+Discard is always allowed. A note whose text Mora hid as credential-like, was cut
+(over 20,000 characters, or a title over 200), or could not be read shows a
+warning and has no Keep button. The window locks Keep, Discard and Refresh while
+a fetch or an action runs, and drops a fetch that an action made stale. The
+collector does not know what the window showed, so `review-act keep` still works
+from the command line.
+
 The window lists up to 50 notes with their text, shown as plain text (no
 markdown, no links opened). Each note has Keep and Discard. Discard asks once.
 After an action the note leaves the list and the panel count refreshes. A failed

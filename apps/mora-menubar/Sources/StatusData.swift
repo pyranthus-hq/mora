@@ -111,6 +111,37 @@ struct ReviewNote: Decodable, Identifiable, Equatable {
     let type: String
     let title: String
     let text: String
+    let redacted: Bool
+    let truncated: Bool
+    let hiddenChars: Int
+    let unreadable: Bool
+
+    enum CodingKeys: String, CodingKey { case id, kind, scope, type, title, text, redacted, truncated, hiddenChars = "hidden_chars", unreadable }
+    init(id: String, kind: String, scope: String, type: String, title: String, text: String, redacted: Bool = false, truncated: Bool = false, hiddenChars: Int = 0, unreadable: Bool = false) {
+        self.id = id; self.kind = kind; self.scope = scope; self.type = type; self.title = title; self.text = text
+        self.redacted = redacted; self.truncated = truncated; self.hiddenChars = hiddenChars; self.unreadable = unreadable
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(id: try c.decode(String.self, forKey: .id), kind: try c.decode(String.self, forKey: .kind),
+                  scope: try c.decode(String.self, forKey: .scope), type: try c.decode(String.self, forKey: .type),
+                  title: try c.decode(String.self, forKey: .title), text: try c.decode(String.self, forKey: .text),
+                  redacted: try c.decodeIfPresent(Bool.self, forKey: .redacted) ?? false,
+                  truncated: try c.decodeIfPresent(Bool.self, forKey: .truncated) ?? false,
+                  hiddenChars: max(0, try c.decodeIfPresent(Int.self, forKey: .hiddenChars) ?? 0),
+                  unreadable: try c.decodeIfPresent(Bool.self, forKey: .unreadable) ?? false)
+    }
+
+    /// Keep is allowed only when the window shows the whole text that would be saved. Discard is always allowed.
+    var canKeep: Bool { !redacted && !truncated && !unreadable }
+
+    /// Why Keep is missing; nil when Keep is allowed.
+    var keepWarning: String? {
+        if redacted { return "This note holds a value that looks like a credential. Mora hides it here. Discard it, or look at it with mora review in a terminal." }
+        if truncated { return "Text cut: \(hiddenChars) more characters are not shown. Discard it, or look at it with mora review in a terminal." }
+        if unreadable { return "The text could not be read. Discard it, or look at it with mora review in a terminal." }
+        return nil
+    }
 
     /// "Saved, not reviewed · global · insight"
     var kindLine: String {
@@ -140,6 +171,39 @@ struct ReviewList: Decodable {
 
     static func moreLine(_ more: Int) -> String? { more > 0 ? "\(more) more not shown. Review these first, then refresh." : nil }
     var moreLine: String? { Self.moreLine(more) }
+}
+
+/// Decides which fetch results and clicks the window accepts, so a late fetch
+/// cannot bring back a card after an action removed it.
+struct ReviewGate {
+    private(set) var generation = 0
+    private(set) var fetching = false
+    private(set) var acting = 0
+
+    var canRefresh: Bool { !fetching && acting == 0 }
+    var canAct: Bool { !fetching }
+
+    /// The fetch's number, or nil when a fetch or an action is already running.
+    mutating func beginFetch() -> Int? {
+        guard canRefresh else { return nil }
+        fetching = true
+        return generation
+    }
+    /// True when the result is current. False means drop it and fetch again.
+    mutating func finishFetch(_ number: Int) -> Bool {
+        fetching = false
+        return number == generation
+    }
+    mutating func beginAction() -> Bool {
+        guard canAct else { return false }
+        acting += 1
+        return true
+    }
+    /// A successful action makes every fetch started before it stale.
+    mutating func endAction(succeeded: Bool) {
+        acting = max(0, acting - 1)
+        if succeeded { generation += 1 }
+    }
 }
 
 /// The collector's review-act answer.

@@ -62,7 +62,7 @@ func TestReviewListMergesTextsCutsAndDropsBadRows(t *testing.T) {
 		rows = append(rows, `{"id":"mem_n`+strings.Repeat("1", i%5)+string(rune('a'+i%26))+string(rune('a'+i/26))+`","kind":"saved","scope":"g","type":"t","title":"n"}`)
 	}
 	list := `{"notes":[` + strings.Join(rows, ",") + `]}`
-	long := strings.Repeat("é", 5000)
+	long := strings.Repeat("é", 25000)
 	log := fakeMora(t, `case "$1 $2" in
 "review --list") cat <<'EOF'
 `+list+`
@@ -84,10 +84,10 @@ esac
 	if len(got.Notes) != 50 || got.More != 4 { // 2 good + 52 numbered = 54 valid
 		t.Fatalf("notes=%d more=%d", len(got.Notes), got.More)
 	}
-	if n := got.Notes[0]; n.ID != "mem_1" || len([]rune(n.Title)) != 200 || len([]rune(n.Text)) != 4000 {
-		t.Fatalf("first note not cut: %d %d", len([]rune(n.Title)), len([]rune(n.Text)))
+	if n := got.Notes[0]; n.ID != "mem_1" || len([]rune(n.Title)) != 200 || len([]rune(n.Text)) != 20000 || !n.Truncated || n.HiddenChars != 5100 {
+		t.Fatalf("first note not cut: %d %d %v %d", len([]rune(n.Title)), len([]rune(n.Text)), n.Truncated, n.HiddenChars)
 	}
-	if n := got.Notes[1]; n.Kind != "held" || n.Text != "held text" {
+	if n := got.Notes[1]; n.Kind != "held" || n.Text != "held text" || n.Redacted || n.Truncated || n.Unreadable {
 		t.Fatalf("held note: %+v", n)
 	}
 	if got.Notes[2].Text != "saved text" {
@@ -160,5 +160,41 @@ func TestReviewActFailureGivesFixedText(t *testing.T) {
 	}
 	if strings.Contains(out+stderr, "raw") {
 		t.Fatalf("mora text passed through: %q %q", out, stderr)
+	}
+}
+
+func TestReviewListFlagsRedactedAndUnreadableNotes(t *testing.T) {
+	list := `{"notes":[{"id":"p_1","kind":"held","scope":"g","type":"t","title":"a"},{"id":"p_2","kind":"held","scope":"g","type":"t","title":"b"},{"id":"mem_3","kind":"saved","scope":"g","type":"t","title":"c"}]}`
+	fakeMora(t, `case "$1 $2 $3 $4" in
+"review --list --json "*) cat <<'EOF'
+`+list+`
+EOF
+;;
+"mcp proposals show p_1") echo '{"inspection":{"redacted":true,"arguments":{"text":"token: [REDACTED]"}}}';;
+"mcp proposals show p_2") echo '{"inspection":{"redacted":false,"arguments":{"text":"has [REDACTED] marker"}}}';;
+*) exit 1;;
+esac
+`)
+	out, _, err := capture(t, reviewList)
+	var got ReviewList
+	if err != nil || json.Unmarshal([]byte(out), &got) != nil || len(got.Notes) != 3 {
+		t.Fatalf("err=%v out=%q", err, out)
+	}
+	if !got.Notes[0].Redacted || !got.Notes[1].Redacted {
+		t.Fatalf("redaction not flagged: %+v", got.Notes)
+	}
+	if n := got.Notes[2]; !n.Unreadable || n.Text != "" || n.Redacted {
+		t.Fatalf("unreadable note: %+v", n)
+	}
+}
+
+// The collector does not know what the window showed; the rule lives in the app.
+func TestReviewActKeepStillWorksFromTheCommandLine(t *testing.T) {
+	log := fakeMora(t, "exit 0\n")
+	if _, _, err := capture(t, func() error { return reviewAct([]string{"keep", "held", "p_1"}) }); err != nil {
+		t.Fatal(err)
+	}
+	if c := calls(t, log); len(c) != 1 || c[0] != "mcp proposals approve p_1" {
+		t.Fatalf("calls=%q", c)
 	}
 }

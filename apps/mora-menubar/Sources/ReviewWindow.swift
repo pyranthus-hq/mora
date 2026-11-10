@@ -36,7 +36,7 @@ final class ReviewModel: ObservableObject {
     @Published var notes: [ReviewNote] = []
     @Published var more = 0
     @Published var error: String?
-    @Published var loading = false
+    @Published var gate = ReviewGate()
     @Published var busy: Set<String> = []
     @Published var failures: [String: String] = [:]
 
@@ -52,30 +52,36 @@ final class ReviewModel: ObservableObject {
 
     var moreLine: String? { ReviewList.moreLine(more) }
 
+    var loading: Bool { gate.fetching }
+
     func load() async {
-        guard !loading else { return }
-        loading = true
-        defer { loading = false }
-        failures = [:]
-        if preview {
-            notes = Self.fixtures; more = 0; error = nil
-            return
-        }
-        do {
-            let collector = self.collector
-            let result = try await Task.detached(priority: .utility) { try StatusModel.runCollector(collector, arguments: ["review-list"]) }.value
-            let list = try JSONDecoder().decode(ReviewList.self, from: Data(result.output.utf8))
-            if let message = list.error { throw StatusError.collector(message) }
-            guard result.status == 0 else { throw StatusError.collector("The collector could not list the notes.") }
-            notes = list.notes; more = list.more; error = nil
-        } catch {
-            notes = []; more = 0
-            self.error = Self.short(error.localizedDescription)
+        // A result older than the last successful action is dropped and fetched again.
+        while let number = gate.beginFetch() {
+            failures = [:]
+            var fetched: (notes: [ReviewNote], more: Int, error: String?)
+            if preview {
+                fetched = (Self.fixtures, 0, nil)
+            } else {
+                do {
+                    let collector = self.collector
+                    let result = try await Task.detached(priority: .utility) { try StatusModel.runCollector(collector, arguments: ["review-list"]) }.value
+                    let list = try JSONDecoder().decode(ReviewList.self, from: Data(result.output.utf8))
+                    if let message = list.error { throw StatusError.collector(message) }
+                    guard result.status == 0 else { throw StatusError.collector("The collector could not list the notes.") }
+                    fetched = (list.notes, list.more, nil)
+                } catch {
+                    fetched = ([], 0, Self.short(error.localizedDescription))
+                }
+            }
+            if gate.finishFetch(number) {
+                notes = fetched.notes; more = fetched.more; error = fetched.error
+                return
+            }
         }
     }
 
     func act(_ note: ReviewNote, keep: Bool) async {
-        guard !busy.contains(note.id) else { return }
+        guard !busy.contains(note.id), (keep ? note.canKeep : true), gate.beginAction() else { return }
         busy.insert(note.id)
         defer { busy.remove(note.id) }
         failures[note.id] = nil
@@ -88,9 +94,11 @@ final class ReviewModel: ObservableObject {
                 guard done.ok, result.status == 0 else { throw StatusError.collector(done.error ?? "The action did not complete.") }
             } catch {
                 failures[note.id] = Self.short(error.localizedDescription)
+                gate.endAction(succeeded: false)
                 return
             }
         }
+        gate.endAction(succeeded: true)
         notes.removeAll { $0.id == note.id }
         onChange()
     }
@@ -98,6 +106,8 @@ final class ReviewModel: ObservableObject {
     private static func short(_ text: String) -> String { String(text.prefix(200)) }
 
     private static let fixtures: [ReviewNote] = [
+        ReviewNote(id: "p_fixture_redacted", kind: "held", scope: "project:demo", type: "fact", title: "Fixture: a redacted note", text: "token: [REDACTED]", redacted: true),
+        ReviewNote(id: "mem_fixture_cut", kind: "saved", scope: "global", type: "insight", title: "Fixture: a cut note", text: "Fixture text that was cut.", truncated: true, hiddenChars: 5100),
         ReviewNote(id: "mem_fixture_saved", kind: "saved", scope: "global", type: "insight", title: "Fixture: a saved note", text: "Fixture text. No collector ran."),
         ReviewNote(id: "p_fixture_held", kind: "held", scope: "project:demo", type: "fact", title: "Fixture: a held note", text: "Fixture text for a note that is not saved yet."),
         ReviewNote(id: "mem_fixture_long", kind: "saved", scope: "global", type: "insight", title: "**Bold** [a link](https://example.com) https://example.com/path", text: (1...60).map { "Line \($0): **not bold**, [not a link](https://example.com), https://example.com/\($0)" }.joined(separator: "\n"))
@@ -115,7 +125,7 @@ struct ReviewView: View {
             HStack {
                 if model.loading { ProgressView().controlSize(.small) }
                 Spacer()
-                Button("Refresh") { Task { await model.load() } }.disabled(model.loading)
+                Button("Refresh") { Task { await model.load() } }.disabled(!model.gate.canRefresh)
             }
             if let error = model.error {
                 Text(verbatim: error).font(.system(size: 12)).foregroundStyle(.orange)
@@ -150,14 +160,17 @@ struct ReviewView: View {
                 Text(verbatim: note.text).font(.system(size: 12)).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
             }.frame(height: 130)
+            if let warning = note.keepWarning {
+                Text(verbatim: warning).font(.system(size: 11)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
             if let failure = model.failures[note.id] {
                 Text(verbatim: failure).font(.system(size: 11)).foregroundStyle(.orange)
             }
             HStack {
-                Button("Keep") { Task { await model.act(note, keep: true) } }
+                if note.canKeep { Button("Keep") { Task { await model.act(note, keep: true) } } }
                 Button("Discard") { pendingDiscard = note }
                 if working { ProgressView().controlSize(.small) }
-            }.disabled(working)
+            }.disabled(working || !model.gate.canAct)
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))

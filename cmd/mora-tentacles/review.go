@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -14,7 +15,7 @@ import (
 const (
 	reviewMaxNotes = 50
 	reviewMaxTitle = 200
-	reviewMaxText  = 4000
+	reviewMaxText  = 20000
 )
 
 // A leading dash is refused so an id can never read as a flag.
@@ -27,6 +28,11 @@ type ReviewNote struct {
 	Type  string `json:"type"`
 	Title string `json:"title"`
 	Text  string `json:"text"`
+	// The window allows Keep only when it showed the whole text that will be saved.
+	Redacted    bool `json:"redacted"`
+	Truncated   bool `json:"truncated"`
+	HiddenChars int  `json:"hidden_chars"`
+	Unreadable  bool `json:"unreadable"`
 }
 type ReviewList struct {
 	Notes []ReviewNote `json:"notes"`
@@ -40,11 +46,12 @@ func moraBin() string {
 	return filepath.Join(home(), ".local/bin/mora")
 }
 
-func cut(s string, n int) string {
+// cut returns s cut to n characters and how many characters it dropped.
+func cut(s string, n int) (string, int) {
 	if r := []rune(s); len(r) > n {
-		return string(r[:n])
+		return string(r[:n]), len(r) - n
 	}
-	return s
+	return s, 0
 }
 
 // reviewList prints the agent notes that wait for review, each with its text.
@@ -85,39 +92,46 @@ func reviewList() error {
 			defer wg.Done()
 			slots <- struct{}{}
 			defer func() { <-slots }()
-			n.Text = reviewText(ctx, bin, *n)
-			n.Title, n.Text = cut(n.Title, reviewMaxTitle), cut(n.Text, reviewMaxText)
+			var th, xh int
+			n.Text, n.Redacted, n.Unreadable = reviewText(ctx, bin, *n)
+			n.Title, th = cut(n.Title, reviewMaxTitle)
+			n.Text, xh = cut(n.Text, reviewMaxText)
+			n.HiddenChars = th + xh
+			n.Truncated = n.HiddenChars > 0
 		}(&out.Notes[i])
 	}
 	wg.Wait()
 	return emit(out)
 }
 
-// reviewText reads one note's text: a saved note with read, a held one with proposals show.
-func reviewText(ctx context.Context, bin string, n ReviewNote) string {
-	const missing = "The text could not be read. Use mora review in a terminal for this note."
+// reviewText reads one note's text: a saved note with read, a held one with
+// proposals show. redacted is true when mora hid a credential-like value, since
+// approving then writes the hidden original.
+func reviewText(ctx context.Context, bin string, n ReviewNote) (text string, redacted, unreadable bool) {
 	if n.Kind == "saved" {
 		b, err := command(ctx, bin, "read", n.ID, "--json")
 		var m struct {
 			Text string `json:"text"`
 		}
 		if err != nil || json.Unmarshal(b, &m) != nil {
-			return missing
+			return "", false, true
 		}
-		return m.Text
+		return m.Text, false, false
 	}
 	b, err := command(ctx, bin, "mcp", "proposals", "show", n.ID)
 	var m struct {
 		Inspection struct {
+			Redacted  bool `json:"redacted"`
 			Arguments struct {
 				Text string `json:"text"`
 			} `json:"arguments"`
 		} `json:"inspection"`
 	}
 	if err != nil || json.Unmarshal(b, &m) != nil {
-		return missing
+		return "", false, true
 	}
-	return m.Inspection.Arguments.Text
+	t := m.Inspection.Arguments.Text
+	return t, m.Inspection.Redacted || strings.Contains(t, "[REDACTED]"), false
 }
 
 // reviewActArgs maps one owner action to exactly one mora command. Keep never
