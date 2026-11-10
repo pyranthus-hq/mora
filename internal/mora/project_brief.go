@@ -14,11 +14,18 @@ import (
 )
 
 const (
-	projectBriefMaxChars  = 2000
-	projectBriefRuleRunes = 200
-	projectBriefNoteRunes = 160
-	projectBriefMaxNotes  = 3
+	projectBriefMaxChars   = 2000
+	projectBriefRuleRunes  = 200
+	projectBriefNoteRunes  = 160
+	projectBriefMaxNotes   = 3
+	projectBriefTitleRunes = 120
+	projectBriefScopeRunes = 80
 )
+
+// clipProjectScope bounds a scope name wherever the brief prints it.
+func clipProjectScope(scope string) string {
+	return hookspkg.ClipRunes(scope, projectBriefScopeRunes)
+}
 
 // projectBriefLine is one rendered note and the keys that order it.
 type projectBriefLine struct {
@@ -49,7 +56,8 @@ func newProjectBriefLine(m Memory, scopeRank, runes int, now time.Time) projectB
 	if len(m.CreatedAt) >= 10 {
 		date = m.CreatedAt[:10]
 	}
-	text := fmt.Sprintf("- [%s] %s, %s: %s.", date, m.Type, m.Scope, flat(m.Title))
+	title := hookspkg.ClipRunes(flat(m.Title), projectBriefTitleRunes)
+	text := fmt.Sprintf("- [%s] %s, %s: %s.", date, m.Type, clipProjectScope(m.Scope), title)
 	if body := flat(m.Text); body != "" {
 		text += " " + hookspkg.ClipRunes(body, runes)
 	}
@@ -81,6 +89,11 @@ func buildProjectBrief(cfg Config, scope, root string, now time.Time) (text stri
 		if err != nil {
 			return "", nil, err
 		}
+		// The same visibility filters search applies after fusion: a pending
+		// delete, a retracted note or a superseded note never reaches a prompt.
+		if mems, err = currentMemories(cfg, suppressPendingDeletes(cfg, mems), now); err != nil {
+			return "", nil, err
+		}
 		for _, m := range mems {
 			switch {
 			case (m.Type == "correction" || m.Type == "decision") && memory.IsOwnerConfirmed(m):
@@ -96,15 +109,16 @@ func buildProjectBrief(cfg Config, scope, root string, now time.Time) (text stri
 		notes = notes[:projectBriefMaxNotes]
 	}
 	all := append(rules, notes...)
+	shown := clipProjectScope(scope)
 	if len(all) == 0 {
-		return fmt.Sprintf("Project %s: no owner rules recorded yet.", scope), []string{}, nil
+		return capProjectBrief(fmt.Sprintf("Project %s: no owner rules recorded yet.", shown), []string{})
 	}
 	notice := reviewNotice(context.Background(), cfg)
 	render := func(k int, withNotice bool) string {
 		var out []string
 		nr := min(k, len(rules))
 		if nr > 0 {
-			out = append(out, fmt.Sprintf("Owner rules for %s (the owner wrote or confirmed each line):", scope))
+			out = append(out, fmt.Sprintf("Owner rules for %s (the owner wrote or confirmed each line):", shown))
 			for _, l := range all[:nr] {
 				out = append(out, l.text)
 			}
@@ -121,7 +135,7 @@ func buildProjectBrief(cfg Config, scope, root string, now time.Time) (text stri
 			out = append(out, notice)
 		}
 		if k < len(all) {
-			out = append(out, fmt.Sprintf("%d more: call search_memory with scope %s.", len(all)-k, scope))
+			out = append(out, fmt.Sprintf("%d more: call search_memory with scope %s or scope global.", len(all)-k, shown))
 		}
 		return strings.Join(out, "\n")
 	}
@@ -138,9 +152,18 @@ func buildProjectBrief(cfg Config, scope, root string, now time.Time) (text stri
 		for _, l := range all[:k] {
 			emittedIDs = append(emittedIDs, l.id)
 		}
-		return text, emittedIDs, nil
+		return capProjectBrief(text, emittedIDs)
 	}
-	return "", nil, fmt.Errorf("project brief for %s does not fit %d characters", scope, projectBriefMaxChars)
+	return capProjectBrief(render(0, false), []string{})
+}
+
+// capProjectBrief is the last guard: no branch returns more than the cap. Text
+// cut here no longer matches its ids, so the ids are dropped with it.
+func capProjectBrief(text string, ids []string) (string, []string, error) {
+	if len(text) <= projectBriefMaxChars {
+		return text, ids, nil
+	}
+	return strings.ToValidUTF8(text[:projectBriefMaxChars], ""), []string{}, nil
 }
 
 type projectBriefResult struct {

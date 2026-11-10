@@ -125,13 +125,24 @@ func hookSessionStart(ctx context.Context, stdout io.Writer, stdin io.Reader) er
 		return nil
 	}
 	// A folder bound to a project gets that project's owner rules instead of the
-	// daily brief. No binding, a lookup error or a build error falls through.
+	// daily brief. No binding file, or no match for cwd, keeps the daily brief.
+	// A binding store that cannot be read, or a brief that cannot be built, shows
+	// one diagnostic line: the daily brief holds personal mail and calendar.
 	if filepath.IsAbs(in.CWD) {
-		if scope, root, found, lerr := lookupProject(cfg, in.CWD); lerr == nil && found {
-			if text, _, perr := buildProjectBrief(cfg, scope, root, hookNow()); perr == nil {
-				_ = writeHookOutput(stdout, "SessionStart", prependBannerLine(healthBannerFrom(healthOf(cfg, hookNow())), text))
-				return nil
+		scope, root, found, lerr := lookupProject(cfg, in.CWD)
+		text := ""
+		switch {
+		case lerr != nil:
+			text = `Mora: the project bindings file cannot be read, so no brief is shown. Run "mora project list".`
+		case found:
+			var perr error
+			if text, _, perr = buildProjectBrief(cfg, scope, root, hookNow()); perr != nil {
+				text = fmt.Sprintf(`Mora: the brief for %s could not be built. Run "mora doctor".`, clipProjectScope(scope))
 			}
+		}
+		if text != "" {
+			_ = writeHookOutput(stdout, "SessionStart", prependBannerLine(healthBannerFrom(healthOf(cfg, hookNow())), text))
+			return nil
 		}
 	}
 	body, _, berr := hookResolveBrief(cfg, hookNow(), briefOpts{})

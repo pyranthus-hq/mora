@@ -1011,12 +1011,21 @@ The text has at most two blocks and 2,000 characters:
    project scope that you have not confirmed, one line each, framed as data.
    The "agent notes not reviewed" line follows when notes wait for review.
 
-`personal` notes and notes of other projects never appear. When lines do not
-fit, whole lines are dropped from the end and one line says how many more
-exist and which `search_memory` scope finds them. A bound project with no lines
-shows `Project project:NAME: no owner rules recorded yet.` An unbound folder
-makes `mora brief --project` exit non-zero. The MCP `brief` tool takes the same
-view through its optional `project_dir` argument.
+`personal` notes and notes of other projects never appear. Notes that are
+deleted, retracted or superseded are left out, as in search. Titles are cut at
+120 characters and scope names at 80. When lines do not fit, whole lines are
+dropped from the end and one line says how many more exist and tells you to
+call `search_memory` with the project scope or scope `global`: the omitted lines
+can sit in either. A bound project with no lines shows
+`Project project:NAME: no owner rules recorded yet.` An unbound folder makes
+`mora brief --project` exit non-zero. The MCP `brief` tool takes the same view
+through its optional `project_dir` argument.
+
+The session-start hook never falls back to the daily brief for a project folder
+it cannot serve. When `projects.json` exists but cannot be read, it writes one
+line telling you to run `mora project list`. When the folder is bound but the
+brief cannot be built, it writes one line telling you to run `mora doctor`. With
+no `projects.json`, or no binding for the folder, the daily brief is unchanged.
 
 ### Claude Code hooks
 

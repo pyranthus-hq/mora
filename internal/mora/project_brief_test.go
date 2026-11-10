@@ -162,7 +162,7 @@ func TestProjectBriefCapDropsWholeLinesFromTheEnd(t *testing.T) {
 	}
 	lines := strings.Split(text, "\n")
 	last := lines[len(lines)-1]
-	if want := fmt.Sprintf("%d more: call search_memory with scope project:demo.", 60-len(ids)); last != want {
+	if want := fmt.Sprintf("%d more: call search_memory with scope project:demo or scope global.", 60-len(ids)); last != want {
 		t.Fatalf("last line = %q, want %q", last, want)
 	}
 	shown := 0
@@ -304,11 +304,90 @@ func TestProjectBriefSessionStartHook(t *testing.T) {
 	if err := cmdHook(testCtx(t), []string{"session-start"}, &out, testStderr, strings.NewReader(fmt.Sprintf(`{"source":"compact","cwd":%q}`, dir))); err != nil || out.Len() != 0 {
 		t.Fatalf("compact must write nothing: %v %q", err, out.String())
 	}
+	daily = 0
+	// A store that cannot be read shows one line, never the daily brief.
 	if err := os.WriteFile(filepath.Join(cfg.ConfigDir, "projects.json"), []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := pbHook(t, filepath.Join(dir, "sub")); got != "daily brief body" {
-		t.Fatalf("corrupt projects.json must give today's behaviour, got %q", got)
+	want := `Mora: the project bindings file cannot be read, so no brief is shown. Run "mora project list".`
+	if got := pbHook(t, filepath.Join(dir, "sub")); got != want || daily != 0 {
+		t.Fatalf("corrupt projects.json: calls %d, got %q", daily, got)
+	}
+	// A binding that is found but cannot build shows one line too.
+	bad := fmt.Sprintf(`{"bindings":[{"dir":%q,"scope":"personal"}]}`, dir)
+	if err := os.WriteFile(filepath.Join(cfg.ConfigDir, "projects.json"), []byte(bad), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want = `Mora: the brief for personal could not be built. Run "mora doctor".`
+	if got := pbHook(t, dir); got != want || daily != 0 {
+		t.Fatalf("builder failure: calls %d, got %q", daily, got)
+	}
+	// No store at all keeps today's behaviour.
+	if err := os.Remove(filepath.Join(cfg.ConfigDir, "projects.json")); err != nil {
+		t.Fatal(err)
+	}
+	if got := pbHook(t, dir); got != "daily brief body" || daily != 1 {
+		t.Fatalf("no projects.json: calls %d, got %q", daily, got)
+	}
+}
+
+func TestProjectBriefHidesDeletedRetractedAndSupersededNotes(t *testing.T) {
+	cfg := projectBriefSetup(t)
+	pbOwner(t, cfg, "mem_keep", pbScope, "decision", "Kept rule", "Visible.", 1)
+	pathPendingOwner := pbSeed(t, cfg, "mem_pend_owner", pbScope, "decision", "Pending owner", "Hidden.", 2)
+	pbConfirm(t, pathPendingOwner)
+	pathPendingNote := pbSeed(t, cfg, "mem_pend_note", pbScope, "decision", "Pending note", "Hidden.", 3)
+	pbOwner(t, cfg, "mem_retracted", pbScope, "correction", "Retracted rule", "Hidden.", 4)
+	pbSeed(t, cfg, "mem_retracted_note", pbScope, "decision", "Retracted note", "Hidden.", 5)
+	pbOwner(t, cfg, "mem_old", "global", "decision", "Superseded rule", "Hidden.", 6)
+	pbOwner(t, cfg, "mem_new", "global", "decision", "Successor rule", "Visible.", 7)
+	for id, path := range map[string]string{"mem_pend_owner": pathPendingOwner, "mem_pend_note": pathPendingNote} {
+		if _, err := markIndexDirty(testCtx(t), cfg, pendingOp{Kind: opKindDelete, Path: path, MemoryID: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{"mem_retracted", "mem_retracted_note"} {
+		if _, err := appendGovernanceEntry(cfg, govEntry{Kind: govKindTeachMemory, Action: govActionRecord, TargetID: id, Decision: teachMemoryRetract}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := appendGovernanceEntry(cfg, govEntry{Kind: govKindTeachMemory, Action: govActionRecord, TargetID: "mem_old", ReplacementID: "mem_new", Decision: teachMemorySupersede}); err != nil {
+		t.Fatal(err)
+	}
+	text, ids := pbBuild(t, cfg)
+	if got := strings.Join(ids, ","); got != "mem_keep,mem_new" {
+		t.Fatalf("ids = %s\n%s", got, text)
+	}
+	if strings.Contains(text, "Hidden.") {
+		t.Fatalf("hidden note leaked:\n%s", text)
+	}
+}
+
+func TestProjectBriefClipsTitleScopeAndNeverExceedsCap(t *testing.T) {
+	cfg := projectBriefSetup(t)
+	pbOwner(t, cfg, "mem_huge", pbScope, "decision", strings.Repeat("T", 3000), "First rule.", 2)
+	pbOwner(t, cfg, "mem_short", pbScope, "decision", "Short rule", "Second rule.", 1)
+	text, ids := pbBuild(t, cfg)
+	if strings.Join(ids, ",") != "mem_huge,mem_short" || len(text) > 2000 {
+		t.Fatalf("ids = %v len = %d", ids, len(text))
+	}
+	if !strings.Contains(text, strings.Repeat("T", 120)+".... First rule.") || strings.Contains(text, strings.Repeat("T", 121)) {
+		t.Fatalf("title not cut at 120:\n%s", text)
+	}
+	long := "project:" + strings.Repeat("p", 3000)
+	for name, want := range map[string]string{"empty": "Project " + long[:80] + "...: no owner rules recorded yet."} {
+		got, gotIDs, err := buildProjectBrief(cfg, long, "/x", projectBriefNow)
+		if err != nil || got != want || len(gotIDs) != 0 {
+			t.Fatalf("%s: %q %v %v", name, got, gotIDs, err)
+		}
+	}
+	pbOwner(t, cfg, "mem_global", "global", "correction", "Global fix", "Applies.", 3)
+	got, gotIDs, err := buildProjectBrief(cfg, long, "/x", projectBriefNow)
+	if err != nil || len(got) > 2000 || len(gotIDs) != 1 || !strings.Contains(got, "Owner rules for "+long[:80]+"...") {
+		t.Fatalf("long scope with a rule: len %d ids %v err %v\n%s", len(got), gotIDs, err, got)
+	}
+	if capped, capIDs, _ := capProjectBrief(strings.Repeat("é", 2000), []string{"x"}); len(capped) > 2000 || len(capIDs) != 0 {
+		t.Fatalf("final guard: len %d ids %v", len(capped), capIDs)
 	}
 }
 
