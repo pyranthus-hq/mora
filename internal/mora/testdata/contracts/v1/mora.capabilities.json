@@ -1075,6 +1075,14 @@
     {
       "json_contract": "receipt",
       "kind": "verb",
+      "path": "review",
+      "payload": "mora.review",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
       "path": "undo",
       "payload": "mora.undo",
       "platform": "all",
@@ -2073,6 +2081,10 @@
     },
     {
       "name": "mora.retention.report",
+      "version": 1
+    },
+    {
+      "name": "mora.review",
       "version": 1
     },
     {

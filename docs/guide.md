@@ -705,6 +705,20 @@ mora confirm <memory-id>       # remove the tag; the memory becomes normal
 `mora confirm` has no MCP tool, and it logs a `confirm` line. Both commands
 accept `--json`.
 
+To see every agent note that waits for you, saved or held, and to keep or
+reject each one in a single pass:
+
+```bash
+mora review --list [--json]    # one row per note: id, saved|held, scope, type, title
+mora review                    # walk the notes: [k]eep [r]eject [s]kip [q]uit
+```
+
+`mora review` needs your own terminal. It refuses when stdin is not a terminal
+or an agent session variable is set. Keep and reject do what `mora confirm` or
+`mora mcp proposals approve` (keep), and `mora undo` or
+`mora mcp proposals reject` (reject), do. If a note changes after it is shown,
+the walk does not act on it and shows it again.
+
 While agent notes wait for review, Mora says so: the `write_memory` result
 (`review_notice`), `mora brief`, the MCP brief, the session-start hook and
 `mora doctor` show the count of saved and held notes. Nothing is shown when
