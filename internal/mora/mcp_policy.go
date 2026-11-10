@@ -85,6 +85,9 @@ func stageMCPWriteProposalHeld(cfg Config, args map[string]any, proposedBy strin
 	if len(heldBecause) > 0 {
 		result["held_because"] = heldBecause
 	}
+	if n := reviewNotice(context.Background(), cfg); n != "" {
+		result["review_notice"] = n
+	}
 	return result, nil
 }
 

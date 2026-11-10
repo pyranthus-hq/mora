@@ -140,6 +140,9 @@ func hookSessionStart(ctx context.Context, stdout io.Writer, stdin io.Reader) er
 	if strings.TrimSpace(body) == "" {
 		return nil
 	}
+	if notice := reviewNotice(ctx, cfg); notice != "" {
+		body += "\n" + notice
+	}
 	_ = writeHookOutput(stdout, "SessionStart", body)
 	return nil
 }
