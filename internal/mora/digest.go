@@ -192,11 +192,11 @@ type briefOpts struct {
 	entityIDSet map[string]bool
 	scope       string
 	sinceDays   int
-	// excludeProjectNotes leaves out authored notes (no provider) in a project:*
-	// scope. The session-start hook sets it in a folder with no project binding.
-	// It is not a preview filter: the persisted brief holds no authored notes, so
-	// the cache stays usable and filtered() ignores it.
-	excludeProjectNotes bool
+	// excludeProjectScopes leaves out every record whose scope starts with
+	// "project:", whatever its provenance. The session-start hook sets it in a
+	// folder with no project binding. It counts as a filter, so the persisted
+	// brief (which may hold project records) is never served for it.
+	excludeProjectScopes bool
 	// ctx carries the caller's context into the one place digest assembly
 	// reaches durable-repair code: digestCommitmentInventory, which loads the
 	// typed commitment inventory through ensureIndexDB. It used to fabricate a
@@ -215,7 +215,7 @@ type briefOpts struct {
 // pulse-only window, never a brief input (P1-E); and a negative sinceDays does not
 // count (it is clamped/inert — P1-D).
 func (o briefOpts) filtered() bool {
-	return o.source != "" || len(o.entityIDSet) > 0 || o.scope != "" || o.sinceDays > 0
+	return o.source != "" || len(o.entityIDSet) > 0 || o.scope != "" || o.sinceDays > 0 || o.excludeProjectScopes
 }
 
 // sourceDigestRank / digestSourceLabel are now thin shims over connectorDisplay
@@ -538,7 +538,7 @@ func digestInputs(cfg Config, now time.Time, opts briefOpts) (perSourceCap int, 
 		if !governance.memoryVisible(m.ID) || memory.IsTentative(m) {
 			continue
 		}
-		if _, groupable := sourceInstanceKey(m); !groupable && opts.excludeProjectNotes && strings.HasPrefix(m.Scope, "project:") {
+		if opts.excludeProjectScopes && strings.HasPrefix(m.Scope, "project:") {
 			continue
 		}
 		m = decorateDecision(m, now)

@@ -143,15 +143,15 @@ func hookSessionStart(ctx context.Context, stdout io.Writer, stdin io.Reader) er
 			}
 		}
 		if text != "" {
-			werr := writeHookOutput(stdout, "SessionStart", prependBannerLine(healthBannerFrom(healthOf(cfg, hookNow())), text))
+			werr := writeHookOutput(stdout, "SessionStart", prependBannerLine(boundHealthBanner(cfg), text))
 			if len(emitted) > 0 {
 				_ = appendGiven(cfg, givenLine{Surface: "hook-session-start", Kind: "project-brief", Caller: "claude-code", Dir: root, Scope: givenScope(scope), Written: boolPtr(werr == nil)}, emitted, len(emitted))
 			}
 			return nil
 		}
 	}
-	// No binding for this folder: the daily brief leaves out project notes.
-	body, _, berr := hookResolveBrief(cfg, hookNow(), briefOpts{excludeProjectNotes: true})
+	// No binding for this folder: the daily brief leaves out every project record.
+	body, _, berr := hookResolveBrief(cfg, hookNow(), briefOpts{excludeProjectScopes: true})
 	if berr != nil {
 		// C2 ▸A: hookSessionStart used to swallow EVERY resolveBrief error with
 		// a silent return nil — a failed brief build injected nothing, and the
@@ -198,16 +198,20 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 		return nil
 	}
 	// A binding file that cannot be read gives no recall and writes nothing.
-	scopeFilter, ok := recallScopeFilter(cfg, opts, in.CWD)
+	scopeFilter, bound, ok := recallScopeFilter(cfg, opts, in.CWD)
 	if !ok {
 		return nil
 	}
 	// C2 ▸A: hook recall injects into EVERY user prompt, so it gets the same
 	// one-line treatment as session-start — the banner rides along whenever the
 	// vault is unhealthy, on both the search-succeeded and search-failed paths.
-	// Scoped recall omits it because source errors may contain unrelated private data.
+	// A folder with a binding gets one fixed line, and the --scope form without a
+	// binding gets none, because source errors may contain unrelated private data.
 	var banner string
-	if opts.scope == "" {
+	switch {
+	case bound:
+		banner = boundHealthBanner(cfg)
+	case opts.scope == "":
 		banner = healthBannerFrom(healthOf(cfg, hookNow()))
 	}
 	searchCtx, cancel := context.WithTimeout(ctx, hookRecallTimeout)
@@ -289,34 +293,49 @@ func parseHookRecallArgs(args []string) (hookRecallOptions, bool) {
 	return opts, true
 }
 
+// boundHealthLine replaces the detailed health banner in a folder with a
+// project binding: the banner can name files and accounts of other projects.
+const boundHealthLine = `Mora: memory health needs attention. Run "mora doctor".`
+
+// boundHealthBanner is boundHealthLine, shown only when the detailed banner
+// would not be empty.
+func boundHealthBanner(cfg Config) string {
+	if healthBannerFrom(healthOf(cfg, hookNow())) == "" {
+		return ""
+	}
+	return boundHealthLine
+}
+
 // recallScopeFilter is the scope limit for notes that appear without being asked
-// for. In a bound folder: that project and global, plus personal when the
-// binding is owner_only. In no bound folder: everything except project notes.
-// The --scope install form means the same as a binding for its project-dir.
-// ok is false when the binding file cannot be read.
-func recallScopeFilter(cfg Config, opts hookRecallOptions, cwd string) (f searchFilters, ok bool) {
-	dir := cwd
-	if opts.scope != "" {
-		dir = opts.projectDir
-	} else if !filepath.IsAbs(cwd) {
-		return searchFilters{NoProjectScopes: true}, true
+// for. The binding of the hook cwd decides everything: its project and global,
+// plus personal only when that binding is owner_only. With no binding, the
+// installed --scope (cwd is inside its directory, checked by the caller) means
+// that project plus global, never personal; with neither, everything except
+// project notes. The bindings store is read first: when it cannot be read,
+// whatever the cwd is, ok is false and recall stays silent. bound reports that a
+// binding applied.
+func recallScopeFilter(cfg Config, opts hookRecallOptions, cwd string) (f searchFilters, bound, ok bool) {
+	var b projectBinding
+	var err error
+	if filepath.IsAbs(cwd) {
+		b, bound, err = lookupProjectBinding(cfg, cwd)
+	} else {
+		_, err = loadProjectBindings(cfg)
 	}
-	b, found, err := lookupProjectBinding(cfg, dir)
-	if err != nil {
-		return searchFilters{}, false
-	}
-	project := opts.scope
-	if project == "" {
-		if !found {
-			return searchFilters{NoProjectScopes: true}, true
+	switch {
+	case err != nil:
+		return searchFilters{}, false, false
+	case bound:
+		f.Scopes = []string{b.Scope, "global"}
+		if b.OwnerOnly {
+			f.Scopes = append(f.Scopes, "personal")
 		}
-		project = b.Scope
+	case opts.scope != "":
+		f.Scopes = []string{opts.scope, "global"}
+	default:
+		f.NoProjectScopes = true
 	}
-	f.Scopes = []string{project, "global"}
-	if found && b.OwnerOnly {
-		f.Scopes = append(f.Scopes, "personal")
-	}
-	return f, true
+	return f, bound, true
 }
 
 func hookWithinProject(root, cwd string) bool {

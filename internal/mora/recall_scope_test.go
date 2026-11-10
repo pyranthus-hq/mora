@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 const rsQuery = "quillfish rule"
@@ -329,22 +331,147 @@ func TestSessionStartDailyBriefLeavesOutProjectNotes(t *testing.T) {
 	}
 }
 
-func TestSessionStartDailyBriefKeepsMailForProjectScope(t *testing.T) {
+// The rule is by scope, not by origin: a mail record in a project scope is
+// left out of the unbound brief, and one in another scope stays.
+func TestSessionStartDailyBriefLeavesOutProjectMail(t *testing.T) {
 	cfg := projectBriefSetup(t)
 	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
-	if err := writeMemory(cfg, Memory{
-		ID: "mail-1", Scope: "project:a", Type: "email", Source: "gmail", Provider: "gmail",
-		ProviderID: "thread/mail-1", Title: "Mail MARK_MAIL", CreatedAt: now.Add(-time.Hour).Format(time.RFC3339),
-		Text: "a mail body",
-	}); err != nil {
-		t.Fatal(err)
+	for _, n := range []struct{ id, scope string }{{"mail-a", "project:a"}, {"mail-p", "personal"}} {
+		if err := writeMemory(cfg, Memory{
+			ID: n.id, Scope: n.scope, Type: "email", Source: "gmail", Provider: "gmail",
+			ProviderID: "thread/" + n.id, Title: "Mail " + rsMark(n.id), CreatedAt: now.Add(-time.Hour).Format(time.RFC3339),
+			Text: "a mail body",
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	d, err := buildDigest(cfg, now, briefOpts{sinceHours: 24, excludeProjectNotes: true})
+	d, err := buildDigest(cfg, now, briefOpts{sinceHours: 24, excludeProjectScopes: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	b, _ := json.Marshal(d)
-	if !strings.Contains(string(b), "MARK_MAIL") {
-		t.Fatalf("mail must stay in the digest: %s", b)
+	if strings.Contains(string(b), rsMark("mail-a")) || !strings.Contains(string(b), rsMark("mail-p")) {
+		t.Fatalf("project mail must be out and other mail in: %s", b)
+	}
+}
+
+// A fresh cached brief can hold project records, so an unbound session start
+// must not serve it.
+func TestSessionStartDailyBriefNeverServesCachedBody(t *testing.T) {
+	cfg := projectBriefSetup(t)
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	seedBriefFile(t, cfg, now.Format("2006-01-02"), "# Brief\nMARK_CACHED_PROJECT_A is in project:a\n")
+	if body, generated, err := resolveBrief(cfg, now, briefOpts{}); err != nil || generated || !strings.Contains(body, "MARK_CACHED_PROJECT_A") {
+		t.Fatalf("fixture: the plain brief must serve the cache (%v, %v): %s", generated, err, body)
+	}
+	prevNow, prevBrief := hookNow, hookResolveBrief
+	hookNow, hookResolveBrief = func() time.Time { return now }, resolveBrief
+	defer func() { hookNow, hookResolveBrief = prevNow, prevBrief }()
+	var out bytes.Buffer
+	if err := cmdHook(testCtx(t), []string{"session-start"}, &out, testStderr, strings.NewReader(fmt.Sprintf(`{"source":"startup","cwd":%s}`, quoteJSON(rsDir(t))))); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "MARK_CACHED_PROJECT_A") {
+		t.Fatalf("the cached brief was served in an unbound folder: %s", out.String())
+	}
+}
+
+func TestRecallScopeBindingOfCwdDecides(t *testing.T) {
+	cfg := projectBriefSetup(t)
+	rsSeed(t, cfg)
+	work := rsDir(t)
+	client := filepath.Join(work, "client")
+	if err := os.MkdirAll(client, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"--scope", "project:a", "--project-dir", work}
+
+	// Install-time scope only: project a and global, never personal.
+	rsWant(t, rsRecall(t, work, args...), []string{"g", "a"}, []string{"b", "p"})
+
+	// A nested binding to b wins over the installed scope a.
+	run(t, "project", "bind", "--scope", "project:b", client)
+	rsWant(t, rsRecall(t, client, args...), []string{"g", "b"}, []string{"a", "p"})
+
+	// An owner-only parent does not give personal notes inside a plain nested binding.
+	run(t, "project", "bind", "--scope", "project:a", "--owner-only", work)
+	rsWant(t, rsRecall(t, work, args...), []string{"g", "a", "p"}, []string{"b"})
+	rsWant(t, rsRecall(t, client, args...), []string{"g", "b"}, []string{"a", "p"})
+
+	// Rebinding the directory takes effect without a reinstall.
+	run(t, "project", "unbind", client)
+	run(t, "project", "bind", "--scope", "project:b", work)
+	rsWant(t, rsRecall(t, work, args...), []string{"g", "b"}, []string{"a", "p"})
+}
+
+func TestRecallScopeBindingsStoreReadFirst(t *testing.T) {
+	cfg := projectBriefSetup(t)
+	rsSeed(t, cfg)
+	dir := rsDir(t)
+	before := len(givenLinesOf(t, cfg))
+	// Readable store: an empty or relative cwd gets the unbound rule.
+	for _, cwd := range []string{"", "."} {
+		rsWant(t, rsRecall(t, cwd), []string{"g", "p"}, []string{"a", "b"})
+	}
+	if len(givenLinesOf(t, cfg)) == before {
+		t.Fatal("fixture: a readable store must recall and log")
+	}
+	if err := os.WriteFile(projectBindingsPath(cfg), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before = len(givenLinesOf(t, cfg))
+	for _, cwd := range []string{"", ".", dir} {
+		if got := rsRecall(t, cwd); got != "" {
+			t.Fatalf("cwd %q with an unreadable store wrote %q", cwd, got)
+		}
+	}
+	if after := len(givenLinesOf(t, cfg)); after != before {
+		t.Fatalf("recall logged %d lines on a bindings error", after-before)
+	}
+}
+
+const rsHealthMarker = "PRIVATE_FOREIGN_ACCOUNT_QX"
+
+func rsBreakGmail(t *testing.T, cfg Config) {
+	t.Helper()
+	enableSources(t, cfg, "gmail")
+	seedSyncStatusFull(t, cfg, "gmail", &memory.SyncStatus{
+		Source: "gmail", LastAttemptAt: time.Now().UTC().Format(time.RFC3339),
+		LastError: rsHealthMarker + " /private/other-project",
+	})
+	if healthBannerFrom(healthOf(cfg, hookNow())) == "" {
+		t.Fatal("fixture must have an unhealthy banner")
+	}
+}
+
+func TestBoundFolderShowsOnlyFixedHealthLine(t *testing.T) {
+	cfg := projectBriefSetup(t)
+	rsSeed(t, cfg)
+	dir := rsDir(t)
+	rsBreakGmail(t, cfg)
+
+	// Unbound: today's detailed banner.
+	if got := rsRecall(t, dir); !strings.Contains(got, rsHealthMarker) {
+		t.Fatalf("fixture: an unbound folder keeps the detailed banner: %s", got)
+	}
+
+	run(t, "project", "bind", "--scope", "project:a", dir)
+	prevBrief := hookResolveBrief
+	hookResolveBrief = resolveBrief
+	defer func() { hookResolveBrief = prevBrief }()
+	for name, got := range map[string]string{
+		"recall":        rsRecall(t, dir),
+		"recall-scope":  rsRecall(t, dir, "--scope", "project:a", "--project-dir", dir),
+		"session-start": pbHook(t, dir),
+	} {
+		if strings.Contains(got, rsHealthMarker) || strings.Contains(got, "private/other-project") {
+			t.Errorf("%s leaked a source error in a bound folder: %s", name, got)
+		}
+		if strings.HasPrefix(got, "{") {
+			got = decodeHookOutput(t, got).HookSpecificOutput.AdditionalContext
+		}
+		if !strings.Contains(got, boundHealthLine) {
+			t.Errorf("%s misses the fixed health line: %s", name, got)
+		}
 	}
 }
