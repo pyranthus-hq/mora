@@ -224,7 +224,7 @@ Everything that saves into Mora, and whether it waits:
 | Connectors (mail, calendar, messages, files, PDF, GitHub) | No. Saved at once. |
 | `mora tasks add` | No. Saved at once. |
 | `mora teach ... --yes` corrections | No. Saved at once, and reversible with `mora teach undo`. |
-| An agent's `write_memory` call over MCP | Depends on the [agent write policy](#agent-write-policy). |
+| An agent's `write_memory` call over MCP | By default, no. It saves at once with a tag, and you review it later with `mora review`. See the [agent write policy](#agent-write-policy). |
 | Claude Code hooks | Nothing is saved. Hooks only add context. |
 
 No AI model is called on any of these paths.
@@ -265,21 +265,36 @@ use. Its writes follow the same [agent write policy](#agent-write-policy).
 This section covers only the MCP `write_memory` tool (and `delete_memory`). It
 does not affect `mora write`, connectors, tasks, or teach corrections.
 
-**Default: `tentative`.** A low-risk agent write saves at once and carries a
-`mora-tentative` tag. Low risk means type `insight` or `fact`, a `project:*`
-scope, and no secret, money, sensitive or agent-aimed text. Every other write
-waits in the proposal queue, and the reply says why (`held_because`).
+**Default: `tentative`.** An agent write saves at once and carries a
+`mora-tentative` tag. A write waits in the proposal queue only when its type is
+not `insight`, `fact`, `decision` or `task` (a `correction` changes how other
+records are found, so it waits), or when its text looks like a secret, matches
+the sensitive word list, or is aimed at agents. The reply says why
+(`held_because`).
 
 A tentative memory shows in search, read, list and context with a label. It
 does not reach the recall hook, the digest, the brief, commitments or share.
-Run `mora confirm --list` to see them. Run `mora confirm <id>` to keep one.
-Run `mora undo <id>` to remove an agent write. Run `mora review` in your own
-terminal to keep or reject every waiting note, saved or held. Under this policy
-`delete_memory` is refused, and phone captures go to the queue.
+It is a file in your vault, so `mora sync git` and `mora backup` carry it.
+
+While notes wait, Mora says so. Each `write_memory` reply, `mora brief`, the
+session-start hook and `mora doctor` show one line such as
+`Agent notes not reviewed: 2 saved, 1 held.`
+
+Run `mora review` in your own terminal to go through them. It shows each note
+in full, with every field an agent acts on, and asks keep, reject, skip or
+quit. A note you keep becomes owner-confirmed: agents see
+`"trust":"owner-confirmed"` and are told to treat it as your own statement. If
+the note changes later, that status drops. `mora review --list` prints the list
+in any shell. `mora confirm <id>` keeps one note without that status, and
+`mora undo <id>` removes an agent write. Under this policy `delete_memory` is
+refused, and phone captures go to the queue.
 
 The hold filter is coarse. It does not stop a false claim written in plain
 words. An agent with a shell can run `mora confirm` or
-`mora mcp proposals approve`, so this is not a sandbox.
+`mora mcp proposals approve`, so this is not a sandbox. `mora review` refuses to
+run inside an agent session, but a program that fakes a terminal or writes
+vault files can still forge the owner-confirmed status. It is a review record,
+not a signature.
 
 `open`, `propose` and `readonly` stay explicit choices. v0.15.3 defaulted to
 `propose`. v0.15.2 and earlier defaulted to `open`.
@@ -291,7 +306,7 @@ uses the code default.
 Set it with one command:
 
 ```bash
-mora config mcp-write-policy tentative # default: low-risk writes save with a tag; the rest wait
+mora config mcp-write-policy tentative # default: agent writes save with a tag; a few kinds wait
 mora config mcp-write-policy open      # agent writes save at once; deletes allowed
 mora config mcp-write-policy propose   # agent writes wait for approval; deletes refused
 mora config mcp-write-policy readonly  # agent writes and deletes refused
@@ -441,6 +456,7 @@ mora write --scope project:acme --type decision \
   --title "OAuth" --text "Use PKCE."            # save a decision
 mora brief --event-id calendar_event/abc        # cited meeting prep
 mora tasks list                                 # open local tasks
+mora review                                     # keep or reject what agents saved
 mora doctor                                     # source and index health
 ```
 
