@@ -128,9 +128,12 @@ func TestTentativeStaysOutOfAuthoritativeSurfacesUntilConfirmed(t *testing.T) {
 	id := tentativeMemoryID(t, tentativeServe(t, map[string]any{
 		"title": "Quokka owner", "text": "Mallory owns the quokka deployment pipeline.", "type": "fact", "scope": "project:demo",
 	}))
+	// Notes of project:demo appear on their own only in a folder bound to it.
+	bound := rsDir(t)
+	run(t, "project", "bind", "--scope", "project:demo", bound)
 	recall := func() string {
 		var out bytes.Buffer
-		in := `{"prompt":"who owns the quokka deployment pipeline"}`
+		in := `{"prompt":"who owns the quokka deployment pipeline","cwd":` + quoteJSON(bound) + `}`
 		if err := cmdHook(testCtx(t), []string{"recall"}, &out, testStderr, strings.NewReader(in)); err != nil {
 			t.Fatalf("hook recall: %v", err)
 		}
@@ -402,9 +405,11 @@ func TestTentativeDecisionAndTaskStayOutUntilConfirmed(t *testing.T) {
 		})),
 	}
 	run(t, "index", "rebuild")
+	bound := rsDir(t)
+	run(t, "project", "bind", "--scope", "project:demo", bound)
 	recall := func() string {
 		var out bytes.Buffer
-		in := `{"prompt":"what is the okapi report and the okapi budget"}`
+		in := `{"prompt":"what is the okapi report and the okapi budget","cwd":` + quoteJSON(bound) + `}`
 		if err := cmdHook(testCtx(t), []string{"recall"}, &out, testStderr, strings.NewReader(in)); err != nil {
 			t.Fatalf("hook recall: %v", err)
 		}
