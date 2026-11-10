@@ -971,6 +971,7 @@ Tell Mora that a folder belongs to a project scope:
 mora project bind --scope project:my-app ~/code/my-app
 mora project which ~/code/my-app/src   # project:my-app, plus the bound root
 mora project list --json               # [{"dir": "...", "scope": "project:my-app"}]
+mora project bind --scope project:my-app --owner-only ~/code/my-app
 mora project unbind ~/code/my-app
 ```
 
@@ -980,15 +981,19 @@ path with symlinks resolved, in `projects.json` in the Mora config directory
 (mode 0600). `--scope` must be `project:NAME`; `global` and `personal` are
 refused. Without `--scope`, Mora uses `project:` plus the lower-case folder name,
 or asks for `--scope` when that name is not a valid scope. Binding the same
-folder again replaces its scope. A folder matches its own binding and the
+folder again replaces its scope and its `--owner-only` mark: bind without the
+flag to clear it. `--owner-only` lets your `personal` notes appear on their own
+in sessions in that folder (see "Which notes appear on their own"); `list` and
+`which` show it, as a trailing `owner-only` column in text and as `"owner_only":
+true` in JSON. A file written before the flag existed loads with it off. A folder matches its own binding and the
 bindings of its parents; the deepest one wins. Mora never guesses a project
 from a folder name when it looks one up, and `which` exits non-zero with "no
 project" when nothing matches.
 
 `mora hook install --project --scope project:NAME` also binds the project root.
 `mora hook uninstall --project` leaves that binding in place. The session-start
-hook and `mora brief --project` read bindings (see "Project brief" below); search
-and save do not.
+hook, the recall hook and `mora brief --project` read bindings (see "Project
+brief" and "Which notes appear on their own" below); search and save do not.
 
 ### Project brief
 
@@ -1089,14 +1094,40 @@ Mora hook with `mora hook uninstall --project`.
 
 The binding is a directory subtree, not a repository identity: nested
 repositories inside it are included. Moving or renaming the installed root stops
-new recall until you reinstall there. Global hooks added after project setup can
-reintroduce broad context; this installer does not monitor future settings edits.
+new recall until you reinstall there. A global recall hook added after project
+setup follows the folder's binding, as described in the next section.
 
-The plain `mora hook install` remains global and reads across scopes. Project
-hooks filter automatic recall only: MCP reads still use their existing scope
-arguments, other hooks may inject context, and previously read context remains
-in an agent's session. This installer supports Claude Code; Codex can use MCP
+The plain `mora hook install` is global, but its recall also follows the folder
+binding. Project hooks filter automatic recall only: MCP reads still use their
+existing scope arguments, other hooks may inject context, and previously read
+context remains in an agent's session. This installer supports Claude Code; Codex can use MCP
 but has no automatic Mora hook route.
+
+### Which notes appear on their own
+
+Two hooks hand notes to an agent without being asked: recall on each prompt, and
+the brief at session start. Both follow the folder the session runs in:
+
+| Where the session runs | Notes that appear on their own |
+| --- | --- |
+| In a folder bound to `project:X` | `project:X` and `global` |
+| In a folder bound with `--owner-only` | `project:X`, `global` and `personal` |
+| In a folder with no binding | every scope except `project:*` (so `global`, `personal` and any other) |
+
+`mora hook install --project --scope project:X` means the same as a binding for
+its folder: `project:X` and `global`, plus `personal` when that folder's binding
+is `--owner-only`. Outside the folder it stays silent. If `projects.json` cannot
+be read, recall gives nothing for that prompt and writes nothing. Notes nobody
+has confirmed stay out of recall, as before.
+
+The scope limit is applied inside every search arm before ranking, so a note of
+another project is never fetched and cannot push a matching note out of the
+result. At session start in a folder with no binding, the daily brief leaves out
+authored notes in a `project:*` scope. Mail, messages and calendar content, and
+`mora brief` typed in your own terminal, are unchanged.
+
+A deliberate search is not limited by any of this: `mora search`, `search_memory`
+and `context_memory` still find other projects' notes.
 
 ### What Mora gave an agent
 

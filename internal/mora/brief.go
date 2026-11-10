@@ -157,7 +157,7 @@ func reconcileCachedBriefHealth(cfg Config, now time.Time, body string) string {
 func filteredBriefDigest(cfg Config, now time.Time, opts briefOpts) (Digest, error) {
 	d, err := buildDigest(cfg, now, briefOpts{
 		advance: false, perSourceCap: opts.perSourceCap,
-		source: opts.source, entityIDSet: opts.entityIDSet, scope: opts.scope, sinceDays: opts.sinceDays,
+		source: opts.source, entityIDSet: opts.entityIDSet, scope: opts.scope, sinceDays: opts.sinceDays, excludeProjectNotes: opts.excludeProjectNotes,
 	})
 	if err != nil {
 		return Digest{}, err
@@ -165,7 +165,7 @@ func filteredBriefDigest(cfg Config, now time.Time, opts briefOpts) (Digest, err
 	if briefSurfacedItemCount(d) == 0 {
 		fallback, fallbackErr := buildDigest(cfg, now, briefOpts{
 			advance: false, sinceHours: briefFallbackWindowHours, perSourceCap: opts.perSourceCap,
-			source: opts.source, entityIDSet: opts.entityIDSet, scope: opts.scope, sinceDays: opts.sinceDays,
+			source: opts.source, entityIDSet: opts.entityIDSet, scope: opts.scope, sinceDays: opts.sinceDays, excludeProjectNotes: opts.excludeProjectNotes,
 		})
 		if fallbackErr != nil {
 			return Digest{}, fallbackErr

@@ -337,7 +337,7 @@ func TestHookProjectRecallRenamedRootIsSilent(t *testing.T) {
 	}
 }
 
-func TestHookProjectLaterGlobalHooksRemainBroad(t *testing.T) {
+func TestHookProjectLaterGlobalHookFollowsBinding(t *testing.T) {
 	withTempHookHome(t)
 	root := t.TempDir()
 	t.Chdir(root)
@@ -357,7 +357,9 @@ func TestHookProjectLaterGlobalHooksRemainBroad(t *testing.T) {
 	if err := cmdHook(testCtx(t), []string{"recall"}, &global, testStderr, strings.NewReader(input)); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(global.String(), "PRIVATE_PERSONAL") {
-		t.Fatalf("fixture must demonstrate that a later global hook can still expose personal context: %s", &global)
+	// The install bound root to project:demo, so the global form follows that
+	// binding: the project's note appears and the personal note does not.
+	if !strings.Contains(global.String(), "LOCAL_CORRECTION") || strings.Contains(global.String(), "PRIVATE_PERSONAL") {
+		t.Fatalf("a later global hook must follow the folder binding: %s", &global)
 	}
 }

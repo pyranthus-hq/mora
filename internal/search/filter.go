@@ -3,6 +3,7 @@ package search
 import (
 	"encoding/json"
 	"math"
+	"slices"
 	"strings"
 	"time"
 )
@@ -40,6 +41,12 @@ type Filter struct {
 	// ExcludedMemoryIDs is a trusted query-time projection of local, applied
 	// corrections. It is never parsed from caller arguments or used for shares.
 	ExcludedMemoryIDs []string
+	// Scopes, when set, limits results to exactly these memory scopes, and
+	// NoProjectScopes drops every project:* scope. Both are trusted values set by
+	// the recall hook from the folder binding, never parsed from caller arguments.
+	// Like every other predicate they run in the SQL WHERE clause of each arm.
+	Scopes          []string
+	NoProjectScopes bool
 	// Now is the reference instant SinceHours is computed against. It is
 	// captured ONCE per MCP call (mcp.go handlers) and threaded down, so a
 	// single call sees one consistent clock across every retrieval arm —
@@ -59,6 +66,14 @@ func CreatedAtUnix(createdAt string) int64 {
 		return math.MinInt64
 	}
 	return ts.Unix()
+}
+
+// ScopeAllowed is the Go-side twin of the scope predicates in SQLPredicate.
+func (f Filter) ScopeAllowed(scope string) bool {
+	if f.NoProjectScopes && strings.HasPrefix(scope, "project:") {
+		return false
+	}
+	return len(f.Scopes) == 0 || slices.Contains(f.Scopes, scope)
 }
 func (f Filter) Active() bool {
 	return f.Source != "" || f.SinceHours > 0 || f.EventSinceHours > 0 || len(f.ExcludeDispositions) > 0
@@ -114,6 +129,14 @@ func (f Filter) SQLPredicate() (clause string, args []any) {
 		encoded, _ := json.Marshal(f.ExcludedMemoryIDs)
 		parts = append(parts, "m.id NOT IN (SELECT value FROM json_each(?))")
 		args = append(args, string(encoded))
+	}
+	if len(f.Scopes) > 0 {
+		encoded, _ := json.Marshal(f.Scopes)
+		parts = append(parts, "m.scope IN (SELECT value FROM json_each(?))")
+		args = append(args, string(encoded))
+	}
+	if f.NoProjectScopes {
+		parts = append(parts, "substr(m.scope, 1, 8) <> 'project:'")
 	}
 	if len(parts) == 0 {
 		return "", nil

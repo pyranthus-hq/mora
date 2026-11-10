@@ -192,6 +192,11 @@ type briefOpts struct {
 	entityIDSet map[string]bool
 	scope       string
 	sinceDays   int
+	// excludeProjectNotes leaves out authored notes (no provider) in a project:*
+	// scope. The session-start hook sets it in a folder with no project binding.
+	// It is not a preview filter: the persisted brief holds no authored notes, so
+	// the cache stays usable and filtered() ignores it.
+	excludeProjectNotes bool
 	// ctx carries the caller's context into the one place digest assembly
 	// reaches durable-repair code: digestCommitmentInventory, which loads the
 	// typed commitment inventory through ensureIndexDB. It used to fabricate a
@@ -531,6 +536,9 @@ func digestInputs(cfg Config, now time.Time, opts briefOpts) (perSourceCap int, 
 			continue // M-4: tombstone — mirror graph.go's skip.
 		}
 		if !governance.memoryVisible(m.ID) || memory.IsTentative(m) {
+			continue
+		}
+		if _, groupable := sourceInstanceKey(m); !groupable && opts.excludeProjectNotes && strings.HasPrefix(m.Scope, "project:") {
 			continue
 		}
 		m = decorateDecision(m, now)

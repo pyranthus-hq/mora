@@ -150,7 +150,8 @@ func hookSessionStart(ctx context.Context, stdout io.Writer, stdin io.Reader) er
 			return nil
 		}
 	}
-	body, _, berr := hookResolveBrief(cfg, hookNow(), briefOpts{})
+	// No binding for this folder: the daily brief leaves out project notes.
+	body, _, berr := hookResolveBrief(cfg, hookNow(), briefOpts{excludeProjectNotes: true})
 	if berr != nil {
 		// C2 ▸A: hookSessionStart used to swallow EVERY resolveBrief error with
 		// a silent return nil — a failed brief build injected nothing, and the
@@ -196,6 +197,11 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 	if err != nil {
 		return nil
 	}
+	// A binding file that cannot be read gives no recall and writes nothing.
+	scopeFilter, ok := recallScopeFilter(cfg, opts, in.CWD)
+	if !ok {
+		return nil
+	}
 	// C2 ▸A: hook recall injects into EVERY user prompt, so it gets the same
 	// one-line treatment as session-start — the banner rides along whenever the
 	// vault is unhealthy, on both the search-succeeded and search-failed paths.
@@ -206,7 +212,7 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 	}
 	searchCtx, cancel := context.WithTimeout(ctx, hookRecallTimeout)
 	defer cancel()
-	mems, serr := hookSearchMemories(searchCtx, cfg, prompt, opts.scope, hookRecallLimit*4)
+	mems, serr := hookSearchMemories(searchCtx, cfg, prompt, "", hookRecallLimit*4, scopeFilter)
 	var body string
 	var recalledIDs []string
 	if serr == nil && searchCtx.Err() == nil {
@@ -214,7 +220,7 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 		for _, m := range mems {
 			// Recall speaks with Mora's voice inside the agent's prompt, so a
 			// write nobody has confirmed never rides it.
-			if (opts.scope == "" || m.Scope == opts.scope) && !memory.IsTentative(m) {
+			if scopeFilter.ScopeAllowed(m.Scope) && !memory.IsTentative(m) {
 				kept = append(kept, m)
 			}
 		}
@@ -281,6 +287,36 @@ func parseHookRecallArgs(args []string) (hookRecallOptions, bool) {
 		return opts, false
 	}
 	return opts, true
+}
+
+// recallScopeFilter is the scope limit for notes that appear without being asked
+// for. In a bound folder: that project and global, plus personal when the
+// binding is owner_only. In no bound folder: everything except project notes.
+// The --scope install form means the same as a binding for its project-dir.
+// ok is false when the binding file cannot be read.
+func recallScopeFilter(cfg Config, opts hookRecallOptions, cwd string) (f searchFilters, ok bool) {
+	dir := cwd
+	if opts.scope != "" {
+		dir = opts.projectDir
+	} else if !filepath.IsAbs(cwd) {
+		return searchFilters{NoProjectScopes: true}, true
+	}
+	b, found, err := lookupProjectBinding(cfg, dir)
+	if err != nil {
+		return searchFilters{}, false
+	}
+	project := opts.scope
+	if project == "" {
+		if !found {
+			return searchFilters{NoProjectScopes: true}, true
+		}
+		project = b.Scope
+	}
+	f.Scopes = []string{project, "global"}
+	if found && b.OwnerOnly {
+		f.Scopes = append(f.Scopes, "personal")
+	}
+	return f, true
 }
 
 func hookWithinProject(root, cwd string) bool {
