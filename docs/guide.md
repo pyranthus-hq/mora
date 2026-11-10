@@ -679,10 +679,13 @@ mora config mcp-write-policy readonly
 - `tentative` is the default whenever `config.toml` has no `mcp_write_policy`
   line, however Mora was started (`mora init`, `mora setup`, or `mora mcp serve`
   on a machine that was never initialized). A low-risk write saves at once with
-  the tag `mora-tentative`. Low risk means type `insight` or `fact`, a
-  `project:*` scope, and no secret, money, sensitive or agent-aimed text. Any
-  other write goes to the proposal queue, and the result has `held_because`. It
-  refuses deletes. Phone captures go to the queue.
+  the tag `mora-tentative`. It holds a write only for these reasons: the type
+  is not `insight`, `fact`, `decision` or `task` (a `correction` changes how
+  other records are retrieved, so it stays held), or the text looks like a
+  secret, or it matches the sensitive word list, or it is aimed at agents. Any
+  scope saves, and money words do not hold a write. A held write goes to the
+  proposal queue, and the result has `held_because`. It refuses deletes. Phone
+  captures go to the queue.
 - `open` allows `write_memory` and `delete_memory`. You must choose it.
 - `propose` stores write proposals in the local config directory. It does not
   add them to the vault before approval. It refuses deletes.
@@ -694,8 +697,14 @@ v0.15.3 stay queued: `mora doctor` prints how many are pending, and
 `mora mcp proposals approve <id>` publishes one.
 
 A tentative memory shows in search, read, list and context with a
-`"trust":"tentative"` label. It does not reach the recall hook, the digest, the
-brief, commitments or share. List them and keep one like this:
+`"trust":"tentative"` label. This holds for every type and scope. It does not
+reach the recall hook, the digest, the brief, commitments, open loops, think,
+entities or `mora share`.
+
+A tentative note is a vault file. `mora sync git` uploads vault files to your
+own git remote, tentative notes included, and the tag travels with the file.
+`mora backup` also archives them. `mora share` leaves tentative notes out.
+Run `mora confirm --list` before you sync if you want to review first. List them and keep one like this:
 
 ```bash
 mora confirm --list            # tentative memories

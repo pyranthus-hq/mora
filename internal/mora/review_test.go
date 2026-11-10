@@ -15,7 +15,7 @@ import (
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
-// reviewSeed makes the shipped policy save a plain fact as tentative and hold a decision.
+// reviewSeed makes the shipped policy save a plain fact as tentative and hold a correction.
 func reviewSaved(t *testing.T, title string) string {
 	t.Helper()
 	return tentativeMemoryID(t, tentativeServe(t, map[string]any{
@@ -25,7 +25,7 @@ func reviewSaved(t *testing.T, title string) string {
 
 func reviewHeld(t *testing.T, title string) string {
 	t.Helper()
-	res := tentativeServe(t, map[string]any{"title": title, "text": "Body of " + title + ".", "type": "decision", "scope": "project:demo"})
+	res := tentativeServe(t, map[string]any{"title": title, "text": "Body of " + title + ".", "type": "correction", "scope": "project:demo"})
 	p, ok := res["proposal"].(map[string]any)
 	if !ok {
 		t.Fatalf("write was not held: %v", res)
@@ -79,7 +79,7 @@ func TestReviewListShowsSavedThenHeldOnly(t *testing.T) {
 	run(t, "mcp", "proposals", "reject", decided)
 
 	out := run(t, "review", "--list")
-	want := saved + "\tsaved\tproject:demo\tfact\tSaved note\n" + held + "\theld\tproject:demo\tdecision\tHeld note\n"
+	want := saved + "\tsaved\tproject:demo\tfact\tSaved note\n" + held + "\theld\tproject:demo\tcorrection\tHeld note\n"
 	if out != want {
 		t.Fatalf("list =\n%q\nwant\n%q", out, want)
 	}
@@ -120,7 +120,7 @@ func TestReviewWalkKeepsRejectsAndSkips(t *testing.T) {
 	if !strings.HasSuffix(out, "kept 2, rejected 2, skipped 1, left 0\n") {
 		t.Fatalf("last line wrong:\n%s", out)
 	}
-	if !strings.Contains(out, "held because: type decision") {
+	if !strings.Contains(out, "held because: type correction") {
 		t.Fatalf("hold reasons not shown:\n%s", out)
 	}
 	if reviewTentative(t, cfg, keepSaved) {
@@ -480,5 +480,32 @@ func TestReviewTitlesAreComparedAndShownInFull(t *testing.T) {
 	}
 	if !strings.Contains(out, "title: "+long+"X") || !strings.Contains(out, "title: "+long+"Y") {
 		t.Fatalf("full title not printed:\n%s", out)
+	}
+}
+
+// A proposal with no current hold reason (held under an older rule, or staged
+// by propose mode) still gets one honest line in the review.
+func TestReviewExplainsAProposalWithNoCurrentReason(t *testing.T) {
+	useShippedWritePolicyDefault(t)
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	res, err := stageMCPWriteProposal(cfg, map[string]any{"title": "Old hold", "text": "Plain body.", "type": "decision", "scope": "personal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := res.(map[string]any)["proposal"].(map[string]any)["id"].(string)
+	p, _, err := readMCPWriteProposal(cfg, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := reviewNoteFromProposal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	printReviewNote(&out, n)
+	if !strings.Contains(out.String(), "held because: held under an earlier rule or write mode\n") {
+		t.Fatalf("no reason line:\n%s", out.String())
 	}
 }

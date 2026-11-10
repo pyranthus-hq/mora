@@ -81,6 +81,8 @@ func reviewNoteFromMemory(m Memory) reviewNote {
 	return reviewNote{Kind: reviewKindSaved, ID: m.ID, Scope: m.Scope, Type: m.Type, Title: reviewTitle(m), Text: m.Text, Confirm: memory.OwnerConfirmedDigest(m), Fields: memory.OwnerConfirmedFields(m)}
 }
 
+const reviewNoReason = "held under an earlier rule or write mode"
+
 func reviewNoteFromProposal(p mcpWriteProposal) (reviewNote, error) {
 	// A fixed clock keeps the note the same between print and keep; the only
 	// field the clock reaches is a missing as_of, named as such below.
@@ -100,6 +102,10 @@ func reviewNoteFromProposal(p mcpWriteProposal) (reviewNote, error) {
 				n.Fields[i][1] = "the time you keep it"
 			}
 		}
+	}
+	if len(n.Reasons) == 0 {
+		// Held under an earlier rule, or staged by propose mode, which gives no reason.
+		n.Reasons = []string{reviewNoReason}
 	}
 	return n, nil
 }

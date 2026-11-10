@@ -119,7 +119,7 @@ func TestReviewNoticeLifecycle(t *testing.T) {
 	if want := `Agent notes not reviewed: 1 saved, 0 held. The owner can run "mora review".`; saved["review_notice"] != want {
 		t.Fatalf("saved write notice = %v, want %q", saved["review_notice"], want)
 	}
-	held := tentativeServe(t, map[string]any{"title": "Use tabs", "text": "We chose tabs.", "type": "decision", "scope": "project:demo"})
+	held := tentativeServe(t, map[string]any{"title": "Passport copy", "text": "The passport scan is in the shared drive.", "type": "fact", "scope": "project:demo"})
 	want := `Agent notes not reviewed: 1 saved, 1 held. The owner can run "mora review".`
 	if held["review_notice"] != want {
 		t.Fatalf("held write notice = %v, want %q", held["review_notice"], want)
@@ -188,7 +188,7 @@ func TestReviewNoticeBriefStaysWithinBudget(t *testing.T) {
 	}
 	rebuildDigestIndex(t, cfg)
 	tentativeMemoryID(t, tentativeServe(t, map[string]any{"title": "Zebrafish owner", "text": "The zebrafish module belongs to the indexer team.", "type": "fact", "scope": "project:demo"}))
-	tentativeServe(t, map[string]any{"title": "Use tabs", "text": "We chose tabs.", "type": "decision", "scope": "project:demo"})
+	tentativeServe(t, map[string]any{"title": "Passport copy", "text": "The passport scan is in the shared drive.", "type": "fact", "scope": "project:demo"})
 
 	for _, args := range []string{`{"max_tokens":20000}`, `{"max_tokens":20000,"envelope":true}`} {
 		p := briefMCPStructured(t, args)

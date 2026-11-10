@@ -78,13 +78,58 @@ func argEcho(a map[string]any) string {
 }
 
 func TestTentativeSurfaceContract(t *testing.T) {
+	// The decision, task, personal and global rows save at once since the hold
+	// rule widened, so each one must pass the same sweep as the project fact.
+	for _, c := range []struct{ typ, scope string }{
+		{"fact", "project:" + tentativeCanry + "tag"},
+		{"decision", "project:" + tentativeCanry + "tag"},
+		{"task", "project:" + tentativeCanry + "tag"},
+		{"fact", "personal"},
+		{"insight", "global"},
+	} {
+		t.Run(c.typ+" "+c.scope, func(t *testing.T) { runTentativeSurfaceContract(t, c.typ, c.scope) })
+	}
+}
+
+// surfaceOut is one surface's output for the sweep.
+type surfaceOut struct{ name, class, out, echo string }
+
+// reaches says whether a surface output holds the fixture. An entity surface
+// shows the fixture as an entity row, not as the canary text, so it has its own
+// test; every other surface must show the canary itself.
+func (o surfaceOut) reaches(entity string) bool {
+	low := strings.ToLower(o.out)
+	switch o.name {
+	case "mcp get_entity":
+		return strings.Contains(low, `"found":true`)
+	case "cli entity":
+		return !strings.Contains(low, "no entity named")
+	case "mcp list_entities", "cli entities":
+		return strings.Contains(low, strings.ToLower(entity))
+	}
+	if o.echo != "" {
+		low = strings.ReplaceAll(low, strings.ToLower(o.echo), "")
+	}
+	return strings.Contains(low, tentativeCanry)
+}
+
+// unreachableByNote lists hides surfaces that no agent note of these types can
+// ever reach, even when confirmed, so they cannot have a positive control.
+var unreachableByNote = map[string]string{
+	"mcp calendar_events":    "lists type event rows only, and write_memory cannot save that type",
+	"mcp meeting_prep":       "briefs an upcoming calendar event and its attendees, and no agent note is one",
+	"companion meeting_prep": "same as mcp meeting_prep",
+}
+
+func runTentativeSurfaceContract(t *testing.T, typ, scope string) {
 	useShippedWritePolicyDefault(t)
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
+	entity := scope // the graph names a scope entity by the full scope string
 	id := tentativeMemoryID(t, tentativeServe(t, map[string]any{
-		"title": "Canary " + tentativeCanry, "text": tentativeCanry + " Zorbleton owns the deploy pipeline.",
-		"type": "fact", "scope": "project:" + tentativeCanry + "tag",
+		"title": "Canary " + tentativeCanry, "text": tentativeCanry + " Zorbleton owns the deploy pipeline. I will send Jordan the report by Friday.",
+		"type": typ, "scope": scope,
 	}))
 	run(t, "index", "rebuild")
 
@@ -100,61 +145,78 @@ func TestTentativeSurfaceContract(t *testing.T) {
 		"context_memory":  {"query": "Zorbleton deploy pipeline"},
 		"think":           {"query": "Zorbleton deploy pipeline"},
 		"list_entities":   {},
-		"get_entity":      {"name": tentativeCanry + "tag"},
-		"digest":          {},
+		"get_entity":      {"name": entity},
+		"digest":          {"since_hours": float64(24)},
 		"brief":           {},
-		"meeting_prep":    {"name": tentativeCanry + "tag"},
+		"meeting_prep":    {},
 		"calendar_events": {"start": "2019-01-01", "end": "2030-01-01"},
 	}
-	for name, class := range tentativeToolClass {
-		if class == surfaceWrites {
-			continue
+	sweep := func() []surfaceOut {
+		var outs []surfaceOut
+		for name, class := range tentativeToolClass {
+			if class == surfaceWrites {
+				continue
+			}
+			res, err := mcpToolHandlers[name](testCtx(t), cfg, args[name])
+			if err != nil {
+				t.Fatalf("mcp %s errored: %v", name, err)
+			}
+			b, _ := json.Marshal(res)
+			outs = append(outs, surfaceOut{"mcp " + name, class, string(b), argEcho(args[name])})
 		}
-		res, err := mcpToolHandlers[name](testCtx(t), cfg, args[name])
-		if err != nil {
-			t.Logf("%s returned an error (counts as no leak): %v", name, err)
-			continue
+		reader := newCompanionReader(cfg)
+		for _, mode := range []companion.ContextMode{companion.ModeThink, companion.ModeSearch, companion.ModeMeetingPrep} {
+			req := companion.NewContextRequest()
+			req.Mode = mode
+			req.Query = "Zorbleton deploy pipeline"
+			bundle, err := reader.Context(testCtx(t), req)
+			if err != nil {
+				t.Fatalf("companion %s errored: %v", mode, err)
+			}
+			b, _ := json.Marshal(bundle)
+			outs = append(outs, surfaceOut{"companion " + string(mode), surfaceHides, string(b), ""})
 		}
-		b, _ := json.Marshal(res)
-		checkSurface(t, "mcp "+name, class, string(b), argEcho(args[name]))
+		cli := []struct {
+			name, class string
+			args        []string
+		}{
+			{"read", surfaceLabels, []string{"read", id}},
+			{"list", surfaceLabels, []string{"list"}},
+			{"search", surfaceLabels, []string{"search", "Zorbleton deploy pipeline"}},
+			{"entities", surfaceHides, []string{"entities"}},
+			{"entity", surfaceHides, []string{"entities", entity}},
+		}
+		for _, c := range cli {
+			var out bytes.Buffer
+			if err := Run(testCtx(t), c.args, &out, &out, strings.NewReader("")); err != nil {
+				t.Fatalf("cli %s errored: %v\n%s", c.name, err, out.String())
+			}
+			echo := ""
+			if c.name == "entity" {
+				echo = entity
+			}
+			outs = append(outs, surfaceOut{"cli " + c.name, c.class, out.String(), echo})
+		}
+		return outs
 	}
 
-	// Companion context modes.
-	reader := newCompanionReader(cfg)
-	for _, mode := range []companion.ContextMode{companion.ModeThink, companion.ModeSearch, companion.ModeMeetingPrep} {
-		req := companion.NewContextRequest()
-		req.Mode = mode
-		req.Query = "Zorbleton deploy pipeline"
-		bundle, err := reader.Context(testCtx(t), req)
-		if err != nil {
-			t.Logf("companion %s errored (counts as no leak): %v", mode, err)
+	for _, o := range sweep() {
+		checkSurface(t, o.name, o.class, o.out, o.echo)
+		if o.class == surfaceHides && o.reaches(entity) {
+			t.Errorf("%s shows the tentative fixture:\n%s", o.name, o.out)
+		}
+	}
+	// Positive control: the same fixture, once confirmed, must reach every
+	// surface that can reach it. Without this a hidden row proves nothing.
+	run(t, "confirm", id)
+	run(t, "index", "rebuild")
+	for _, o := range sweep() {
+		if _, skip := unreachableByNote[o.name]; skip {
 			continue
 		}
-		b, _ := json.Marshal(bundle)
-		checkSurface(t, "companion "+string(mode), surfaceHides, string(b), "")
-	}
-
-	// CLI read commands.
-	cli := map[string]struct {
-		class string
-		args  []string
-	}{
-		"read":     {surfaceLabels, []string{"read", id}},
-		"list":     {surfaceLabels, []string{"list"}},
-		"search":   {surfaceLabels, []string{"search", "Zorbleton deploy pipeline"}},
-		"entities": {surfaceHides, []string{"entities"}},
-		"entity":   {surfaceHides, []string{"entities", tentativeCanry + "tag"}},
-	}
-	for name, c := range cli {
-		var out bytes.Buffer
-		if err := Run(testCtx(t), c.args, &out, &out, strings.NewReader("")); err != nil {
-			t.Logf("cli %s errored (counts as no leak): %v", name, err)
+		if !o.reaches(entity) {
+			t.Errorf("control: %s does not show the confirmed fixture, so its tentative check proves nothing:\n%s", o.name, o.out)
 		}
-		echo := ""
-		if name == "entity" {
-			echo = c.args[len(c.args)-1]
-		}
-		checkSurface(t, "cli "+name, c.class, out.String(), echo)
 	}
 }
 
