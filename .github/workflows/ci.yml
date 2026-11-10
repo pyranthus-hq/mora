@@ -117,24 +117,61 @@ jobs:
           fi
       - name: go vet
         run: go vet ./...
+
+  # The full race + cover suite, split in three so no job waits ~8 min on
+  # internal/mora alone. `run` and `skip` take the SAME pattern, so they are
+  # exact complements: every internal/mora test runs in exactly one of them.
+  # `^Test[A-F]` held about half of internal/mora's test time on 2026-11-09;
+  # move the letter if one half grows. `rest` is every other package, and its
+  # guard fails if the three shards stop covering exactly `go list ./...`.
+  # `needs: test` keeps the stage order above: nothing here runs until the
+  # exam ground truth is proven intact.
+  test-race:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [run, skip, rest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
       - name: go test (race + cover)
         # The race detector needs CGO. Enable it ONLY for the test run —
         # every build/release step stays CGO_ENABLED=0 (the product's thesis).
         # Explicit 20m timeout: Gate 2 multi-process storm tests can otherwise
         # push the default 10m package limit on a loaded runner (landmine 7).
-        # Vet already ran above. Keep it off here so the 1,500+ test package is
-        # not analyzed twice.
+        # Vet already ran in the `test` job. Keep it off here so the 1,500+
+        # test package is not analyzed twice.
         env:
           CGO_ENABLED: "1"
-        run: go test -race -vet=off -count=1 -timeout=20m -covermode=atomic ./...
+          SHARD: ${{ matrix.shard }}
+        run: |
+          mora=github.com/pyranthus-hq/mora/internal/mora
+          if [ "$SHARD" != rest ]; then
+            go test -race -vet=off -count=1 -timeout=20m -covermode=atomic -"$SHARD" '^Test[A-F]' ./internal/mora
+            exit
+          fi
+          all=$(go list ./...)
+          mapfile -t rest < <(printf '%s\n' "$all" | grep -vx "$mora")
+          # Guard: internal/mora (run + skip) plus rest must be exactly `go list ./...`.
+          if [ "$(printf '%s\n' "$mora" "${rest[@]}" | sort)" != "$(printf '%s\n' "$all" | sort)" ]; then
+            echo "::error::CI test shards do not cover exactly 'go list ./...'"; exit 1
+          fi
+          go test -race -vet=off -count=1 -timeout=20m -covermode=atomic "${rest[@]}"
 
   # Windows portability gate (#56 Phase 2 exit criterion): the FULL `go test ./...`
-  # now runs on a real windows-latest runner, not just build+vet. The Phase 2
-  # runtime-portability work landed (#67 filename sanitization, #71 test HOME
-  # isolation, #73 file-mode/chmod/symlink/GOOS gates + LF golden files, #74
-  # Windows-safe atomic rename), so the suite passes here. CGO_ENABLED=0 keeps it
-  # matching the shipped static binary; the race detector pass is the Linux `test`
-  # job (race needs CGO — not the point of this portability gate).
+  # now runs on a real windows-latest runner (the `test-windows` shards below),
+  # not just build+vet. The Phase 2 runtime-portability work landed (#67 filename
+  # sanitization, #71 test HOME isolation, #73 file-mode/chmod/symlink/GOOS gates
+  # + LF golden files, #74 Windows-safe atomic rename), so the suite passes here.
+  # This job keeps build, vet and the repeat regressions. CGO_ENABLED=0 keeps it
+  # matching the shipped static binary; the race detector pass is the Linux
+  # `test-race` job (race needs CGO — not the point of this portability gate).
   build-windows:
     runs-on: windows-latest
     steps:
@@ -164,11 +201,43 @@ jobs:
         env:
           CGO_ENABLED: "0"
         run: go test -vet=off -count=5 -timeout=10m ./internal/atomicio/
-      - name: go test
+
+  # The FULL Windows `go test ./...`, split in three the same way as the Linux
+  # `test-race` job: `run` and `skip` share one pattern, so every internal/mora
+  # test runs in exactly one of them; `rest` is every other package, guarded.
+  test-windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [run, skip, rest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: go test internal/mora (${{ matrix.shard }})
+        if: matrix.shard != 'rest'
         env:
           CGO_ENABLED: "0"
-        # This job already runs native Windows vet immediately above.
-        run: go test -vet=off -count=1 -timeout=20m ./...
+        # The `build-windows` job runs native Windows vet.
+        run: go test -vet=off -count=1 -timeout=20m -${{ matrix.shard }} '^Test[A-F]' ./internal/mora
+      - name: go test (every other package)
+        if: matrix.shard == 'rest'
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          $mora = 'github.com/pyranthus-hq/mora/internal/mora'
+          $all = @(go list ./...)
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $rest = @($all | Where-Object { $_ -ne $mora })
+          # Guard: internal/mora (run + skip) plus rest must be exactly `go list ./...`.
+          if ($all.Count -ne $rest.Count + 1) {
+            Write-Output "::error::CI test shards do not cover exactly 'go list ./...'"; exit 1
+          }
+          go test -vet=off -count=1 -timeout=20m @rest
 
   readable-golden-reason:
     # This is deliberately data-only: it inspects changed paths and the PR body,
