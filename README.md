@@ -398,6 +398,10 @@ installation. Adding global hooks later can reintroduce context from other scope
 The plain global install still reads across scopes. These hook settings do not
 restrict MCP tools or memories an agent has already read.
 
+To bind any folder to a project scope without a hook, run
+`mora project bind --scope project:my-app DIR`. `mora project list`, `which` and
+`unbind` manage the bindings. See the [guide](docs/guide.md).
+
 ## Check health and add a schedule
 
 ```bash

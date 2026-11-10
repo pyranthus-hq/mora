@@ -337,6 +337,9 @@ func hookInstall(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 		fmt.Fprintf(stdout, "installed Mora project recall: %s (%s)\n", *scope, path)
+		if _, _, err := bindProjectDir(ctx, root, *scope); err != nil {
+			return err
+		}
 		return nil
 	}
 	if err := hookspkg.Install(path, exe, *threshold); err != nil {

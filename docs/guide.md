@@ -963,6 +963,31 @@ mora serve http uninstall
 Scheduler on Windows. The status command checks both install state and the
 `/healthz` endpoint.
 
+### Bind a folder to a project
+
+Tell Mora that a folder belongs to a project scope:
+
+```bash
+mora project bind --scope project:my-app ~/code/my-app
+mora project which ~/code/my-app/src   # project:my-app, plus the bound root
+mora project list --json               # [{"dir": "...", "scope": "project:my-app"}]
+mora project unbind ~/code/my-app
+```
+
+`DIR` defaults to the current directory and must exist. Mora stores its absolute
+path with symlinks resolved, in `projects.json` in the Mora config directory
+(mode 0600). `--scope` must be `project:NAME`; `global` and `personal` are
+refused. Without `--scope`, Mora uses `project:` plus the lower-case folder name,
+or asks for `--scope` when that name is not a valid scope. Binding the same
+folder again replaces its scope. A folder matches its own binding and the
+bindings of its parents; the deepest one wins. Mora never guesses a project
+from a folder name when it looks one up, and `which` exits non-zero with "no
+project" when nothing matches.
+
+`mora hook install --project --scope project:NAME` also binds the project root.
+`mora hook uninstall --project` leaves that binding in place. This change only
+stores bindings; no hook, brief, search or save reads them yet.
+
 ### Claude Code hooks
 
 ```bash

@@ -358,6 +358,13 @@
       "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
+      "path": "project",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
+    },
+    {
       "path": "loop",
       "kind": "verb",
       "platform": "all",
@@ -1065,6 +1072,34 @@
       "platform": "all",
       "json_contract": "result",
       "payload": "mora.rules.list"
+    },
+    {
+      "path": "project bind",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "prints one line; no JSON mode"
+    },
+    {
+      "path": "project unbind",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "prints one line; no JSON mode"
+    },
+    {
+      "path": "project list",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "bare JSON array of dir and scope; not enveloped yet"
+    },
+    {
+      "path": "project which",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "bare JSON object of dir and scope; not enveloped yet"
     },
     {
       "path": "rules compile",

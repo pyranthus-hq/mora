@@ -372,6 +372,26 @@
     "status": "empty"
   },
   {
+    "path": "project",
+    "status": "empty"
+  },
+  {
+    "path": "project bind",
+    "status": "empty"
+  },
+  {
+    "path": "project list",
+    "status": "parses"
+  },
+  {
+    "path": "project unbind",
+    "status": "empty"
+  },
+  {
+    "path": "project which",
+    "status": "parses_null"
+  },
+  {
     "path": "pulse",
     "status": "parses"
   },
