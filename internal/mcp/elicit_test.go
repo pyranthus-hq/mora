@@ -192,3 +192,63 @@ func TestElicitTransportErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestElicitAnswerReportsActionAndSendsHint(t *testing.T) {
+	// The action is for wording only: yes stays false unless accept carries true.
+	for _, tc := range []struct {
+		reply  string
+		yes    bool
+		action string
+	}{
+		{`{"action":"accept","content":{"confirm":true}}`, true, "accept"},
+		{`{"action":"accept","content":{"confirm":false}}`, false, "accept"},
+		{`{"action":"accept"}`, false, "accept"},
+		{`{"action":"decline","content":{"confirm":true}}`, false, "decline"},
+		{`{"action":"cancel"}`, false, "cancel"},
+		{`{"action":"Accept","content":{"confirm":true}}`, false, ""},
+		{`{"action":true}`, false, ""},
+		{`null`, false, ""},
+	} {
+		t.Run(tc.reply, func(t *testing.T) {
+			type answer struct {
+				yes    bool
+				action string
+				err    error
+			}
+			got := make(chan answer, 1)
+			s := startTwoWay(t, context.Background(), func(ctx context.Context, r Request) Response {
+				if r.Method == "initialize" {
+					yes, action, err := ElicitAnswer(ctx, "Proceed?", "confirm", "Approval", "the hint", time.Second)
+					got <- answer{yes, action, err}
+				}
+				return Response{ID: r.ID, Result: "done"}
+			})
+			s.send(map[string]any{"id": 1, "method": "initialize", "params": json.RawMessage(`{"capabilities":{"elicitation":{}}}`)})
+			f := s.read()
+			var params struct {
+				Schema struct {
+					Properties map[string]struct {
+						Hint string `json:"description"`
+					} `json:"properties"`
+				} `json:"requestedSchema"`
+			}
+			if err := json.Unmarshal(f["params"], &params); err != nil {
+				t.Fatal(err)
+			}
+			if params.Schema.Properties["confirm"].Hint != "the hint" {
+				t.Fatalf("params=%s", f["params"])
+			}
+			s.send(result(f["id"], json.RawMessage(tc.reply)))
+			select {
+			case a := <-got:
+				if a.err != nil || a.yes != tc.yes || a.action != tc.action {
+					t.Fatalf("answer=%+v", a)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("elicitation deadlock")
+			}
+			s.read()
+			s.finish(nil)
+		})
+	}
+}

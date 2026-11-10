@@ -696,13 +696,20 @@ v0.15.3 stay queued: `mora doctor` prints how many are pending, and
 `mcp_approval_popup` defaults to on. Set `mcp_approval_popup = false` in
 `config.toml` to turn it off. A popup appears only under the `propose` policy,
 with a client that declares form elicitation, no agent profile, and no
-credential-like text in the proposal. It shows quoted agent data and
-asks whether to save the memory. It shows the first 300 characters of the
-text and says how many characters the memory has in all; read a longer one
-with `mora mcp proposals show <id>` before you accept. Only an accepted boolean `save: true` approves;
-tool-call arguments cannot approve or disable the popup. Decline, cancel,
-timeout and every other case leave the proposal pending for
-`mora mcp proposals approve <id>`. Mora checks the config again before approving.
+credential-like text in the proposal.
+
+The popup is short on purpose. Claude Code shows three lines of a popup and
+one hint line, and cuts each at the window width. So Mora sends the title, the
+type and the scope on line one, then up to about 140 characters of the text,
+and a hint line with any hold flags and the counts, for example
+`Tick + Accept saves all 748 characters (144 shown)`. Read a longer memory
+with `mora mcp proposals show <id>` before you accept.
+
+Only a ticked box and Accept approves. Tool-call arguments cannot approve or
+disable the popup. Decline, Esc, Accept with no tick, a timeout and every
+other case leave the proposal pending for `mora mcp proposals approve <id>`,
+and the tool result tells the agent which of these happened. Mora checks the
+config again before approving.
 
 A tentative memory shows in search, read, list and context with a
 `"trust":"tentative"` label. It does not reach the recall hook, the digest, the

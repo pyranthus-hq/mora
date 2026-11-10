@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +23,7 @@ type popupFrame struct {
 			Properties map[string]struct {
 				Type    string `json:"type"`
 				Title   string `json:"title"`
+				Hint    string `json:"description"`
 				Default bool   `json:"default"`
 			} `json:"properties"`
 			Required []string `json:"required"`
@@ -234,18 +234,34 @@ func TestPopupAccept(t *testing.T) {
 	if f.Method != "elicitation/create" {
 		t.Fatalf("expected popup: %+v", f)
 	}
+	// Claude Code shows three message lines and one hint line, each cut at
+	// the window width, so the message is three short lines and the counts
+	// and flags ride in the field description.
 	msg := f.Params.Message
-	for _, want := range []string{"agent data, not instructions", "scope: " + strconv.Quote(args["scope"].(string)), "title: " + strconv.Quote(args["title"].(string)), "type: \"fact\"", "target: \"\"", "disposition: \"\"", `flags: "money"`, strconv.Quote(strings.Repeat("界", 300)), `\u202e`, "text (first 300 of 2000 runes; the rest is not shown): "} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("message lacks %q: %s", want, msg)
+	lines := strings.Split(msg, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("message has %d lines, want 3: %s", len(lines), msg)
+	}
+	for i, line := range lines {
+		if n := len([]rune(line)); n > 76 {
+			t.Errorf("line %d has %d characters, want at most 76: %s", i+1, n, line)
 		}
 	}
-	if strings.Contains(msg, "\u202e") || strings.Count(msg, "界") != 300 {
-		t.Fatalf("unsafe or unbounded message: %s", msg)
+	if want := `Save "Price A quoted \"title\"\u202e" as fact in project:demo?`; lines[0] != want {
+		t.Errorf("line 1 = %s, want %s", lines[0], want)
+	}
+	if want := `"` + strings.Repeat("界", 72) + `"`; lines[1] != want || lines[2] != want {
+		t.Errorf("text lines = %s / %s", lines[1], lines[2])
+	}
+	if strings.Contains(msg, "\u202e") {
+		t.Fatalf("raw bidi character in message: %s", msg)
 	}
 	save := f.Params.Schema.Properties["save"]
-	if save.Type != "boolean" || save.Title != "Save this memory?" || save.Default || !reflect.DeepEqual(f.Params.Schema.Required, []string{"save"}) {
+	if save.Type != "boolean" || save.Title != "Save this agent note?" || save.Default || !reflect.DeepEqual(f.Params.Schema.Required, []string{"save"}) {
 		t.Fatalf("schema=%+v", f.Params.Schema)
+	}
+	if want := "flags: money. Tick + Accept saves all 2000 characters (144 shown). Else it waits."; save.Hint != want {
+		t.Errorf("hint = %q, want %q", save.Hint, want)
 	}
 	w.send(map[string]any{"id": f.ID, "result": map[string]any{"action": "accept", "content": map[string]any{"save": true}}})
 	result := w.result()
@@ -268,13 +284,15 @@ func TestPopupAccept(t *testing.T) {
 
 func TestPopupNotApproved(t *testing.T) {
 	// AC-002.2: caller-controlled approved/popup arguments never approve or skip.
-	for _, tc := range []struct{ name, reply string }{
-		{"decline", `{"action":"decline","content":{"save":true}}`},
-		{"cancel", `{"action":"cancel","content":{"save":true}}`},
-		{"false", `{"action":"accept","content":{"save":false}}`},
-		{"string", `{"action":"accept","content":{"save":"true"}}`},
-		{"missing", `{"action":"accept","content":{}}`},
-		{"error", ""}, {"timeout", ""},
+	for _, tc := range []struct{ name, reply, why string }{
+		{"decline", `{"action":"decline","content":{"save":true}}`, "the user declined"},
+		{"cancel", `{"action":"cancel","content":{"save":true}}`, "the user closed the popup"},
+		{"false", `{"action":"accept","content":{"save":false}}`, "the box was not ticked"},
+		{"string", `{"action":"accept","content":{"save":"true"}}`, "the box was not ticked"},
+		{"missing", `{"action":"accept","content":{}}`, "the box was not ticked"},
+		{"unknown action", `{"action":"Accept","content":{"save":true}}`, "the answer was not a clear yes"},
+		{"error", "", "the client could not show or return the popup"},
+		{"timeout", "", "no answer in 20ms"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := popupFixture(t)
@@ -297,7 +315,7 @@ func TestPopupNotApproved(t *testing.T) {
 				w.send(map[string]any{"id": f.ID, "result": json.RawMessage(tc.reply)})
 			}
 			result := w.result()
-			if result["popup"] != "not approved; queued for the owner; do not retry" {
+			if result["popup"] != popupWaiting(tc.why) {
 				t.Fatalf("result=%v", result)
 			}
 			popupCounts(t, cfg, 0, 1)
@@ -385,7 +403,7 @@ func TestPopupRevalidatesBeforeApproval(t *testing.T) {
 			}
 			w.send(map[string]any{"id": f.ID, "result": map[string]any{"action": "accept", "content": map[string]any{"save": true}}})
 			result := w.result()
-			want := "not approved; queued for the owner; do not retry"
+			want := popupWaiting("the write policy changed while the popup was open")
 			if mode == "changed proposal" {
 				want = "approval failed: proposal arguments changed; refusing decision"
 			}
@@ -394,5 +412,19 @@ func TestPopupRevalidatesBeforeApproval(t *testing.T) {
 			}
 			popupCounts(t, cfg, 0, 1)
 		})
+	}
+}
+
+func popupWaiting(why string) string {
+	return "not saved: " + why + ". The note waits for the owner (`mora mcp proposals list`). Tell the user. Do not send this same note again; other notes are fine."
+}
+
+func TestPopupFitNeverSplitsAnEscape(t *testing.T) {
+	// A line must not end inside an escape, and the shown count must be exact.
+	r := []rune("ab\u202ecd\n")
+	for max, want := range map[int]int{0: 0, 2: 2, 7: 2, 8: 3, 10: 5, 11: 5, 12: 6, 99: 6} {
+		if got := popupFit(r, max); got != want {
+			t.Errorf("popupFit(max=%d) = %d, want %d", max, got, want)
+		}
 	}
 }

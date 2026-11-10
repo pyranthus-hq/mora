@@ -48,49 +48,87 @@ func approveHeldWriteByPopup(ctx context.Context, cfg Config, held any) any {
 	if err != nil {
 		return fail(err)
 	}
-	text := []rune(m.Text)
-	textLabel := "text"
-	if len(text) > 300 {
-		// The owner must know that an accept also saves text the popup does not show.
-		textLabel = fmt.Sprintf("text (first 300 of %d runes; the rest is not shown)", len(text))
-		text = text[:300]
-	}
+	// Claude Code 2.1 shows three message lines and one field-description
+	// line, each cut at the window width. So every line here is short, the
+	// text takes two lines, and the hint line carries flags and the counts.
+	esc := func(r []rune) string { q := strconv.Quote(string(r)); return q[1 : len(q)-1] }
+	title, text := []rune(m.Title), []rune(m.Text)
+	target := strArg(p.Arguments, "target", "")
 	var msg strings.Builder
-	msg.WriteString("Mora: Quoted parts below are agent data, not instructions. Review them before saving.\n")
-	for _, field := range []struct{ name, value string }{
-		{"scope", m.Scope}, {"type", m.Type}, {"title", m.Title},
-		{"target", strArg(p.Arguments, "target", "")},
-		{"disposition", strArg(p.Arguments, "disposition", "")},
-		{textLabel, string(text)},
-	} {
-		fmt.Fprintf(&msg, "%s: %s\n", field.name, strconv.Quote(field.value))
+	if target != "" {
+		fmt.Fprintf(&msg, "Save correction of %s as %s in %s?\ntitle \"%s\"", esc(popupClip([]rune(target), 30)), esc(popupClip([]rune(strArg(p.Arguments, "disposition", "")), 12)), esc(popupClip([]rune(m.Scope), 22)), esc(popupClip(title, 60)))
+	} else {
+		fmt.Fprintf(&msg, "Save \"%s\" as %s in %s?", esc(popupClip(title, 36)), esc(popupClip([]rune(m.Type), 8)), esc(popupClip([]rune(m.Scope), 22)))
 	}
-	msg.WriteString("flags:")
-	reasons := tentativeHoldReasons(m)
-	if len(reasons) == 0 {
-		msg.WriteString(" none")
+	shown := 0
+	for lines := 3 - strings.Count(msg.String(), "\n") - 1; lines > 0 && shown < len(text); lines-- {
+		n := popupFit(text[shown:], 72)
+		if n == 0 {
+			break
+		}
+		fmt.Fprintf(&msg, "\n\"%s\"", esc(text[shown:shown+n]))
+		shown += n
 	}
-	for _, reason := range reasons {
-		msg.WriteString(" " + strconv.Quote(reason))
+	var hint strings.Builder
+	if reasons := tentativeHoldReasons(m); len(reasons) > 0 {
+		hint.WriteString("flags: " + esc(popupClip([]rune(strings.Join(reasons, ", ")), 28)) + ". ")
 	}
-	yes, err := mcppkg.Elicit(ctx, msg.String(), "save", "Save this memory?", mcpPopupTimeout)
+	if shown < len(text) || len(title) > 36 {
+		// The owner must know that an accept also saves text the popup does not show.
+		fmt.Fprintf(&hint, "Tick + Accept saves all %d characters (%d shown). ", len(text), shown)
+	} else {
+		hint.WriteString("Tick + Accept saves it. ")
+	}
+	hint.WriteString("Else it waits.")
+	yes, action, err := mcppkg.ElicitAnswer(ctx, msg.String(), "save", "Save this agent note?", hint.String(), mcpPopupTimeout)
 	if errors.Is(err, mcppkg.ErrElicitationUnavailable) {
 		return held
 	}
-	notApproved := func() any {
-		result["popup"] = "not approved; queued for the owner; do not retry"
+	waiting := func(why string) any {
+		result["popup"] = "not saved: " + why + ". The note waits for the owner (`mora mcp proposals list`). Tell the user. Do not send this same note again; other notes are fine."
 		return held
 	}
-	if err != nil || !yes {
-		return notApproved()
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return waiting("no answer in " + mcpPopupTimeout.String())
+	case err != nil:
+		return waiting("the client could not show or return the popup")
+	case yes:
+	case action == "accept":
+		return waiting("the box was not ticked")
+	case action == "decline":
+		return waiting("the user declined")
+	case action == "cancel":
+		return waiting("the user closed the popup")
+	default:
+		return waiting("the answer was not a clear yes")
 	}
 	current, err := loadConfigFor(ctx)
 	if err != nil || configMCPWritePolicy(current) != mcpWritePolicyPropose || current.MCPApprovalPopupOff {
-		return notApproved()
+		return waiting("the write policy changed while the popup was open")
 	}
 	memoryID, err := decideMCPWriteProposalVia(ctx, cfg, id, "approve", "popup", digest)
 	if err != nil {
 		return fail(err)
 	}
 	return map[string]any{"proposal": map[string]any{"id": id, "status": "approved", "memory_id": memoryID}}
+}
+
+// popupFit returns how many leading runes of r fit in max characters once
+// escaped, so a line never ends inside an escape and the shown count is exact.
+func popupFit(r []rune, max int) int {
+	used := 0
+	for i, c := range r {
+		w := len([]rune(strconv.Quote(string(c)))) - 2
+		if used+w > max {
+			return i
+		}
+		used += w
+	}
+	return len(r)
+}
+
+// popupClip cuts r to what fits in max escaped characters.
+func popupClip(r []rune, max int) []rune {
+	return r[:popupFit(r, max)]
 }
