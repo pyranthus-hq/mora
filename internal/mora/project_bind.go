@@ -42,6 +42,11 @@ func loadProjectBindings(cfg Config) ([]projectBinding, error) {
 	if err := json.Unmarshal(body, &f); err != nil {
 		return nil, fmt.Errorf("read %s: %w", projectBindingsPath(cfg), err)
 	}
+	for _, b := range f.Bindings {
+		if !filepath.IsAbs(b.Dir) || filepath.Clean(b.Dir) != b.Dir || validProjectScope(b.Scope) != nil {
+			return nil, fmt.Errorf("read %s: invalid binding %q -> %q", projectBindingsPath(cfg), b.Dir, b.Scope)
+		}
+	}
 	sort.Slice(f.Bindings, func(i, j int) bool { return f.Bindings[i].Dir < f.Bindings[j].Dir })
 	return f.Bindings, nil
 }
@@ -93,7 +98,7 @@ func bindProjectDir(ctx context.Context, dir, scope string) (resolved, replaced 
 	}
 	out := bindings[:0:0]
 	for _, b := range bindings {
-		if b.Dir == resolved {
+		if sameProjectDir(b.Dir, resolved) {
 			replaced = b.Scope
 			continue
 		}
@@ -104,26 +109,66 @@ func bindProjectDir(ctx context.Context, dir, scope string) (resolved, replaced 
 	return resolved, replaced, saveProjectBindings(cfg, out)
 }
 
-// lookupProject finds the longest bound directory that equals dir or contains
-// it. It never guesses from a folder name.
-func lookupProject(cfg Config, dir string) (scope, root string, found bool, err error) {
-	abs, err := filepath.Abs(dir)
+// sameProjectDir compares by file identity, so letter case on a
+// case-insensitive volume cannot make one folder look like two. A path that
+// no longer exists matches only by exact string.
+func sameProjectDir(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ai, aerr := os.Stat(a)
+	bi, berr := os.Stat(b)
+	return aerr == nil && berr == nil && os.SameFile(ai, bi)
+}
+
+// resolveExisting resolves symlinks in the deepest existing ancestor of path
+// and appends the missing rest. It reports false when no ancestor resolves.
+func resolveExisting(path string) (string, bool) {
+	abs, err := filepath.Abs(path)
 	if err != nil {
-		return "", "", false, err
+		return "", false
 	}
-	if r, rerr := filepath.EvalSymlinks(abs); rerr == nil {
-		abs = r
+	rest := ""
+	for cur := abs; ; {
+		if r, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(r, rest), true
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return "", false
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
 	}
+}
+
+// lookupProject finds the longest bound directory that is dir or one of its
+// parents, walking up from the deepest existing ancestor and comparing by file
+// identity. It never guesses from a folder name, and it fails closed: an
+// unreadable or invalid store gives found=false with an error.
+func lookupProject(cfg Config, dir string) (scope, root string, found bool, err error) {
 	bindings, err := loadProjectBindings(cfg)
 	if err != nil {
 		return "", "", false, err
 	}
-	for _, b := range bindings {
-		if (abs == b.Dir || strings.HasPrefix(abs, strings.TrimSuffix(b.Dir, string(filepath.Separator))+string(filepath.Separator))) && len(b.Dir) > len(root) {
-			scope, root, found = b.Scope, b.Dir, true
-		}
+	cur, ok := resolveExisting(dir)
+	if !ok {
+		return "", "", false, nil
 	}
-	return scope, root, found, nil
+	for {
+		if info, serr := os.Stat(cur); serr == nil {
+			for _, b := range bindings {
+				if bi, berr := os.Stat(b.Dir); berr == nil && os.SameFile(info, bi) {
+					return b.Scope, b.Dir, true, nil
+				}
+			}
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return "", "", false, nil
+		}
+		cur = parent
+	}
 }
 
 func cmdProject(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -190,7 +235,7 @@ func cmdProject(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		}
 		out := bindings[:0:0]
 		for _, b := range bindings {
-			if b.Dir != resolved {
+			if !sameProjectDir(b.Dir, resolved) {
 				out = append(out, b)
 			}
 		}
