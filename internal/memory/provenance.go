@@ -244,6 +244,20 @@ func WithoutOwnerConfirmedTags(m Memory) Memory {
 	return m
 }
 
+// OwnerDecisionWithoutValidity reports an owner-confirmed decision whose writer
+// chose no validity: nothing beyond the defaulted as-of time (provisional
+// durability, no flip condition, no review date). The owner confirmed the
+// decision itself, so readers show it as current rather than as needing review.
+// A stored review date or any flip condition makes it false, and the normal
+// status rules apply.
+func OwnerDecisionWithoutValidity(m Memory) bool {
+	if m.Type != "decision" || !IsOwnerConfirmed(m) {
+		return false
+	}
+	d := m.Decision
+	return d == nil || ((d.Durability == "" || d.Durability == "provisional") && len(d.FlipConditions) == 0 && d.ReviewBy == "")
+}
+
 func deriveTrust(m Memory) string {
 	if IsTentative(m) {
 		return TrustTentative

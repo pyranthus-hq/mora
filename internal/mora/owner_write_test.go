@@ -1,43 +1,51 @@
 package mora
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
-// ownerWriteArgs is one complete decision note. Decision status (current or
-// needs_review) comes from the validity fields, not from trust: a decision
-// written without durability and flip conditions reads needs_review whoever
-// wrote it.
-var ownerWriteArgs = []string{"write", "--scope", "project:demo", "--type", "decision",
-	"--title", "Heron cache choice", "--text", "Use the heron cache for all lookups.",
-	"--durability", "standing", "--flip-conditions", "The heron team drops the cache"}
+// The tests in this file cover `mora write --mine` and `mora confirm --mine`.
+// A test that calls reviewTerminal fakes the terminal check (rulesInteractive
+// returns true); every refusal test leaves the real check in place.
 
-func ownerWriteID(t *testing.T, args ...string) string {
+const mineYes = "y\n"
+
+var mineNote = []string{"--scope", "project:demo", "--type", "decision",
+	"--title", "Heron cache choice", "--text", "Use the heron cache for all lookups."}
+
+// mineRun runs one command with the given stdin and keeps stdout and stderr apart.
+func mineRun(t *testing.T, stdin io.Reader, args ...string) (string, string, error) {
 	t.Helper()
-	var r struct {
-		ID             string `json:"id"`
-		OwnerConfirmed bool   `json:"owner_confirmed"`
-	}
-	if err := json.Unmarshal([]byte(run(t, append(append([]string{}, args...), "--json")...)), &r); err != nil {
-		t.Fatal(err)
+	var out, errOut bytes.Buffer
+	err := Run(testCtx(t), args, &out, &errOut, stdin)
+	return out.String(), errOut.String(), err
+}
+
+func mineArgs(cmd string, extra ...string) []string {
+	return append(append([]string{cmd}, mineNote...), extra...)
+}
+
+// minePlain saves an ordinary agent note and returns its id.
+func minePlain(t *testing.T, extra ...string) string {
+	t.Helper()
+	var r struct{ ID string }
+	if err := json.Unmarshal([]byte(run(t, append(mineArgs("write", extra...), "--json")...)), &r); err != nil || r.ID == "" {
+		t.Fatalf("plain write: %v", err)
 	}
 	return r.ID
 }
 
-func ownerWriteConfirmed(t *testing.T, cfg Config, id string) bool {
-	t.Helper()
-	return memory.IsOwnerConfirmed(ownerMemory(t, cfg, id))
-}
-
-func ownerWriteHasTag(t *testing.T, cfg Config, id string) bool {
-	t.Helper()
-	for _, tag := range ownerMemory(t, cfg, id).Tags {
+func mineHasTag(m Memory) bool {
+	for _, tag := range m.Tags {
 		if strings.HasPrefix(tag, memory.OwnerConfirmedTagPrefix) {
 			return true
 		}
@@ -45,27 +53,47 @@ func ownerWriteHasTag(t *testing.T, cfg Config, id string) bool {
 	return false
 }
 
-func TestWriteInOwnerTerminalIsOwnerConfirmed(t *testing.T) {
+func mineTitles(t *testing.T) []string {
+	t.Helper()
+	rows, err := decodeMemoriesJSON(t, run(t, "list", "--json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var titles []string
+	for _, m := range rows {
+		titles = append(titles, m.Title)
+	}
+	return titles
+}
+
+func mineSaved(t *testing.T, cfg Config, id string) bool {
+	t.Helper()
+	return memory.IsOwnerConfirmed(ownerMemory(t, cfg, id))
+}
+
+func TestWriteMineSavesOwnerConfirmedAfterYes(t *testing.T) {
 	cfg := reviewSetup(t)
 	reviewTerminal(t)
 
-	human := run(t, ownerWriteArgs...)
-	if !strings.Contains(human, "saved as owner-confirmed") {
-		t.Fatalf("receipt does not say the note is owner-confirmed:\n%s", human)
+	out, errOut, err := mineRun(t, strings.NewReader("YES\n"), append(mineArgs("write", "--mine"), "--json")...)
+	if err != nil {
+		t.Fatalf("write --mine: %v\n%s", err, errOut)
+	}
+	// The note is shown on stderr before the question, so stdout stays JSON.
+	for _, want := range []string{"project:demo", "Heron cache choice", "Use the heron cache for all lookups.", "Save this as your own statement? [y/N]"} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("prompt does not show %q:\n%s", want, errOut)
+		}
 	}
 	var r struct {
 		ID             string `json:"id"`
 		OwnerConfirmed bool   `json:"owner_confirmed"`
-		IndexUpdated   bool   `json:"index_updated"`
 	}
-	if err := json.Unmarshal([]byte(run(t, append(append([]string{}, ownerWriteArgs...), "--json")...)), &r); err != nil {
-		t.Fatal(err)
-	}
-	if !r.OwnerConfirmed || !r.IndexUpdated || !ownerWriteConfirmed(t, cfg, r.ID) {
-		t.Fatalf("json receipt %+v, owner-confirmed = %v", r, ownerWriteConfirmed(t, cfg, r.ID))
+	if err := json.Unmarshal([]byte(out), &r); err != nil || !r.OwnerConfirmed || !mineSaved(t, cfg, r.ID) {
+		t.Fatalf("receipt %q, %v", out, err)
 	}
 
-	// Contract point 4: agents read the note as the owner's own statement.
+	// Reads: agents see the owner's statement.
 	for tool, args := range map[string]map[string]any{
 		"read_memory":   {"id": r.ID},
 		"search_memory": {"query": "heron cache"},
@@ -76,133 +104,284 @@ func TestWriteInOwnerTerminalIsOwnerConfirmed(t *testing.T) {
 		}
 	}
 	got := ownerCall(t, "context_memory", map[string]any{"query": "heron cache"})
-	if !strings.Contains(got, "the owner then confirmed this exact text in their own terminal") {
-		t.Fatalf("context_memory has no owner-confirmed wording:\n%s", got)
+	for _, want := range []string{"the owner then confirmed this exact text in their own terminal", "Adopted by user: the owner confirmed this exact text"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("context_memory lacks %q:\n%s", want, got)
+		}
 	}
-	if !strings.Contains(got, "Adopted by user: the owner confirmed this exact text") {
-		t.Fatalf("context_memory has no adoption line:\n%s", got)
-	}
-	// The unconfirmed lines: the pinned owner-confirmed wording still names the
-	// writer ("agent-written ...; the owner then confirmed"), so that word
-	// alone is not the test.
 	for _, bad := range []string{"needs_review", "not checked against the user's words", "no record either way"} {
 		if strings.Contains(got, bad) {
 			t.Fatalf("context_memory still says %q:\n%s", bad, got)
 		}
 	}
+
+	// The human receipt says so too.
+	human, _, err := mineRun(t, strings.NewReader("y\n"), mineArgs("write", "--mine")...)
+	if err != nil || !strings.Contains(human, "saved as owner-confirmed") {
+		t.Fatalf("human receipt %q, %v", human, err)
+	}
 }
 
-func TestWriteOutsideOwnerTerminalIsNotOwnerConfirmed(t *testing.T) {
-	cfg := reviewSetup(t)
-
+func TestWriteMineSavesNothingWithoutAYes(t *testing.T) {
+	reviewSetup(t)
 	reviewTerminal(t)
-	t.Setenv("CLAUDECODE", "1") // an agent session, even with a terminal on stdin
-	out := run(t, ownerWriteArgs...)
-	if strings.Contains(out, "owner-confirmed") {
-		t.Fatalf("agent-session write claims owner-confirmed:\n%s", out)
+	for _, answer := range []string{"n\n", "no\n", "\n", "", "maybe\n", "yy\n"} {
+		_, _, err := mineRun(t, strings.NewReader(answer), mineArgs("write", "--mine")...)
+		if err == nil || !strings.Contains(err.Error(), "Not saved.") {
+			t.Fatalf("answer %q: err = %v", answer, err)
+		}
 	}
-	id := ownerWriteID(t, ownerWriteArgs...)
-	if ownerWriteHasTag(t, cfg, id) || ownerWriteConfirmed(t, cfg, id) {
-		t.Fatal("agent-session write carries an owner-confirmed tag")
+	if titles := mineTitles(t); len(titles) != 0 {
+		t.Fatalf("a declined write saved notes: %v", titles)
+	}
+}
+
+func TestWriteMineRefusesOutsideTheOwnerTerminal(t *testing.T) {
+	reviewSetup(t)
+	clearAgentEnv(t)
+
+	// A pipe: the real terminal check, not the test fake.
+	_, _, err := mineRun(t, strings.NewReader(mineYes), mineArgs("write", "--mine")...)
+	if err == nil || !strings.Contains(err.Error(), "non-interactive") {
+		t.Fatalf("pipe: %v", err)
+	}
+	_, _, err = mineRun(t, nil, mineArgs("write", "--mine")...)
+	if err == nil {
+		t.Fatal("nil stdin was accepted")
+	}
+
+	// Each agent variable on its own, with a terminal on stdin.
+	reviewTerminal(t)
+	for _, key := range rulesAgentEnv {
+		func() {
+			if err := os.Setenv(key, "1"); err != nil {
+				t.Fatal(err)
+			}
+			defer os.Unsetenv(key)
+			_, _, err := mineRun(t, strings.NewReader(mineYes), mineArgs("write", "--mine")...)
+			if err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("%s set: err = %v", key, err)
+			}
+		}()
+	}
+	if titles := mineTitles(t); len(titles) != 0 {
+		t.Fatalf("a refused write saved notes: %v", titles)
+	}
+}
+
+func TestPlainWriteIsNeverOwnerConfirmed(t *testing.T) {
+	cfg := reviewSetup(t)
+	reviewTerminal(t) // even in the owner terminal
+	out := run(t, mineArgs("write")...)
+	if strings.Contains(out, "owner-confirmed") || strings.Count(out, "\n") != 1 {
+		t.Fatalf("plain write receipt changed:\n%s", out)
+	}
+	id := minePlain(t)
+	if mineHasTag(ownerMemory(t, cfg, id)) {
+		t.Fatal("plain write carries an owner-confirmed tag")
 	}
 	var fields map[string]any
-	if err := json.Unmarshal([]byte(run(t, append(append([]string{}, ownerWriteArgs...), "--json")...)), &fields); err != nil {
+	if err := json.Unmarshal([]byte(run(t, append(mineArgs("write"), "--json")...)), &fields); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := fields["owner_confirmed"]; ok {
-		t.Fatal("receipt gained owner_confirmed for an agent-session write")
+		t.Fatal("plain write receipt gained owner_confirmed")
 	}
 }
 
-func TestWriteWithNonInteractiveStdinIsNotOwnerConfirmed(t *testing.T) {
-	cfg := reviewSetup(t)
-	clearAgentEnv(t) // no agent variable, but stdin is not a terminal (the real check)
-
-	out := run(t, ownerWriteArgs...)
-	if strings.Contains(out, "owner-confirmed") || strings.Count(out, "\n") != 1 {
-		t.Fatalf("receipt changed for non-interactive stdin:\n%s", out)
-	}
-	id := ownerWriteID(t, ownerWriteArgs...)
-	if ownerWriteHasTag(t, cfg, id) {
-		t.Fatal("non-interactive write carries an owner-confirmed tag")
-	}
-}
-
-func TestWriteRefusesACallerSuppliedOwnerConfirmedTag(t *testing.T) {
-	cfg := reviewSetup(t)
+func TestWriteMineRefusesACallerSuppliedOwnerConfirmedTag(t *testing.T) {
+	reviewSetup(t)
 	reviewTerminal(t)
-
-	_, err := runErr(t, "write", "--title", "Forged", "--text", "Forged body.", "--tags", "keep,"+memory.OwnerConfirmedTagPrefix+"abc")
+	_, _, err := mineRun(t, strings.NewReader(mineYes), mineArgs("write", "--mine", "--tags", "keep,"+memory.OwnerConfirmedTagPrefix+"abc")...)
 	if err == nil || !strings.Contains(err.Error(), memory.OwnerConfirmedTagPrefix) {
-		t.Fatalf("tag not refused in the owner terminal: %v", err)
+		t.Fatalf("tag not refused: %v", err)
 	}
-	rows, err := decodeMemoriesJSON(t, run(t, "list", "--json"))
-	if err != nil {
-		t.Fatal(err)
+	if titles := mineTitles(t); len(titles) != 0 {
+		t.Fatalf("a refused write saved notes: %v", titles)
 	}
-	for _, m := range rows {
-		if m.Title == "Forged" {
-			t.Fatalf("a refused write saved a note: %+v", m)
-		}
-	}
-	_ = cfg
 }
 
-func TestConfirmInOwnerTerminalMakesAnyAgentNoteOwnerConfirmed(t *testing.T) {
+func TestPlainConfirmIsUnchangedInTheOwnerTerminal(t *testing.T) {
 	cfg := reviewSetup(t)
 	clearAgentEnv(t)
-	plain := ownerWriteID(t, ownerWriteArgs...) // saved by a non-terminal write: a plain agent note
+	plain := minePlain(t)
 	tentative := ownerSaved(t, "Tentative heron")
+	reviewTerminal(t)
 
-	// Outside the owner terminal, confirm is unchanged.
 	if _, err := runErr(t, "confirm", plain); err == nil || !strings.Contains(err.Error(), "not tentative") {
-		t.Fatalf("confirm of a plain note outside the terminal: %v", err)
+		t.Fatalf("plain confirm of a plain note: %v", err)
 	}
 	if out := run(t, "confirm", tentative); !strings.HasPrefix(out, "confirmed ") {
-		t.Fatalf("confirm output changed outside the terminal: %q", out)
+		t.Fatalf("plain confirm output = %q", out)
 	}
-	if ownerWriteConfirmed(t, cfg, plain) || ownerWriteConfirmed(t, cfg, tentative) || ownerWriteHasTag(t, cfg, tentative) {
-		t.Fatal("confirm outside the owner terminal set owner-confirmed")
+	if mineSaved(t, cfg, plain) || mineSaved(t, cfg, tentative) || mineHasTag(ownerMemory(t, cfg, tentative)) {
+		t.Fatal("plain confirm made a note owner-confirmed")
 	}
+}
 
+func TestConfirmMineAsksThenConfersOwnerConfirmed(t *testing.T) {
+	cfg := reviewSetup(t)
+	clearAgentEnv(t)
+	plain := minePlain(t)
+	tentative := ownerSaved(t, "Tentative heron")
 	reviewTerminal(t)
+
 	for _, id := range []string{plain, tentative} {
-		if out := run(t, "confirm", id); !strings.HasPrefix(out, "owner-confirmed "+id) {
-			t.Fatalf("confirm output = %q", out)
+		// Declined: nothing changes.
+		before, _ := os.ReadFile(ownerMemory(t, cfg, id).Path)
+		_, errOut, err := mineRun(t, strings.NewReader("n\n"), "confirm", id, "--mine")
+		if err == nil || !strings.Contains(err.Error(), "Not confirmed") || !strings.Contains(errOut, "Confirm this exact text as your own statement? [y/N]") {
+			t.Fatalf("%s declined: %v\n%s", id, err, errOut)
 		}
-		if !ownerWriteConfirmed(t, cfg, id) {
-			t.Fatalf("%s is not owner-confirmed after confirm in the owner terminal", id)
+		if after, _ := os.ReadFile(ownerMemory(t, cfg, id).Path); !bytes.Equal(before, after) {
+			t.Fatalf("%s: a declined confirm changed the file", id)
+		}
+
+		out, errOut, err := mineRun(t, strings.NewReader("yes\n"), "confirm", id, "--mine", "--json")
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", id, err, errOut)
+		}
+		var r confirmReceipt
+		if json.Unmarshal([]byte(out), &r) != nil || !r.OwnerConfirmed || !mineSaved(t, cfg, id) {
+			t.Fatalf("%s: receipt %q, owner-confirmed %v", id, out, mineSaved(t, cfg, id))
+		}
+		if first, _, _ := strings.Cut(ownerMemory(t, cfg, id).Text, "\n"); !strings.Contains(errOut, first) {
+			t.Fatalf("%s: the text was not shown:\n%s", id, errOut)
 		}
 		if got := ownerCall(t, "read_memory", map[string]any{"id": id}); !strings.Contains(got, ownerTrustJSON) {
 			t.Fatalf("read_memory of %s:\n%s", id, got)
 		}
 	}
-	var r confirmReceipt
-	if err := json.Unmarshal([]byte(run(t, "confirm", plain, "--json")), &r); err != nil || !r.OwnerConfirmed || !r.Confirmed {
-		t.Fatalf("receipt = %+v, %v", r, err)
-	}
 	if log := readAgentWriteLog(t, cfg); !strings.Contains(log, " owner-confirm "+plain+" ") {
 		t.Fatalf("log has no owner-confirm line:\n%s", log)
 	}
 
-	// A connector record is not an agent note: confirm refuses it.
-	if _, err := runErr(t, "confirm", "gmail_thread/none"); err == nil {
-		t.Fatal("confirm accepted an id that is not an agent note")
+	// Already confirmed: say so, change nothing.
+	before, _ := os.ReadFile(ownerMemory(t, cfg, plain).Path)
+	out, _, err := mineRun(t, strings.NewReader(mineYes), "confirm", plain, "--mine")
+	if err != nil || !strings.Contains(out, "already owner-confirmed") {
+		t.Fatalf("already confirmed: %q, %v", out, err)
+	}
+	if after, _ := os.ReadFile(ownerMemory(t, cfg, plain).Path); !bytes.Equal(before, after) {
+		t.Fatal("confirm --mine rewrote an owner-confirmed note")
+	}
+}
+
+func TestConfirmMineRefusesOutsideTheOwnerTerminal(t *testing.T) {
+	cfg := reviewSetup(t)
+	clearAgentEnv(t)
+	id := minePlain(t)
+	before, _ := os.ReadFile(ownerMemory(t, cfg, id).Path)
+
+	_, _, err := mineRun(t, strings.NewReader(mineYes), "confirm", id, "--mine")
+	if err == nil || !strings.Contains(err.Error(), "non-interactive") {
+		t.Fatalf("pipe: %v", err)
+	}
+	reviewTerminal(t)
+	for _, key := range rulesAgentEnv {
+		func() {
+			if err := os.Setenv(key, "1"); err != nil {
+				t.Fatal(err)
+			}
+			defer os.Unsetenv(key)
+			_, _, err := mineRun(t, strings.NewReader(mineYes), "confirm", id, "--mine")
+			if err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("%s set: err = %v", key, err)
+			}
+		}()
+	}
+	if after, _ := os.ReadFile(ownerMemory(t, cfg, id).Path); !bytes.Equal(before, after) {
+		t.Fatal("a refused confirm changed the file")
+	}
+}
+
+func TestConfirmMineRefusesRecordsThatAreNotAgentNotes(t *testing.T) {
+	cfg := reviewSetup(t)
+	plant := func(m Memory, rel string) {
+		body, err := renderMemory(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(cfg.VaultDir, "sources", rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plant(Memory{ID: "gmail_thread/mine1", Scope: "personal", Type: "email", Title: "Mail", Text: "Mail body.", Provider: "gmail", CreatedAt: "2026-11-01T00:00:00Z"}, "gmail/gmail_thread_mine1.md")
+	plant(Memory{ID: "src_mine2", Scope: "project:demo", Type: "source", Title: "mine.md", Text: "File body.", Tags: []string{"filesystem", "notes"}, CreatedAt: "2026-11-01T00:00:00Z"}, "filesystem/notes/src_mine2.md")
+	run(t, "index", "rebuild")
+	reviewTerminal(t)
+
+	for _, id := range []string{"gmail_thread/mine1", "src_mine2"} {
+		if _, err := findMemory(cfg, id); err != nil {
+			t.Fatalf("fixture %s is not findable: %v", id, err)
+		}
+		_, errOut, err := mineRun(t, strings.NewReader(mineYes), "confirm", id, "--mine")
+		if err == nil || !strings.Contains(err.Error(), "not an agent-written note") || strings.Contains(errOut, "[y/N]") {
+			t.Fatalf("%s: err = %v\n%s", id, err, errOut)
+		}
+		if mineHasTag(ownerMemory(t, cfg, id)) {
+			t.Fatalf("%s got an owner-confirmed tag", id)
+		}
+	}
+}
+
+// racyStdin edits the note once, as the owner's answer is read, so the file
+// differs from what was shown.
+type racyStdin struct {
+	path string
+	done bool
+}
+
+func (r *racyStdin) Read(p []byte) (int, error) {
+	if !r.done {
+		r.done = true
+		raw, err := os.ReadFile(r.path)
+		if err != nil {
+			return 0, err
+		}
+		if err := os.WriteFile(r.path, bytes.Replace(raw, []byte("all lookups"), []byte("no lookups"), 1), 0o644); err != nil {
+			return 0, err
+		}
+	}
+	return copy(p, "y\n"), nil
+}
+
+func TestConfirmMineRefusesANoteThatChangedAfterItWasShown(t *testing.T) {
+	cfg := reviewSetup(t)
+	clearAgentEnv(t)
+	id := minePlain(t)
+	reviewTerminal(t)
+	m := ownerMemory(t, cfg, id)
+
+	_, _, err := mineRun(t, &racyStdin{path: m.Path}, "confirm", id, "--mine")
+	if err == nil || !strings.Contains(err.Error(), "changed after it was shown") {
+		t.Fatalf("err = %v", err)
+	}
+	if mineSaved(t, cfg, id) || mineHasTag(ownerMemory(t, cfg, id)) {
+		t.Fatal("a changed note was confirmed")
 	}
 }
 
 func TestEditingAnOwnerWrittenNoteDropsTheStatus(t *testing.T) {
 	cfg := reviewSetup(t)
 	reviewTerminal(t)
-	id := ownerWriteID(t, ownerWriteArgs...)
-	m := ownerMemory(t, cfg, id)
-	if !memory.IsOwnerConfirmed(m) {
-		t.Fatal("note is not owner-confirmed before the edit")
-	}
-	raw, err := os.ReadFile(m.Path)
+	out, _, err := mineRun(t, strings.NewReader(mineYes), append(mineArgs("write", "--mine"), "--json")...)
 	if err != nil {
 		t.Fatal(err)
 	}
+	var r struct{ ID string }
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		t.Fatal(err)
+	}
+	m := ownerMemory(t, cfg, r.ID)
+	if !memory.IsOwnerConfirmed(m) {
+		t.Fatal("note is not owner-confirmed before the edit")
+	}
+	raw, _ := os.ReadFile(m.Path)
 	edited := strings.Replace(string(raw), "all lookups", "no lookups", 1)
 	if edited == string(raw) {
 		t.Fatalf("edit did not apply:\n%s", raw)
@@ -210,21 +389,112 @@ func TestEditingAnOwnerWrittenNoteDropsTheStatus(t *testing.T) {
 	if err := os.WriteFile(m.Path, []byte(edited), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if ownerWriteConfirmed(t, cfg, id) {
+	if mineSaved(t, cfg, r.ID) {
 		t.Fatal("an edited note is still owner-confirmed")
 	}
 	var read struct{ Trust string }
-	if err := json.Unmarshal([]byte(run(t, "read", id, "--json")), &read); err != nil || read.Trust != "" {
+	if err := json.Unmarshal([]byte(run(t, "read", r.ID, "--json")), &read); err != nil || read.Trust != "" {
 		t.Fatalf("read --json trust = %q, %v", read.Trust, err)
 	}
 }
 
-// outsideOwnerTerminal runs fn as a non-terminal shell would, even in a test
-// that faked the owner terminal earlier.
-func outsideOwnerTerminal(t *testing.T, fn func()) {
+// mineDecision writes one decision and returns its id. owner picks --mine.
+func mineDecision(t *testing.T, owner bool, extra ...string) string {
 	t.Helper()
-	prev := rulesInteractive
-	rulesInteractive = func(io.Reader) bool { return false }
-	defer func() { rulesInteractive = prev }()
-	fn()
+	args := append([]string{"write", "--scope", "project:demo", "--type", "decision",
+		"--title", "Heron cache decision", "--text", "Use the heron cache."}, extra...)
+	if owner {
+		out, errOut, err := mineRun(t, strings.NewReader(mineYes), append(args, "--mine", "--json")...)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, errOut)
+		}
+		var r struct{ ID string }
+		if err := json.Unmarshal([]byte(out), &r); err != nil {
+			t.Fatal(err)
+		}
+		return r.ID
+	}
+	var r struct{ ID string }
+	if err := json.Unmarshal([]byte(run(t, append(args, "--json")...)), &r); err != nil {
+		t.Fatal(err)
+	}
+	return r.ID
+}
+
+func mineDecisionStatus(t *testing.T, id string) string {
+	t.Helper()
+	var read struct {
+		DecisionStatus string `json:"decision_status"`
+	}
+	if err := json.Unmarshal([]byte(run(t, "read", id, "--json")), &read); err != nil {
+		t.Fatal(err)
+	}
+	return read.DecisionStatus
+}
+
+func mineDecisionContext(t *testing.T) string {
+	t.Helper()
+	// The tool result is JSON, so line breaks arrive escaped.
+	return strings.ReplaceAll(ownerCall(t, "context_memory", map[string]any{"query": "heron cache decision"}), `\n`, "\n")
+}
+
+func TestOwnerDecisionWithoutValidityReadsCurrent(t *testing.T) {
+	reviewSetup(t)
+	reviewTerminal(t)
+
+	// Not the owner's: unchanged, needs review.
+	plain := mineDecision(t, false)
+	if got := mineDecisionStatus(t, plain); got != decisionNeedsReview {
+		t.Fatalf("plain decision status = %q", got)
+	}
+	if got := mineDecisionContext(t); !strings.Contains(got, "Decision status: needs_review") || !strings.Contains(got, "Durability: provisional") {
+		t.Fatalf("plain decision context changed:\n%s", got)
+	}
+
+	// The owner's own decision, no validity chosen: current.
+	id := mineDecision(t, true)
+	if got := mineDecisionStatus(t, id); got != decisionCurrent {
+		t.Fatalf("owner decision status = %q", got)
+	}
+	if got := ownerCall(t, "read_memory", map[string]any{"id": id}); !strings.Contains(got, `"decision_status":"current"`) {
+		t.Fatalf("read_memory:\n%s", got)
+	}
+	got := mineDecisionContext(t)
+	owned := got[strings.Index(got, "Decision status: current"):]
+	if !strings.Contains(got, "Decision status: current (owner-confirmed; no review date set)\nAs of: ") {
+		t.Fatalf("context lacks the current line:\n%s", got)
+	}
+	// The owner block carries no defaulted durability or empty flip line.
+	if end := strings.Index(owned, "Use the heron cache."); end < 0 || strings.Contains(owned[:end], "Durability:") || strings.Contains(owned[:end], "Flip conditions:") {
+		t.Fatalf("owner decision block shows defaulted fields:\n%s", owned)
+	}
+
+	// A review date that has passed still needs review, owner-confirmed or not.
+	past := mineDecision(t, true, "--review-by", time.Now().Add(-48*time.Hour).Format(time.RFC3339))
+	if got := mineDecisionStatus(t, past); got != decisionNeedsReview {
+		t.Fatalf("passed review date status = %q", got)
+	}
+	complete := mineDecision(t, true, "--durability", "standing", "--flip-conditions", "the team drops it", "--review-by", time.Now().Add(-48*time.Hour).Format(time.RFC3339))
+	if got := mineDecisionStatus(t, complete); got != decisionNeedsReview {
+		t.Fatalf("complete decision past its review date = %q", got)
+	}
+}
+
+// The digest list reads the same field, so it follows the status.
+func TestOwnerDecisionStatusIsOneFieldForEveryReader(t *testing.T) {
+	m := Memory{ID: "mem_1", Scope: "project:demo", Type: "decision", Title: "T", Text: "body", Source: "manual", CreatedAt: "2026-11-10T00:00:00Z",
+		Decision: decisionValidityFromFlags("2026-11-10T00:00:00Z", "", "", "", "")}
+	if got := decorateDecision(m, time.Now()).DecisionStatus; got != decisionNeedsReview {
+		t.Fatalf("not confirmed: %q", got)
+	}
+	m.Tags = []string{memory.OwnerConfirmedTagPrefix + memory.OwnerConfirmedDigest(m)}
+	if got := decorateDecision(m, time.Now()).DecisionStatus; got != decisionCurrent {
+		t.Fatalf("owner-confirmed: %q", got)
+	}
+	m.Decision.FlipConditions = nil
+	m.Decision.ReviewBy = "2020-01-01T00:00:00Z"
+	m.Tags = []string{memory.OwnerConfirmedTagPrefix + memory.OwnerConfirmedDigest(m)}
+	if got := decorateDecision(m, time.Now()).DecisionStatus; got != decisionNeedsReview {
+		t.Fatalf("past review date: %q", got)
+	}
 }

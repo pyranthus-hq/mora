@@ -16,9 +16,9 @@ import (
 	"time"
 )
 
-// cmdWrite saves the note owner-confirmed when a person runs it in their own
-// terminal, the same check `mora review` makes. An agent's shell fails that
-// check, so its notes stay tentative or agent-written.
+// cmdWrite saves an agent-written note. With --mine it saves the note
+// owner-confirmed instead, but only in the owner's own terminal and only after
+// the owner reads the note and types yes.
 func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	fs := flag.NewFlagSet("write", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -34,9 +34,15 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 	durability := fs.String("durability", "", "decision durability: provisional|working|standing")
 	flip := fs.String("flip-conditions", "", "semicolon-separated conditions that reverse a decision")
 	reviewBy := fs.String("review-by", "", "optional decision review deadline (RFC3339)")
+	mine := fs.Bool("mine", false, "save as your own statement (owner-confirmed); needs your own terminal and a typed yes")
 	jsonOut := fs.Bool("json", false, "json")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *mine {
+		if err := requireMineTerminal(stdin, "mora write"); err != nil {
+			return err
+		}
 	}
 	if *text == "" && fs.NArg() > 0 {
 		*text = strings.Join(fs.Args(), " ")
@@ -97,8 +103,10 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 	// never silently loses its write. createMemory sets m.ID and m.Path.
 	var op pendingOp
 	var opts []createOption
-	owner := requireReviewTerminal(stdin) == nil
-	if owner {
+	if *mine {
+		if !askOwner(stderr, stdin, m, "Save this as your own statement?") {
+			return errors.New("Not saved.")
+		}
 		opts = append(opts, withOwnerConfirmed())
 	}
 	m, op, err = createMemory(ctx, cfg, m, opts...)
@@ -108,9 +116,9 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 	m = decorateDecision(m, time.Now())
 	done := func(indexed bool) error {
 		if *jsonOut {
-			return emitReceipt(stdout, "mora.write", 1, newWriteReceipt(m, indexed, owner))
+			return emitReceipt(stdout, "mora.write", 1, newWriteReceipt(m, indexed, *mine))
 		}
-		if err := emit(stdout, m, false); err != nil || !owner {
+		if err := emit(stdout, m, false); err != nil || !*mine {
 			return err
 		}
 		_, err := fmt.Fprintln(stdout, "saved as owner-confirmed: agents read it as your own statement")
