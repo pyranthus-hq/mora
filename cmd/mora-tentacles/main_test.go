@@ -327,7 +327,11 @@ func TestJobLockRecoversAfterProcessDeath(t *testing.T) {
 	if err := child.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer child.Process.Kill()
+	defer func() {
+		if err := child.Process.Kill(); err != nil {
+			t.Log(err)
+		}
+	}()
 	until := time.Now().Add(5 * time.Second)
 	for {
 		if _, e := os.Stat(path + ".ready"); e == nil {
