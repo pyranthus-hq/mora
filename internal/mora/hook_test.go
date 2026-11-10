@@ -235,7 +235,7 @@ func seedRecallMemories(t *testing.T, n int) Config {
 	for i := 0; i < n; i++ {
 		m := Memory{
 			ID:        newID(),
-			Scope:     "project:eelpout",
+			Scope:     "global",
 			Type:      "decision",
 			Title:     "Eelpout recall decision",
 			Source:    "test",

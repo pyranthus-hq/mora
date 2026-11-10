@@ -147,6 +147,14 @@
     {
       "json_contract": "exempt",
       "kind": "subcommand",
+      "path": "hook session-end",
+      "payload": "",
+      "platform": "all",
+      "reason": "Claude Code owns this stdin: the command reads the session-end JSON, writes nothing to stdout and always exits 0"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
       "path": "hook session-start",
       "payload": "",
       "platform": "all",

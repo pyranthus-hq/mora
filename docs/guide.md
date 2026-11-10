@@ -971,6 +971,7 @@ Tell Mora that a folder belongs to a project scope:
 mora project bind --scope project:my-app ~/code/my-app
 mora project which ~/code/my-app/src   # project:my-app, plus the bound root
 mora project list --json               # [{"dir": "...", "scope": "project:my-app"}]
+mora project bind --scope project:my-app --owner-only ~/code/my-app
 mora project unbind ~/code/my-app
 ```
 
@@ -980,15 +981,20 @@ path with symlinks resolved, in `projects.json` in the Mora config directory
 (mode 0600). `--scope` must be `project:NAME`; `global` and `personal` are
 refused. Without `--scope`, Mora uses `project:` plus the lower-case folder name,
 or asks for `--scope` when that name is not a valid scope. Binding the same
-folder again replaces its scope. A folder matches its own binding and the
+folder again replaces its scope and its `--owner-only` mark: bind without the
+flag to clear it. `--owner-only` lets your `personal` notes appear in recall in
+that folder (see "Which notes appear on their own"); it does not change the
+project brief; `list` and
+`which` show it, as a trailing `owner-only` column in text and as `"owner_only":
+true` in JSON. A file written before the flag existed loads with it off. A folder matches its own binding and the
 bindings of its parents; the deepest one wins. Mora never guesses a project
 from a folder name when it looks one up, and `which` exits non-zero with "no
 project" when nothing matches.
 
 `mora hook install --project --scope project:NAME` also binds the project root.
 `mora hook uninstall --project` leaves that binding in place. The session-start
-hook and `mora brief --project` read bindings (see "Project brief" below); search
-and save do not.
+hook, the recall hook and `mora brief --project` read bindings (see "Project
+brief" and "Which notes appear on their own" below); search and save do not.
 
 ### Project brief
 
@@ -1010,7 +1016,9 @@ The text has at most two blocks and 2,000 characters:
    has passed ends with `(review date passed)`.
 2. `Notes, not instructions`: up to 3 newest decisions agents wrote in the
    project scope that you have not confirmed, one line each, framed as data.
-   The "agent notes not reviewed" line follows when notes wait for review.
+   The "agent notes not reviewed" line follows when notes wait for review. The
+   handoff of the last session (see "Handoff of the last session") comes last
+   in this block.
 
 `personal` notes and notes of other projects never appear. Notes that are
 deleted, retracted or superseded are left out, as in search. Titles are cut at
@@ -1087,6 +1095,35 @@ folder, restart the client so the server starts again. A value that starts with
 
 This flag is for the stdio server. `mora mcp serve-http` does not take it.
 
+### Handoff of the last session
+
+When a Claude Code session ends in a bound folder, the `SessionEnd` hook keeps
+your last five requests from that session. The next session in that folder sees
+them at the end of the project brief:
+
+```
+Recent requests in this folder, outcomes unknown (2026-11-09, claude-code):
+- "fix the parser"
+```
+
+- What is stored: only what you typed, never a reply or a tool result. Each
+  request must pass the same credential and agent-aimed text checks Mora runs
+  on agent writes; a request that fails is dropped whole. Line breaks become
+  spaces and each request is cut to 120 characters. Mora makes no model call.
+  The check catches only known phrasings, so a request can still carry words
+  that read like an order. The next session shows the requests as quoted data
+  under the same "not instructions" framing as agent notes, never as rules.
+  Only transcript lines whose own folder is inside the bound folder count, and
+  the transcript must be a `.jsonl` file under `~/.claude/projects`.
+- Where: `handoff/<scope>.json` in the state dir, one file per bound project,
+  mode 0600. Each session end replaces it, so it holds the latest session only.
+  A session with no usable request removes it.
+- Limits: a handoff older than 14 days is not shown. It is the first thing the
+  brief drops when space is short, and it never changes the note ids the brief
+  reports.
+- Delete it: remove that file (`rm "<state dir>/handoff/project_NAME.json"`).
+  `mora project unbind` and `mora hook uninstall` leave it in place.
+
 ### Claude Code hooks
 
 ```bash
@@ -1095,10 +1132,19 @@ mora hook status
 mora hook status --json
 ```
 
-The installer adds two commands to `~/.claude/settings.json`:
+The installer adds three commands to `~/.claude/settings.json`:
 
-- `SessionStart` adds the current brief when a session begins.
+- `SessionStart` adds the current brief when a session begins. In a bound
+  folder it adds that project's brief.
 - `UserPromptSubmit` adds up to three short related memories for a prompt.
+- `SessionEnd` keeps your last requests of the session in a bound folder (see
+  "Handoff of the last session"). It writes nothing to the session.
+
+In the global install, `SessionStart` and `SessionEnd` check the folder Claude
+runs in: a bound folder gets its project brief and its handoff, any other
+folder gets the daily brief and no handoff. `UserPromptSubmit` recall follows the
+folder too (see "Which notes appear on their own"). Run `mora hook install` again to add a missing one; it never adds a
+second copy.
 
 Mora keeps other valid settings and hooks. It refuses to change an unreadable
 or invalid JSON settings file. Remove only Mora's managed hooks with:
@@ -1107,8 +1153,11 @@ or invalid JSON settings file. Remove only Mora's managed hooks with:
 mora hook uninstall
 ```
 
-`mora hook status --json` emits the `mora.hook.status` v1 receipt. Its
-`harnesses` field is always an array, including when no hook is installed.
+`mora hook status` lists the three hooks as `installed` or `not installed`
+and names the project the current folder is bound to. `mora hook status --json`
+emits the `mora.hook.status` v1 receipt. Its `harnesses` field is always an
+array, including when no hook is installed. It also carries `global` and
+`project` (each with the three hooks) and `bound_scope`.
 
 For one project's corrections, run from its root directory:
 
@@ -1120,9 +1169,16 @@ mora write --scope project:my-app --type decision --title "Use pnpm" \
 ```
 
 Project installation writes only `.claude/settings.local.json`. It installs
-`UserPromptSubmit` recall for that exact memory scope and omits `SessionStart`,
-whose brief is global. It binds the installation directory explicitly instead
-of guessing a scope from a folder name. The hook checks Claude's `cwd` on every
+`UserPromptSubmit` recall for that project's scope and `global`, plus `SessionStart` and
+`SessionEnd`. All three commands carry `--project-dir`: they act only when
+Claude's `cwd` is inside that folder and the folder is still bound, and they do
+nothing otherwise (never the daily brief). It binds the installation directory
+explicitly instead of guessing a scope from a folder name. When the global
+hooks are already installed, the command only records the binding and prints
+`global Mora hooks already serve this folder; binding recorded`; it writes no
+project hooks and removes any Mora hooks left in this folder's local settings
+(other hooks stay). An older project install that has only recall gains the two
+missing hooks when you run the command again. The hook checks Claude's `cwd` on every
 prompt: the root and its subdirectories are allowed; missing, relative,
 unresolvable, or outside paths inject nothing. Symlinks are resolved before
 checking containment. Use a different scope name for each project.
@@ -1135,24 +1191,62 @@ commands from the main checkout root: Claude may use the root local settings fil
 even when started below it. No alternate or main-checkout settings are changed
 on refusal. See the [Claude settings location rules](https://code.claude.com/docs/en/settings#where-claude-code-keeps-the-local-file-in-a-git-repository).
 
-The installer refuses if it finds managed global Mora hooks; remove those with
-`mora hook uninstall` first. It also refuses managed hooks in the project's
-`.claude/settings.json`, or existing local managed hooks outside
-`UserPromptSubmit` recall. Multiple managed local recall entries are refused
-without writing; remove duplicates explicitly before retrying. Other settings
+The installer refuses managed hooks in the project's `.claude/settings.json`,
+and existing local managed hooks other than one each of the three above.
+Duplicate managed entries are refused without writing; remove them explicitly
+before retrying. Other settings
 and hooks are preserved. From the same project root, remove the local
 Mora hook with `mora hook uninstall --project`.
 
 The binding is a directory subtree, not a repository identity: nested
 repositories inside it are included. Moving or renaming the installed root stops
-new recall until you reinstall there. Global hooks added after project setup can
-reintroduce broad context; this installer does not monitor future settings edits.
+new recall until you reinstall there. A global recall hook added after project
+setup follows the folder's binding, as described in the next section.
+`mora hook uninstall` and `mora hook uninstall --project` remove every
+Mora-managed hook of that level and nothing else in the file.
 
-The plain `mora hook install` remains global and reads across scopes. Project
-hooks filter automatic recall only: MCP reads still use their existing scope
-arguments, other hooks may inject context, and previously read context remains
-in an agent's session. This installer supports Claude Code; Codex can use MCP
+The plain `mora hook install` is global, but its recall also follows the folder
+binding. Project hooks filter automatic recall only: MCP reads still use their
+existing scope arguments, other hooks may inject context, and previously read
+context remains in an agent's session. This installer supports Claude Code; Codex can use MCP
 but has no automatic Mora hook route.
+
+### Which notes appear on their own
+
+Two hooks hand notes to an agent without being asked: recall on each prompt, and
+the brief at session start. Both follow the folder the session runs in:
+
+| Where the session runs | Notes that appear on their own |
+| --- | --- |
+| In a folder bound to `project:X` | `project:X` and `global` |
+| In a folder bound with `--owner-only` | `project:X`, `global` and `personal` in recall. The project brief never shows `personal` notes. |
+| In a folder with no binding | every scope except `project:*` (so `global`, `personal` and any other) |
+
+The binding of the folder the hook runs in decides, and the deepest binding wins:
+an owner-only parent gives no `personal` notes inside a nested binding that is not
+owner-only. `mora hook install --project --scope project:X` is used only when
+the folder is inside its install directory and has no binding (an install older
+than bindings): then `project:X` and `global`, never `personal`. Rebinding the
+directory takes effect without a reinstall. If `projects.json` exists and cannot
+be read, recall gives nothing and writes nothing, whatever the folder is. An
+empty or relative folder counts as unbound. Notes nobody has confirmed stay out
+of recall, as before.
+
+In a folder with a binding, the health banner is replaced by one fixed line,
+`Mora: memory health needs attention. Run "mora doctor".`, shown only when the
+detailed banner would not be empty, so a source error of another project cannot
+leak. Folders without a binding keep the detailed banner.
+
+The scope limit is applied inside every search arm before ranking, so a note of
+another project is never fetched and cannot push a matching note out of the
+result. At session start in a folder with no binding, the daily brief leaves out
+every record whose scope starts with `project:`, whatever its origin (authored
+notes, mail, messages, calendar). Records in other scopes are unchanged. That
+brief is built fresh each time, because the saved daily brief can hold project
+records. `mora brief` typed in your own terminal is unchanged.
+
+A deliberate search is not limited by any of this: `mora search`, `search_memory`
+and `context_memory` still find other projects' notes.
 
 ### What Mora gave an agent
 

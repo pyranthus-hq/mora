@@ -394,8 +394,8 @@ Project hook commands reject `CLAUDE_CONFIG_DIR`, linked worktrees, and symlinke
 Claude settings. In a Git repository, run them from the main checkout root.
 Duplicate managed local hooks are refused without writing. The binding covers the
 directory subtree, including nested repositories; moving the root requires a new
-installation. Adding global hooks later can reintroduce context from other scopes.
-The plain global install still reads across scopes. These hook settings do not
+installation. A global hook added later follows the folder's binding: a project's notes appear
+on their own only in that project's folder. These hook settings do not
 restrict MCP tools or memories an agent has already read.
 
 To bind any folder to a project scope without a hook, run
