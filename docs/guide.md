@@ -2073,6 +2073,18 @@ mora config embedder ollama
 Mora uses `nomic-embed-text` by default. It accepts only a loopback Ollama URL.
 If Ollama is not available, Mora warns and falls back to the static route.
 
+### Written decisions rank above long files
+
+After either route has ranked its matches, Mora moves a note that someone wrote
+a few places up the list. A correction moves up to 4 places, a decision up to
+3, and a fact or insight 1. A note you confirmed in `mora review` moves 2 more.
+A note nobody has confirmed moves 2 places down, so an equal confirmed note
+comes first. A source file or connector record does not move. This stops a
+short decision from sitting behind long files that only repeat its words. The
+reorder changes no score and drops no row. A weak decision far down the list
+still stays behind a strong match, and Mora does not claim this makes search
+more accurate.
+
 ### Entity graph
 
 Mora builds people from connector metadata such as sender, recipient,
