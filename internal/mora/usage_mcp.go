@@ -86,6 +86,9 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 			proposedBy = profile.Name
 		}
 		inv.value, inv.err = stageMCPWriteProposalHeld(cfg, args, proposedBy, nil)
+		if inv.err == nil && !profiled {
+			inv.value = approveHeldWriteByPopup(traced, cfg, inv.value)
+		}
 		policyHandled = true
 		proposed = true
 	case mcppkg.ActionTentative:

@@ -303,6 +303,13 @@ func resolve(ctx context.Context, cfg Config, injected bool) (Config, error) {
 				return cfg, e
 			}
 			cfg.MCPWritePolicy = p
+		case "mcp_approval_popup":
+			switch val {
+			case "true", "false":
+				cfg.MCPApprovalPopupOff = val == "false"
+			default:
+				return cfg, fmt.Errorf("invalid mcp_approval_popup %q (want true or false)", val)
+			}
 		case "update_policy":
 			p, e := ParseUpdatePolicy(val)
 			if e != nil {
