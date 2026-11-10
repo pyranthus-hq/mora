@@ -498,3 +498,31 @@ func TestOwnerDecisionStatusIsOneFieldForEveryReader(t *testing.T) {
 		t.Fatalf("past review date: %q", got)
 	}
 }
+
+// Only a complete line counts: "y" then EOF must not be taken as yes.
+func TestMineAcceptsYesOnlyAsACompleteLine(t *testing.T) {
+	cfg := reviewSetup(t)
+	clearAgentEnv(t)
+	reviewTerminal(t)
+
+	for _, in := range []string{"y", "yes", "", "\n", "maybe\n"} {
+		before := len(mineTitles(t))
+		if _, _, err := mineRun(t, strings.NewReader(in), mineArgs("write", "--mine")...); err == nil {
+			t.Fatalf("write --mine with %q: want non-zero result", in)
+		}
+		if after := len(mineTitles(t)); after != before {
+			t.Fatalf("write --mine with %q saved a note", in)
+		}
+		id := minePlain(t, "--title", "Plain "+strings.TrimSpace(in)+"x")
+		if _, _, err := mineRun(t, strings.NewReader(in), "confirm", id, "--mine"); err == nil || mineSaved(t, cfg, id) {
+			t.Fatalf("confirm --mine with %q: want not confirmed", in)
+		}
+	}
+	if _, _, err := mineRun(t, strings.NewReader("yes\n"), mineArgs("write", "--mine")...); err != nil {
+		t.Fatalf("write --mine yes\\n: %v", err)
+	}
+	id := minePlain(t, "--title", "Plain ok")
+	if _, _, err := mineRun(t, strings.NewReader("yes\n"), "confirm", id, "--mine"); err != nil || !mineSaved(t, cfg, id) {
+		t.Fatalf("confirm --mine yes\\n: %v", err)
+	}
+}

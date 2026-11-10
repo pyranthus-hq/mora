@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -152,8 +153,14 @@ func askOwner(stderr io.Writer, stdin io.Reader, m Memory, question string) bool
 		fmt.Fprintf(stderr, "%s: %s\n", f[0], rulesShow(f[1]))
 	}
 	fmt.Fprintf(stderr, "%s [y/N] ", question)
-	answer := strings.ToLower(strings.TrimSpace(rulesReadConfirm(stdin)))
+	// Not rulesReadConfirm: that one drops the read error, so "y" then EOF
+	// would count as yes. Only a complete line, ending in a newline, counts.
+	line, err := bufio.NewReader(stdin).ReadString('\n')
 	fmt.Fprintln(stderr)
+	if err != nil || !strings.HasSuffix(line, "\n") {
+		return false
+	}
+	answer := strings.ToLower(strings.TrimSpace(line))
 	return answer == "y" || answer == "yes"
 }
 
