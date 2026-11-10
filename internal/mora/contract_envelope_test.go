@@ -70,6 +70,7 @@ var contractEnvelopeNonExecutable = map[string]string{
 	"delete":                  "destructive memory mutation",
 	"undo":                    "destructive memory mutation",
 	"confirm":                 "memory trust mutation",
+	"review":                  "interactive memory trust mutation",
 	"forget":                  "destructive governance mutation",
 	"unforget":                "governance mutation",
 	"disconnect google":       "revokes a real Google credential",
