@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
+	"github.com/pyranthus-hq/mora/internal/memory"
 	"io"
 	"os"
 	"sort"
@@ -227,6 +228,9 @@ func teachMemory(ctx context.Context, args []string, stdout io.Writer) error {
 	if *id == "" {
 		return errors.New("--id is required")
 	}
+	if err := refuseOwnerConfirmedTags(genericutil.SplitCSV(*tags)); err != nil {
+		return err
+	}
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
@@ -289,9 +293,14 @@ func teachMemory(ctx context.Context, args []string, stdout io.Writer) error {
 				Type:      original.Type,
 				Title:     *title,
 				Text:      *text,
-				Tags:      append([]string(nil), original.Tags...),
 				Source:    original.Source,
 				CreatedAt: nowRFC3339(),
+			}
+			// The owner confirmed the original, not this revision.
+			for _, tag := range original.Tags {
+				if !strings.HasPrefix(tag, memory.OwnerConfirmedTagPrefix) {
+					replacement.Tags = append(replacement.Tags, tag)
+				}
 			}
 			if *scope != "" {
 				replacement.Scope = *scope

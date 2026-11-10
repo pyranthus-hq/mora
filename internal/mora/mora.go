@@ -894,9 +894,18 @@ func createMemory(ctx context.Context, cfg Config, m Memory, opts ...createOptio
 	for _, opt := range opts {
 		opt(&options)
 	}
+	if err := refuseOwnerConfirmedTags(m.Tags); err != nil {
+		return Memory{}, pendingOp{}, err
+	}
 	if options.tentative {
 		m.Tags = append(m.Tags, memory.TentativeTag)
 		m.Trust = memory.TrustTentative
+	}
+	if options.ownerConfirmed {
+		if options.tentative {
+			return Memory{}, pendingOp{}, errors.New("a memory cannot be both tentative and owner-confirmed; nothing was written")
+		}
+		m.Tags = append(m.Tags, memory.OwnerConfirmedTagPrefix+memory.OwnerConfirmedDigest(m))
 	}
 	for attempt := 0; attempt < maxCreateAttempts; attempt++ {
 		if options.explicitID != "" {
@@ -942,8 +951,9 @@ func createMemory(ctx context.Context, cfg Config, m Memory, opts ...createOptio
 // createOptions carries the optional settings of a governed create. The zero
 // value is what every pre-existing caller gets.
 type createOptions struct {
-	explicitID string
-	tentative  bool
+	explicitID     string
+	tentative      bool
+	ownerConfirmed bool
 }
 
 // createOption adjusts one governed create.
@@ -965,6 +975,26 @@ func withExplicitMemoryID(id string) createOption {
 // write_memory argument reaches it.
 func withTentative() createOption {
 	return func(o *createOptions) { o.tentative = true }
+}
+
+// withOwnerConfirmed saves the memory owner-confirmed, with the tag bound to
+// the memory as written. Only the keep action of `mora review` sets it, and
+// only after the proposal arguments matched the ones the owner was shown.
+// (The digest is not compared to the shown one: a decision with no as_of
+// takes the time of the write.)
+func withOwnerConfirmed() createOption {
+	return func(o *createOptions) { o.ownerConfirmed = true }
+}
+
+// refuseOwnerConfirmedTags keeps every caller-supplied tag list away from the
+// prefix only `mora review` may write.
+func refuseOwnerConfirmedTags(tags []string) error {
+	for _, tag := range tags {
+		if strings.HasPrefix(tag, memory.OwnerConfirmedTagPrefix) {
+			return fmt.Errorf("tag %q uses the reserved prefix %s; only keeping a note in `mora review` sets it", tag, memory.OwnerConfirmedTagPrefix)
+		}
+	}
+	return nil
 }
 
 // errMemoryAlreadyExists reports that a create with a PINNED id found the vault

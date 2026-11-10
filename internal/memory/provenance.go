@@ -1,7 +1,11 @@
 package memory
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -153,9 +157,80 @@ func IsTentative(m Memory) bool {
 	return false
 }
 
+// OwnerConfirmedTagPrefix starts the tag the keep action of `mora review` adds
+// in the owner's own terminal. The rest of the tag is OwnerConfirmedDigest of
+// the text the owner saw, so a copied tag or a later edit leaves a tag that
+// counts for nothing. Commands that take tags refuse this prefix.
+const OwnerConfirmedTagPrefix = "mora-owner-confirmed-"
+
+// TrustOwnerConfirmed is the Trust value of a record IsOwnerConfirmed accepts.
+const TrustOwnerConfirmed = "owner-confirmed"
+
+// OwnerConfirmedFields lists, in order, every field of a note that a reader
+// acts on or that its writer chose: what `mora review` shows the owner and
+// what OwnerConfirmedDigest binds. Optional fields appear only when set; each
+// flip condition is its own entry. The text is trimmed because the memory file
+// codec trims it. Left out, because Mora sets them and they cannot govern:
+// the id and path, created_at, tags (trust markers; commands refuse the
+// confirmed prefix), the connector fields an agent memory never has, and the
+// read-time projections (decision status, disposition, corrections).
+func OwnerConfirmedFields(m Memory) [][2]string {
+	f := [][2]string{{"scope", m.Scope}, {"type", m.Type}, {"title", m.Title}}
+	if m.Source != "" {
+		f = append(f, [2]string{"source", m.Source})
+	}
+	if d := m.Decision; d != nil {
+		f = append(f, [2]string{"decision as of", d.AsOf}, [2]string{"decision durability", d.Durability})
+		for _, c := range d.FlipConditions {
+			f = append(f, [2]string{"decision flip condition", c})
+		}
+		if d.ReviewBy != "" {
+			f = append(f, [2]string{"decision review by", d.ReviewBy})
+		}
+		f = append(f, [2]string{"decision complete", strconv.FormatBool(d.Complete)})
+	}
+	// The same canonical JSON line the memory file stores.
+	if meta, _ := CanonicalMeta(m.Meta); meta != "" {
+		f = append(f, [2]string{"meta", meta})
+	}
+	return append(f, [2]string{"text", strings.TrimSpace(m.Text)})
+}
+
+// OwnerConfirmedDigest is the hex SHA-256 of OwnerConfirmedFields. Each label
+// and value is length-prefixed, so no two field lists share an input.
+func OwnerConfirmedDigest(m Memory) string {
+	h := sha256.New()
+	for _, f := range OwnerConfirmedFields(m) {
+		fmt.Fprintf(h, "%d:%s%d:%s,", len(f[0]), f[0], len(f[1]), f[1])
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// IsOwnerConfirmed reports whether the owner kept this exact record: an agent
+// memory in the owner's own vault (not a subscribed share row), not tentative,
+// with a confirmed tag that matches its current content. A stale or copied tag
+// is not an error; it just does not count. deriveTrust checks tentative first,
+// but the tentative check here stays: the context adoption line and the keep's
+// own postcondition call this directly.
+func IsOwnerConfirmed(m Memory) bool {
+	if m.Owner != "" || IsTentative(m) || !strings.HasPrefix(m.ID, "mem_") || DeriveProvenance(m) != ProvenanceAuthored {
+		return false
+	}
+	for _, tag := range m.Tags {
+		// Hash only rows that carry the prefix; most rows on a read surface do not.
+		if strings.HasPrefix(tag, OwnerConfirmedTagPrefix) && tag == OwnerConfirmedTagPrefix+OwnerConfirmedDigest(m) {
+			return true
+		}
+	}
+	return false
+}
+
 func deriveTrust(m Memory) string {
 	if IsTentative(m) {
 		return TrustTentative
+	}
+	if IsOwnerConfirmed(m) {
+		return TrustOwnerConfirmed
 	}
 	return ""
 }

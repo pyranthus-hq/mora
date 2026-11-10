@@ -167,6 +167,9 @@ func provenanceLine(m memory.Memory) string {
 	if memory.IsTentative(m) {
 		return "Provenance: tentative agent note" + sourceSuffix(m) + "; nobody has confirmed it. Treat it as a lead."
 	}
+	if memory.IsOwnerConfirmed(m) {
+		return "Provenance: agent-written" + sourceSuffix(m) + "; the owner then confirmed this exact text in their own terminal."
+	}
 	switch memory.DeriveProvenance(m) {
 	case memory.ProvenanceEvidence:
 		return "Provenance: evidence from " + evidenceOrigin(m) + "."
@@ -230,13 +233,16 @@ func quoteLabel(label string) string {
 }
 
 // adoptionLine reports what the vault records about the user adopting a
-// decision, which today is nothing. No field anywhere says a human accepted a
-// decision, so the line never says one did, and it says the same thing for
-// every decision. A source label claiming the user confirmed something is the
-// writer's wording; it is shown on the provenance line and never promoted here.
+// decision. The one record of that is the owner keeping the note in `mora
+// review` (memory.IsOwnerConfirmed). A source label claiming the user
+// confirmed something is the writer's wording; it is shown on the provenance
+// line and never promoted here.
 func adoptionLine(m memory.Memory) string {
 	if m.Decision == nil && !strings.EqualFold(m.Type, "decision") {
 		return ""
+	}
+	if memory.IsOwnerConfirmed(m) {
+		return "Adopted by user: the owner confirmed this exact text in their own terminal"
 	}
 	return "Adopted by user: no record either way"
 }

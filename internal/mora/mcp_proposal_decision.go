@@ -102,7 +102,9 @@ func decideMCPWriteProposal(ctx context.Context, cfg Config, id, action string) 
 	return decideMCPWriteProposalVia(ctx, cfg, id, action, "", "")
 }
 
-func decideMCPWriteProposalVia(ctx context.Context, cfg Config, id, action, via, wantArgsSHA256 string) (string, error) {
+// opts reach the governed create of an approval; the review walk passes
+// withOwnerConfirmed there.
+func decideMCPWriteProposalVia(ctx context.Context, cfg Config, id, action, via, wantArgsSHA256 string, opts ...createOption) (string, error) {
 	if via != "" && via != "popup" {
 		return "", errors.New("invalid proposal decision via")
 	}
@@ -187,7 +189,7 @@ func decideMCPWriteProposalVia(ctx context.Context, cfg Config, id, action, via,
 			if via == "popup" {
 				caller += "/popup"
 			}
-			result, err := mcpWriteMemoryWith(withAgentCaller(ctx, caller), cfg, p.Arguments, withExplicitMemoryID(memoryID))
+			result, err := mcpWriteMemoryWith(withAgentCaller(ctx, caller), cfg, p.Arguments, append([]createOption{withExplicitMemoryID(memoryID)}, opts...)...)
 			if err != nil {
 				return fmt.Errorf("proposal decision remains unresolved for memory %s; do not retry approval: %w", memoryID, err)
 			}

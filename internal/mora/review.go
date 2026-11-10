@@ -37,6 +37,12 @@ type reviewNote struct {
 	Digest  string
 	// SHA is the content hash of the memory file the owner saw (saved notes).
 	SHA string
+	// Confirm is memory.OwnerConfirmedDigest of the shown note; keep binds the
+	// owner-confirmed tag to it.
+	Confirm string
+	// Fields is memory.OwnerConfirmedFields as printed: every field the digest
+	// binds. SHA (saved) or Digest (held) covers them in same.
+	Fields [][2]string
 }
 
 type reviewRow struct {
@@ -54,7 +60,7 @@ type reviewReceipt struct {
 // same reports whether the owner would still see what was printed.
 func (n reviewNote) same(o reviewNote) bool {
 	return n.Kind == o.Kind && n.ID == o.ID && n.Scope == o.Scope && n.Type == o.Type &&
-		n.Title == o.Title && n.Text == o.Text && n.Digest == o.Digest && n.SHA == o.SHA
+		n.Title == o.Title && n.Text == o.Text && n.Digest == o.Digest && n.SHA == o.SHA && n.Confirm == o.Confirm
 }
 
 // reviewTitle is the complete title, never cut or normalized, so what the
@@ -72,11 +78,13 @@ func reviewTitle(m Memory) string {
 }
 
 func reviewNoteFromMemory(m Memory) reviewNote {
-	return reviewNote{Kind: reviewKindSaved, ID: m.ID, Scope: m.Scope, Type: m.Type, Title: reviewTitle(m), Text: m.Text}
+	return reviewNote{Kind: reviewKindSaved, ID: m.ID, Scope: m.Scope, Type: m.Type, Title: reviewTitle(m), Text: m.Text, Confirm: memory.OwnerConfirmedDigest(m), Fields: memory.OwnerConfirmedFields(m)}
 }
 
 func reviewNoteFromProposal(p mcpWriteProposal) (reviewNote, error) {
-	m, err := mcpMemoryFromArgs(p.Arguments, time.Now())
+	// A fixed clock keeps the note the same between print and keep; the only
+	// field the clock reaches is a missing as_of, named as such below.
+	m, err := mcpMemoryFromArgs(p.Arguments, time.Time{})
 	if err != nil {
 		return reviewNote{}, err
 	}
@@ -86,6 +94,13 @@ func reviewNoteFromProposal(p mcpWriteProposal) (reviewNote, error) {
 	}
 	n := reviewNoteFromMemory(m)
 	n.Kind, n.ID, n.Reasons, n.Digest = reviewKindHeld, p.ID, tentativeHoldReasons(m), digest
+	if strArg(p.Arguments, "as_of", "") == "" {
+		for i := range n.Fields {
+			if n.Fields[i][0] == "decision as of" {
+				n.Fields[i][1] = "the time you keep it"
+			}
+		}
+	}
 	return n, nil
 }
 
@@ -182,6 +197,13 @@ func reviewShowText(s string) string {
 func printReviewNote(w io.Writer, n reviewNote) {
 	fmt.Fprintf(w, "\n%s %s\n", n.Kind, rulesShow(n.ID))
 	fmt.Fprintf(w, "scope: %s\ntype: %s\ntitle: %s\n", rulesShow(n.Scope), rulesShow(n.Type), rulesShow(n.Title))
+	for _, f := range n.Fields {
+		switch f[0] {
+		case "scope", "type", "title", "text": // printed in their own places
+		default:
+			fmt.Fprintf(w, "%s: %s\n", f[0], rulesShow(f[1]))
+		}
+	}
 	if len(n.Reasons) > 0 {
 		reasons := make([]string, len(n.Reasons))
 		for i, r := range n.Reasons {
@@ -200,11 +222,11 @@ func reviewAct(ctx context.Context, cfg Config, n reviewNote, keep bool, stdout,
 	id := rulesShow(n.ID)
 	switch {
 	case n.Kind == reviewKindSaved && keep:
-		m, _, err := confirmMemory(ctx, cfg, n.ID, n.SHA, warn)
+		m, _, err := confirmMemory(ctx, cfg, n.ID, n.SHA, n.Confirm, warn)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(stdout, "confirmed %s (%s)\n", rulesShow(m.ID), rulesShow(n.Title))
+		fmt.Fprintf(stdout, "owner-confirmed %s (%s)\n", rulesShow(m.ID), rulesShow(n.Title))
 		return nil
 	case n.Kind == reviewKindSaved:
 		m, err := findMemory(cfg, n.ID)
@@ -223,16 +245,23 @@ func reviewAct(ctx context.Context, cfg Config, n reviewNote, keep bool, stdout,
 		}
 		return nil
 	}
-	action := "reject"
+	action, opts := "reject", []createOption(nil)
 	if keep {
-		action = "approve"
+		action, opts = "approve", []createOption{withOwnerConfirmed()}
 	}
-	memoryID, err := decideMCPWriteProposalVia(ctx, cfg, n.ID, action, "", n.Digest)
+	memoryID, err := decideMCPWriteProposalVia(ctx, cfg, n.ID, action, "", n.Digest, opts...)
 	if err != nil {
 		return err
 	}
 	if keep {
-		fmt.Fprintf(stdout, "Approved %s as memory %s.\n", id, rulesShow(memoryID))
+		fmt.Fprintf(stdout, "Approved %s as owner-confirmed memory %s.\n", id, rulesShow(memoryID))
+		m, err := findMemory(cfg, memoryID)
+		if err == nil {
+			err = appendAgentWriteLog(cfg, time.Now(), "owner-confirm", m, "cli")
+		}
+		if err != nil {
+			fmt.Fprintf(warn, "warning: memory %s is owner-confirmed, but %s could not be appended: %v\n", memoryID, agentWriteLogName, err)
+		}
 	} else {
 		fmt.Fprintf(stdout, "Rejected %s.\n", id)
 	}
