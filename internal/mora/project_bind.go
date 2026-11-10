@@ -16,12 +16,15 @@ import (
 	"github.com/pyranthus-hq/mora/internal/memoryfile"
 )
 
-const projectUsage = "usage: mora project bind [--scope project:NAME] [DIR] | unbind [DIR] | list [--json] | which [DIR] [--json]"
+const projectUsage = "usage: mora project bind [--scope project:NAME] [--owner-only] [DIR] | unbind [DIR] | list [--json] | which [DIR] [--json]"
 
 // projectBinding ties one resolved directory to one project scope.
 type projectBinding struct {
 	Dir   string `json:"dir"`
 	Scope string `json:"scope"`
+	// OwnerOnly lets personal notes appear on their own in this folder's
+	// sessions. Absent in an old file, so it loads as false.
+	OwnerOnly bool `json:"owner_only,omitempty"`
 }
 
 type projectBindingFile struct {
@@ -79,6 +82,12 @@ func resolveProjectDir(dir string) (string, error) {
 
 // bindProjectDir stores dir -> scope and reports the scope it replaced, if any.
 func bindProjectDir(ctx context.Context, dir, scope string) (resolved, replaced string, err error) {
+	return bindProjectDirOwner(ctx, dir, scope, false)
+}
+
+// bindProjectDirOwner is bindProjectDir with the owner_only flag. A rebind
+// replaces the whole record, so a bind without the flag clears it.
+func bindProjectDirOwner(ctx context.Context, dir, scope string, ownerOnly bool) (resolved, replaced string, err error) {
 	if err := validProjectScope(scope); err != nil {
 		return "", "", err
 	}
@@ -104,7 +113,7 @@ func bindProjectDir(ctx context.Context, dir, scope string) (resolved, replaced 
 		}
 		out = append(out, b)
 	}
-	out = append(out, projectBinding{Dir: resolved, Scope: scope})
+	out = append(out, projectBinding{Dir: resolved, Scope: scope, OwnerOnly: ownerOnly})
 	sort.Slice(out, func(i, j int) bool { return out[i].Dir < out[j].Dir })
 	return resolved, replaced, saveProjectBindings(cfg, out)
 }
@@ -147,25 +156,31 @@ func resolveExisting(path string) (string, bool) {
 // identity. It never guesses from a folder name, and it fails closed: an
 // unreadable or invalid store gives found=false with an error.
 func lookupProject(cfg Config, dir string) (scope, root string, found bool, err error) {
+	b, found, err := lookupProjectBinding(cfg, dir)
+	return b.Scope, b.Dir, found, err
+}
+
+// lookupProjectBinding is lookupProject returning the whole binding record.
+func lookupProjectBinding(cfg Config, dir string) (projectBinding, bool, error) {
 	bindings, err := loadProjectBindings(cfg)
 	if err != nil {
-		return "", "", false, err
+		return projectBinding{}, false, err
 	}
 	cur, ok := resolveExisting(dir)
 	if !ok {
-		return "", "", false, nil
+		return projectBinding{}, false, nil
 	}
 	for {
 		if info, serr := os.Stat(cur); serr == nil {
 			for _, b := range bindings {
 				if bi, berr := os.Stat(b.Dir); berr == nil && os.SameFile(info, bi) {
-					return b.Scope, b.Dir, true, nil
+					return b, true, nil
 				}
 			}
 		}
 		parent := filepath.Dir(cur)
 		if parent == cur {
-			return "", "", false, nil
+			return projectBinding{}, false, nil
 		}
 		cur = parent
 	}
@@ -184,10 +199,11 @@ func cmdProject(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	fs.SetOutput(io.Discard)
 	scope := fs.String("scope", "", "project scope, project:NAME")
 	jsonOut := fs.Bool("json", false, "emit JSON")
+	ownerOnly := fs.Bool("owner-only", false, "let personal notes appear on their own in this folder")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	if fs.NArg() > 1 || (*scope != "" && args[0] != "bind") || (*jsonOut && args[0] != "list" && args[0] != "which") {
+	if fs.NArg() > 1 || (*scope != "" && args[0] != "bind") || (*ownerOnly && args[0] != "bind") || (*jsonOut && args[0] != "list" && args[0] != "which") {
 		return errors.New(projectUsage)
 	}
 	dir := "."
@@ -214,15 +230,19 @@ func cmdProject(ctx context.Context, args []string, stdout, stderr io.Writer) er
 				return fmt.Errorf("cannot derive a scope from folder name %q: pass --scope project:NAME", filepath.Base(resolved))
 			}
 		}
-		resolved, replaced, err := bindProjectDir(ctx, dir, s)
+		resolved, replaced, err := bindProjectDirOwner(ctx, dir, s, *ownerOnly)
 		if err != nil {
 			return err
 		}
+		note := ""
+		if *ownerOnly {
+			note = " (owner-only)"
+		}
 		if replaced != "" && replaced != s {
-			fmt.Fprintf(stdout, "%s -> %s (replaced %s)\n", resolved, s, replaced)
+			fmt.Fprintf(stdout, "%s -> %s%s (replaced %s)\n", resolved, s, note, replaced)
 			return nil
 		}
-		fmt.Fprintf(stdout, "%s -> %s\n", resolved, s)
+		fmt.Fprintf(stdout, "%s -> %s%s\n", resolved, s, note)
 		return nil
 	case "unbind":
 		resolved, err := resolveProjectDir(dir)
@@ -259,11 +279,11 @@ func cmdProject(ctx context.Context, args []string, stdout, stderr io.Writer) er
 			return json.NewEncoder(stdout).Encode(bindings)
 		}
 		for _, b := range bindings {
-			fmt.Fprintf(stdout, "%s\t%s\n", b.Dir, b.Scope)
+			fmt.Fprintf(stdout, "%s\t%s%s\n", b.Dir, b.Scope, ownerOnlyColumn(b))
 		}
 		return nil
 	case "which":
-		s, root, found, err := lookupProject(cfg, dir)
+		b, found, err := lookupProjectBinding(cfg, dir)
 		if err != nil {
 			return err
 		}
@@ -274,10 +294,19 @@ func cmdProject(ctx context.Context, args []string, stdout, stderr io.Writer) er
 			return errors.New("no project")
 		}
 		if *jsonOut {
-			return json.NewEncoder(stdout).Encode(projectBinding{Dir: root, Scope: s})
+			return json.NewEncoder(stdout).Encode(b)
 		}
-		fmt.Fprintf(stdout, "%s\t%s\n", s, root)
+		fmt.Fprintf(stdout, "%s\t%s%s\n", b.Scope, b.Dir, ownerOnlyColumn(b))
 		return nil
 	}
 	return errors.New(projectUsage)
+}
+
+// ownerOnlyColumn is the extra text column list and which print for an
+// owner-only binding. Other bindings print exactly as before.
+func ownerOnlyColumn(b projectBinding) string {
+	if b.OwnerOnly {
+		return "\towner-only"
+	}
+	return ""
 }
