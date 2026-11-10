@@ -238,9 +238,7 @@ func TestProjectBindInvalidStoreFailsClosed(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(entry, "%s") {
-			entry = strings.Replace(entry, "%s", filepath.Join(w, "a"), 1)
-		}
+		entry = strings.Replace(entry, "%s", filepath.Join(w, "a"), 1)
 		if err := os.MkdirAll(cfg.ConfigDir, 0o700); err != nil {
 			t.Fatal(err)
 		}
