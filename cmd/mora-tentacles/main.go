@@ -116,6 +116,12 @@ func run(args []string) error {
 		}
 		return syncShares(*j)
 	}
+	if len(args) == 1 && args[0] == "review-list" {
+		return reviewList()
+	}
+	if len(args) > 0 && args[0] == "review-act" {
+		return reviewAct(args[1:])
+	}
 	if len(args) > 0 && args[0] == "probe" {
 		f := flag.NewFlagSet("probe", flag.ContinueOnError)
 		p := f.String("profile", "", "")

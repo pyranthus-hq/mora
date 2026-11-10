@@ -64,7 +64,7 @@ final class StatusModel: ObservableObject {
     @Published var detailText = "No collector output yet."
 
     private var timer: Timer?
-    private let collector: URL
+    let collector: URL
     private let preview: Bool
 
     init(preview: Bool = false) {
@@ -101,10 +101,10 @@ final class StatusModel: ObservableObject {
         }
     }
 
-    nonisolated private static func runCollector(_ url: URL) throws -> (output: String, error: String, status: Int32) {
+    nonisolated static func runCollector(_ url: URL, arguments: [String]? = nil) throws -> (output: String, error: String, status: Int32) {
         let process = Process()
         process.executableURL = url
-        process.arguments = ["--config", NSString(string: "~/.config/mora-tentacles/config.json").expandingTildeInPath]
+        process.arguments = arguments ?? ["--config", NSString(string: "~/.config/mora-tentacles/config.json").expandingTildeInPath]
         // File-backed output avoids a full pipe blocking the collector before exit.
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -171,10 +171,16 @@ struct StatusPanel: View {
             }
 
             if let text = model.snapshot?.review?.rowText {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(text).font(.system(size: 12))
-                    Text("Run mora review in a terminal.").font(.system(size: 11)).foregroundStyle(.secondary)
+                Button {
+                    ReviewWindowController.shared.show(collector: model.collector, preview: isPreview) { Task { await model.refresh() } }
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(text).font(.system(size: 12))
+                        Text("Click to review.").font(.system(size: 11)).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityHint("Open the agent notes that wait for review")
             }
 
             if let given = model.snapshot?.given, let text = given.rowText(now: Date(), timeZone: .current) {

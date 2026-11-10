@@ -2,7 +2,8 @@
 
 Standalone native macOS 13+ menu bar companion. It probes through the bundled
 `mora-tentacles` collector and displays connection reachability separately from
-each sync channel's reported state. It never changes sync state.
+each sync channel's reported state. It never changes sync state. The only
+changes it can make are the two review actions described below.
 
 The menu bar, panel, and app icon share a monochrome eye-and-tentacles mark.
 Its native 20×18pt menu image keeps a fixed footprint, including its attention dot.
@@ -43,10 +44,28 @@ For a deterministic UI preview, run the app executable with `--preview`:
 ```
 
 When Mora 0.16.0 or later reports agent notes waiting for the owner, the panel
-shows one row under the headline, such as "3 agent notes to review, 2 held",
-with a hint to run `mora review` in a terminal. The count is information only:
-it does not change the health state or the icon, and no row appears when the
-counts are zero or the doctor report is unavailable.
+shows one row under the headline, such as "3 agent notes to review, 2 held".
+Click the row ("Click to review.") to open one window, "Agent notes to review".
+The count does not change the health state or the icon, and no row appears when
+the counts are zero or the doctor report is unavailable.
+
+The window lists up to 50 notes with their text, shown as plain text (no
+markdown, no links opened). Each note has Keep and Discard. Discard asks once.
+After an action the note leaves the list and the panel count refreshes. A failed
+action shows a short error and keeps the note. The app is unsigned and local.
+The buttons run these four commands through the collector
+(`mora-tentacles review-act <keep|discard> <saved|held> <id>`), one per click,
+with the id as a single argument and no shell:
+
+| Button | Saved note | Held note |
+| --- | --- | --- |
+| Keep | `mora confirm <id>` | `mora mcp proposals approve <id>` |
+| Discard | `mora undo <id>` | `mora mcp proposals reject <id>` |
+
+The list comes from `mora review --list --json`, `mora read <id> --json` and
+`mora mcp proposals show <id>` (`mora-tentacles review-list`). Keep never marks a
+note as your own statement: that stays a terminal action,
+`mora confirm <id> --mine`. The window never edits a note and runs no other command.
 
 When Mora reports `last_given` in its doctor report, the panel shows one row
 under the review row, such as "Last hand-over to an agent: 14:02, 3 notes",
@@ -54,7 +73,8 @@ with the surface in plain words and a hint to run `mora given` in a terminal.
 The row is information only: it does not change the health state or the icon,
 and no row appears when `last_given` is absent or invalid.
 
-Preview mode uses clearly labelled fixture data and does not run the collector.
+Preview mode uses clearly labelled fixture data and does not run the collector;
+its review window shows three fixture notes, and Keep and Discard only remove the card.
 
 ## Checks
 

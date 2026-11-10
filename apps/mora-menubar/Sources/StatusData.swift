@@ -103,6 +103,51 @@ struct ReviewCounts: Decodable {
     }
 }
 
+/// One agent note in the review window. All text is untrusted: show it as plain text only.
+struct ReviewNote: Decodable, Identifiable, Equatable {
+    let id: String
+    let kind: String
+    let scope: String
+    let type: String
+    let title: String
+    let text: String
+
+    /// "Saved, not reviewed · global · insight"
+    var kindLine: String {
+        let kindText: String
+        switch kind {
+        case "saved": kindText = "Saved, not reviewed"
+        case "held": kindText = "Held, not saved yet"
+        default: kindText = "Unknown kind"
+        }
+        return [kindText, scope, type].joined(separator: " · ")
+    }
+}
+
+/// The collector's review-list answer: notes, a count of notes left out, or one error.
+struct ReviewList: Decodable {
+    let notes: [ReviewNote]
+    let more: Int
+    let error: String?
+
+    enum CodingKeys: String, CodingKey { case notes, more, error }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        error = try c.decodeIfPresent(String.self, forKey: .error)
+        notes = try c.decodeIfPresent([ReviewNote].self, forKey: .notes) ?? []
+        more = max(0, try c.decodeIfPresent(Int.self, forKey: .more) ?? 0)
+    }
+
+    static func moreLine(_ more: Int) -> String? { more > 0 ? "\(more) more not shown. Review these first, then refresh." : nil }
+    var moreLine: String? { Self.moreLine(more) }
+}
+
+/// The collector's review-act answer.
+struct ReviewActResult: Decodable {
+    let ok: Bool
+    let error: String?
+}
+
 struct GivenInfo: Decodable {
     let at: String
     let surface: String
