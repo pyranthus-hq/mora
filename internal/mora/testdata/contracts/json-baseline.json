@@ -252,6 +252,10 @@
     "status": "empty"
   },
   {
+    "path": "hook session-end",
+    "status": "empty"
+  },
+  {
     "path": "hook session-start",
     "status": "empty"
   },

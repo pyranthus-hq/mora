@@ -193,8 +193,15 @@ func Install(path, exe string, threshold float64) error {
 	}
 	recall += " " + Marker + ":recall"
 	upsert(groups, "UserPromptSubmit", "recall", Command{Type: "command", Command: recall, Timeout: 10})
+	upsertSessionEnd(groups, exe)
 	settings["hooks"] = groups
 	return Write(path, settings)
+}
+
+// upsertSessionEnd adds or replaces Mora's SessionEnd entry. It decides by cwd
+// at run time, so global and project installs use the same command.
+func upsertSessionEnd(groups map[string][]Group, exe string) {
+	upsert(groups, "SessionEnd", "session-end", Command{Type: "command", Command: shellQuote(exe) + " hook session-end " + Marker + ":session-end", Timeout: 10})
 }
 
 // PreToolSub is the managed marker suffix of the PreToolUse warning hook.
@@ -221,7 +228,8 @@ func InstallPreTool(path, exe string) error {
 	return Write(path, settings)
 }
 
-// InstallProjectRecall omits the unscoped brief and binds recall to one directory.
+// InstallProjectRecall binds recall to one directory and adds the two hooks that
+// decide by cwd (SessionStart, SessionEnd).
 func InstallProjectRecall(path, exe, scope, projectDir string, threshold float64) error {
 	if !filepath.IsAbs(projectDir) || filepath.Clean(path) != filepath.Join(projectDir, ".claude", "settings.local.json") {
 		return errors.New("project recall settings must be in the project directory")
@@ -238,23 +246,28 @@ func InstallProjectRecall(path, exe, scope, projectDir string, threshold float64
 	if settings == nil || groups == nil {
 		return errors.New("project Claude settings and hooks must be JSON objects")
 	}
-	managedRecall := 0
+	// A project install may hold one managed entry per hook, each on its own
+	// event. Anything else managed is refused.
+	allowed := map[string]string{"SessionStart": "session-start", "UserPromptSubmit": "recall", "SessionEnd": "session-end"}
+	seen := map[string]int{}
 	for event, eventGroups := range groups {
 		for _, group := range eventGroups {
 			for _, hook := range group.Hooks {
 				if !strings.Contains(hook.Command, Marker+":") {
 					continue
 				}
-				if event != "UserPromptSubmit" || !strings.Contains(hook.Command, Marker+":recall") {
+				sub, ok := allowed[event]
+				if !ok || !strings.Contains(hook.Command, Marker+":"+sub) {
 					return errors.New("remove other managed Mora hooks before installing project recall")
 				}
-				managedRecall++
+				if seen[sub]++; seen[sub] > 1 {
+					return errors.New("remove duplicate managed Mora " + sub + " hooks before installing project recall")
+				}
 			}
 		}
 	}
-	if managedRecall > 1 {
-		return errors.New("remove duplicate managed Mora recall hooks before installing project recall")
-	}
+	upsert(groups, "SessionStart", "session-start", Command{Type: "command", Command: shellQuote(exe) + " hook session-start " + Marker + ":session-start", Timeout: 15})
+	upsertSessionEnd(groups, exe)
 	recall := shellQuote(exe) + " hook recall --scope " + shellQuote(scope) + " --project-dir " + shellQuote(projectDir)
 	if threshold != 0 {
 		recall += " --threshold " + strconv.FormatFloat(threshold, 'g', -1, 64)
@@ -390,6 +403,18 @@ func Status(path string) (string, string, error) {
 		return "not installed"
 	}
 	return status("SessionStart", "session-start"), status("UserPromptSubmit", "recall"), nil
+}
+
+// StatusEnd reports "installed" or "not installed" for the SessionEnd hook.
+func StatusEnd(path string) (string, error) {
+	_, groups, err := Load(path)
+	if err != nil {
+		return "", err
+	}
+	if find(groups["SessionEnd"], "session-end") >= 0 {
+		return "installed", nil
+	}
+	return "not installed", nil
 }
 
 // shellQuote makes an executable path one literal POSIX shell word.

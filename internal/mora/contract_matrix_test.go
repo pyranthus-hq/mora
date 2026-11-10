@@ -280,6 +280,7 @@ var contractMatrixDashLedIgnored = map[string]string{
 	// envelope, and changing their argument handling risks the hook contract for
 	// a benefit Mora does not own. Deliberately untouched.
 	"hook session-start": "emits Claude Code's foreign hook envelope; its argument contract is not ours",
+	"hook session-end":   "reads Claude Code's foreign hook input and must always exit 0; its argument contract is not ours",
 	"hook recall":        "emits Claude Code's foreign hook envelope; its argument contract is not ours",
 	"hook pre-tool-use":  "emits Claude Code's foreign hook envelope and must always exit 0, so it ignores every argument",
 

@@ -38,8 +38,10 @@ func TestHookProjectInstallLifecycle(t *testing.T) {
 			t.Fatalf("project settings missing %q: %s", want, body)
 		}
 	}
-	if strings.Contains(string(body), "session-start") || strings.Count(string(body), hookMarker+":recall") != 1 {
-		t.Fatalf("project install must contain one recall and no global brief: %s", body)
+	for _, sub := range []string{"recall", "session-start", "session-end"} {
+		if strings.Count(string(body), hookMarker+":"+sub) != 1 {
+			t.Fatalf("project install must contain one %s hook: %s", sub, body)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(home, ".claude", "settings.json")); !os.IsNotExist(err) {
 		t.Fatalf("project install touched global settings: %v", err)
@@ -51,7 +53,7 @@ func TestHookProjectInstallLifecycle(t *testing.T) {
 	}
 	if payload.Path != local || !payload.Installed || len(payload.Harnesses) != 1 ||
 		payload.Harnesses[0].Name != "claude" || !payload.Harnesses[0].Installed ||
-		len(payload.Harnesses[0].Events) != 1 || payload.Harnesses[0].Events[0] != "UserPromptSubmit" {
+		len(payload.Harnesses[0].Events) != 3 {
 		t.Fatalf("wrong project status: %s", status)
 	}
 	run(t, "hook", "uninstall", "--project")
@@ -61,18 +63,24 @@ func TestHookProjectInstallLifecycle(t *testing.T) {
 	}
 }
 
-func TestHookProjectInstallRefusesGlobalHooks(t *testing.T) {
+func TestHookProjectInstallKeepsToGlobalHooks(t *testing.T) {
 	withTempHookHome(t)
 	project := t.TempDir()
 	t.Chdir(project)
 	run(t, "hook", "install")
-	var out bytes.Buffer
-	err := cmdHook(testCtx(t), []string{"install", "--project", "--scope", "project:demo"}, &out, testStderr, strings.NewReader(""))
-	if err == nil || !strings.Contains(err.Error(), "mora hook uninstall") {
-		t.Fatalf("expected actionable global-hook refusal, got %v", err)
+	out := run(t, "hook", "install", "--project", "--scope", "project:demo")
+	if !strings.Contains(out, "global Mora hooks already serve this folder; binding recorded") {
+		t.Fatalf("output: %q", out)
 	}
 	if _, err := os.Stat(filepath.Join(project, ".claude", "settings.local.json")); !os.IsNotExist(err) {
-		t.Fatalf("refused install touched project settings: %v", err)
+		t.Fatalf("install with global hooks wrote project settings: %v", err)
+	}
+	cfg, err := loadConfigFor(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope, _, found, err := lookupProject(cfg, project); err != nil || !found || scope != "project:demo" {
+		t.Fatalf("binding not recorded: %q %v %v", scope, found, err)
 	}
 }
 

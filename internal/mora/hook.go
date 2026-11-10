@@ -58,13 +58,15 @@ type recallHookInput struct {
 
 func cmdHook(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	if len(args) == 0 {
-		return errors.New("usage: mora hook session-start|recall|pre-tool-use|install|uninstall|status")
+		return errors.New("usage: mora hook session-start|recall|session-end|pre-tool-use|install|uninstall|status")
 	}
 	switch args[0] {
 	case "session-start":
 		return hookSessionStart(ctx, stdout, stdin)
 	case "recall":
 		return hookRecall(ctx, args[1:], stdout, stdin)
+	case "session-end":
+		return hookSessionEnd(ctx, stdin)
 	case "pre-tool-use":
 		return hookPreToolUse(ctx, stdout, stdin)
 	case "install":
@@ -108,7 +110,7 @@ func cmdHook(ctx context.Context, args []string, stdout, stderr io.Writer, stdin
 		}
 		return hookStatus(ctx, stdout, *jsonOut, *project)
 	default:
-		return errors.New("usage: mora hook session-start|recall|pre-tool-use|install|uninstall|status")
+		return errors.New("usage: mora hook session-start|recall|session-end|pre-tool-use|install|uninstall|status")
 	}
 }
 
@@ -349,36 +351,41 @@ func hookInstall(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		start, recall, err := hookspkg.Status(path)
+		globalHooks, err := hookStates(path)
 		if err != nil {
 			return err
 		}
-		if start == "installed" || recall == "installed" {
-			return errors.New("global Mora hooks read all scopes; run mora hook uninstall before installing project recall")
-		}
-		path = projectPath
-		root := filepath.Dir(filepath.Dir(path))
-		start, recall, err = hookspkg.Status(filepath.Join(root, ".claude", "settings.json"))
+		root := filepath.Dir(filepath.Dir(projectPath))
+		sharedHooks, err := hookStates(filepath.Join(root, ".claude", "settings.json"))
 		if err != nil {
 			return err
 		}
-		if start == "installed" || recall == "installed" {
+		if sharedHooks.any() {
 			return errors.New("remove Mora hooks from this project's .claude/settings.json before installing project recall")
 		}
 		// Bind first so a failed binding leaves no hook file behind.
 		if _, _, err := bindProjectDir(ctx, root, *scope); err != nil {
 			return err
 		}
-		if err := hookspkg.InstallProjectRecall(path, exe, *scope, root, *threshold); err != nil {
+		// The global hooks decide by cwd, so they already serve this folder.
+		if globalHooks.any() {
+			note := ""
+			if missing := globalHooks.missing(); len(missing) > 0 {
+				note = fmt.Sprintf(" (missing globally: %s; run mora hook install)", strings.Join(missing, ", "))
+			}
+			fmt.Fprintf(stdout, "global Mora hooks already serve this folder; binding recorded%s\n", note)
+			return nil
+		}
+		if err := hookspkg.InstallProjectRecall(projectPath, exe, *scope, root, *threshold); err != nil {
 			return err
 		}
-		fmt.Fprintf(stdout, "installed Mora project recall: %s (%s)\n", *scope, path)
+		fmt.Fprintf(stdout, "installed Mora project hooks: SessionStart, UserPromptSubmit, SessionEnd: %s (%s)\n", *scope, projectPath)
 		return nil
 	}
 	if err := hookspkg.Install(path, exe, *threshold); err != nil {
 		return err
 	}
-	fmt.Fprintln(stdout, "installed mora Claude hooks: SessionStart, UserPromptSubmit")
+	fmt.Fprintln(stdout, "installed mora Claude hooks: SessionStart, UserPromptSubmit, SessionEnd")
 	return nil
 }
 
@@ -408,18 +415,65 @@ type hookStatusPayload struct {
 	Path       string              `json:"path"`
 	Harnesses  []hookStatusHarness `json:"harnesses"`
 	PreToolUse string              `json:"pre_tool_use"`
+	// Global and Project list the three hooks of each level. Project is
+	// omitted when this folder cannot hold project hooks. BoundScope is the
+	// project the current folder is bound to, or empty.
+	Global     hookLevelStatus  `json:"global"`
+	Project    *hookLevelStatus `json:"project,omitempty"`
+	BoundScope string           `json:"bound_scope"`
+}
+
+type hookLevelStatus struct {
+	SessionStart     string `json:"session_start"`
+	UserPromptSubmit string `json:"user_prompt_submit"`
+	SessionEnd       string `json:"session_end"`
+}
+
+func (s hookLevelStatus) list() [3]string {
+	return [3]string{s.SessionStart, s.UserPromptSubmit, s.SessionEnd}
+}
+
+var hookNames = [3]string{"SessionStart", "UserPromptSubmit", "SessionEnd"}
+
+func (s hookLevelStatus) any() bool {
+	for _, v := range s.list() {
+		if v == "installed" {
+			return true
+		}
+	}
+	return false
+}
+
+func (s hookLevelStatus) missing() (out []string) {
+	for i, v := range s.list() {
+		if v != "installed" {
+			out = append(out, hookNames[i])
+		}
+	}
+	return out
+}
+
+// hookStates reads the three Mora hooks of one Claude settings file.
+func hookStates(path string) (hookLevelStatus, error) {
+	start, recall, err := hookspkg.Status(path)
+	if err != nil {
+		return hookLevelStatus{}, err
+	}
+	end, err := hookspkg.StatusEnd(path)
+	return hookLevelStatus{SessionStart: start, UserPromptSubmit: recall, SessionEnd: end}, err
 }
 
 func hookStatus(ctx context.Context, stdout io.Writer, jsonOutput ...bool) error {
 	jsonOut := len(jsonOutput) > 0 && jsonOutput[0]
+	project := len(jsonOutput) > 1 && jsonOutput[1]
 	path, err := claudeSettingsPath(ctx)
-	if len(jsonOutput) > 1 && jsonOutput[1] {
+	if project {
 		path, err = claudeProjectSettingsPath()
 	}
 	if err != nil {
 		return err
 	}
-	start, recall, err := hookspkg.Status(path)
+	states, err := hookStates(path)
 	if err != nil {
 		return err
 	}
@@ -434,22 +488,48 @@ func hookStatus(ctx context.Context, stdout io.Writer, jsonOutput ...bool) error
 	} else {
 		preTool = st
 	}
-	if jsonOut {
-		events := make([]string, 0, 2)
-		if start == "installed" {
-			events = append(events, "SessionStart")
+	global := states
+	var projectStates *hookLevelStatus
+	if project {
+		projectStates = &states
+		if gp, gerr := claudeSettingsPath(ctx); gerr == nil {
+			if g, serr := hookStates(gp); serr == nil {
+				global = g
+			}
 		}
-		if recall == "installed" {
-			events = append(events, "UserPromptSubmit")
+	} else if pp, perr := claudeProjectSettingsPath(); perr == nil {
+		if ps, serr := hookStates(pp); serr == nil {
+			projectStates = &ps
+		}
+	}
+	bound := ""
+	if cfg, cerr := loadConfigFor(ctx); cerr == nil {
+		if wd, werr := os.Getwd(); werr == nil {
+			bound, _, _, _ = lookupProject(cfg, wd)
+		}
+	}
+	if jsonOut {
+		events := make([]string, 0, 3)
+		for i, v := range states.list() {
+			if v == "installed" {
+				events = append(events, hookNames[i])
+			}
 		}
 		harnesses := make([]hookStatusHarness, 0, 1)
 		harnesses = append(harnesses, hookStatusHarness{Name: "claude", Installed: len(events) > 0, Events: events})
 		return emitReceipt(stdout, "mora.hook.status", 1, hookStatusPayload{
 			Installed: len(events) > 0, Path: path, Harnesses: harnesses, PreToolUse: preTool,
+			Global: global, Project: projectStates, BoundScope: bound,
 		})
 	}
-	fmt.Fprintf(stdout, "SessionStart: %s\n", start)
-	fmt.Fprintf(stdout, "UserPromptSubmit: %s\n", recall)
+	for i, v := range states.list() {
+		fmt.Fprintf(stdout, "%s: %s\n", hookNames[i], v)
+	}
+	if bound == "" {
+		fmt.Fprintln(stdout, "Folder: not bound to a project")
+	} else {
+		fmt.Fprintf(stdout, "Folder: bound to %s\n", clipProjectScope(bound))
+	}
 	if preToolErr != nil {
 		fmt.Fprintf(stdout, "PreToolUse: unknown (%v)\n", preToolErr)
 		return nil
