@@ -171,3 +171,112 @@ func TestProjectBindHookInstallRecordsBinding(t *testing.T) {
 		t.Error("hook uninstall --project must leave the binding")
 	}
 }
+
+func TestProjectBindMissingLeafUnderSymlink(t *testing.T) {
+	withTempHome(t)
+	w := projectTree(t)
+	for _, d := range []string{"North", "South"} {
+		if err := os.Mkdir(filepath.Join(w, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(w, "South"), filepath.Join(w, "North", "link")); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	run(t, "project", "bind", "--scope", "project:alpha", filepath.Join(w, "North"))
+	run(t, "project", "bind", "--scope", "project:beta", filepath.Join(w, "South"))
+	if got, found := which(t, filepath.Join(w, "North", "link", "not-created")); !found || got != "project:beta" {
+		t.Errorf("got %q found=%v want project:beta", got, found)
+	}
+}
+
+func caseSensitiveVolume(t *testing.T, dir string) bool {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "probecase"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := os.Stat(filepath.Join(dir, "PROBECASE"))
+	return err != nil
+}
+
+func TestProjectBindCaseVariants(t *testing.T) {
+	withTempHome(t)
+	w := projectTree(t)
+	if caseSensitiveVolume(t, w) {
+		t.Skip("case-sensitive volume")
+	}
+	run(t, "project", "bind", "--scope", "project:alpha", filepath.Join(w, "a"))
+	if err := os.Mkdir(filepath.Join(w, "a", "Proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(t, "project", "bind", "--scope", "project:beta", filepath.Join(w, "a", "Proj"))
+	if got, found := which(t, filepath.Join(w, "a", "proj", "x")); !found || got != "project:beta" {
+		t.Errorf("case-variant lookup: %q %v", got, found)
+	}
+	run(t, "project", "bind", "--scope", "project:gamma", filepath.Join(w, "a", "PROJ"))
+	var list []projectBinding
+	if err := json.Unmarshal([]byte(run(t, "project", "list", "--json")), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("case-variant rebind added an entry: %+v", list)
+	}
+	if got, _ := which(t, filepath.Join(w, "a", "Proj")); got != "project:gamma" {
+		t.Errorf("rebind scope = %q", got)
+	}
+}
+
+func TestProjectBindInvalidStoreFailsClosed(t *testing.T) {
+	w := projectTree(t)
+	for _, entry := range []string{
+		`{"dir":"` + "%s" + `","scope":"personal"}`,
+		`{"dir":"relative/dir","scope":"project:x"}`,
+		`{"dir":"` + "%s" + `","scope":"project:../x"}`,
+	} {
+		withTempHome(t)
+		cfg, err := loadConfigFor(testCtx(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(entry, "%s") {
+			entry = strings.Replace(entry, "%s", filepath.Join(w, "a"), 1)
+		}
+		if err := os.MkdirAll(cfg.ConfigDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		body := `{"bindings":[` + entry + `]}`
+		if err := os.WriteFile(projectBindingsPath(cfg), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, found, err := lookupProject(cfg, filepath.Join(w, "a")); found || err == nil {
+			t.Errorf("%s: lookup err=%v found=%v", entry, err, found)
+		}
+		err = Run(testCtx(t), []string{"project", "list"}, &bytes.Buffer{}, &bytes.Buffer{}, strings.NewReader(""))
+		if err == nil || !strings.Contains(err.Error(), "projects.json") {
+			t.Errorf("%s: list error = %v", entry, err)
+		}
+	}
+}
+
+func TestProjectBindHookInstallCorruptStoreWritesNoHook(t *testing.T) {
+	withTempHookHome(t)
+	project := t.TempDir()
+	t.Chdir(project)
+	cfg, err := loadConfigFor(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cfg.ConfigDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projectBindingsPath(cfg), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = Run(testCtx(t), []string{"hook", "install", "--project", "--scope", "project:demo"}, &bytes.Buffer{}, &bytes.Buffer{}, strings.NewReader(""))
+	if err == nil {
+		t.Fatal("install must fail on a corrupt store")
+	}
+	if _, serr := os.Stat(filepath.Join(project, ".claude", "settings.local.json")); serr == nil {
+		t.Error("hook file written despite binding failure")
+	}
+}

@@ -974,7 +974,8 @@ mora project list --json               # [{"dir": "...", "scope": "project:my-ap
 mora project unbind ~/code/my-app
 ```
 
-`DIR` defaults to the current directory and must exist. Mora stores its absolute
+`DIR` defaults to the current directory. It must exist for `bind` and `unbind`;
+`which` also accepts a path that does not exist yet. Mora stores its absolute
 path with symlinks resolved, in `projects.json` in the Mora config directory
 (mode 0600). `--scope` must be `project:NAME`; `global` and `personal` are
 refused. Without `--scope`, Mora uses `project:` plus the lower-case folder name,
