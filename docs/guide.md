@@ -1223,7 +1223,7 @@ was handed over. Each line is JSON with these fields:
 The log holds ids and counts only: never a prompt, a query, a title or note
 text. It says "given", never "used": Mora cannot know whether the agent read the
 notes. The log is your own record and it ignores `mora usage off`. It lives in
-Mora's state folder, so it follows that folder if you sync or link it. Mora keeps at most 2 MB, then moves it to `given.log.1`. To
+Mora's state folder, so it follows that folder if you sync or link it. Mora keeps at most 2 MB, then moves it to `given.log.1`. On Windows a line can be skipped while the log rotates. To
 delete it, remove `given.log` and `given.log.1` from the state folder.
 
 ### Bash warning rules

@@ -149,7 +149,11 @@ func appendGiven(cfg Config, g givenLine, ids []string, count int) error {
 // nil (no error) unless the opened file is a regular file. A file that already
 // exists with wider permissions is narrowed to 0600.
 func openGiven(path string, flag int) (*os.File, error) {
-	f, err := os.OpenFile(path, flag|givenOpenFlags, 0o600)
+	var f *os.File
+	err := givenRetry(func() (e error) {
+		f, e = os.OpenFile(path, flag|givenOpenFlags, 0o600)
+		return e
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +187,7 @@ func rotateGiven(path string) {
 	}
 	defer func() { _ = leasefile.Unlock(lock) }()
 	if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() && info.Size() > givenLogMaxBytes {
-		_ = os.Rename(path, path+".1")
+		_ = givenRetry(func() error { return os.Rename(path, path+".1") })
 	}
 }
 
