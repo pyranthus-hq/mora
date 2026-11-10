@@ -63,12 +63,19 @@ func (c *clientTransport) write(v any) error {
 
 // CallClient sends a request to the active stdio client.
 func CallClient(ctx context.Context, method string, params any, timeout time.Duration) (json.RawMessage, error) {
+	if session, ok := ctx.Value(elicitationSessionKey{}).(elicitationSession); ok {
+		return session.client.call(ctx, method, params, timeout)
+	}
 	clientChannel.Lock()
 	c := clientChannel.active
 	clientChannel.Unlock()
 	if c == nil {
 		return nil, ErrNoClientChannel
 	}
+	return c.call(ctx, method, params, timeout)
+}
+
+func (c *clientTransport) call(ctx context.Context, method string, params any, timeout time.Duration) (json.RawMessage, error) {
 	id := fmt.Sprintf("mora-%d", clientSequence.Add(1))
 	reply := make(chan clientReply, 1)
 	c.mu.Lock()
@@ -120,8 +127,12 @@ func Serve(ctx context.Context, out io.Writer, in io.Reader, maxRequestBytes int
 	handled := make(chan struct{})
 	go func() {
 		defer close(handled)
+		handlerCtx := ctx
 		for req := range requests {
-			_ = c.write(handle(ctx, req))
+			if req.Method == "initialize" {
+				handlerCtx = context.WithValue(ctx, elicitationSessionKey{}, elicitationSession{client: c, form: declaresForm(req.Params)})
+			}
+			_ = c.write(handle(handlerCtx, req))
 		}
 	}()
 	scanner := bufio.NewScanner(in)
