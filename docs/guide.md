@@ -1094,6 +1094,36 @@ arguments, other hooks may inject context, and previously read context remains
 in an agent's session. This installer supports Claude Code; Codex can use MCP
 but has no automatic Mora hook route.
 
+### What Mora gave an agent
+
+Each time Mora hands notes to an agent, it adds one line to `given.log` in
+Mora's state folder (`state_dir` in `mora config`). Run `mora given` to read the
+newest ten lines, `mora given --limit 50` for more, or `mora given --json` for
+the raw lines. `mora doctor --json` shows the newest one as `last_given`.
+
+Mora writes a line when the session-start hook prints a brief, when the recall
+hook prints notes, and when an agent calls `search_memory`, `read_memory`,
+`list_memory`, `context_memory`, `think`, or `brief` with `project_dir` and
+gets notes back. It writes nothing for write or delete tools, or when nothing
+was handed over. Each line is JSON with these fields:
+
+- `at`: UTC time, RFC 3339.
+- `surface`: `hook-session-start`, `hook-recall`, or `mcp:<tool>`.
+- `kind`: `project-brief`, `daily-brief`, `recall`, or the tool name.
+- `caller`: the client name from the MCP handshake, or `claude-code` for hooks.
+- `dir`: the folder the agent worked in, when known.
+- `scope`: the project scope, when one applies.
+- `count`, `ids`, `more`: how many notes, the first 20 ids in order, and how
+  many ids are not listed. `context_memory` logs a count and no ids, and the
+  daily brief logs a count of 0, because both are text digests.
+- `written`: false when the hook could not write its output.
+
+The log holds ids and counts only: never a prompt, a query, a title or note
+text. It says "given", never "used": Mora cannot know whether the agent read the
+notes. The log is your local record, it stays on this machine, and it ignores
+`mora usage off`. Mora keeps at most 2 MB, then moves it to `given.log.1`. To
+delete it, remove `given.log` and `given.log.1` from the state folder.
+
 ### Bash warning rules
 
 A rule warns a Claude Code agent when it runs a Bash command that matches a

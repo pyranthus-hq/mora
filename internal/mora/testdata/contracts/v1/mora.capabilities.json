@@ -379,6 +379,14 @@
     {
       "json_contract": "exempt",
       "kind": "verb",
+      "path": "given",
+      "payload": "",
+      "platform": "all",
+      "reason": "bare JSON array of given lines; not enveloped yet"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
       "path": "help",
       "payload": "",
       "platform": "all",
