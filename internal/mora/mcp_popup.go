@@ -54,11 +54,18 @@ func approveHeldWriteByPopup(ctx context.Context, cfg Config, held any) any {
 	esc := func(r []rune) string { q := strconv.Quote(string(r)); return q[1 : len(q)-1] }
 	title, text := []rune(m.Title), []rune(m.Text)
 	target := strArg(p.Arguments, "target", "")
+	// Budgets are in escaped characters and keep every line at 76 or less.
+	width := func(r []rune) int { return len([]rune(esc(r))) }
+	scope := popupClip([]rune(m.Scope), 26)
 	var msg strings.Builder
+	var shownTitle []rune
 	if target != "" {
-		fmt.Fprintf(&msg, "Save correction of %s as %s in %s?\ntitle \"%s\"", esc(popupClip([]rune(target), 30)), esc(popupClip([]rune(strArg(p.Arguments, "disposition", "")), 12)), esc(popupClip([]rune(m.Scope), 22)), esc(popupClip(title, 60)))
+		shownTitle = popupClip(title, 40)
+		fmt.Fprintf(&msg, "Correct %s as %s?\nin %s: \"%s\"", esc(popupClip([]rune(target), 30)), esc(popupClip([]rune(strArg(p.Arguments, "disposition", "")), 12)), esc(scope), esc(shownTitle))
 	} else {
-		fmt.Fprintf(&msg, "Save \"%s\" as %s in %s?", esc(popupClip(title, 36)), esc(popupClip([]rune(m.Type), 8)), esc(popupClip([]rune(m.Scope), 22)))
+		kind := popupClip([]rune(m.Type), 8)
+		shownTitle = popupClip(title, 60-width(scope)-width(kind))
+		fmt.Fprintf(&msg, "Save \"%s\" as %s in %s?", esc(shownTitle), esc(kind), esc(scope))
 	}
 	shown := 0
 	for lines := 3 - strings.Count(msg.String(), "\n") - 1; lines > 0 && shown < len(text); lines-- {
@@ -73,10 +80,15 @@ func approveHeldWriteByPopup(ctx context.Context, cfg Config, held any) any {
 	if reasons := tentativeHoldReasons(m); len(reasons) > 0 {
 		hint.WriteString("flags: " + esc(popupClip([]rune(strings.Join(reasons, ", ")), 28)) + ". ")
 	}
-	if shown < len(text) || len(title) > 36 {
-		// The owner must know that an accept also saves text the popup does not show.
-		fmt.Fprintf(&hint, "Tick + Accept saves all %d characters (%d shown). ", len(text), shown)
-	} else {
+	// The owner must know that an accept also saves what the popup does not show.
+	switch textCut, titleCut := shown < len(text), len(shownTitle) < len(title); {
+	case textCut && titleCut:
+		fmt.Fprintf(&hint, "Tick + Accept saves the whole note: text %d of %d characters shown, title %d of %d. ", shown, len(text), len(shownTitle), len(title))
+	case textCut:
+		fmt.Fprintf(&hint, "Tick + Accept saves the whole note: text %d of %d characters shown. ", shown, len(text))
+	case titleCut:
+		fmt.Fprintf(&hint, "Tick + Accept saves the whole note: title %d of %d characters shown. ", len(shownTitle), len(title))
+	default:
 		hint.WriteString("Tick + Accept saves it. ")
 	}
 	hint.WriteString("Else it waits.")

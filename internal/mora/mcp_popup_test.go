@@ -260,7 +260,7 @@ func TestPopupAccept(t *testing.T) {
 	if save.Type != "boolean" || save.Title != "Save this agent note?" || save.Default || !reflect.DeepEqual(f.Params.Schema.Required, []string{"save"}) {
 		t.Fatalf("schema=%+v", f.Params.Schema)
 	}
-	if want := "flags: money. Tick + Accept saves all 2000 characters (144 shown). Else it waits."; save.Hint != want {
+	if want := "flags: money. Tick + Accept saves the whole note: text 144 of 2000 characters shown. Else it waits."; save.Hint != want {
 		t.Errorf("hint = %q, want %q", save.Hint, want)
 	}
 	w.send(map[string]any{"id": f.ID, "result": map[string]any{"action": "accept", "content": map[string]any{"save": true}}})
@@ -428,3 +428,61 @@ func TestPopupFitNeverSplitsAnEscape(t *testing.T) {
 		}
 	}
 }
+
+func TestPopupLinesFitWorstCase(t *testing.T) {
+	// Every message line stays at 76 characters or less for the longest
+	// title, type, scope, target and disposition, and the hint says which
+	// parts were cut.
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+		hint string
+	}{
+		{"note", map[string]any{"scope": popupLongScope, "type": "insight", "title": strings.Repeat("T", 300), "text": "short"},
+			"Tick + Accept saves the whole note: title 27 of 300 characters shown. Else it waits."},
+		{"both cut", map[string]any{"scope": "project:demo", "type": "fact", "title": strings.Repeat("\u202e", 40), "text": strings.Repeat("x", 500)},
+			"Tick + Accept saves the whole note: text 144 of 500 characters shown, title 7 of 40. Else it waits."},
+		{"fits", map[string]any{"scope": "project:demo", "type": "fact", "title": "Short", "text": "Short text."},
+			"Tick + Accept saves it. Else it waits."},
+		{"correction", map[string]any{"scope": popupLongScope, "title": strings.Repeat("T", 300), "text": strings.Repeat("x", 500), "target": "seeded below", "disposition": "outdated"},
+			"flags: type correction. Tick + Accept saves the whole note: text 72 of 500 characters shown, title 40 of 300. Else it waits."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := popupFixture(t)
+			target := ""
+			if tc.args["target"] != nil {
+				seeded, _, err := createMemory(testCtx(t), cfg, Memory{Scope: popupLongScope, Type: "fact", Source: "manual", Title: "old note", Text: "old text", CreatedAt: time.Now().Add(-time.Hour).Format(time.RFC3339)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				target = seeded.ID
+				tc.args["target"] = target
+			}
+			w := startPopupWire(t, testCtx(t), true)
+			w.call(tc.args)
+			f := w.read()
+			if f.Method != "elicitation/create" {
+				t.Fatalf("expected popup: %+v", f)
+			}
+			lines := strings.Split(f.Params.Message, "\n")
+			if target != "" && lines[0] != "Correct "+target+" as outdated?" {
+				t.Errorf("line 1 = %s", lines[0])
+			}
+			if len(lines) > 3 {
+				t.Fatalf("%d lines: %s", len(lines), f.Params.Message)
+			}
+			for i, line := range lines {
+				if n := len([]rune(line)); n > 76 {
+					t.Errorf("line %d has %d characters: %s", i+1, n, line)
+				}
+			}
+			if got := f.Params.Schema.Properties["save"].Hint; got != tc.hint {
+				t.Errorf("hint = %q, want %q", got, tc.hint)
+			}
+			w.send(map[string]any{"id": f.ID, "result": map[string]any{"action": "decline"}})
+			w.result()
+		})
+	}
+}
+
+var popupLongScope = "project:" + strings.Repeat("s", 60)

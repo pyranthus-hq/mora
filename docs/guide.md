@@ -702,7 +702,7 @@ The popup is short on purpose. Claude Code shows three lines of a popup and
 one hint line, and cuts each at the window width. So Mora sends the title, the
 type and the scope on line one, then up to about 140 characters of the text,
 and a hint line with any hold flags and the counts, for example
-`Tick + Accept saves all 748 characters (144 shown)`. Read a longer memory
+`Tick + Accept saves the whole note: text 144 of 748 characters shown`. Read a longer memory
 with `mora mcp proposals show <id>` before you accept.
 
 Only a ticked box and Accept approves. Tool-call arguments cannot approve or
