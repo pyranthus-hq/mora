@@ -119,6 +119,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdUndo(ctx, args[1:], stdout, stderr)
 	case "confirm":
 		return cmdConfirm(ctx, args[1:], stdout, stderr)
+	case "review":
+		return cmdReview(ctx, args[1:], stdout, stderr, stdin)
 	case "forget":
 		return cmdForget(ctx, args[1:], stdout, stderr)
 	case "retention":
@@ -259,6 +261,8 @@ USAGE:
   mora list --scope project:acme --json
   mora delete <id> --yes
   mora confirm <memory-id> | --list   # keep a tentative agent write (confirm --list shows them)
+  mora review --list [--json]      # list every agent note that waits for you: saved (tentative) and held
+  mora review                      # keep or reject each one; in your own terminal only
   mora undo <memory-id> [--force]  # remove an agent-written memory; refuses others without --force (log: <vault>/agent-writes.log)
   mora context --scope project:acme --query "auth" --budget 6000 --json
   mora think "what did Sam decide about the launch" --json   # cited evidence + gap analysis

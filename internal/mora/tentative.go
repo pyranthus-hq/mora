@@ -102,36 +102,56 @@ func cmdConfirm(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if err := refuseDashLedPositional("confirm", "memory id", fs.Arg(0)); err != nil {
 		return err
 	}
-	found, err := findMemory(cfg, fs.Arg(0))
+	m, logged, err := confirmMemory(ctx, cfg, fs.Arg(0), "", stderr)
 	if err != nil {
 		return err
+	}
+	if *jsonOut {
+		return emitReceipt(stdout, "mora.confirm", 1, confirmReceipt{ID: m.ID, Confirmed: true, AuditLogged: logged})
+	}
+	fmt.Fprintf(stdout, "confirmed %s (%s)\n", m.ID, agentLogTitle(m))
+	return nil
+}
+
+// confirmMemory removes the tentative tag from one memory. A non-empty
+// expectSHA is the content hash of the file the owner saw: the core refuses if
+// the file it reads differs, and writes from that same read. A file system has
+// no compare-and-swap, so the window left is the time between that read and the
+// write.
+func confirmMemory(ctx context.Context, cfg Config, id, expectSHA string, stderr io.Writer) (Memory, bool, error) {
+	found, err := findMemory(cfg, id)
+	if err != nil {
+		return Memory{}, false, err
 	}
 	// Reparse the file: a read result can carry derived fields.
 	m, err := parseMemory(found.Path)
 	if err != nil {
-		return err
+		return Memory{}, false, err
 	}
 	if !memory.IsTentative(m) {
-		return fmt.Errorf("memory %s is not tentative", m.ID)
+		return Memory{}, false, fmt.Errorf("memory %s is not tentative", m.ID)
 	}
 	raw, err := os.ReadFile(m.Path)
 	if err != nil {
-		return err
+		return Memory{}, false, err
+	}
+	if expectSHA != "" && indexstore.ContentSHA256(raw) != expectSHA {
+		return Memory{}, false, fmt.Errorf("memory %s changed after it was shown; nothing was done", m.ID)
 	}
 	body, err := withoutTentativeTag(raw)
 	if err != nil {
-		return fmt.Errorf("memory %s: %w", m.ID, err)
+		return Memory{}, false, fmt.Errorf("memory %s: %w", m.ID, err)
 	}
 	if m, err = parseMemoryBytes(m.Path, body); err != nil {
-		return err
+		return Memory{}, false, err
 	}
 	op, err := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindWrite, Path: m.Path, ContentSHA256: indexstore.ContentSHA256(body)})
 	if err != nil {
-		return err
+		return Memory{}, false, err
 	}
 	if err := atomicio.Write(m.Path, body, 0o644); err != nil {
 		_ = unmarkIndexDirty(cfg, op.OpID)
-		return err
+		return Memory{}, false, err
 	}
 	logged := true
 	if lerr := appendAgentWriteLog(cfg, time.Now(), "confirm", m, "cli"); lerr != nil {
@@ -149,11 +169,7 @@ func cmdConfirm(ctx context.Context, args []string, stdout, stderr io.Writer) er
 			fmt.Fprintf(stderr, "warning: memory confirmed, but full index reconciliation is pending: %v\n", rerr)
 		}
 	}
-	if *jsonOut {
-		return emitReceipt(stdout, "mora.confirm", 1, confirmReceipt{ID: m.ID, Confirmed: true, AuditLogged: logged})
-	}
-	fmt.Fprintf(stdout, "confirmed %s (%s)\n", m.ID, agentLogTitle(m))
-	return nil
+	return m, logged, nil
 }
 
 // withoutTentativeTag edits only the frontmatter tags line, because a render

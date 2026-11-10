@@ -125,6 +125,17 @@
       }
     },
     {
+      "name": "review",
+      "paths": ["review"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestReviewWalkKeepsRejectsAndSkips"]},
+        "json": {"status": "test", "tests": ["TestReviewListShowsSavedThenHeldOnly"]},
+        "state": {"status": "test", "tests": ["TestReviewWalkKeepsRejectsAndSkips"]},
+        "error": {"status": "test", "tests": ["TestReviewWalkRefusesAChangedNote"]},
+        "refusal": {"status": "test", "tests": ["TestReviewWalkRefusesOutsideOwnTerminal"]}
+      }
+    },
+    {
       "name": "entities",
       "paths": ["entities"],
       "evidence": {

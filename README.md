@@ -273,7 +273,8 @@ waits in the proposal queue, and the reply says why (`held_because`).
 A tentative memory shows in search, read, list and context with a label. It
 does not reach the recall hook, the digest, the brief, commitments or share.
 Run `mora confirm --list` to see them. Run `mora confirm <id>` to keep one.
-Run `mora undo <id>` to remove an agent write. Under this policy
+Run `mora undo <id>` to remove an agent write. Run `mora review` in your own
+terminal to keep or reject every waiting note, saved or held. Under this policy
 `delete_memory` is refused, and phone captures go to the queue.
 
 The hold filter is coarse. It does not stop a false claim written in plain

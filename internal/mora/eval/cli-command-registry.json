@@ -113,6 +113,13 @@
       "payload": "mora.confirm"
     },
     {
+      "path": "review",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.review"
+    },
+    {
       "path": "forget",
       "kind": "verb",
       "platform": "all",
