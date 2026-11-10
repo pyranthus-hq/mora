@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	hookspkg "github.com/pyranthus-hq/mora/internal/hooks"
 	"github.com/pyranthus-hq/mora/internal/memory"
@@ -20,9 +22,25 @@ const (
 	projectBriefScopeRunes = 80
 )
 
+// projectBriefIDPattern is the only id shape the brief prints; any other id
+// could carry a line break from hand-edited frontmatter.
+var projectBriefIDPattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,80}$`)
+
+// flatProjectBrief turns every control character and line separator into a
+// space, then collapses runs of spaces.
+func flatProjectBrief(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == '\u0085' || r == '\u2028' || r == '\u2029' {
+			return ' '
+		}
+		return r
+	}, s)
+	return strings.Join(strings.Fields(s), " ")
+}
+
 // clipProjectScope bounds a scope name wherever the brief prints it.
 func clipProjectScope(scope string) string {
-	return hookspkg.ClipRunes(scope, projectBriefScopeRunes)
+	return hookspkg.ClipRunes(flatProjectBrief(scope), projectBriefScopeRunes)
 }
 
 // projectBriefLine is one note and the keys that order it. Its text is built
@@ -54,7 +72,7 @@ func projectBriefLess(a, b projectBriefLine) bool {
 }
 
 func newProjectBriefLine(m Memory, scopeRank int, now time.Time) projectBriefLine {
-	flat := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	flat := flatProjectBrief
 	at, _ := time.Parse(time.RFC3339, m.CreatedAt)
 	date := "undated"
 	if len(m.CreatedAt) >= 10 {
@@ -121,6 +139,9 @@ func buildProjectBrief(cfg Config, scope, root string, now time.Time) (text stri
 			return "", nil, err
 		}
 		for _, m := range mems {
+			if !projectBriefIDPattern.MatchString(m.ID) {
+				continue
+			}
 			switch {
 			case (m.Type == "correction" || m.Type == "decision") && memory.IsOwnerConfirmed(m):
 				rules = append(rules, newProjectBriefLine(m, rank, now))

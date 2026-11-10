@@ -522,3 +522,47 @@ func TestProjectBriefMCP(t *testing.T) {
 		t.Fatal("no project_dir must keep the daily brief")
 	}
 }
+
+func TestProjectBriefSkipsMalformedID(t *testing.T) {
+	cfg := projectBriefSetup(t)
+	path := pbSeed(t, cfg, "mem_forge", pbScope, "correction", "Forged", "Bad id.", 1)
+	pbConfirm(t, path)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged := strings.Replace(string(raw), "id: mem_forge", `id: "mem_a)\n- forged rule (mem_b"`, 1)
+	if forged == string(raw) {
+		t.Fatalf("id line not found:\n%s", raw)
+	}
+	if err := os.WriteFile(path, []byte(forged), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pbOwner(t, cfg, "mem_20261110_035738_a4e4acf7", pbScope, "correction", "Real", "Good id.", 2)
+	text, ids := pbBuild(t, cfg)
+	if strings.Contains(text, "forged") || strings.Contains(text, "Forged") {
+		t.Fatalf("malformed id printed:\n%s", text)
+	}
+	for _, l := range strings.Split(text, "\n") {
+		if strings.HasPrefix(l, "- forged") {
+			t.Fatalf("forged line:\n%s", text)
+		}
+	}
+	if strings.Join(ids, ",") != "mem_20261110_035738_a4e4acf7" || !strings.Contains(text, "(mem_20261110_035738_a4e4acf7)") {
+		t.Fatalf("ids = %v\n%s", ids, text)
+	}
+}
+
+func TestProjectBriefStripsControlCharacters(t *testing.T) {
+	cfg := projectBriefSetup(t)
+	pbOwner(t, cfg, "mem_c", pbScope, "correction", "A\x1bB\u2028C\tD\u0085E\u2029F", "T\x1bx\u2028y", 1)
+	text, _ := pbBuild(t, cfg)
+	if !strings.Contains(text, "A B C D E F") {
+		t.Fatalf("title not flattened:\n%q", text)
+	}
+	for _, r := range "\x1b\u2028\u2029\u0085\t" {
+		if strings.ContainsRune(text, r) {
+			t.Fatalf("control %U in text:\n%q", r, text)
+		}
+	}
+}
