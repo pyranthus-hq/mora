@@ -41,6 +41,17 @@ type Snapshot struct {
 	Devices      []Device       `json:"devices"`
 	Sources      []SourceHealth `json:"sources"`
 	SourcesError string         `json:"sources_error,omitempty"`
+	Review       *Review        `json:"review,omitempty"`
+	Given        *Given         `json:"given,omitempty"`
+}
+type Given struct {
+	At      string `json:"at"`
+	Surface string `json:"surface"`
+	Count   *int   `json:"count,omitempty"`
+}
+type Review struct {
+	Saved int `json:"saved"`
+	Held  int `json:"held"`
 }
 type SourceHealth struct {
 	Key           string `json:"key"`
@@ -105,6 +116,12 @@ func run(args []string) error {
 		}
 		return syncShares(*j)
 	}
+	if len(args) == 1 && args[0] == "review-list" {
+		return reviewList()
+	}
+	if len(args) > 0 && args[0] == "review-act" {
+		return reviewAct(args[1:])
+	}
 	if len(args) > 0 && args[0] == "probe" {
 		f := flag.NewFlagSet("probe", flag.ContinueOnError)
 		p := f.String("profile", "", "")
@@ -137,11 +154,13 @@ func run(args []string) error {
 		sources []SourceHealth
 		err     string
 		index   Channel
+		review  *Review
+		given   *Given
 	}
 	health := make(chan healthResult, 1)
 	go func() {
-		sources, err, index := sourceHealth()
-		health <- healthResult{sources: sources, err: err, index: index}
+		sources, err, index, review, given := sourceHealth()
+		health <- healthResult{sources: sources, err: err, index: index, review: review, given: given}
 	}()
 	s.Devices[0] = probe("mac")
 	var wg sync.WaitGroup
@@ -151,14 +170,14 @@ func run(args []string) error {
 	}
 	wg.Wait()
 	result := <-health
-	s.Sources, s.SourcesError = result.sources, result.err
+	s.Sources, s.SourcesError, s.Review, s.Given = result.sources, result.err, result.review, result.given
 	s.Devices[0].Channels = append(s.Devices[0].Channels, result.index)
 	return emit(s)
 }
 
 // sourceHealth reads Mora's machine-readable doctor report without running its
 // --pulse path, which advances producer state and can notify on unhealthy data.
-func sourceHealth() ([]SourceHealth, string, Channel) {
+func sourceHealth() ([]SourceHealth, string, Channel, *Review, *Given) {
 	unknownIndex := Channel{Name: "Search index", State: "unknown", Detail: "Search index health is unavailable."}
 	bin := os.Getenv("MORA_BIN")
 	if bin == "" {
@@ -171,9 +190,9 @@ func sourceHealth() ([]SourceHealth, string, Channel) {
 		var exitErr *exec.ExitError
 		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
 			if ctx.Err() != nil {
-				return []SourceHealth{}, "Mora doctor source health timed out.", unknownIndex
+				return []SourceHealth{}, "Mora doctor source health timed out.", unknownIndex, nil, nil
 			}
-			return []SourceHealth{}, "Mora doctor source health is unavailable.", unknownIndex
+			return []SourceHealth{}, "Mora doctor source health is unavailable.", unknownIndex, nil, nil
 		}
 	}
 	var report struct {
@@ -188,12 +207,12 @@ func sourceHealth() ([]SourceHealth, string, Channel) {
 		Index *doctorIndex `json:"index"`
 	}
 	if json.Unmarshal(b, &report) != nil || report.Schema != "mora.doctor.report" || report.SchemaVersion != 1 || report.Sources == nil {
-		return []SourceHealth{}, "Mora doctor returned an invalid source health report.", unknownIndex
+		return []SourceHealth{}, "Mora doctor returned an invalid source health report.", unknownIndex, nil, nil
 	}
 	sources := make([]SourceHealth, 0, len(*report.Sources))
 	for _, source := range *report.Sources {
 		if source.Key == "" || source.State == "" {
-			return []SourceHealth{}, "Mora doctor returned an invalid source health report.", unknownIndex
+			return []SourceHealth{}, "Mora doctor returned an invalid source health report.", unknownIndex, nil, nil
 		}
 		detail := source.ErrorCode
 		if source.State == "failed" && detail == "" {
@@ -201,8 +220,64 @@ func sourceHealth() ([]SourceHealth, string, Channel) {
 		}
 		sources = append(sources, SourceHealth{Key: source.Key, State: source.State, LastSuccessAt: source.LastSuccessAt, Detail: detail})
 	}
-	return sources, "", indexChannel(report.Index)
+	return sources, "", indexChannel(report.Index), reviewCounts(b), lastGiven(b)
 }
+
+// reviewCounts reads the Mora 0.16.0 review fields in a separate pass, so a bad
+// value drops only the review object and never the health report. Nil when invalid.
+func reviewCounts(b []byte) *Review {
+	var raw struct {
+		Saved json.RawMessage `json:"tentative_memories"`
+		Held  json.RawMessage `json:"pending_mcp_proposals"`
+	}
+	if json.Unmarshal(b, &raw) != nil {
+		return nil
+	}
+	count := func(m json.RawMessage) (int, bool) {
+		if len(m) == 0 {
+			return 0, true // omitted when zero, never sent by 0.15.x
+		}
+		var n int
+		return n, json.Unmarshal(m, &n) == nil && n >= 0
+	}
+	saved, ok1 := count(raw.Saved)
+	held, ok2 := count(raw.Held)
+	if !ok1 || !ok2 {
+		return nil
+	}
+	return &Review{Saved: saved, Held: held}
+}
+
+// lastGiven reads the optional last_given object in its own pass, so a bad value
+// drops only the given object. Nil when absent or invalid.
+func lastGiven(b []byte) *Given {
+	var raw struct {
+		LastGiven *struct {
+			At      string          `json:"at"`
+			Surface string          `json:"surface"`
+			Count   json.RawMessage `json:"count"`
+		} `json:"last_given"`
+	}
+	if json.Unmarshal(b, &raw) != nil || raw.LastGiven == nil {
+		return nil
+	}
+	g := raw.LastGiven
+	if _, err := time.Parse(time.RFC3339, g.At); err != nil || len(g.Surface) > 60 || !givenSurface.MatchString(g.Surface) {
+		return nil
+	}
+	out := &Given{At: g.At, Surface: g.Surface}
+	if len(g.Count) > 0 {
+		var n int
+		// json.Unmarshal accepts null into an int as a no-op, so reject it explicitly.
+		if string(g.Count) == "null" || json.Unmarshal(g.Count, &n) != nil || n < 0 || n > 100000 {
+			return nil
+		}
+		out.Count = &n
+	}
+	return out
+}
+
+var givenSurface = regexp.MustCompile(`^[a-z0-9:_-]+$`)
 
 func indexChannel(index *doctorIndex) Channel {
 	c := Channel{Name: "Search index", State: "unknown", Detail: "Search index health is unavailable."}

@@ -64,14 +64,14 @@ final class StatusModel: ObservableObject {
     @Published var detailText = "No collector output yet."
 
     private var timer: Timer?
-    private let collector: URL
+    let collector: URL
     private let preview: Bool
 
     init(preview: Bool = false) {
         self.preview = preview
         collector = Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("mora-tentacles")
         if preview {
-            snapshot = try? StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"id":"mac","name":"This Mac","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked.","last_success":"2026-11-08T07:45:00Z"},{"name":"Personal archive","state":"stale","detail":"Fixture data — displayed to demonstrate a stale channel.","last_success":"2026-11-07T07:45:00Z"}]},{"id":"devbox","name":"Devbox","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked."}]},{"id":"windows","name":"Windows (WSL)","connection":"connected","channels":[{"name":"Windows → Mac","state":"unknown","detail":"Fixture data — return path not configured."}]}],"sources":[{"key":"gmail:work","state":"fresh","last_success_at":"2026-11-08T07:45:00Z","detail":"Fixture data — no source content was read."},{"key":"calendar","state":"stale","last_success_at":"2026-11-07T07:45:00Z","detail":"Fixture data — stale connector example."},{"key":"imessage","state":"provider-paused","detail":"Fixture data — unknown state example."}]}"#.utf8))
+            snapshot = try? StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"id":"mac","name":"This Mac","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked.","last_success":"2026-11-08T07:45:00Z"},{"name":"Personal archive","state":"stale","detail":"Fixture data — displayed to demonstrate a stale channel.","last_success":"2026-11-07T07:45:00Z"}]},{"id":"devbox","name":"Devbox","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked."}]},{"id":"windows","name":"Windows (WSL)","connection":"connected","channels":[{"name":"Windows → Mac","state":"unknown","detail":"Fixture data — return path not configured."}]}],"review":{"saved":3,"held":1},"given":{"at":"2026-11-08T07:30:00Z","surface":"hook-session-start","count":3},"sources":[{"key":"gmail:work","state":"fresh","last_success_at":"2026-11-08T07:45:00Z","detail":"Fixture data — no source content was read."},{"key":"calendar","state":"stale","last_success_at":"2026-11-07T07:45:00Z","detail":"Fixture data — stale connector example."},{"key":"imessage","state":"provider-paused","detail":"Fixture data — unknown state example."}]}"#.utf8))
             lastUpdated = Date()
             detailText = "PREVIEW FIXTURE — no collector was run and no sync was checked."
             return
@@ -101,10 +101,10 @@ final class StatusModel: ObservableObject {
         }
     }
 
-    nonisolated private static func runCollector(_ url: URL) throws -> (output: String, error: String, status: Int32) {
+    nonisolated static func runCollector(_ url: URL, arguments: [String]? = nil) throws -> (output: String, error: String, status: Int32) {
         let process = Process()
         process.executableURL = url
-        process.arguments = ["--config", NSString(string: "~/.config/mora-tentacles/config.json").expandingTildeInPath]
+        process.arguments = arguments ?? ["--config", NSString(string: "~/.config/mora-tentacles/config.json").expandingTildeInPath]
         // File-backed output avoids a full pipe blocking the collector before exit.
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -168,6 +168,27 @@ struct StatusPanel: View {
                 }
                 .buttonStyle(.borderless).disabled(model.isRefreshing)
                 .accessibilityLabel("Refresh status").help("Refresh status")
+            }
+
+            if let text = model.snapshot?.review?.rowText {
+                Button {
+                    ReviewWindowController.shared.show(collector: model.collector, preview: isPreview) { Task { await model.refresh() } }
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(text).font(.system(size: 12))
+                        Text("Click to review.").font(.system(size: 11)).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Open the agent notes that wait for review")
+            }
+
+            if let given = model.snapshot?.given, let text = given.rowText(now: Date(), timeZone: .current) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(text).font(.system(size: 12))
+                    Text([given.surfaceText, "Run mora given in a terminal for the list."].compactMap { $0 }.joined(separator: " "))
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
             }
 
             if let error = model.error {
