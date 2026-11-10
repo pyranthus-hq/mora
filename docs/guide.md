@@ -974,7 +974,8 @@ mora project list --json               # [{"dir": "...", "scope": "project:my-ap
 mora project unbind ~/code/my-app
 ```
 
-`DIR` defaults to the current directory and must exist. Mora stores its absolute
+`DIR` defaults to the current directory. It must exist for `bind` and `unbind`;
+`which` also accepts a path that does not exist yet. Mora stores its absolute
 path with symlinks resolved, in `projects.json` in the Mora config directory
 (mode 0600). `--scope` must be `project:NAME`; `global` and `personal` are
 refused. Without `--scope`, Mora uses `project:` plus the lower-case folder name,
@@ -1013,10 +1014,13 @@ The text has at most two blocks and 2,000 characters:
 
 `personal` notes and notes of other projects never appear. Notes that are
 deleted, retracted or superseded are left out, as in search. Titles are cut at
-120 characters and scope names at 80. When lines do not fit, whole lines are
-dropped from the end and one line says how many more exist and tells you to
-call `search_memory` with the project scope or scope `global`: the omitted lines
-can sit in either. A bound project with no lines shows
+120 characters and scope names at 80. Each line ends with the note id, and a
+line names its scope only when it comes from `global`. When the lines do not fit,
+Mora first cuts texts to 100 characters, then keeps titles only, and says so in a
+line that points to `read_memory` for the full rule. When whole rules still do
+not fit, the line under the block header says `Only k of n owner rules fit here`
+and tells the agent to call `search_memory` with the project scope and with scope
+`global` before it proposes an approach. A bound project with no lines shows
 `Project project:NAME: no owner rules recorded yet.` An unbound folder makes
 `mora brief --project` exit non-zero. The MCP `brief` tool takes the same view
 through its optional `project_dir` argument.
