@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -84,8 +85,8 @@ func TestProjectBriefOwnerDecisions(t *testing.T) {
 		t.Fatalf("ids = %v", ids)
 	}
 	want := "Owner rules for project:demo (the owner wrote or confirmed each line):\n" +
-		"- [2026-11-02] decision, project:demo: Ship on Fridays. No Friday deploys.\n" +
-		"- [2026-11-01] decision, project:demo: Use pnpm. Always use pnpm."
+		"- [2026-11-02] decision: Ship on Fridays. No Friday deploys. (mem_b)\n" +
+		"- [2026-11-01] decision: Use pnpm. Always use pnpm. (mem_a)"
 	if !strings.HasPrefix(text, want) {
 		t.Fatalf("text =\n%s", text)
 	}
@@ -110,7 +111,7 @@ func TestProjectBriefScopesAndOrder(t *testing.T) {
 			t.Fatalf("%q leaked:\n%s", bad, text)
 		}
 	}
-	if !strings.Contains(text, "correction, global: Global fix.") {
+	if !strings.Contains(text, "correction, global: Global fix.") || strings.Contains(text, "decision, project:demo") {
 		t.Fatalf("global correction missing:\n%s", text)
 	}
 }
@@ -150,6 +151,28 @@ func TestProjectBriefOnlyThreeNewestNotes(t *testing.T) {
 	}
 }
 
+var pbLineID = regexp.MustCompile(`^- \[.*\((mem_[A-Za-z0-9_]+)\)$`)
+
+// pbLineIDs returns the id ending each rule or note line, in order.
+func pbLineIDs(text string) []string {
+	var ids []string
+	for _, l := range strings.Split(text, "\n") {
+		if m := pbLineID.FindStringSubmatch(l); m != nil {
+			ids = append(ids, m[1])
+		}
+	}
+	return ids
+}
+
+const pbShortened = "Texts are shortened. Call read_memory with an id, or search_memory with scope project:demo, for the full rule."
+
+func pbCheckIDs(t *testing.T, text string, ids []string) {
+	t.Helper()
+	if got := pbLineIDs(text); strings.Join(got, ",") != strings.Join(ids, ",") {
+		t.Fatalf("ids in lines %v != emittedIDs %v\n%s", got, ids, text)
+	}
+}
+
 func TestProjectBriefCapDropsWholeLinesFromTheEnd(t *testing.T) {
 	cfg := projectBriefSetup(t)
 	long := strings.Repeat("rule words ", 40)
@@ -160,22 +183,21 @@ func TestProjectBriefCapDropsWholeLinesFromTheEnd(t *testing.T) {
 	if len(text) > 2000 {
 		t.Fatalf("len = %d", len(text))
 	}
+	if len(ids) == 0 || len(ids) >= 60 {
+		t.Fatalf("%d ids", len(ids))
+	}
+	pbCheckIDs(t, text, ids)
 	lines := strings.Split(text, "\n")
-	last := lines[len(lines)-1]
-	if want := fmt.Sprintf("%d more: call search_memory with scope project:demo or scope global.", 60-len(ids)); last != want {
-		t.Fatalf("last line = %q, want %q", last, want)
+	want := fmt.Sprintf("Only %d of 60 owner rules fit here. Before you propose an approach, call search_memory with scope project:demo (and scope global) for rules about your task.", len(ids))
+	if lines[0] != "Owner rules for project:demo (the owner wrote or confirmed each line):" || lines[1] != want {
+		t.Fatalf("notice not directly under the header:\n%s", text)
 	}
-	shown := 0
-	for _, l := range lines {
-		if strings.HasPrefix(l, "- [") {
-			if !strings.Contains(l, "...") {
-				t.Fatalf("long text not cut: %q", l)
-			}
-			shown++
-		}
+	if strings.Contains(text, " more: ") || strings.Count(text, "Only ") != 1 {
+		t.Fatalf("one notice only:\n%s", text)
 	}
-	if shown != len(ids) || shown == 0 || shown >= 60 {
-		t.Fatalf("shown %d lines, %d ids", shown, len(ids))
+	// Step d works on title-only lines, and the shortened note follows block 1.
+	if strings.Contains(text, "...") || lines[len(lines)-1] != pbShortened {
+		t.Fatalf("title-only lines and the shortened line expected:\n%s", text)
 	}
 	// Block 2 is dropped before block 1 loses a line.
 	pbSeed(t, cfg, "mem_note", pbScope, "decision", "Late note", "agent text", 28)
@@ -184,6 +206,63 @@ func TestProjectBriefCapDropsWholeLinesFromTheEnd(t *testing.T) {
 		if id == "mem_note" {
 			t.Fatalf("block 2 note kept while block 1 lines were dropped:\n%s", text)
 		}
+	}
+	pbCheckIDs(t, text, ids)
+}
+
+func TestProjectBriefFitsTenLongRulesWithoutDropping(t *testing.T) {
+	cfg := projectBriefSetup(t)
+	var want []string
+	for i := 1; i <= 10; i++ {
+		id := fmt.Sprintf("mem_t%02d", i)
+		title := fmt.Sprintf("Rule %02d ", i) + strings.Repeat("x", 51)
+		pbOwner(t, cfg, id, pbScope, "decision", title, strings.Repeat("long text ", 40), 11-i)
+		want = append(want, id)
+	}
+	text, ids := pbBuild(t, cfg)
+	if len(text) > 2000 || strings.Join(ids, ",") != strings.Join(want, ",") {
+		t.Fatalf("len %d ids %v\n%s", len(text), ids, text)
+	}
+	pbCheckIDs(t, text, ids)
+	if !strings.Contains(text, pbShortened) || strings.Contains(text, "Only ") {
+		t.Fatalf("shortened line expected, no omission notice:\n%s", text)
+	}
+	if again, _ := pbBuild(t, cfg); again != text {
+		t.Fatalf("two runs differ")
+	}
+	t.Logf("ten-rule brief:\n%s", text)
+}
+
+func TestProjectBriefShortRulesStayInFullForm(t *testing.T) {
+	cfg := projectBriefSetup(t)
+	for i := 1; i <= 3; i++ {
+		pbOwner(t, cfg, fmt.Sprintf("mem_s%d", i), pbScope, "decision", fmt.Sprintf("Short %d", i), "Short text.", i)
+	}
+	text, ids := pbBuild(t, cfg)
+	if strings.Contains(text, "Texts are shortened") || strings.Contains(text, "Only ") || !strings.Contains(text, "Short 3. Short text. (mem_s3)") {
+		t.Fatalf("form a expected:\n%s", text)
+	}
+	pbCheckIDs(t, text, ids)
+}
+
+func TestProjectBriefShorterTextsStepKeepsEveryRule(t *testing.T) {
+	cfg := projectBriefSetup(t)
+	for i := 1; i <= 7; i++ {
+		pbOwner(t, cfg, fmt.Sprintf("mem_m%d", i), pbScope, "decision", fmt.Sprintf("Medium %d", i), strings.Repeat("w", 300), i)
+	}
+	pbSeed(t, cfg, "mem_agent", pbScope, "decision", "Agent note", strings.Repeat("n", 300), 20)
+	text, ids := pbBuild(t, cfg)
+	if len(ids) != 8 || len(text) > 2000 {
+		t.Fatalf("ids %v len %d\n%s", ids, len(text), text)
+	}
+	pbCheckIDs(t, text, ids)
+	if !strings.Contains(text, strings.Repeat("w", 100)+"... (mem_m7)") || strings.Contains(text, strings.Repeat("w", 101)) || !strings.Contains(text, strings.Repeat("n", 100)+"... (mem_agent)") {
+		t.Fatalf("texts not cut at 100:\n%s", text)
+	}
+	// The shortened line follows block 1 and comes before block 2.
+	iShort, iNotes := strings.Index(text, pbShortened), strings.Index(text, "Notes, not instructions")
+	if iShort < 0 || iNotes < iShort || strings.Index(text, "(mem_m1)") > iShort {
+		t.Fatalf("shortened line misplaced:\n%s", text)
 	}
 }
 
@@ -232,7 +311,7 @@ func TestProjectBriefNoteWithNewlineStaysOneDataLine(t *testing.T) {
 	if after == "" {
 		t.Fatalf("no data framing:\n%s", text)
 	}
-	if strings.Count(after, "\n") != 0 || !strings.HasPrefix(after, "- [2026-11-01] decision, project:demo: Sneaky Title. Fine. "+pbIgnore) {
+	if strings.Count(after, "\n") != 0 || !strings.HasPrefix(after, "- [2026-11-01] decision: Sneaky Title. Fine. "+pbIgnore) {
 		t.Fatalf("note is not one line inside the framing:\n%q", after)
 	}
 	if strings.Contains(text, "\nOwner rules for") {
