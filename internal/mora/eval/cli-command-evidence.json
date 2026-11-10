@@ -510,6 +510,17 @@
       }
     },
     {
+      "name": "project binding",
+      "paths": ["project", "project bind", "project unbind", "project list", "project which"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestProjectBindListLookup", "TestProjectBindRebindUnbindAndDefaultScope"]},
+        "json": {"status": "test", "tests": ["TestProjectBindListLookup"], "reason": "list --json and which --json emit bare JSON, not an enveloped receipt yet."},
+        "state": {"status": "test", "tests": ["TestProjectBindStoreSurvivesReload", "TestProjectBindHookInstallRecordsBinding"]},
+        "error": {"status": "test", "tests": ["TestProjectBindRefusals"]},
+        "refusal": {"status": "test", "tests": ["TestProjectBindRefusals"]}
+      }
+    },
+    {
       "name": "warning rules",
       "paths": ["rules", "rules add", "rules test", "rules approve", "rules off", "rules list", "rules compile", "rules grant", "rules verify", "rules import"],
       "evidence": {

@@ -190,6 +190,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdIntegrations(ctx, args[1:], stdout)
 	case "hook":
 		return cmdHook(ctx, args[1:], stdout, stderr, stdin)
+	case "project":
+		return cmdProject(ctx, args[1:], stdout, stderr)
 	case "rules":
 		return cmdRules(ctx, args[1:], stdout, stderr, stdin)
 	case "check":

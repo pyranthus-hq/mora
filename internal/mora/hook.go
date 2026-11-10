@@ -333,6 +333,10 @@ func hookInstall(ctx context.Context, args []string, stdout io.Writer) error {
 		if start == "installed" || recall == "installed" {
 			return errors.New("remove Mora hooks from this project's .claude/settings.json before installing project recall")
 		}
+		// Bind first so a failed binding leaves no hook file behind.
+		if _, _, err := bindProjectDir(ctx, root, *scope); err != nil {
+			return err
+		}
 		if err := hookspkg.InstallProjectRecall(path, exe, *scope, root, *threshold); err != nil {
 			return err
 		}

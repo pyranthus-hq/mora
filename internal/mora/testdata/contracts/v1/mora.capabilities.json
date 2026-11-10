@@ -179,6 +179,38 @@
     {
       "json_contract": "exempt",
       "kind": "subcommand",
+      "path": "project bind",
+      "payload": "",
+      "platform": "all",
+      "reason": "prints one line; no JSON mode"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "project list",
+      "payload": "",
+      "platform": "all",
+      "reason": "bare JSON array of dir and scope; not enveloped yet"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "project unbind",
+      "payload": "",
+      "platform": "all",
+      "reason": "prints one line; no JSON mode"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
+      "path": "project which",
+      "payload": "",
+      "platform": "all",
+      "reason": "bare JSON object of dir and scope; not enveloped yet"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
       "path": "remote expose",
       "payload": "",
       "platform": "all",
@@ -415,6 +447,14 @@
       "payload": "",
       "platform": "all",
       "reason": "removed in #137; tombstone row retained so the dispatch drift test still pins the token"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "project",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
       "json_contract": "exempt",
