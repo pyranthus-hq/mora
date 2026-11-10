@@ -521,6 +521,17 @@
       }
     },
     {
+      "name": "given log",
+      "paths": ["given"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestGivenCommandNewestFirstAndEmpty"]},
+        "json": {"status": "test", "tests": ["TestGivenCommandNewestFirstAndEmpty"], "reason": "--json emits a bare JSON array, not an enveloped receipt yet."},
+        "state": {"status": "test", "tests": ["TestGivenLogRotatesAtTwoMegabytes"]},
+        "error": {"status": "test", "tests": ["TestGivenCommandNewestFirstAndEmpty"]},
+        "refusal": {"status": "test", "tests": ["TestGivenCommandNewestFirstAndEmpty"]}
+      }
+    },
+    {
       "name": "warning rules",
       "paths": ["rules", "rules add", "rules test", "rules approve", "rules off", "rules list", "rules compile", "rules grant", "rules verify", "rules import"],
       "evidence": {

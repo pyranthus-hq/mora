@@ -365,6 +365,13 @@
       "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
+      "path": "given",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "bare JSON array of given lines; not enveloped yet"
+    },
+    {
       "path": "loop",
       "kind": "verb",
       "platform": "all",

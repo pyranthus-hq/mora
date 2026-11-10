@@ -74,6 +74,14 @@ type doctorReport struct {
 	// TentativeMemories counts agent notes saved but not yet confirmed by the
 	// owner (tag mora-tentative). Additive; omitted when zero.
 	TentativeMemories int `json:"tentative_memories,omitempty"`
+	// LastGiven is the newest line of the given log. Omitted when the log is empty.
+	LastGiven *doctorLastGiven `json:"last_given,omitempty"`
+}
+
+type doctorLastGiven struct {
+	At      string `json:"at"`
+	Surface string `json:"surface"`
+	Count   *int   `json:"count,omitempty"`
 }
 
 type doctorObservation struct {
@@ -758,6 +766,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			AgentRelaxations:    agentRelax,
 			PendingMCPProposals: pendingProposals,
 			TentativeMemories:   tentativeSaved,
+			LastGiven:           lastGiven(cfg),
 		}
 		if rec, present, _ := readBlockRecord(cfg); present {
 			rep.RebuildBlock = &rec

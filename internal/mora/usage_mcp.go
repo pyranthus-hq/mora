@@ -153,6 +153,7 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 		}
 		trace.event = usageEvent{Tool: name, Results: results}
 	}
+	logGivenMCP(ctx, name, args, inv)
 	return inv
 }
 

@@ -131,17 +131,22 @@ func hookSessionStart(ctx context.Context, stdout io.Writer, stdin io.Reader) er
 	if filepath.IsAbs(in.CWD) {
 		scope, root, found, lerr := lookupProject(cfg, in.CWD)
 		text := ""
+		var emitted []string
 		switch {
 		case lerr != nil:
 			text = `Mora: the project bindings file cannot be read, so no brief is shown. Run "mora project list".`
 		case found:
 			var perr error
-			if text, _, perr = buildProjectBrief(cfg, scope, root, hookNow()); perr != nil {
+			if text, emitted, perr = buildProjectBrief(cfg, scope, root, hookNow()); perr != nil {
 				text = fmt.Sprintf(`Mora: the brief for %s could not be built. Run "mora doctor".`, clipProjectScope(scope))
+				emitted = nil
 			}
 		}
 		if text != "" {
-			_ = writeHookOutput(stdout, "SessionStart", prependBannerLine(healthBannerFrom(healthOf(cfg, hookNow())), text))
+			werr := writeHookOutput(stdout, "SessionStart", prependBannerLine(healthBannerFrom(healthOf(cfg, hookNow())), text))
+			if len(emitted) > 0 {
+				_ = appendGiven(cfg, givenLine{Surface: "hook-session-start", Kind: "project-brief", Caller: "claude-code", Dir: root, Scope: givenScope(scope), Written: boolPtr(werr == nil)}, emitted, len(emitted))
+			}
 			return nil
 		}
 	}
@@ -165,7 +170,9 @@ func hookSessionStart(ctx context.Context, stdout io.Writer, stdin io.Reader) er
 	if notice := reviewNotice(ctx, cfg); notice != "" {
 		body += "\n" + notice
 	}
-	_ = writeHookOutput(stdout, "SessionStart", body)
+	werr := writeHookOutput(stdout, "SessionStart", body)
+	// The daily brief is a digest, not a list of notes: no ids, count 0.
+	_ = appendGiven(cfg, givenLine{Surface: "hook-session-start", Kind: "daily-brief", Caller: "claude-code", Dir: givenHookDir(in.CWD), Written: boolPtr(werr == nil)}, nil, 0)
 	return nil
 }
 
@@ -201,7 +208,7 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 	defer cancel()
 	mems, serr := hookSearchMemories(searchCtx, cfg, prompt, opts.scope, hookRecallLimit*4)
 	var body string
-	recalled := 0
+	var recalledIDs []string
 	if serr == nil && searchCtx.Err() == nil {
 		kept := mems[:0]
 		for _, m := range mems {
@@ -212,13 +219,16 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 			}
 		}
 		mems = kept
-		body, recalled = hookspkg.FormatRecallContextCount(mems, prompt, opts.threshold, hookNow())
+		body, recalledIDs = hookspkg.FormatRecallContextIDs(mems, prompt, opts.threshold, hookNow())
 	}
 	body = prependBannerLine(banner, body)
 	if body == "" {
 		return nil
 	}
-	_ = writeHookOutputWithMessage(stdout, "UserPromptSubmit", body, hookspkg.SteppedInLine(recalled))
+	werr := writeHookOutputWithMessage(stdout, "UserPromptSubmit", body, hookspkg.SteppedInLine(len(recalledIDs)))
+	if len(recalledIDs) > 0 {
+		_ = appendGiven(cfg, givenLine{Surface: "hook-recall", Kind: "recall", Caller: "claude-code", Dir: givenHookDir(in.CWD), Scope: givenScope(opts.scope), Written: boolPtr(werr == nil)}, recalledIDs, len(recalledIDs))
+	}
 	return nil
 }
 
