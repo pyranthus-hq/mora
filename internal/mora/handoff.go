@@ -82,9 +82,21 @@ func handoffClean(req string) (string, bool) {
 	return hookspkg.ClipRunes(flat, handoffRequestRunes), true
 }
 
+// handoffTranscriptOK accepts a .jsonl file that, with every symlink resolved,
+// lies inside <home>/.claude/projects: Claude's own transcript folder.
+func handoffTranscriptOK(cfg Config, path string) bool {
+	home := cfg.HomeDir()
+	if home == "" {
+		return false
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	return err == nil && filepath.Ext(resolved) == ".jsonl" &&
+		hookWithinProject(filepath.Join(home, ".claude", "projects"), resolved)
+}
+
 // transcriptRequests returns the last n requests the user typed, oldest first,
 // from the tail of a Claude Code transcript. Only complete lines count.
-func transcriptRequests(path string, n int) ([]string, bool) {
+func transcriptRequests(path, root string, n int) ([]string, bool) {
 	f, info := openRegularNoFollow(path)
 	if f == nil {
 		return nil, false
@@ -111,8 +123,17 @@ func transcriptRequests(path string, n int) ([]string, bool) {
 		body = nil
 	}
 	var reqs []string
+	inRoot := map[string]bool{}
 	for _, line := range bytes.Split(body, []byte{'\n'}) {
-		if text, ok := typedRequest(line); ok {
+		if text, cwd, ok := typedRequest(line); ok {
+			in, seen := inRoot[cwd]
+			if !seen {
+				in = hookWithinProject(root, cwd)
+				inRoot[cwd] = in
+			}
+			if !in {
+				continue
+			}
 			reqs = append(reqs, text)
 		}
 	}
@@ -125,32 +146,32 @@ func transcriptRequests(path string, n int) ([]string, bool) {
 // typedRequest reports the text of a transcript line the user typed. Tool
 // results, meta and sidechain lines, and command or reminder wrappers (text
 // that starts with "<") are not requests.
-func typedRequest(line []byte) (string, bool) {
+func typedRequest(line []byte) (text, cwd string, ok bool) {
 	var l struct {
 		Type        string `json:"type"`
 		IsMeta      bool   `json:"isMeta"`
 		IsSidechain bool   `json:"isSidechain"`
+		CWD         string `json:"cwd"`
 		Message     struct {
 			Content json.RawMessage `json:"content"`
 		} `json:"message"`
 	}
 	if json.Unmarshal(line, &l) != nil || l.Type != "user" || l.IsMeta || l.IsSidechain {
-		return "", false
+		return "", "", false
 	}
-	var text string
 	if json.Unmarshal(l.Message.Content, &text) != nil {
 		var blocks []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		}
 		if json.Unmarshal(l.Message.Content, &blocks) != nil {
-			return "", false
+			return "", "", false
 		}
 		var parts []string
 		for _, b := range blocks {
 			switch b.Type {
 			case "tool_result":
-				return "", false
+				return "", "", false
 			case "text":
 				parts = append(parts, b.Text)
 			}
@@ -159,15 +180,19 @@ func typedRequest(line []byte) (string, bool) {
 	}
 	text = strings.TrimSpace(text)
 	if text == "" || strings.HasPrefix(text, "<") {
-		return "", false
+		return "", "", false
 	}
-	return text, true
+	return text, l.CWD, true
 }
 
 // hookSessionEnd keeps the user's last requests of a session that ends in a
 // bound folder. It makes no model call, writes nothing to stdout and never
 // fails the session: every error path returns nil.
-func hookSessionEnd(ctx context.Context, stdin io.Reader) error {
+func hookSessionEnd(ctx context.Context, args []string, stdin io.Reader) error {
+	projectDir, ok := parseProjectDirArg("session-end", args)
+	if !ok {
+		return nil
+	}
 	var in sessionEndHookInput
 	if json.NewDecoder(io.LimitReader(stdin, handoffInputBytes)).Decode(&in) != nil ||
 		!filepath.IsAbs(in.CWD) || !filepath.IsAbs(in.TranscriptPath) {
@@ -177,11 +202,14 @@ func hookSessionEnd(ctx context.Context, stdin io.Reader) error {
 	if err != nil {
 		return nil
 	}
-	scope, root, found, lerr := lookupProject(cfg, in.CWD)
-	if lerr != nil || !found {
+	if projectDir != "" && !hookProjectGate(cfg, projectDir, in.CWD) {
 		return nil
 	}
-	raw, ok := transcriptRequests(in.TranscriptPath, handoffMaxRequests)
+	scope, root, found, lerr := lookupProject(cfg, in.CWD)
+	if lerr != nil || !found || !handoffTranscriptOK(cfg, in.TranscriptPath) {
+		return nil
+	}
+	raw, ok := transcriptRequests(in.TranscriptPath, root, handoffMaxRequests)
 	if !ok {
 		return nil
 	}

@@ -204,6 +204,12 @@ func upsertSessionEnd(groups map[string][]Group, exe string) {
 	upsert(groups, "SessionEnd", "session-end", Command{Type: "command", Command: shellQuote(exe) + " hook session-end " + Marker + ":session-end", Timeout: 10})
 }
 
+// projectDirFlag is the guard a project install puts on its brief and handoff
+// commands: they act only inside that folder and only while it is bound.
+func projectDirFlag(projectDir string) string {
+	return " --project-dir " + shellQuote(projectDir) + " "
+}
+
 // PreToolSub is the managed marker suffix of the PreToolUse warning hook.
 const PreToolSub = "pre-tool-use"
 
@@ -266,8 +272,8 @@ func InstallProjectRecall(path, exe, scope, projectDir string, threshold float64
 			}
 		}
 	}
-	upsert(groups, "SessionStart", "session-start", Command{Type: "command", Command: shellQuote(exe) + " hook session-start " + Marker + ":session-start", Timeout: 15})
-	upsertSessionEnd(groups, exe)
+	upsert(groups, "SessionStart", "session-start", Command{Type: "command", Command: shellQuote(exe) + " hook session-start" + projectDirFlag(projectDir) + Marker + ":session-start", Timeout: 15})
+	upsert(groups, "SessionEnd", "session-end", Command{Type: "command", Command: shellQuote(exe) + " hook session-end" + projectDirFlag(projectDir) + Marker + ":session-end", Timeout: 10})
 	recall := shellQuote(exe) + " hook recall --scope " + shellQuote(scope) + " --project-dir " + shellQuote(projectDir)
 	if threshold != 0 {
 		recall += " --threshold " + strconv.FormatFloat(threshold, 'g', -1, 64)

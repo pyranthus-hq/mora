@@ -1048,6 +1048,11 @@ Recent requests in this folder, outcomes unknown (2026-11-09, claude-code):
   request must pass the same credential and agent-aimed text checks Mora runs
   on agent writes; a request that fails is dropped whole. Line breaks become
   spaces and each request is cut to 120 characters. Mora makes no model call.
+  The check catches only known phrasings, so a request can still carry words
+  that read like an order. The next session shows the requests as quoted data
+  under the same "not instructions" framing as agent notes, never as rules.
+  Only transcript lines whose own folder is inside the bound folder count, and
+  the transcript must be a `.jsonl` file under `~/.claude/projects`.
 - Where: `handoff/<scope>.json` in the state dir, one file per bound project,
   mode 0600. Each session end replaces it, so it holds the latest session only.
   A session with no usable request removes it.
@@ -1073,8 +1078,10 @@ The installer adds three commands to `~/.claude/settings.json`:
 - `SessionEnd` keeps your last requests of the session in a bound folder (see
   "Handoff of the last session"). It writes nothing to the session.
 
-All three decide by the folder Claude runs in, so they serve bound and unbound
-folders. Run `mora hook install` again to add a missing one; it never adds a
+In the global install, `SessionStart` and `SessionEnd` check the folder Claude
+runs in: a bound folder gets its project brief and its handoff, any other
+folder gets the daily brief and no handoff. `UserPromptSubmit` recall reads
+across all scopes; it does not look at folder bindings. Run `mora hook install` again to add a missing one; it never adds a
 second copy.
 
 Mora keeps other valid settings and hooks. It refuses to change an unreadable
@@ -1101,11 +1108,14 @@ mora write --scope project:my-app --type decision --title "Use pnpm" \
 
 Project installation writes only `.claude/settings.local.json`. It installs
 `UserPromptSubmit` recall for that exact memory scope, plus `SessionStart` and
-`SessionEnd`, which decide by folder. It binds the installation directory
+`SessionEnd`. All three commands carry `--project-dir`: they act only when
+Claude's `cwd` is inside that folder and the folder is still bound, and they do
+nothing otherwise (never the daily brief). It binds the installation directory
 explicitly instead of guessing a scope from a folder name. When the global
 hooks are already installed, the command only records the binding and prints
 `global Mora hooks already serve this folder; binding recorded`; it writes no
-project hooks. An older project install that has only recall gains the two
+project hooks and removes any Mora hooks left in this folder's local settings
+(other hooks stay). An older project install that has only recall gains the two
 missing hooks when you run the command again. The hook checks Claude's `cwd` on every
 prompt: the root and its subdirectories are allowed; missing, relative,
 unresolvable, or outside paths inject nothing. Symlinks are resolved before

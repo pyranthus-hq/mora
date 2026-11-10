@@ -62,11 +62,11 @@ func cmdHook(ctx context.Context, args []string, stdout, stderr io.Writer, stdin
 	}
 	switch args[0] {
 	case "session-start":
-		return hookSessionStart(ctx, stdout, stdin)
+		return hookSessionStart(ctx, args[1:], stdout, stdin)
 	case "recall":
 		return hookRecall(ctx, args[1:], stdout, stdin)
 	case "session-end":
-		return hookSessionEnd(ctx, stdin)
+		return hookSessionEnd(ctx, args[1:], stdin)
 	case "pre-tool-use":
 		return hookPreToolUse(ctx, stdout, stdin)
 	case "install":
@@ -114,7 +114,31 @@ func cmdHook(ctx context.Context, args []string, stdout, stderr io.Writer, stdin
 	}
 }
 
-func hookSessionStart(ctx context.Context, stdout io.Writer, stdin io.Reader) error {
+// parseProjectDirArg reads the one optional flag of session-start and
+// session-end. A project install writes it; ok is false on any other argument.
+func parseProjectDirArg(name string, args []string) (dir string, ok bool) {
+	fs := flag.NewFlagSet("mora hook "+name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.StringVar(&dir, "project-dir", "", "project directory bound at installation")
+	return dir, fs.Parse(args) == nil && fs.NArg() == 0
+}
+
+// hookProjectGate is the fail-closed check of a project-installed hook: cwd must
+// be inside the installed folder and the folder must still be bound. Every other
+// case, including an unreadable bindings file, means "do nothing".
+func hookProjectGate(cfg Config, projectDir, cwd string) bool {
+	if !hookWithinProject(projectDir, cwd) {
+		return false
+	}
+	_, _, found, err := lookupProject(cfg, cwd)
+	return err == nil && found
+}
+
+func hookSessionStart(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
+	projectDir, ok := parseProjectDirArg("session-start", args)
+	if !ok {
+		return nil
+	}
 	var in sessionStartHookInput
 	if err := json.NewDecoder(stdin).Decode(&in); err != nil {
 		return nil
@@ -125,6 +149,9 @@ func hookSessionStart(ctx context.Context, stdout io.Writer, stdin io.Reader) er
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return nil
+	}
+	if projectDir != "" && !hookProjectGate(cfg, projectDir, in.CWD) {
+		return nil // a project install never falls back to the daily brief
 	}
 	// A folder bound to a project gets that project's owner rules instead of the
 	// daily brief. No binding file, or no match for cwd, keeps the daily brief.
@@ -372,6 +399,14 @@ func hookInstall(ctx context.Context, args []string, stdout io.Writer) error {
 			note := ""
 			if missing := globalHooks.missing(); len(missing) > 0 {
 				note = fmt.Sprintf(" (missing globally: %s; run mora hook install)", strings.Join(missing, ", "))
+			}
+			// Old local Mora hooks would run beside the global ones, possibly
+			// for another scope. Foreign hooks stay.
+			if local, lerr := hookStates(projectPath); lerr == nil && local.any() {
+				if err := hookspkg.Uninstall(projectPath); err != nil {
+					return err
+				}
+				note += "; removed this folder's local Mora hooks"
 			}
 			fmt.Fprintf(stdout, "global Mora hooks already serve this folder; binding recorded%s\n", note)
 			return nil

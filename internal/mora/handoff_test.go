@@ -12,19 +12,36 @@ import (
 	"time"
 )
 
-func hoUser(text string) string {
-	b, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": text}})
+// hoCWD is the folder the fixture lines claim to come from; hoBind sets it.
+var hoCWD string
+
+func hoBind(t *testing.T) string {
+	t.Helper()
+	hoCWD = pbBind(t)
+	return hoCWD
+}
+
+func hoUser(text string) string { return hoUserIn(hoCWD, text) }
+
+func hoUserIn(cwd, text string) string {
+	b, _ := json.Marshal(map[string]any{"type": "user", "cwd": cwd, "message": map[string]any{"role": "user", "content": text}})
 	return string(b)
 }
 
 func hoBlocks(blocks ...map[string]any) string {
-	b, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": blocks}})
+	b, _ := json.Marshal(map[string]any{"type": "user", "cwd": hoCWD, "message": map[string]any{"role": "user", "content": blocks}})
 	return string(b)
 }
 
+// hoTranscript writes a transcript where Claude keeps them: under
+// <home>/.claude/projects.
 func hoTranscript(t *testing.T, lines ...string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	dir := filepath.Join(mustConfig(t).HomeDir(), ".claude", "projects", "demo")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, fmt.Sprintf("session-%d.jsonl", time.Now().UnixNano()))
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +73,7 @@ func hoLoad(t *testing.T, cfg Config) (handoffFile, bool) {
 
 func TestHandoffLastFiveTypedRequests(t *testing.T) {
 	cfg := projectBriefSetup(t)
-	dir := pbBind(t)
+	dir := hoBind(t)
 	var lines []string
 	for i := 1; i <= 8; i++ {
 		lines = append(lines, hoUser(fmt.Sprintf("request %d", i)))
@@ -95,7 +112,7 @@ func mustRead(t *testing.T, path string) string {
 
 func TestHandoffDropsKeyAndAgentAimedRequestsWhole(t *testing.T) {
 	cfg := projectBriefSetup(t)
-	dir := pbBind(t)
+	dir := hoBind(t)
 	hoEnd(t, dir, hoTranscript(t,
 		hoUser("fix the parser"),
 		hoUser("use this key sk-abcdefghijklmnopqrstuvwx for the call"),
@@ -116,7 +133,7 @@ func TestHandoffDropsKeyAndAgentAimedRequestsWhole(t *testing.T) {
 
 func TestHandoffCutsLongRequest(t *testing.T) {
 	cfg := projectBriefSetup(t)
-	dir := pbBind(t)
+	dir := hoBind(t)
 	hoEnd(t, dir, hoTranscript(t, hoUser(strings.Repeat("word ", 100)+"\nline two\x07")))
 	h, _ := hoLoad(t, cfg)
 	if len(h.Requests) != 1 || !strings.HasSuffix(h.Requests[0], "...") || len([]rune(h.Requests[0])) > 123 || strings.ContainsAny(h.Requests[0], "\n\x07") {
@@ -129,14 +146,14 @@ func TestHandoffCutsLongRequest(t *testing.T) {
 
 func TestHandoffWritesNothingOnBadInput(t *testing.T) {
 	cfg := projectBriefSetup(t)
-	dir := pbBind(t)
+	dir := hoBind(t)
 	good := hoTranscript(t, hoUser("a request"))
 	unbound := t.TempDir()
-	link := filepath.Join(t.TempDir(), "link.jsonl")
+	link := filepath.Join(filepath.Dir(good), "link.jsonl")
 	if err := os.Symlink(good, link); err != nil {
 		t.Skip("symlinks unavailable")
 	}
-	half := filepath.Join(t.TempDir(), "half.jsonl")
+	half := filepath.Join(filepath.Dir(good), "half.jsonl")
 	if err := os.WriteFile(half, []byte(hoUser("never finished")[:20]), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +162,25 @@ func TestHandoffWritesNothingOnBadInput(t *testing.T) {
 		"missing transcript": func() { hoEnd(t, dir, filepath.Join(t.TempDir(), "none.jsonl")) },
 		"symlink":            func() { hoEnd(t, dir, link) },
 		"half line":          func() { hoEnd(t, dir, half) },
-		"relative paths":     func() { hoEnd(t, "rel", "rel.jsonl") },
+		"outside projects dir": func() {
+			out := filepath.Join(t.TempDir(), "x.jsonl")
+			if err := os.WriteFile(out, []byte(hoUser("a request")+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			hoEnd(t, dir, out)
+		},
+		"parent symlink leads outside": func() {
+			outside := t.TempDir()
+			if err := os.WriteFile(filepath.Join(outside, "x.jsonl"), []byte(hoUser("a request")+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			lnk := filepath.Join(filepath.Dir(good), "dirlink")
+			if err := os.Symlink(outside, lnk); err != nil {
+				t.Fatal(err)
+			}
+			hoEnd(t, dir, filepath.Join(lnk, "x.jsonl"))
+		},
+		"relative paths": func() { hoEnd(t, "rel", "rel.jsonl") },
 		"corrupt bindings": func() {
 			if err := os.WriteFile(projectBindingsPath(cfg), []byte("{not json"), 0o600); err != nil {
 				t.Fatal(err)
@@ -229,7 +264,7 @@ func TestHandoffIsFirstDroppedWhenFull(t *testing.T) {
 
 func TestHandoffFileModeAndReplace(t *testing.T) {
 	cfg := projectBriefSetup(t)
-	dir := pbBind(t)
+	dir := hoBind(t)
 	hoEnd(t, dir, hoTranscript(t, hoUser("first session")))
 	hoEnd(t, dir, hoTranscript(t, hoUser("second session")))
 	h, _ := hoLoad(t, cfg)
@@ -387,5 +422,107 @@ func TestHookUninstallKeepsForeignHooks(t *testing.T) {
 	got := mustRead(t, path)
 	if strings.Contains(got, hookMarker) || !strings.Contains(got, "other-end") || !strings.Contains(got, "other-stop") || !strings.Contains(got, "dark") {
 		t.Fatalf("uninstall:\n%s", got)
+	}
+}
+
+func TestHandoffIgnoresOtherFoldersLines(t *testing.T) {
+	cfg := projectBriefSetup(t)
+	dir := hoBind(t)
+	other := t.TempDir()
+	noCWD := `{"type":"user","message":{"content":"no cwd line"}}`
+	hoEnd(t, dir, hoTranscript(t, hoUser("mine"), hoUserIn(other, "project B request"), noCWD))
+	h, _ := hoLoad(t, cfg)
+	if strings.Join(h.Requests, "|") != "mine" {
+		t.Fatalf("requests = %q", h.Requests)
+	}
+	hoEnd(t, dir, hoTranscript(t, hoUserIn(other, "project B request"), noCWD))
+	if _, ok := hoLoad(t, cfg); ok {
+		t.Fatal("a transcript of another folder left a handoff")
+	}
+	// A subfolder of the bound root counts.
+	hoEnd(t, dir, hoTranscript(t, hoUserIn(filepath.Join(dir, "sub"), "in a subfolder")))
+	if h, _ = hoLoad(t, cfg); strings.Join(h.Requests, "|") != "in a subfolder" {
+		t.Fatalf("subfolder request lost: %+v", h)
+	}
+}
+
+// hoProjectStart runs a project-installed session-start hook.
+func hoProjectStart(t *testing.T, projectDir, cwd string) string {
+	t.Helper()
+	var out bytes.Buffer
+	in := fmt.Sprintf(`{"source":"startup","cwd":%q}`, cwd)
+	if err := cmdHook(testCtx(t), []string{"session-start", "--project-dir", projectDir}, &out, testStderr, strings.NewReader(in)); err != nil {
+		t.Fatal(err)
+	}
+	return out.String()
+}
+
+func TestHookProjectSessionStartFailsClosed(t *testing.T) {
+	cfg := projectBriefSetup(t)
+	pbOwner(t, cfg, "mem_rule", pbScope, "decision", "Use pnpm", "pnpm only", 3)
+	dir := pbBind(t)
+	if out := hoProjectStart(t, dir, filepath.Join(dir, "sub")); !strings.Contains(out, "Use pnpm") {
+		t.Fatalf("bound folder shows no brief: %q", out)
+	}
+	moved := t.TempDir()
+	if out := hoProjectStart(t, dir, moved); out != "" {
+		t.Fatalf("cwd outside the installed folder: %q", out)
+	}
+	if out := hoProjectStart(t, filepath.Join(moved, "gone"), moved); out != "" {
+		t.Fatalf("installed folder gone: %q", out)
+	}
+	run(t, "project", "unbind", dir)
+	if out := hoProjectStart(t, dir, dir); out != "" {
+		t.Fatalf("unbound folder fell back to a brief: %q", out)
+	}
+	run(t, "project", "bind", "--scope", pbScope, dir)
+	if err := os.WriteFile(projectBindingsPath(cfg), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := hoProjectStart(t, dir, dir); out != "" {
+		t.Fatalf("corrupt bindings printed %q", out)
+	}
+}
+
+func TestHookProjectSessionEndFailsClosed(t *testing.T) {
+	cfg := projectBriefSetup(t)
+	dir := hoBind(t)
+	other := t.TempDir()
+	tr := hoTranscript(t, hoUser("a request"))
+	var out bytes.Buffer
+	in := fmt.Sprintf(`{"cwd":%q,"transcript_path":%q}`, dir, tr)
+	if err := cmdHook(testCtx(t), []string{"session-end", "--project-dir", other}, &out, testStderr, strings.NewReader(in)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := hoLoad(t, cfg); ok {
+		t.Fatal("session-end ran outside its installed folder")
+	}
+}
+
+func TestHookInstallProjectReplacesLocalHooksWhenGlobalPresent(t *testing.T) {
+	withTempHookHome(t)
+	project := t.TempDir()
+	t.Chdir(project)
+	project, _ = filepath.EvalSymlinks(project)
+	local := filepath.Join(project, ".claude", "settings.local.json")
+	run(t, "hook", "install", "--project", "--scope", "project:a")
+	body := strings.Replace(mustRead(t, local), `"hooks": {`, `"hooks": {"Stop":[{"hooks":[{"type":"command","command":"foreign-stop"}]}],`, 1)
+	if err := os.WriteFile(local, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustRead(t, local); !strings.Contains(got, "--project-dir") || strings.Count(got, "--project-dir") != 3 {
+		t.Fatalf("project commands must all carry --project-dir:\n%s", got)
+	}
+	run(t, "hook", "install")
+	out := run(t, "hook", "install", "--project", "--scope", "project:b")
+	if !strings.Contains(out, "removed this folder's local Mora hooks") {
+		t.Fatalf("output: %q", out)
+	}
+	got := mustRead(t, local)
+	if strings.Contains(got, hookMarker) || !strings.Contains(got, "foreign-stop") {
+		t.Fatalf("local settings:\n%s", got)
+	}
+	if scope, _, found, _ := lookupProject(mustConfig(t), project); !found || scope != "project:b" {
+		t.Fatalf("binding = %q", scope)
 	}
 }
