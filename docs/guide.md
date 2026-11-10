@@ -728,6 +728,11 @@ or an agent session variable is set. Keep and reject do what `mora confirm` or
 `mora mcp proposals reject` (reject), do. If a note changes after it is shown,
 the walk does not act on it and shows it again.
 
+While agent notes wait for review, Mora says so: the `write_memory` result
+(`review_notice`), `mora brief`, the MCP brief, the session-start hook and
+`mora doctor` show the count of saved and held notes. Nothing is shown when
+both counts are 0.
+
 The hold filter is coarse. It does not stop a false claim written in plain
 words. An agent with a shell can run `mora confirm` or
 `mora mcp proposals approve`, so tentative is a review aid, not a sandbox.

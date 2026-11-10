@@ -37,6 +37,9 @@ type DigestEnvelope struct {
 	// SharedCorpora is set only by the brief tool, only when subscribed shares
 	// exist (see sharedCorporaPointerFor); digest never sets it.
 	SharedCorpora *sharedCorporaPointer `json:"shared_corpora,omitempty"`
+	// ReviewNotice says agent notes wait for the owner; set only by the brief
+	// tool, only when some wait.
+	ReviewNotice string `json:"review_notice,omitempty"`
 }
 
 // digestSynthesisPrompt builds the instruction the calling agent's model runs to

@@ -71,6 +71,9 @@ type doctorReport struct {
 	// `mora mcp proposals approve` (for example, left over from v0.15.3, whose
 	// default staged every agent write). Additive; omitted when zero.
 	PendingMCPProposals int `json:"pending_mcp_proposals,omitempty"`
+	// TentativeMemories counts agent notes saved but not yet confirmed by the
+	// owner (tag mora-tentative). Additive; omitted when zero.
+	TentativeMemories int `json:"tentative_memories,omitempty"`
 }
 
 type doctorObservation struct {
@@ -712,6 +715,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 
 	pendingProposals, _ := pendingMCPProposalCount(cfg)
+	tentativeSaved, tentativeHeld, tentativeErr := unreviewedAgentNoteCounts(ctx, cfg)
 
 	gitSync := false
 	if _, err := os.Stat(filepath.Join(cfg.VaultDir, ".git")); err == nil {
@@ -753,6 +757,7 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			Repairable: hasSafeDoctorRepair(repairPlan), RepairPlan: repairPlan, Verification: verification,
 			AgentRelaxations:    agentRelax,
 			PendingMCPProposals: pendingProposals,
+			TentativeMemories:   tentativeSaved,
 		}
 		if rec, present, _ := readBlockRecord(cfg); present {
 			rep.RebuildBlock = &rec
@@ -848,7 +853,11 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	// surface "last authed / how long ago" per connected account so the user can
 	// tell at a glance when they last signed in.
 	printGoogleAuthRecency(cfg, stdout, now)
-	if pendingProposals > 0 {
+	// The shared notice replaces the held-only warning; the old line stays as
+	// the fallback when the notice cannot be computed.
+	if notice := reviewNoticeText(tentativeSaved, tentativeHeld, tentativeErr); notice != "" {
+		fmt.Fprintf(stdout, "%s %s\n", sty.warn("warn"), notice)
+	} else if pendingProposals > 0 {
 		fmt.Fprintf(stdout, "%s %d agent write(s) pending in the MCP proposal queue — review with `mora mcp proposals list`, approve with `mora mcp proposals approve <id>`\n", sty.warn("warn"), pendingProposals)
 	}
 	// iMessage readiness prints in a dedicated ORDERED block so the Full Disk

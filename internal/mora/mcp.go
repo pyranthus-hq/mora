@@ -358,17 +358,23 @@ func mcpWriteMemoryWith(ctx context.Context, cfg Config, args map[string]any, op
 	// still needs to know the vault it just wrote into is otherwise healthy
 	// (or not), so both the plain-success and the degraded-success shape carry
 	// the SAME bounded envelope under the "memory" key (Open Q1 shape).
+	notice := func(res map[string]any) map[string]any {
+		if n := reviewNotice(ctx, cfg); n != "" {
+			res["review_notice"] = n
+		}
+		return res
+	}
 	if rerr := indexUpsert(ctx, cfg, m); rerr != nil {
 		// Degraded SUCCESS — the op REMAINS so the index reads dirty (A2), now
 		// backed by durable state instead of one lost warning string. The
 		// reconcile still runs, so the write is covered without a manual rebuild.
 		scheduleAuthoredReconciliation(cfg)
-		return map[string]any{
+		return notice(map[string]any{
 			"memory":      m,
 			"index_stale": true,
 			"warning":     fmt.Sprintf("memory %s saved, but the search index could not be updated: %v — run `mora index rebuild` (do NOT retry the write; it is saved)", m.ID, rerr),
 			"health":      compactHealthOf(cfg, now),
-		}, nil
+		}), nil
 	}
 	// The request path ends after the durable FTS upsert: the write is searchable
 	// now. Its marker stays until the coalesced background reconcile (or the
@@ -385,11 +391,11 @@ func mcpWriteMemoryWith(ctx context.Context, cfg Config, args map[string]any, op
 		// Every byte here rides the tightest MCP ceiling (write_memory 1500 tok
 		// with a max-cap banner), so the response carries no second flag that
 		// restates what health.index already says.
-		return map[string]any{"memory": m, "searchable": true, "health": compactHealthOf(cfg, now)}, nil
+		return notice(map[string]any{"memory": m, "searchable": true, "health": compactHealthOf(cfg, now)}), nil
 	}
 	// A covering rebuild (the cold-start delegate, or a concurrent rebuild that
 	// parsed this file) already retired the marker: searchable and fully indexed.
-	return map[string]any{"memory": m, "searchable": true, "health": compactHealthOf(cfg, now)}, nil
+	return notice(map[string]any{"memory": m, "searchable": true, "health": compactHealthOf(cfg, now)}), nil
 }
 
 // mcpMemoryFromArgs validates and shapes a write_memory request without
@@ -941,25 +947,40 @@ func mcpBrief(ctx context.Context, cfg Config, args map[string]any) (any, error)
 	// the payload still fits max_tokens. With no subscriptions shared is nil
 	// and the payload below is byte-identical to the pre-share one.
 	shared := boundedSharedCorporaPointer(sharedCorporaPointerFor(cfg), budgetChars/2)
+	// The review notice rides outside the item budget's reach: its bytes come
+	// out of the budget first, so the payload still fits max_tokens.
+	notice := reviewNotice(ctx, cfg)
+	if notice != "" {
+		budgetChars = maxInt(0, budgetChars-jsonLen(map[string]any{"review_notice": notice}))
+	}
+	withNotice := func(payload map[string]any) map[string]any {
+		if notice != "" {
+			payload["review_notice"] = notice
+		}
+		return payload
+	}
 	// Reuse the Phase-15 budget machinery VERBATIM (additive — the digest case and
 	// its helpers are untouched): envelope-gated synthesis_prompt, max_tokens
 	// budget, T0-safe by construction (16-03 adds the gate row). Model-free: the
 	// synthesis_prompt is a STRING the agent runs with its own model — no sampling.
 	if shared == nil {
 		if boolArg(args, "envelope", false) {
-			return budgetEnvelopePayload(cfg, d, budgetChars), nil
+			env := budgetEnvelopePayload(cfg, d, budgetChars)
+			env.ReviewNotice = notice
+			return env, nil
 		}
-		return digestMCPPayload(cfg, d, budgetChars), nil
+		return withNotice(digestMCPPayload(cfg, d, budgetChars)), nil
 	}
 	budgetChars = maxInt(0, budgetChars-jsonLen(map[string]any{"shared_corpora": shared}))
 	if boolArg(args, "envelope", false) {
 		env := budgetEnvelopePayload(cfg, d, budgetChars)
 		env.SharedCorpora = shared
+		env.ReviewNotice = notice
 		return env, nil
 	}
 	payload := digestMCPPayloadAtBudget(cfg, d, budgetChars)
 	payload["shared_corpora"] = shared
-	return payload, nil
+	return withNotice(payload), nil
 }
 
 func mcpMeetingPrep(ctx context.Context, cfg Config, args map[string]any) (any, error) {
