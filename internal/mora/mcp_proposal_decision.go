@@ -25,6 +25,7 @@ type mcpProposalDecision struct {
 	Version         int    `json:"version"`
 	ProposalID      string `json:"proposal_id"`
 	Action          string `json:"action"`
+	DecidedVia      string `json:"decided_via,omitempty"`
 	Status          string `json:"status"`
 	MemoryID        string `json:"memory_id,omitempty"`
 	ArgumentsSHA256 string `json:"arguments_sha256"`
@@ -56,6 +57,7 @@ func readMCPProposalDecision(cfg Config, id string) (*mcpProposalDecision, error
 	var d mcpProposalDecision
 	if json.Unmarshal(body, &d) != nil || d.Version != 1 || d.ProposalID != id ||
 		(d.Action != "approve" && d.Action != "reject") ||
+		(d.DecidedVia != "" && d.DecidedVia != "popup") ||
 		(d.Status != "attempted" && d.Status != "approved" && d.Status != "rejected") ||
 		(d.Action == "approve" && d.MemoryID == "") || (d.Action == "reject" && d.MemoryID != "") ||
 		(d.Status == "approved" && d.Action != "approve") || (d.Status == "rejected" && d.Action != "reject") || len(d.ArgumentsSHA256) != 64 {
@@ -88,7 +90,25 @@ func proposalDecisionConflict(d *mcpProposalDecision) error {
 // A durable claim precedes publication. An interrupted attempt fails closed:
 // automatic retry cannot distinguish a failed write from a published, deleted,
 // or retracted memory. Recovery must reconcile the recorded memory ID manually.
+func mcpProposalArgumentsSHA256(args map[string]any) (string, error) {
+	body, err := json.Marshal(args)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(body)), nil
+}
+
 func decideMCPWriteProposal(ctx context.Context, cfg Config, id, action string) (string, error) {
+	return decideMCPWriteProposalVia(ctx, cfg, id, action, "", "")
+}
+
+func decideMCPWriteProposalVia(ctx context.Context, cfg Config, id, action, via, wantArgsSHA256 string) (string, error) {
+	if via != "" && via != "popup" {
+		return "", errors.New("invalid proposal decision via")
+	}
+	if via == "popup" && action != "approve" {
+		return "", errors.New("popup proposal decisions must approve")
+	}
 	if action != "approve" && action != "reject" {
 		return "", errors.New("invalid proposal decision action")
 	}
@@ -134,6 +154,14 @@ func decideMCPWriteProposal(ctx context.Context, cfg Config, id, action string) 
 		if err != nil {
 			return err
 		}
+
+		digest, err := mcpProposalArgumentsSHA256(p.Arguments)
+		if err != nil {
+			return err
+		}
+		if wantArgsSHA256 != "" && wantArgsSHA256 != digest {
+			return errors.New("proposal arguments changed; refusing decision")
+		}
 		if action == "approve" {
 			m, err := mcpMemoryFromArgs(p.Arguments, mcpWriteClock())
 			if err != nil {
@@ -144,11 +172,7 @@ func decideMCPWriteProposal(ctx context.Context, cfg Config, id, action string) 
 			}
 			memoryID = newIDFn()
 		}
-		arguments, err := json.Marshal(p.Arguments)
-		if err != nil {
-			return err
-		}
-		d := &mcpProposalDecision{Version: 1, ProposalID: id, Action: action, Status: "attempted", MemoryID: memoryID, ArgumentsSHA256: fmt.Sprintf("%x", sha256.Sum256(arguments)), AttemptedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+		d := &mcpProposalDecision{Version: 1, ProposalID: id, Action: action, Status: "attempted", MemoryID: memoryID, ArgumentsSHA256: digest, DecidedVia: via, AttemptedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 		// The guard can create the decisions directory on its first use. Sync
 		// its parent before publication so losing that directory cannot erase the
 		// claim while keeping the vault write.
@@ -159,7 +183,11 @@ func decideMCPWriteProposal(ctx context.Context, cfg Config, id, action string) 
 			return fmt.Errorf("cannot durably claim proposal decision; nothing published: %w", err)
 		}
 		if action == "approve" {
-			result, err := mcpWriteMemoryWith(withAgentCaller(ctx, "approved-proposal"), cfg, p.Arguments, withExplicitMemoryID(memoryID))
+			caller := "approved-proposal"
+			if via == "popup" {
+				caller += "/popup"
+			}
+			result, err := mcpWriteMemoryWith(withAgentCaller(ctx, caller), cfg, p.Arguments, withExplicitMemoryID(memoryID))
 			if err != nil {
 				return fmt.Errorf("proposal decision remains unresolved for memory %s; do not retry approval: %w", memoryID, err)
 			}
