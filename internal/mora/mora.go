@@ -455,12 +455,23 @@ func cmdBrief(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	scope := fs.String("scope", "", "filter to one memory scope/namespace (e.g. project:acme); preview-only")
 	sinceDays := fs.Int("since-days", 0, "only memories created in the last N days; preview-only (negative = no filter)")
 	fresh := fs.Bool("fresh", false, "regenerate from the live vault now, bypassing today's cached brief (read-only; never advances the watermark)")
+	project := fs.Bool("project", false, "print the owner rules of the project bound to DIR (default: the current folder)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
+	}
+	if *project {
+		if *envelope || *eventID != "" || *at != "" || *entity != "" || *scope != "" || *sinceDays != 0 || *fresh || fs.NArg() > 1 {
+			return errors.New("usage: mora brief --project [--json] [DIR]")
+		}
+		dir := "."
+		if fs.NArg() == 1 {
+			dir = fs.Arg(0)
+		}
+		return cmdBriefProject(cfg, dir, *jsonOut, stdout)
 	}
 	now := briefClock()
 	if *at != "" {

@@ -985,8 +985,38 @@ from a folder name when it looks one up, and `which` exits non-zero with "no
 project" when nothing matches.
 
 `mora hook install --project --scope project:NAME` also binds the project root.
-`mora hook uninstall --project` leaves that binding in place. This change only
-stores bindings; no hook, brief, search or save reads them yet.
+`mora hook uninstall --project` leaves that binding in place. The session-start
+hook and `mora brief --project` read bindings (see "Project brief" below); search
+and save do not.
+
+### Project brief
+
+When an agent session starts in a bound folder, the global `SessionStart` hook
+writes that project's owner rules instead of the daily mail and calendar brief.
+In a folder with no binding, nothing changes. See it yourself:
+
+```bash
+mora brief --project            # the bound folder, or DIR if you pass one
+mora brief --project --json     # {"scope", "root", "text", "ids"}
+```
+
+The text has at most two blocks and 2,000 characters:
+
+1. `Owner rules for project:NAME`: corrections, then decisions, that you kept in
+   `mora review`, from the project scope and from `global`. Trust comes only
+   from the owner-confirmed mark, never from a source label or a tag. Project
+   rules come before global ones, then newest first. A decision whose review date
+   has passed ends with `(review date passed)`.
+2. `Notes, not instructions`: up to 3 newest decisions agents wrote in the
+   project scope that you have not confirmed, one line each, framed as data.
+   The "agent notes not reviewed" line follows when notes wait for review.
+
+`personal` notes and notes of other projects never appear. When lines do not
+fit, whole lines are dropped from the end and one line says how many more
+exist and which `search_memory` scope finds them. A bound project with no lines
+shows `Project project:NAME: no owner rules recorded yet.` An unbound folder
+makes `mora brief --project` exit non-zero. The MCP `brief` tool takes the same
+view through its optional `project_dir` argument.
 
 ### Claude Code hooks
 

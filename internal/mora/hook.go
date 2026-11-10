@@ -48,6 +48,7 @@ type hookSpecificOutput struct {
 
 type sessionStartHookInput struct {
 	Source string `json:"source"`
+	CWD    string `json:"cwd"`
 }
 
 type recallHookInput struct {
@@ -122,6 +123,16 @@ func hookSessionStart(ctx context.Context, stdout io.Writer, stdin io.Reader) er
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return nil
+	}
+	// A folder bound to a project gets that project's owner rules instead of the
+	// daily brief. No binding, a lookup error or a build error falls through.
+	if filepath.IsAbs(in.CWD) {
+		if scope, root, found, lerr := lookupProject(cfg, in.CWD); lerr == nil && found {
+			if text, _, perr := buildProjectBrief(cfg, scope, root, hookNow()); perr == nil {
+				_ = writeHookOutput(stdout, "SessionStart", prependBannerLine(healthBannerFrom(healthOf(cfg, hookNow())), text))
+				return nil
+			}
+		}
 	}
 	body, _, berr := hookResolveBrief(cfg, hookNow(), briefOpts{})
 	if berr != nil {

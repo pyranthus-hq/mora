@@ -914,6 +914,9 @@ func mcpBrief(ctx context.Context, cfg Config, args map[string]any) (any, error)
 	// advances the Phase-12 watermark (D16-2/SC#4, zero egress). The verbatim-file
 	// path is the human CLI's; the agent reads the STRUCTURED, budgeted projection
 	// (like the digest tool), not a render string.
+	if dir := strArg(args, "project_dir", ""); dir != "" {
+		return projectBriefForDir(cfg, dir, briefClock())
+	}
 	start := time.Now()
 	var err error
 	// A filtered brief uses the filter-aware factory (same delta→24h-window

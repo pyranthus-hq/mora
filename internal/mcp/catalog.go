@@ -118,9 +118,10 @@ var toolCatalog = []ToolDefinition{
 		},
 	},
 	{
-		Name: "brief", Description: "Return the latest what-changed/what-matters brief for session start — the same budgeted, cited, source-grouped daily brief as `digest`, resolved to the freshest available; call this FIRST at the start of a session. Opt into `envelope` for a synthesis_prompt to compose a grounded, cited brief.",
+		Name: "brief", Description: "Return the latest what-changed/what-matters brief for session start — the same budgeted, cited, source-grouped daily brief as `digest`, resolved to the freshest available; call this FIRST at the start of a session. Opt into `envelope` for a synthesis_prompt to compose a grounded, cited brief. Pass `project_dir` (the folder you work in) to get that project's owner rules instead; it errors when the folder is not bound.",
 		Params: []Param{
 			{"max_tokens", "integer", "Approximate token budget for the brief (default ~6000, max ~20000)", false},
+			{"project_dir", "string", "Absolute path of the folder you work in. When it is bound to a project (`mora project bind`), return that project's owner rules instead of the daily brief; error when it is not bound.", false},
 			{"envelope", "boolean", "Opt-in: also return a synthesis_prompt for composing a grounded, cited brief over the items (default false; Mora makes no model call)", false},
 			{"entity", "string", `Filter the brief to memories referencing one person (display name or email/handle). A no-match or ambiguous name returns an error. Preview-only.`, false},
 			{"scope", "string", `Filter the brief to one memory scope/namespace, e.g. "project:acme". Preview-only.`, false},
