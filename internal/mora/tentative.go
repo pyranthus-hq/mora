@@ -24,21 +24,24 @@ var tentativeHoldPatterns = []struct {
 	reason  string
 	pattern *regexp.Regexp
 }{
-	{"money", regexp.MustCompile(`(?i)[$€£₹]\s?\d|\b(price|pricing|invoice|payment|paid|revenue|salary|refund|wire transfer|bank account)\b`)},
 	{"sensitive", regexp.MustCompile(`(?i)\b(ssn|social security|passport|medical|diagnos(is|ed)|lawsuit|attorney|immigration|visa status)\b`)},
 	{"aimed at agents", regexp.MustCompile(`(?i)\b(ignore|disregard|forget)\b.{0,30}\b(previous|prior|above|earlier|all)\b|\bsystem prompt\b|\b(you|agents?|assistants?|claude|codex)\s+(must|should|shall|need to|have to)\b|\bfrom now on\b|\b(always|never)\s+(use|run|call|do|say|tell|ask|write|approve|trust)\b`)},
 }
 
 // tentativeHoldReasons returns why a write must wait for the owner. An empty
-// result means it may save at once as tentative. Type and scope are allow
-// lists, so a new type or scope kind is held until someone decides otherwise.
+// result means it may save at once as tentative. Type is an allow list, so a
+// new type is held until someone decides otherwise. A correction stays held
+// because it changes how other records are retrieved, and those readers do not
+// leave out tentative rows. Scope does not matter. The named automatic readers
+// (see docs/guide.md, "MCP write policy") leave out a tentative row of any type
+// and scope. Vault sync (`mora sync git`) and `mora backup` carry the file, tag
+// included, so a saved tentative note can leave the machine that way.
 func tentativeHoldReasons(m Memory) []string {
 	var reasons []string
-	if m.Type != "insight" && m.Type != "fact" {
+	switch m.Type {
+	case "insight", "fact", "decision", "task":
+	default:
 		reasons = append(reasons, "type "+m.Type)
-	}
-	if !strings.HasPrefix(m.Scope, "project:") {
-		reasons = append(reasons, "scope "+m.Scope)
 	}
 	// source rides into the audit log, so it gets the same check as the text.
 	text := m.Title + "\n" + m.Source + "\n" + m.Text
