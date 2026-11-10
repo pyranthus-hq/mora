@@ -500,7 +500,7 @@
     },
     {
       "name": "claude hooks",
-      "paths": ["hook", "hook session-start", "hook recall", "hook pre-tool-use", "hook install", "hook uninstall", "hook status"],
+      "paths": ["hook", "hook session-start", "hook session-end", "hook recall", "hook pre-tool-use", "hook install", "hook uninstall", "hook status"],
       "evidence": {
         "success": {"status": "platform_seam", "tests": ["TestCLIRegistryHookIOThroughRun", "TestHookInstallFreshSettings", "TestHookStatusReportsInstalledHooks", "TestHookUninstallRemovesOnlyMoraHooks", "TestHookPreToolWarnedGroupPrintsGolden", "TestHookInstallPreToolThroughRun"], "reason": "Hook I/O and settings mutations run through Run in a hermetic HOME; executable discovery is injected."},
         "json": {"status": "test", "tests": ["TestCLIRegistryHookIOThroughRun", "TestHookStatusPreToolJSON"], "reason": "session-start, recall and pre-tool-use emit Claude hook JSON; lifecycle commands emit text; status --json carries pre_tool_use."},
