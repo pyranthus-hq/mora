@@ -360,14 +360,14 @@ func TestProjectBriefSessionStartHook(t *testing.T) {
 	cfg := projectBriefSetup(t)
 	pbOwner(t, cfg, "mem_a", pbScope, "decision", "Use pnpm", "Always use pnpm.", 1)
 	dir := pbBind(t)
-	defer stubHookBrief(t, "daily brief body")()
+	restore := stubHookBrief(t, "daily brief body")
+	t.Cleanup(restore)
 	daily := 0
 	prev := hookResolveBrief
 	hookResolveBrief = func(c Config, n time.Time, o briefOpts) (string, bool, error) {
 		daily++
 		return prev(c, n, o)
 	}
-	t.Cleanup(func() { hookResolveBrief = prev })
 
 	got := pbHook(t, filepath.Join(dir, "sub"))
 	if !strings.HasPrefix(got, "Owner rules for project:demo") || strings.Contains(got, "daily brief body") || daily != 0 {
