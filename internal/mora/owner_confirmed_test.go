@@ -269,11 +269,14 @@ func TestOwnerConfirmedTagIsInertAfterForgeryOrDrift(t *testing.T) {
 	edited, corrected, superseded := kept[0], kept[1], kept[2]
 	stolen := ownerTag(ownerMemory(t, cfg, edited))
 
-	// The same tag pasted on a memory with different text.
+	// The same tag pasted on a memory with different text. The write is an
+	// ordinary one: in the owner terminal `mora write` would confirm it itself.
 	var other bytes.Buffer
-	if err := Run(testCtx(t), []string{"write", "--scope", "project:demo", "--type", "fact", "--title", "Drift edit", "--text", "Different text.", "--json"}, &other, &other, nil); err != nil {
-		t.Fatal(err)
-	}
+	outsideOwnerTerminal(t, func() {
+		if err := Run(testCtx(t), []string{"write", "--scope", "project:demo", "--type", "fact", "--title", "Drift edit", "--text", "Different text.", "--json"}, &other, &other, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
 	var w struct{ ID, Path string }
 	if err := json.Unmarshal(other.Bytes(), &w); err != nil {
 		t.Fatal(err)

@@ -102,7 +102,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 	case "setup":
 		return cmdSetup(ctx, args[1:], stdout, stderr, stdin)
 	case "write":
-		return cmdWrite(ctx, args[1:], stdout, stderr)
+		return cmdWrite(ctx, args[1:], stdout, stderr, stdin)
 	case "read":
 		return cmdRead(ctx, args[1:], stdout, stderr)
 	case "list":
@@ -118,7 +118,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 	case "undo":
 		return cmdUndo(ctx, args[1:], stdout, stderr)
 	case "confirm":
-		return cmdConfirm(ctx, args[1:], stdout, stderr)
+		return cmdConfirm(ctx, args[1:], stdout, stderr, stdin)
 	case "review":
 		return cmdReview(ctx, args[1:], stdout, stderr, stdin)
 	case "forget":
@@ -978,8 +978,9 @@ func withTentative() createOption {
 }
 
 // withOwnerConfirmed saves the memory owner-confirmed, with the tag bound to
-// the memory as written. Only the keep action of `mora review` sets it, and
-// only after the proposal arguments matched the ones the owner was shown.
+// the memory as written. Only the keep action of `mora review` and the
+// owner's own terminal (`mora write`, `mora confirm`) set it; the review keep
+// does so only after the proposal arguments matched the ones the owner was shown.
 // (The digest is not compared to the shown one: a decision with no as_of
 // takes the time of the write.)
 func withOwnerConfirmed() createOption {
@@ -987,11 +988,11 @@ func withOwnerConfirmed() createOption {
 }
 
 // refuseOwnerConfirmedTags keeps every caller-supplied tag list away from the
-// prefix only `mora review` may write.
+// prefix only the owner's terminal may write.
 func refuseOwnerConfirmedTags(tags []string) error {
 	for _, tag := range tags {
 		if strings.HasPrefix(tag, memory.OwnerConfirmedTagPrefix) {
-			return fmt.Errorf("tag %q uses the reserved prefix %s; only keeping a note in `mora review` sets it", tag, memory.OwnerConfirmedTagPrefix)
+			return fmt.Errorf("tag %q uses the reserved prefix %s; only the owner's own terminal sets it", tag, memory.OwnerConfirmedTagPrefix)
 		}
 	}
 	return nil

@@ -64,17 +64,19 @@ type tentativeRow struct {
 }
 
 type confirmReceipt struct {
-	ID          string         `json:"id,omitempty"`
-	Confirmed   bool           `json:"confirmed"`
-	AuditLogged bool           `json:"audit_logged"`
-	Tentative   []tentativeRow `json:"tentative,omitempty"`
+	ID             string         `json:"id,omitempty"`
+	Confirmed      bool           `json:"confirmed"`
+	OwnerConfirmed bool           `json:"owner_confirmed,omitempty"`
+	AuditLogged    bool           `json:"audit_logged"`
+	Tentative      []tentativeRow `json:"tentative,omitempty"`
 }
 
 // cmdConfirm is the owner action that turns a tentative memory into a normal
 // one. There is no MCP tool for it, so an agent cannot confirm through Mora's
 // tools. An agent with a shell can still run this command, the same limit
-// `mora mcp proposals approve` has.
-func cmdConfirm(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+// `mora mcp proposals approve` has. In the owner's own terminal (the check
+// `mora review` makes) it makes any agent note owner-confirmed instead.
+func cmdConfirm(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	fs := flag.NewFlagSet("confirm", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	list := fs.Bool("list", false, "list tentative memories")
@@ -105,24 +107,54 @@ func cmdConfirm(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if err := refuseDashLedPositional("confirm", "memory id", fs.Arg(0)); err != nil {
 		return err
 	}
-	m, logged, err := confirmMemory(ctx, cfg, fs.Arg(0), "", "", stderr)
+	owner := requireReviewTerminal(stdin) == nil
+	sha, digest := "", ""
+	if owner {
+		if sha, digest, err = shownOwnerNote(cfg, fs.Arg(0)); err != nil {
+			return err
+		}
+	}
+	m, logged, err := confirmMemory(ctx, cfg, fs.Arg(0), sha, digest, stderr)
 	if err != nil {
 		return err
 	}
 	if *jsonOut {
-		return emitReceipt(stdout, "mora.confirm", 1, confirmReceipt{ID: m.ID, Confirmed: true, AuditLogged: logged})
+		return emitReceipt(stdout, "mora.confirm", 1, confirmReceipt{ID: m.ID, Confirmed: true, OwnerConfirmed: owner, AuditLogged: logged})
+	}
+	if owner {
+		fmt.Fprintf(stdout, "owner-confirmed %s (%s)\n", m.ID, agentLogTitle(m))
+		return nil
 	}
 	fmt.Fprintf(stdout, "confirmed %s (%s)\n", m.ID, agentLogTitle(m))
 	return nil
+}
+
+// shownOwnerNote returns the content hash and owner digest of the note as it
+// is on disk now. confirmMemory refuses if the file changes before it writes.
+func shownOwnerNote(cfg Config, id string) (sha, digest string, err error) {
+	found, err := findMemory(cfg, id)
+	if err != nil {
+		return "", "", err
+	}
+	m, err := parseMemory(found.Path)
+	if err != nil {
+		return "", "", err
+	}
+	raw, err := os.ReadFile(m.Path)
+	if err != nil {
+		return "", "", err
+	}
+	return indexstore.ContentSHA256(raw), memory.OwnerConfirmedDigest(m), nil
 }
 
 // confirmMemory removes the tentative tag from one memory. A non-empty
 // expectSHA is the content hash of the file the owner saw: the core refuses if
 // the file it reads differs, and writes from that same read. A file system has
 // no compare-and-swap, so the window left is the time between that read and the
-// write. A non-empty ownerDigest (only the `mora review` keep passes one) swaps
-// the tentative tag for the owner-confirmed tag in the same write, and needs
-// expectSHA so the digest is of the bytes the owner saw.
+// write. A non-empty ownerDigest (only the `mora review` keep and `mora confirm`
+// in the owner's terminal pass one) swaps the tentative tag for the
+// owner-confirmed tag in the same write, or adds it to a note that is not
+// tentative, and needs expectSHA so the digest is of the bytes the owner saw.
 func confirmMemory(ctx context.Context, cfg Config, id, expectSHA, ownerDigest string, stderr io.Writer) (Memory, bool, error) {
 	if ownerDigest != "" && expectSHA == "" {
 		return Memory{}, false, errors.New("owner confirmation needs the content hash of the shown note")
@@ -136,7 +168,7 @@ func confirmMemory(ctx context.Context, cfg Config, id, expectSHA, ownerDigest s
 	if err != nil {
 		return Memory{}, false, err
 	}
-	if !memory.IsTentative(m) {
+	if ownerDigest == "" && !memory.IsTentative(m) {
 		return Memory{}, false, fmt.Errorf("memory %s is not tentative", m.ID)
 	}
 	raw, err := os.ReadFile(m.Path)
@@ -189,7 +221,8 @@ func confirmMemory(ctx context.Context, cfg Config, id, expectSHA, ownerDigest s
 
 // withoutTentativeTag edits only the frontmatter tags line, because a render
 // round trip would trim the body and drop keys this binary does not know. A
-// non-empty swap takes the tentative tag's place instead of nothing. Any
+// non-empty swap takes the tentative tag's place instead of nothing, or is
+// added when the note has no tentative tag. Any
 // owner-confirmed tag already on the line is dropped, so only the swap here
 // can make the note owner-confirmed.
 func withoutTentativeTag(raw []byte, swap string) ([]byte, error) {
@@ -219,6 +252,9 @@ func withoutTentativeTag(raw []byte, swap string) ([]byte, error) {
 			default:
 				kept = append(kept, tag)
 			}
+		}
+		if !found && swap != "" {
+			kept, found = append(kept, swap), true
 		}
 		if !found {
 			break

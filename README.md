@@ -287,8 +287,7 @@ in full, with every field an agent acts on, and asks keep, reject, skip or
 quit. A note you keep becomes owner-confirmed: agents see
 `"trust":"owner-confirmed"` and are told to treat it as your own statement. If
 one of the shown fields changes later, that status drops. `mora review --list` prints the list
-in any shell. `mora confirm <id>` keeps one note without that status, and
-`mora undo <id>` removes an agent write. Under this policy `delete_memory` is
+in any shell. `mora confirm <id>` keeps one note: owner-confirmed in your own terminal, without that status anywhere else. `mora write` run in your own terminal saves its note owner-confirmed. `mora undo <id>` removes an agent write. Under this policy `delete_memory` is
 refused, and phone captures go to the queue.
 
 The hold filter is coarse. It does not stop a false claim written in plain

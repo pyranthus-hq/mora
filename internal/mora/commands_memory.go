@@ -16,7 +16,10 @@ import (
 	"time"
 )
 
-func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+// cmdWrite saves the note owner-confirmed when a person runs it in their own
+// terminal, the same check `mora review` makes. An agent's shell fails that
+// check, so its notes stay tentative or agent-written.
+func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	fs := flag.NewFlagSet("write", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	scope := fs.String("scope", "global", "scope")
@@ -93,11 +96,26 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	// memory (os.Link fails EEXIST → re-mint), so a same-instant concurrent writer
 	// never silently loses its write. createMemory sets m.ID and m.Path.
 	var op pendingOp
-	m, op, err = createMemory(ctx, cfg, m)
+	var opts []createOption
+	owner := requireReviewTerminal(stdin) == nil
+	if owner {
+		opts = append(opts, withOwnerConfirmed())
+	}
+	m, op, err = createMemory(ctx, cfg, m, opts...)
 	if err != nil {
 		return err
 	}
 	m = decorateDecision(m, time.Now())
+	done := func(indexed bool) error {
+		if *jsonOut {
+			return emitReceipt(stdout, "mora.write", 1, newWriteReceipt(m, indexed, owner))
+		}
+		if err := emit(stdout, m, false); err != nil || !owner {
+			return err
+		}
+		_, err := fmt.Fprintln(stdout, "saved as owner-confirmed: agents read it as your own statement")
+		return err
+	}
 	// The vault write already succeeded (vault is truth; the index is a derived
 	// cache). Reflect just this one memory into the index (O(1)) instead of a full
 	// vault rebuild, so concurrent agent writers don't serialize whole-vault
@@ -111,10 +129,7 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		// so the index reads dirty until a rebuild covers it (A2). Do not retire it.
 		if errors.Is(err, errRebuildBlocked) {
 			fmt.Fprintf(stderr, "warning: memory saved but the search index was not updated (vault looks empty or unfamiliar); run `mora index rebuild --force` after checking vault_dir\n")
-			if *jsonOut {
-				return emitReceipt(stdout, "mora.write", 1, newWriteReceipt(m, false))
-			}
-			return emit(stdout, m, false)
+			return done(false)
 		}
 		return err
 	}
@@ -132,10 +147,7 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	if err := reconcileAuthoredWrites(ctx, cfg); err != nil {
 		fmt.Fprintf(stderr, "warning: memory saved and text search updated, but full index reconciliation is pending: %v\n", err)
 	}
-	if *jsonOut {
-		return emitReceipt(stdout, "mora.write", 1, newWriteReceipt(m, true))
-	}
-	return emit(stdout, m, false)
+	return done(true)
 }
 
 type writeReceipt struct {
@@ -145,16 +157,19 @@ type writeReceipt struct {
 	Type         string `json:"type"`
 	Title        string `json:"title"`
 	IndexUpdated bool   `json:"index_updated"`
+	// OwnerConfirmed is set only when the note was saved owner-confirmed.
+	OwnerConfirmed bool `json:"owner_confirmed,omitempty"`
 }
 
-func newWriteReceipt(m Memory, indexUpdated bool) writeReceipt {
+func newWriteReceipt(m Memory, indexUpdated, ownerConfirmed bool) writeReceipt {
 	return writeReceipt{
-		ID:           m.ID,
-		Path:         m.Path,
-		Scope:        m.Scope,
-		Type:         m.Type,
-		Title:        m.Title,
-		IndexUpdated: indexUpdated,
+		ID:             m.ID,
+		Path:           m.Path,
+		Scope:          m.Scope,
+		Type:           m.Type,
+		Title:          m.Title,
+		IndexUpdated:   indexUpdated,
+		OwnerConfirmed: ownerConfirmed,
 	}
 }
 func cmdRead(ctx context.Context, args []string, stdout, stderr io.Writer) error {
