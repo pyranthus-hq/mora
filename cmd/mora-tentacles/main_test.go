@@ -128,7 +128,7 @@ func TestSourceHealthAcceptsUnhealthyDoctorExit2AndPreservesUnknownState(t *test
 		t.Fatal(err)
 	}
 	t.Setenv("MORA_BIN", bin)
-	sources, detail, index := sourceHealth()
+	sources, detail, index, _ := sourceHealth()
 	if detail != "" || len(sources) != 2 {
 		t.Fatalf("doctor unhealthy report was rejected: sources=%+v detail=%q", sources, detail)
 	}
@@ -155,12 +155,44 @@ func TestSourceHealthMalformedAndUnavailableAreExplicit(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("MORA_BIN", bin)
-	if sources, detail, index := sourceHealth(); len(sources) != 0 || detail == "" || index.State != "unknown" {
+	if sources, detail, index, _ := sourceHealth(); len(sources) != 0 || detail == "" || index.State != "unknown" {
 		t.Fatalf("malformed response was not marked unavailable: %+v, %q", sources, detail)
 	}
 	t.Setenv("MORA_BIN", filepath.Join(t.TempDir(), "missing"))
-	if sources, detail, index := sourceHealth(); len(sources) != 0 || detail == "" || index.State != "unknown" {
+	if sources, detail, index, _ := sourceHealth(); len(sources) != 0 || detail == "" || index.State != "unknown" {
 		t.Fatalf("missing helper was not marked unavailable: %+v, %q", sources, detail)
+	}
+}
+
+func TestSourceHealthReviewCounts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture")
+	}
+	const head = `{"schema":"mora.doctor.report","schema_version":1,"sources":[]`
+	cases := []struct {
+		name, output string
+		want         *Review
+	}{
+		{"both present", head + `,"tentative_memories":3,"pending_mcp_proposals":2}`, &Review{3, 2}},
+		{"both absent", head + `}`, &Review{0, 0}},
+		{"one present", head + `,"pending_mcp_proposals":4}`, &Review{0, 4}},
+		{"invalid report", `{broken`, nil},
+		{"wrong schema", `{"schema":"other","schema_version":1,"sources":[],"tentative_memories":3}`, nil},
+	}
+	for _, c := range cases {
+		bin := filepath.Join(t.TempDir(), "mora")
+		if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' '"+c.output+"'\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("MORA_BIN", bin)
+		_, _, _, got := sourceHealth()
+		if (got == nil) != (c.want == nil) || (got != nil && *got != *c.want) {
+			t.Fatalf("%s: got %+v want %+v", c.name, got, c.want)
+		}
+	}
+	t.Setenv("MORA_BIN", filepath.Join(t.TempDir(), "missing"))
+	if _, _, _, got := sourceHealth(); got != nil {
+		t.Fatalf("unavailable doctor must omit review: %+v", got)
 	}
 }
 

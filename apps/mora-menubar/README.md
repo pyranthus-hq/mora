@@ -42,6 +42,12 @@ For a deterministic UI preview, run the app executable with `--preview`:
 "apps/mora-menubar/build/Mora Status.app/Contents/MacOS/Mora Status" --preview
 ```
 
+When Mora 0.16.0 or later reports agent notes waiting for the owner, the panel
+shows one row under the headline, such as "3 agent notes to review, 2 held",
+with a hint to run `mora review` in a terminal. The count is information only:
+it does not change the health state or the icon, and no row appears when the
+counts are zero or the doctor report is unavailable.
+
 Preview mode uses clearly labelled fixture data and does not run the collector.
 
 ## Checks

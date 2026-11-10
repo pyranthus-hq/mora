@@ -67,3 +67,16 @@ let malformedFreshJSON = #"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"i
 let malformedFresh = try StatusSnapshot.decode(Data(malformedFreshJSON.utf8))
 check(malformedFresh.sources?.first?.state == "unknown", "fresh source with malformed timestamp is demoted to unknown")
 check(malformedFresh.deviceAggregate == .healthy && malformedFresh.aggregate == .unknown, "malformed source timestamp cannot hide healthy device checks")
+
+let reviewJSON = #"{"generated_at":"2026-11-08T08:00:00Z","devices":[],"review":{"saved":3,"held":2}}"#
+let reviewed = try StatusSnapshot.decode(Data(reviewJSON.utf8))
+check(reviewed.review?.saved == 3 && reviewed.review?.held == 2, "review counts decoded")
+check(reviewed.aggregate == .unknown, "review counts do not change the aggregate")
+let unreviewed = try StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T08:00:00Z","devices":[]}"#.utf8))
+check(unreviewed.review == nil, "absent review stays nil, not zero")
+check(ReviewCounts(saved: 3, held: 0).rowText == "3 agent notes to review", "saved only row text")
+check(ReviewCounts(saved: 0, held: 2).rowText == "2 agent notes held", "held only row text")
+check(ReviewCounts(saved: 3, held: 2).rowText == "3 agent notes to review, 2 held", "saved and held row text")
+check(ReviewCounts(saved: 1, held: 0).rowText == "1 agent note to review", "singular row text")
+check(ReviewCounts(saved: 0, held: 1).rowText == "1 agent note held", "singular held row text")
+check(ReviewCounts(saved: 0, held: 0).rowText == nil, "zero counts give no row")

@@ -71,7 +71,7 @@ final class StatusModel: ObservableObject {
         self.preview = preview
         collector = Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("mora-tentacles")
         if preview {
-            snapshot = try? StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"id":"mac","name":"This Mac","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked.","last_success":"2026-11-08T07:45:00Z"},{"name":"Personal archive","state":"stale","detail":"Fixture data — displayed to demonstrate a stale channel.","last_success":"2026-11-07T07:45:00Z"}]},{"id":"devbox","name":"Devbox","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked."}]},{"id":"windows","name":"Windows (WSL)","connection":"connected","channels":[{"name":"Windows → Mac","state":"unknown","detail":"Fixture data — return path not configured."}]}],"sources":[{"key":"gmail:work","state":"fresh","last_success_at":"2026-11-08T07:45:00Z","detail":"Fixture data — no source content was read."},{"key":"calendar","state":"stale","last_success_at":"2026-11-07T07:45:00Z","detail":"Fixture data — stale connector example."},{"key":"imessage","state":"provider-paused","detail":"Fixture data — unknown state example."}]}"#.utf8))
+            snapshot = try? StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"id":"mac","name":"This Mac","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked.","last_success":"2026-11-08T07:45:00Z"},{"name":"Personal archive","state":"stale","detail":"Fixture data — displayed to demonstrate a stale channel.","last_success":"2026-11-07T07:45:00Z"}]},{"id":"devbox","name":"Devbox","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked."}]},{"id":"windows","name":"Windows (WSL)","connection":"connected","channels":[{"name":"Windows → Mac","state":"unknown","detail":"Fixture data — return path not configured."}]}],"review":{"saved":3,"held":1},"sources":[{"key":"gmail:work","state":"fresh","last_success_at":"2026-11-08T07:45:00Z","detail":"Fixture data — no source content was read."},{"key":"calendar","state":"stale","last_success_at":"2026-11-07T07:45:00Z","detail":"Fixture data — stale connector example."},{"key":"imessage","state":"provider-paused","detail":"Fixture data — unknown state example."}]}"#.utf8))
             lastUpdated = Date()
             detailText = "PREVIEW FIXTURE — no collector was run and no sync was checked."
             return
@@ -168,6 +168,13 @@ struct StatusPanel: View {
                 }
                 .buttonStyle(.borderless).disabled(model.isRefreshing)
                 .accessibilityLabel("Refresh status").help("Refresh status")
+            }
+
+            if let text = model.snapshot?.review?.rowText {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(text).font(.system(size: 12))
+                    Text("Run mora review in a terminal.").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
             }
 
             if let error = model.error {

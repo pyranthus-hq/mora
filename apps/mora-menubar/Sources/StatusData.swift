@@ -5,8 +5,9 @@ struct StatusSnapshot: Decodable {
     let devices: [DeviceStatus]
     let sources: [SourceStatus]?
     let sourcesError: String?
+    let review: ReviewCounts?
 
-    enum CodingKeys: String, CodingKey { case generatedAt = "generated_at", devices, sources, sourcesError = "sources_error" }
+    enum CodingKeys: String, CodingKey { case generatedAt = "generated_at", devices, sources, sourcesError = "sources_error", review }
     static let iso8601 = ISO8601DateFormatter()
     static let fractionalISO8601: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f
@@ -20,6 +21,7 @@ struct StatusSnapshot: Decodable {
         devices = try c.decode([DeviceStatus].self, forKey: .devices)
         do { sources = try c.decodeIfPresent([SourceStatus].self, forKey: .sources) }
         catch { sources = nil }
+        review = try? c.decodeIfPresent(ReviewCounts.self, forKey: .review)
         let reportedError = try c.decodeIfPresent(String.self, forKey: .sourcesError)
         sourcesError = reportedError ?? (sources == nil ? "Connector source health is unavailable." : nil)
     }
@@ -79,6 +81,22 @@ struct StatusSnapshot: Decodable {
         let known = fresh + stale + failed + never + running
         if known < sources.count { parts.append("\(sources.count - known) unknown") }
         return parts.joined(separator: " · ")
+    }
+}
+
+struct ReviewCounts: Decodable {
+    let saved: Int
+    let held: Int
+
+    /// One panel row for unreviewed agent notes; nil when there is nothing to review.
+    var rowText: String? {
+        func notes(_ n: Int) -> String { n == 1 ? "1 agent note" : "\(n) agent notes" }
+        switch (saved > 0, held > 0) {
+        case (true, true): return "\(notes(saved)) to review, \(held) held"
+        case (true, false): return "\(notes(saved)) to review"
+        case (false, true): return "\(notes(held)) held"
+        default: return nil
+        }
     }
 }
 
