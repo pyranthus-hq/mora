@@ -379,6 +379,10 @@ func TestSourceHealthLastGiven(t *testing.T) {
 		{"negative count", `"last_given":{"at":"2026-11-09T14:02:00Z","surface":"hook-recall","count":-1}`, nil},
 		{"huge count", `"last_given":{"at":"2026-11-09T14:02:00Z","surface":"hook-recall","count":100001}`, nil},
 		{"string count", `"last_given":{"at":"2026-11-09T14:02:00Z","surface":"hook-recall","count":"3"}`, nil},
+		{"null count", `"last_given":{"at":"2026-11-09T14:02:00Z","surface":"hook-recall","count":null}`, nil},
+		{"float count", `"last_given":{"at":"2026-11-09T14:02:00Z","surface":"hook-recall","count":3.5}`, nil},
+		{"quoted number count", `"last_given":{"at":"2026-11-09T14:02:00Z","surface":"hook-recall","count":"3"}`, nil},
+		{"object count", `"last_given":{"at":"2026-11-09T14:02:00Z","surface":"hook-recall","count":{}}`, nil},
 	}
 	for _, c := range cases {
 		sources, detail, index, review, got := run(head + "," + c.field + "}")

@@ -262,7 +262,8 @@ func lastGiven(b []byte) *Given {
 	out := &Given{At: g.At, Surface: g.Surface}
 	if len(g.Count) > 0 {
 		var n int
-		if json.Unmarshal(g.Count, &n) != nil || n < 0 || n > 100000 {
+		// json.Unmarshal accepts null into an int as a no-op, so reject it explicitly.
+		if string(g.Count) == "null" || json.Unmarshal(g.Count, &n) != nil || n < 0 || n > 100000 {
 			return nil
 		}
 		out.Count = &n
