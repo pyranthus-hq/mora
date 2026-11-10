@@ -35,6 +35,18 @@ func ownerSaved(t *testing.T, title string) string {
 	}))
 }
 
+// ownerHeldDecision submits a decision that the tentative rule still holds
+// (the text names a sensitive word) and returns the proposal id.
+func ownerHeldDecision(t *testing.T, title string) string {
+	t.Helper()
+	res := tentativeServe(t, map[string]any{"title": title, "text": "Body of " + title + ". Passport renewal.", "type": "decision", "scope": "project:demo"})
+	p, ok := res["proposal"].(map[string]any)
+	if !ok {
+		t.Fatalf("write was not held: %v", res)
+	}
+	return p["id"].(string)
+}
+
 func ownerKeepAll(t *testing.T, n int) string {
 	t.Helper()
 	reviewTerminal(t)
@@ -130,10 +142,13 @@ func TestOwnerConfirmWalkKeepsASavedNote(t *testing.T) {
 
 func TestOwnerConfirmWalkKeepsAHeldNote(t *testing.T) {
 	cfg := reviewSetup(t)
-	pid := reviewHeld(t, "Held tabs")
+	pid := ownerHeldDecision(t, "Held tabs")
 	// No as_of was given, so the walk names the default rather than a time.
-	if out := ownerKeepAll(t, 1); !strings.Contains(out, "decision as of: the time you keep it\n") {
-		t.Fatalf("default as_of not named:\n%s", out)
+	out := ownerKeepAll(t, 1)
+	for _, want := range []string{"decision as of: the time you keep it\n", "created at: the time you keep it\n"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("%q not named:\n%s", want, out)
+		}
 	}
 	d, err := readMCPProposalDecision(cfg, pid)
 	if err != nil || d == nil || d.Status != "approved" {
@@ -158,7 +173,11 @@ func TestOwnerConfirmWalkKeepsAHeldNote(t *testing.T) {
 // even when the agent passes the exact tag the walk would have written.
 func TestOnlyTheWalkKeepMakesANoteOwnerConfirmed(t *testing.T) {
 	forged := func(title, typ string) map[string]any {
-		args := map[string]any{"title": title, "text": "Body of " + title + ".", "type": typ, "scope": "project:demo"}
+		text := "Body of " + title + "."
+		if title == "Held forged note" {
+			text += " Passport renewal." // held under the tentative rule
+		}
+		args := map[string]any{"title": title, "text": text, "type": typ, "scope": "project:demo"}
 		m, err := mcpMemoryFromArgs(args, mcpWriteClock())
 		if err != nil {
 			t.Fatal(err)
@@ -168,28 +187,33 @@ func TestOnlyTheWalkKeepMakesANoteOwnerConfirmed(t *testing.T) {
 	}
 	cases := []struct {
 		name   string
+		title  string
 		policy string
 		typ    string
 		accept func(t *testing.T, cfg Config, res map[string]any) string
 	}{
-		{"tentative then mora confirm", "", "fact", func(t *testing.T, cfg Config, res map[string]any) string {
+		{"tentative then mora confirm", "", "", "fact", func(t *testing.T, cfg Config, res map[string]any) string {
 			id := tentativeMemoryID(t, res)
 			run(t, "confirm", id)
 			return id
 		}},
-		{"tentative held then proposals approve", "", "decision", func(t *testing.T, cfg Config, res map[string]any) string {
+		{"tentative held then proposals approve", "Held forged note", "", "decision", func(t *testing.T, cfg Config, res map[string]any) string {
+			p, ok := res["proposal"].(map[string]any)
+			if !ok {
+				t.Fatalf("write was not held: %v", res)
+			}
+			pid := p["id"].(string)
+			run(t, "mcp", "proposals", "approve", pid)
+			d, _ := readMCPProposalDecision(cfg, pid)
+			return d.MemoryID
+		}},
+		{"propose then proposals approve", "", "propose", "decision", func(t *testing.T, cfg Config, res map[string]any) string {
 			pid := res["proposal"].(map[string]any)["id"].(string)
 			run(t, "mcp", "proposals", "approve", pid)
 			d, _ := readMCPProposalDecision(cfg, pid)
 			return d.MemoryID
 		}},
-		{"propose then proposals approve", "propose", "decision", func(t *testing.T, cfg Config, res map[string]any) string {
-			pid := res["proposal"].(map[string]any)["id"].(string)
-			run(t, "mcp", "proposals", "approve", pid)
-			d, _ := readMCPProposalDecision(cfg, pid)
-			return d.MemoryID
-		}},
-		{"propose then popup approve", "propose", "decision", func(t *testing.T, cfg Config, res map[string]any) string {
+		{"propose then popup approve", "", "propose", "decision", func(t *testing.T, cfg Config, res map[string]any) string {
 			pid := res["proposal"].(map[string]any)["id"].(string)
 			p, _, err := readMCPWriteProposal(cfg, pid)
 			if err != nil {
@@ -202,7 +226,7 @@ func TestOnlyTheWalkKeepMakesANoteOwnerConfirmed(t *testing.T) {
 			}
 			return id
 		}},
-		{"open write", "open", "decision", func(t *testing.T, cfg Config, res map[string]any) string {
+		{"open write", "", "open", "decision", func(t *testing.T, cfg Config, res map[string]any) string {
 			return res["memory"].(map[string]any)["id"].(string)
 		}},
 	}
@@ -212,7 +236,11 @@ func TestOnlyTheWalkKeepMakesANoteOwnerConfirmed(t *testing.T) {
 			if tc.policy != "" {
 				run(t, "config", "mcp-write-policy", tc.policy)
 			}
-			id := tc.accept(t, cfg, tentativeServe(t, forged("Forged note", tc.typ)))
+			title := tc.title
+			if title == "" {
+				title = "Forged note"
+			}
+			id := tc.accept(t, cfg, tentativeServe(t, forged(title, tc.typ)))
 			m := ownerMemory(t, cfg, id)
 			for _, tag := range m.Tags {
 				if strings.HasPrefix(tag, memory.OwnerConfirmedTagPrefix) {
@@ -400,16 +428,37 @@ func TestReviewShowsAndBindsGoverningFields(t *testing.T) {
 	if err := json.Unmarshal(w.Bytes(), &target); err != nil {
 		t.Fatal(err)
 	}
-	decision := tentativeServe(t, map[string]any{
-		"title": "Rerank lane", "text": "We ship the rerank lane.", "type": "decision", "scope": "project:demo", "source": "agent-label",
+	held := func(res map[string]any) string {
+		p, ok := res["proposal"].(map[string]any)
+		if !ok {
+			t.Fatalf("write was not held: %v", res)
+		}
+		return p["id"].(string)
+	}
+	decision := held(tentativeServe(t, map[string]any{
+		// The sensitive word keeps the decision held under the tentative rule.
+		"title": "Rerank lane", "text": "We ship the rerank lane. Passport renewal.", "type": "decision", "scope": "project:demo", "source": "agent-label",
 		"as_of": "2026-01-02T00:00:00Z", "durability": "standing", "flip_conditions": "latency regresses;cost doubles", "review_by": "2027-01-01T00:00:00Z",
-	})["proposal"].(map[string]any)["id"].(string)
-	correction := tentativeServe(t, map[string]any{
+	}))
+	correction := held(tentativeServe(t, map[string]any{
 		"title": "Retire old plan", "text": "The old plan no longer holds.", "type": "correction", "scope": "project:demo",
 		"target": target.ID, "disposition": "outdated",
-	})["proposal"].(map[string]any)["id"].(string)
+	}))
 
-	out := ownerKeepAll(t, 2)
+	// The same decision saved at once as tentative (no sensitive word).
+	savedRes := tentativeServe(t, map[string]any{
+		"title": "Saved plan", "text": "We ship the saved plan.", "type": "decision", "scope": "project:demo", "source": "agent-label",
+		"as_of": "2026-01-02T00:00:00Z", "durability": "standing", "flip_conditions": "latency regresses;cost doubles", "review_by": "2027-01-01T00:00:00Z",
+	})
+	savedID := tentativeMemoryID(t, savedRes)
+
+	out := ownerKeepAll(t, 3)
+	if !strings.Contains(out, "created at: 20") || !strings.Contains(out, "created at: the time you keep it\n") {
+		t.Fatalf("created at not shown for saved and held notes:\n%s", out)
+	}
+	if sm := ownerMemory(t, cfg, savedID); !memory.IsOwnerConfirmed(sm) {
+		t.Fatalf("saved tentative decision not confirmed: %+v", sm.Tags)
+	}
 	for _, want := range []string{
 		"source: agent-label\n",
 		"decision as of: 2026-01-02T00:00:00Z\n",
@@ -511,5 +560,53 @@ func TestCreateMemoryRefusesACallerConfirmedTag(t *testing.T) {
 	}
 	if files, err := allMemoryFiles(cfg); err != nil || len(files) != 0 {
 		t.Fatalf("a refused create wrote %v (%v)", files, err)
+	}
+}
+
+// created_at governs correction eligibility, so editing it in the file drops
+// the trust value.
+func TestEditedCreatedAtDropsOwnerConfirmed(t *testing.T) {
+	cfg := reviewSetup(t)
+	id := ownerSaved(t, "Dated note")
+	ownerKeepAll(t, 1)
+	m := ownerMemory(t, cfg, id)
+	if got := ownerCall(t, "read_memory", map[string]any{"id": id}); !strings.Contains(got, ownerTrustJSON) {
+		t.Fatalf("not confirmed before the edit:\n%s", got)
+	}
+	raw, _ := os.ReadFile(m.Path)
+	edited := bytes.Replace(raw, []byte("created_at: "+m.CreatedAt), []byte("created_at: 2001-01-01T00:00:00Z"), 1)
+	if bytes.Equal(edited, raw) {
+		t.Fatalf("created_at line not found in:\n%s", raw)
+	}
+	if err := os.WriteFile(m.Path, edited, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := ownerCall(t, "read_memory", map[string]any{"id": id}); strings.Contains(got, ownerTrustJSON) {
+		t.Fatalf("edited created_at kept the trust value:\n%s", got)
+	}
+}
+
+// A confirmed note whose file no longer parses is served from the old index
+// row, and that row must not read as owner-confirmed.
+func TestUnreadableFileIsNotOwnerConfirmedInSearch(t *testing.T) {
+	cfg := reviewSetup(t)
+	id := ownerSaved(t, "Zephyr fragile")
+	ownerKeepAll(t, 1)
+	m := ownerMemory(t, cfg, id)
+	if got := ownerCall(t, "search_memory", map[string]any{"query": "zephyr fragile"}); !strings.Contains(got, ownerTrustJSON) {
+		t.Fatalf("not confirmed before the file broke:\n%s", got)
+	}
+	if err := os.WriteFile(m.Path, []byte("---\nid: [unclosed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseMemory(m.Path); err == nil {
+		t.Fatal("test file still parses")
+	}
+	got := ownerCall(t, "search_memory", map[string]any{"query": "zephyr fragile"})
+	if !strings.Contains(got, id) {
+		t.Fatalf("indexed row gone, test proves nothing:\n%s", got)
+	}
+	if strings.Contains(got, "owner-confirmed") {
+		t.Fatalf("unreadable file still owner-confirmed:\n%s", got)
 	}
 }

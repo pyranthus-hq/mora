@@ -9,7 +9,7 @@ func confirmedTag(m Memory) string { return OwnerConfirmedTagPrefix + OwnerConfi
 // while scope, type, title and text are what the owner saw. Every other case
 // carries no trust value and is not an error.
 func TestOwnerConfirmedOnlyCountsOnTheExactTextOfAnOwnAgentMemory(t *testing.T) {
-	base := Memory{ID: "mem_1", Path: "/v/mora/memories/project/demo/mem_1.md", Scope: "project:demo", Type: "fact", Title: "Owner", Text: "Sam owns the pipeline."}
+	base := Memory{ID: "mem_1", Path: "/v/mora/memories/project/demo/mem_1.md", Scope: "project:demo", Type: "fact", Title: "Owner", Text: "Sam owns the pipeline.", CreatedAt: "2026-01-01T00:00:00Z"}
 	tag := confirmedTag(base)
 	cases := []struct {
 		name string
@@ -19,6 +19,7 @@ func TestOwnerConfirmedOnlyCountsOnTheExactTextOfAnOwnAgentMemory(t *testing.T) 
 		{"kept as shown", func(m *Memory) {}, TrustOwnerConfirmed},
 		{"outer whitespace the codec trims", func(m *Memory) { m.Text = "\n" + m.Text + "\n\n" }, TrustOwnerConfirmed},
 		{"text edited afterwards", func(m *Memory) { m.Text = "Sam owns the pipeline and the budget." }, ""},
+		{"created_at edited afterwards", func(m *Memory) { m.CreatedAt = "2026-02-02T00:00:00Z" }, ""},
 		{"title edited afterwards", func(m *Memory) { m.Title = "Owner!" }, ""},
 		{"scope moved afterwards", func(m *Memory) { m.Scope = "global" }, ""},
 		{"type changed afterwards", func(m *Memory) { m.Type = "decision" }, ""},
@@ -75,6 +76,7 @@ func TestOwnerConfirmedDigestBindsEveryGoverningField(t *testing.T) {
 	want := OwnerConfirmedDigest(base())
 	for name, edit := range map[string]func(m *Memory){
 		"source":            func(m *Memory) { m.Source = "user-confirmed" },
+		"created at":        func(m *Memory) { m.CreatedAt = "2026-02-02T00:00:00Z" },
 		"as of":             func(m *Memory) { m.Decision.AsOf = "2020-01-01T00:00:00Z" },
 		"durability":        func(m *Memory) { m.Decision.Durability = "standing" },
 		"flip conditions":   func(m *Memory) { m.Decision.FlipConditions = []string{"a", "b"} },
@@ -94,8 +96,19 @@ func TestOwnerConfirmedDigestBindsEveryGoverningField(t *testing.T) {
 	}
 	// Fields Mora sets itself stay out.
 	m := base()
-	m.ID, m.Path, m.CreatedAt, m.Tags, m.DecisionStatus = "mem_x", "/p", "2026-02-02T00:00:00Z", []string{"keep"}, "current"
+	m.ID, m.Path, m.Tags, m.DecisionStatus = "mem_x", "/p", []string{"keep"}, "current"
 	if OwnerConfirmedDigest(m) != want {
 		t.Error("a field Mora sets changed the digest")
+	}
+}
+
+// Two records equal in everything but created_at do not share a digest, because
+// created_at governs correction eligibility and precedence.
+func TestOwnerConfirmedDigestBindsCreatedAt(t *testing.T) {
+	a := Memory{Scope: "global", Type: "fact", Title: "T", Text: "x", CreatedAt: "2026-01-01T00:00:00Z"}
+	b := a
+	b.CreatedAt = "2026-01-02T00:00:00Z"
+	if OwnerConfirmedDigest(a) == OwnerConfirmedDigest(b) {
+		t.Fatal("created_at is not in the digest")
 	}
 }

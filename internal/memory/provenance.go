@@ -170,14 +170,18 @@ const TrustOwnerConfirmed = "owner-confirmed"
 // acts on or that its writer chose: what `mora review` shows the owner and
 // what OwnerConfirmedDigest binds. Optional fields appear only when set; each
 // flip condition is its own entry. The text is trimmed because the memory file
-// codec trims it. Left out, because Mora sets them and they cannot govern:
-// the id and path, created_at, tags (trust markers; commands refuse the
-// confirmed prefix), the connector fields an agent memory never has, and the
-// read-time projections (decision status, disposition, corrections).
+// codec trims it. created_at is bound because disposition.Project uses it for
+// correction eligibility and precedence. Left out: the id and path, tags (no
+// MCP tool can set them, and commands refuse the confirmed prefix), the
+// connector fields an agent memory never has, and the read-time projections
+// (decision status, disposition, corrections).
 func OwnerConfirmedFields(m Memory) [][2]string {
 	f := [][2]string{{"scope", m.Scope}, {"type", m.Type}, {"title", m.Title}}
 	if m.Source != "" {
 		f = append(f, [2]string{"source", m.Source})
+	}
+	if m.CreatedAt != "" {
+		f = append(f, [2]string{"created at", m.CreatedAt})
 	}
 	if d := m.Decision; d != nil {
 		f = append(f, [2]string{"decision as of", d.AsOf}, [2]string{"decision durability", d.Durability})

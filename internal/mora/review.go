@@ -96,11 +96,11 @@ func reviewNoteFromProposal(p mcpWriteProposal) (reviewNote, error) {
 	}
 	n := reviewNoteFromMemory(m)
 	n.Kind, n.ID, n.Reasons, n.Digest = reviewKindHeld, p.ID, tentativeHoldReasons(m), digest
-	if strArg(p.Arguments, "as_of", "") == "" {
-		for i := range n.Fields {
-			if n.Fields[i][0] == "decision as of" {
-				n.Fields[i][1] = "the time you keep it"
-			}
+	// created_at does not exist until the keep writes the memory.
+	missingAsOf := strArg(p.Arguments, "as_of", "") == ""
+	for i := range n.Fields {
+		if n.Fields[i][0] == "created at" || (missingAsOf && n.Fields[i][0] == "decision as of") {
+			n.Fields[i][1] = "the time you keep it"
 		}
 	}
 	if len(n.Reasons) == 0 {
