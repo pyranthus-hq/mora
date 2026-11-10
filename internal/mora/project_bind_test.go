@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -149,7 +150,8 @@ func TestProjectBindStoreSurvivesReload(t *testing.T) {
 	if err != nil || len(first) != 1 || first[0] != second[0] {
 		t.Fatalf("reload: %+v %+v %v", first, second, err)
 	}
-	if info, err := os.Stat(projectBindingsPath(cfg)); err != nil || info.Mode().Perm() != 0o600 {
+	// Windows does not report Unix permission bits, so skip only the mode check there.
+	if info, err := os.Stat(projectBindingsPath(cfg)); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Errorf("store mode: %v %v", info, err)
 	}
 }
