@@ -26,8 +26,9 @@ type Memory struct {
 	// whether the user agreed with it. It is derived when a record is handed
 	// to an agent through MCP or CLI JSON, and never stored.
 	Provenance string `json:"provenance,omitempty"`
-	// Trust is "tentative" on an agent write nobody has confirmed. It is derived
-	// from TentativeTag when a record is handed out, and never stored.
+	// Trust is "tentative" on an agent write nobody has confirmed, and
+	// "owner-confirmed" on one the owner kept in `mora review`. It is derived
+	// from the tags when a record is handed out, and never stored.
 	Trust string `json:"trust,omitempty"`
 	// EventStart, SourceCreatedAt, and IndexedAt split the three distinct instants
 	// `created_at` conflated on a browse row (#218): when the thing happens, when

@@ -429,7 +429,7 @@ func TestReviewSavedActionsBindToTheShownBytes(t *testing.T) {
 		shown[id] = n
 		reviewSetTitle(t, cfg, id, "swapped after it was shown")
 	}
-	if _, _, err := confirmMemory(testCtx(t), cfg, keepID, shown[keepID].SHA, io.Discard); err == nil || !strings.Contains(err.Error(), "changed after") {
+	if _, _, err := confirmMemory(testCtx(t), cfg, keepID, shown[keepID].SHA, shown[keepID].Confirm, io.Discard); err == nil || !strings.Contains(err.Error(), "changed after") {
 		t.Fatalf("confirm acted on a swapped note: %v", err)
 	}
 	if !reviewTentative(t, cfg, keepID) {

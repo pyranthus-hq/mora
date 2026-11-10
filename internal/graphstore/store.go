@@ -222,6 +222,9 @@ func LoadMemoriesByID(ctx context.Context, db *sql.DB, ids []string, o LoadOptio
 			if full, e := o.Hydrate(m.Path); e == nil {
 				full.Score = m.Score
 				m = full
+			} else {
+				// The row was not verified against the live file.
+				m = memory.WithoutOwnerConfirmedTags(m)
 			}
 		}
 		out = append(out, m)

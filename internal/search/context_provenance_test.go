@@ -60,8 +60,9 @@ func TestContextQuotesAWriterClaimWithoutActingOnIt(t *testing.T) {
 	}
 }
 
-// No field in the vault records that a human accepted a decision, so the line
-// may never say one did.
+// Only the owner keeping a note in `mora review` records adoption (see
+// TestContextSaysTheOwnerConfirmedTheExactText), so without that the line may
+// never say a human accepted a decision.
 func TestContextNeverClaimsAUserAdoptedADecision(t *testing.T) {
 	cfg := config.Config{VaultDir: t.TempDir()}
 	decision := memory.Memory{

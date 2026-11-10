@@ -92,6 +92,9 @@ func searchMemoriesObserved(ctx context.Context, cfg Config, query, scope string
 		if full, ferr := parseMemory(row.Path); ferr == nil {
 			full.Score = row.Score
 			out[i] = full
+		} else {
+			// The row was not verified against the live file.
+			out[i] = memory.WithoutOwnerConfirmedTags(out[i])
 		}
 	}
 	if err := overlayActivityStamps(ctx, db, out); err != nil {

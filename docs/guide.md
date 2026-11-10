@@ -733,6 +733,34 @@ While agent notes wait for review, Mora says so: the `write_memory` result
 `mora doctor` show the count of saved and held notes. Nothing is shown when
 both counts are 0.
 
+When you keep a note in `mora review`, it becomes owner-confirmed. A saved note
+loses `mora-tentative` and gains `mora-owner-confirmed-<digest>` in the same
+write. A held note is saved with that tag. The walk shows every field a reader
+acts on: scope, type, title, source label, the decision fields (as of,
+durability, each flip condition, review by, complete), the correction target
+and disposition (the `meta` line), and the text. The digest is a SHA-256 of all
+of those fields (`OwnerConfirmedFields` and `OwnerConfirmedDigest` in
+`internal/memory/provenance.go`). Search, read, list and context then show
+`"trust":"owner-confirmed"`, and the context line says the owner confirmed this
+exact text in their own terminal. Agents are told to treat such a note as your
+own words. The keep logs an `owner-confirm` line.
+
+Only the keep in `mora review` sets this status. `mora confirm`,
+`mora mcp proposals approve`, `mora write`, `mora teach`, every MCP tool, the
+loopback HTTP routes and companion captures do not. `mora write --tags` and
+`mora teach memory --tags` refuse a tag that starts with
+`mora-owner-confirmed-`, and a `teach correct` or `teach supersede` revision
+does not keep the tag, and `mora confirm` removes one it finds. The tag counts
+only while the note matches what you saw. If anyone edits one of the shown
+fields, or copies the tag to another note, the note shows no trust value. A tag on a connector record, a file copied
+from disk, a tentative note or a row from a subscribed share also counts for
+nothing.
+
+Owner-confirmed is a review record, not a signature. The terminal check stops
+an agent that runs `mora review` through its normal shell tool. It does not stop
+a program that fakes a terminal. A program that can write vault files can also
+write the tag itself.
+
 The hold filter is coarse. It does not stop a false claim written in plain
 words. An agent with a shell can run `mora confirm` or
 `mora mcp proposals approve`, so tentative is a review aid, not a sandbox.

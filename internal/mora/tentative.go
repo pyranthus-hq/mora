@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
+	"github.com/pyranthus-hq/mora/internal/genericutil"
 	indexstore "github.com/pyranthus-hq/mora/internal/index"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
@@ -104,7 +105,7 @@ func cmdConfirm(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if err := refuseDashLedPositional("confirm", "memory id", fs.Arg(0)); err != nil {
 		return err
 	}
-	m, logged, err := confirmMemory(ctx, cfg, fs.Arg(0), "", stderr)
+	m, logged, err := confirmMemory(ctx, cfg, fs.Arg(0), "", "", stderr)
 	if err != nil {
 		return err
 	}
@@ -119,8 +120,13 @@ func cmdConfirm(ctx context.Context, args []string, stdout, stderr io.Writer) er
 // expectSHA is the content hash of the file the owner saw: the core refuses if
 // the file it reads differs, and writes from that same read. A file system has
 // no compare-and-swap, so the window left is the time between that read and the
-// write.
-func confirmMemory(ctx context.Context, cfg Config, id, expectSHA string, stderr io.Writer) (Memory, bool, error) {
+// write. A non-empty ownerDigest (only the `mora review` keep passes one) swaps
+// the tentative tag for the owner-confirmed tag in the same write, and needs
+// expectSHA so the digest is of the bytes the owner saw.
+func confirmMemory(ctx context.Context, cfg Config, id, expectSHA, ownerDigest string, stderr io.Writer) (Memory, bool, error) {
+	if ownerDigest != "" && expectSHA == "" {
+		return Memory{}, false, errors.New("owner confirmation needs the content hash of the shown note")
+	}
 	found, err := findMemory(cfg, id)
 	if err != nil {
 		return Memory{}, false, err
@@ -140,12 +146,19 @@ func confirmMemory(ctx context.Context, cfg Config, id, expectSHA string, stderr
 	if expectSHA != "" && indexstore.ContentSHA256(raw) != expectSHA {
 		return Memory{}, false, fmt.Errorf("memory %s changed after it was shown; nothing was done", m.ID)
 	}
-	body, err := withoutTentativeTag(raw)
+	action, swap := "confirm", ""
+	if ownerDigest != "" {
+		action, swap = "owner-confirm", memory.OwnerConfirmedTagPrefix+ownerDigest
+	}
+	body, err := withoutTentativeTag(raw, swap)
 	if err != nil {
 		return Memory{}, false, fmt.Errorf("memory %s: %w", m.ID, err)
 	}
 	if m, err = parseMemoryBytes(m.Path, body); err != nil {
 		return Memory{}, false, err
+	}
+	if ownerDigest != "" && (memory.OwnerConfirmedDigest(m) != ownerDigest || !memory.IsOwnerConfirmed(m)) {
+		return Memory{}, false, fmt.Errorf("memory %s cannot be owner-confirmed as shown; nothing was done", m.ID)
 	}
 	op, err := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindWrite, Path: m.Path, ContentSHA256: indexstore.ContentSHA256(body)})
 	if err != nil {
@@ -156,7 +169,7 @@ func confirmMemory(ctx context.Context, cfg Config, id, expectSHA string, stderr
 		return Memory{}, false, err
 	}
 	logged := true
-	if lerr := appendAgentWriteLog(cfg, time.Now(), "confirm", m, "cli"); lerr != nil {
+	if lerr := appendAgentWriteLog(cfg, time.Now(), action, m, "cli"); lerr != nil {
 		logged = false
 		fmt.Fprintf(stderr, "warning: memory %s confirmed, but %s could not be appended: %v\n", m.ID, agentWriteLogName, lerr)
 	}
@@ -175,8 +188,11 @@ func confirmMemory(ctx context.Context, cfg Config, id, expectSHA string, stderr
 }
 
 // withoutTentativeTag edits only the frontmatter tags line, because a render
-// round trip would trim the body and drop keys this binary does not know.
-func withoutTentativeTag(raw []byte) ([]byte, error) {
+// round trip would trim the body and drop keys this binary does not know. A
+// non-empty swap takes the tentative tag's place instead of nothing. Any
+// owner-confirmed tag already on the line is dropped, so only the swap here
+// can make the note owner-confirmed.
+func withoutTentativeTag(raw []byte, swap string) ([]byte, error) {
 	lines := strings.SplitAfter(string(raw), "\n")
 	for i, line := range lines {
 		if i > 0 && strings.TrimRight(line, "\r\n") == "---" {
@@ -185,17 +201,29 @@ func withoutTentativeTag(raw []byte) ([]byte, error) {
 		if !strings.HasPrefix(line, "tags: [") {
 			continue
 		}
-		edited := line
-		for _, form := range []string{", " + memory.TentativeTag, memory.TentativeTag + ", ", memory.TentativeTag} {
-			if strings.Contains(edited, form) {
-				edited = strings.Replace(edited, form, "", 1)
-				break
-			}
-		}
-		if edited == line {
+		body := strings.TrimRight(line, "\r\n")
+		inner, ok := strings.CutSuffix(strings.TrimPrefix(body, "tags: ["), "]")
+		if !ok {
 			break
 		}
-		lines[i] = edited
+		var kept []string
+		found := false
+		for _, tag := range genericutil.SplitCSV(inner) {
+			switch {
+			case tag == memory.TentativeTag:
+				if !found && swap != "" {
+					kept = append(kept, swap)
+				}
+				found = true
+			case strings.HasPrefix(tag, memory.OwnerConfirmedTagPrefix):
+			default:
+				kept = append(kept, tag)
+			}
+		}
+		if !found {
+			break
+		}
+		lines[i] = "tags: [" + strings.Join(kept, ", ") + "]" + line[len(body):]
 		return []byte(strings.Join(lines, "")), nil
 	}
 	return nil, errors.New("tentative tag not found in the frontmatter tags line")

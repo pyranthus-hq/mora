@@ -689,7 +689,8 @@ func mcpListMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 	// boundary search_memory uses, so the field is paid for rather than added
 	// to an already-full payload. A browse row is the same claim a search row
 	// is, and an agent reading a list has the same reason to know who wrote it.
-	budgeted, dropped := budgetSearchResults(withProvenance(snippetMemories(decorateBrowseRecency(res), "")), searchMemoryResultsBudgetBytes)
+	// Trust is derived before the snippet flattens the text its digest covers.
+	budgeted, dropped := budgetSearchResults(snippetMemories(withProvenance(decorateBrowseRecency(res)), ""), searchMemoryResultsBudgetBytes)
 	out := map[string]any{"memories": budgeted, "health": compactHealthOf(cfg, now)}
 	if filter.Source != "" {
 		out["source"] = filter.Source
