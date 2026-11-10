@@ -156,10 +156,7 @@ struct ReviewView: View {
         return VStack(alignment: .leading, spacing: 6) {
             Text(verbatim: note.title).font(.system(size: 13, weight: .semibold)).textSelection(.enabled)
             Text(verbatim: note.kindLine).font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
-            ScrollView {
-                Text(verbatim: note.text).font(.system(size: 12)).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-            }.frame(height: 130)
+            NoteText(text: note.text)
             if let warning = note.keepWarning {
                 Text(verbatim: warning).font(.system(size: 11)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
@@ -174,5 +171,23 @@ struct ReviewView: View {
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+    }
+}
+
+/// The note text at its own height, up to 180 points; longer text scrolls inside.
+private struct NoteText: View {
+    let text: String
+
+    private var label: some View {
+        Text(verbatim: text).font(.system(size: 12)).textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    var body: some View {
+        ViewThatFits(in: .vertical) {
+            label.fixedSize(horizontal: false, vertical: true)
+            ScrollView { label }
+        }
+        .frame(maxHeight: 180)
     }
 }
