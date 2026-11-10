@@ -381,6 +381,8 @@ type briefResult struct {
 	// SharedCorpora points at subscribed shares the brief does not summarize;
 	// absent with no subscriptions.
 	SharedCorpora *sharedCorporaPointer `json:"shared_corpora,omitempty"`
+	// ReviewNotice says agent notes wait for review; absent when none do.
+	ReviewNotice string `json:"review_notice,omitempty"`
 }
 
 // briefDigest factors the resolveBrief GENERATE semantics so the CLI envelope
@@ -500,10 +502,11 @@ func cmdBrief(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	// The pointer is added at render time, never written into the persisted
 	// brief artifact, so a cached brief stays exactly what was generated.
 	shared := sharedCorporaPointerFor(cfg)
+	notice := reviewNotice(ctx, cfg)
 	if *jsonOut {
 		// Byte-clean structured result; --envelope has no effect on --json (the
 		// envelope is a human-stdout addition, like pulse --digest --envelope).
-		return emitReceipt(stdout, "mora.brief", 1, briefResult{Generated: generated, Body: body, SharedCorpora: shared})
+		return emitReceipt(stdout, "mora.brief", 1, briefResult{Generated: generated, Body: body, SharedCorpora: shared, ReviewNotice: notice})
 	}
 	if generated {
 		// Freshly generated: apply the TTY skin (off-TTY this is a no-op, byte-clean).
@@ -511,6 +514,9 @@ func cmdBrief(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	}
 	fmt.Fprintln(stdout, body)
 	printSharedCorporaPointer(stdout, shared, "this brief")
+	if notice != "" {
+		fmt.Fprintln(stdout, notice)
+	}
 	if *envelope {
 		// Build the brief digest the SAME way the body was generated so the
 		// synthesis_prompt cites the SAME items. A filtered brief uses the

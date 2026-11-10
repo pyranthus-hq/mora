@@ -253,7 +253,7 @@ func TestExplicitProposeStillQueuesAndDoctorCountsPending(t *testing.T) {
 	}
 
 	out, _ := runErr(t, "doctor")
-	if !strings.Contains(out, "2 agent write(s) pending in the MCP proposal queue") || !strings.Contains(out, "mora mcp proposals approve <id>") {
+	if !strings.Contains(out, "Agent notes not reviewed: 0 saved, 2 held.") || !strings.Contains(out, `"mora review"`) {
 		t.Fatalf("doctor does not report the pending proposals:\n%s", out)
 	}
 	jsonOut, _ := runErr(t, "doctor", "--json")
@@ -271,12 +271,12 @@ func TestExplicitProposeStillQueuesAndDoctorCountsPending(t *testing.T) {
 		t.Fatalf("approved proposal %s not logged:\n%s", memID, log)
 	}
 	out, _ = runErr(t, "doctor")
-	if !strings.Contains(out, "1 agent write(s) pending") {
+	if !strings.Contains(out, "Agent notes not reviewed: 0 saved, 1 held.") {
 		t.Fatalf("doctor pending count did not drop to 1:\n%s", out)
 	}
 	run(t, "mcp", "proposals", "reject", ps[1].ID)
 	out, _ = runErr(t, "doctor")
-	if strings.Contains(out, "pending in the MCP proposal queue") {
+	if strings.Contains(out, "Agent notes not reviewed") {
 		t.Fatalf("doctor still reports pending proposals after the queue emptied:\n%s", out)
 	}
 }

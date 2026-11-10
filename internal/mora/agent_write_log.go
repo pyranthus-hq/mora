@@ -3,6 +3,7 @@ package mora
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"github.com/pyranthus-hq/mora/internal/companion"
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 // agentWriteLogName is the plain-text, append-only audit log of agent writes.
@@ -229,6 +231,75 @@ func pendingMCPProposalCount(cfg Config) (int, error) {
 		}
 	}
 	return n, nil
+}
+
+// reviewNoticeBudget bounds the saved-note count so the notice can never hold a
+// write or a session start. On a lock or a slow disk the notice is dropped.
+const reviewNoticeBudget = 200 * time.Millisecond
+
+// errIndexNotSettled means a pending index operation could make the saved count
+// wrong, so no count is shown.
+var errIndexNotSettled = errors.New("index has unfinished operations")
+
+// unreviewedAgentNoteCounts returns how many agent notes wait for the owner:
+// saved tentative memories and held MCP proposals. The saved count is one
+// COUNT(*) over the memories table with a computed predicate, so it scans the
+// table once. That is acceptable: it reads one short TEXT column from the
+// index, never parses a memory file, and stops at reviewNoticeBudget. The
+// index is opened read-only with a short busy timeout and is never rebuilt. A
+// missing index, a lock, a timeout, or an index with unfinished write
+// operations returns an error, and the caller shows no notice rather than a
+// count that may be wrong.
+func unreviewedAgentNoteCounts(ctx context.Context, cfg Config) (saved, held int, err error) {
+	ctx, cancel := context.WithTimeout(ctx, reviewNoticeBudget)
+	defer cancel()
+	// A write marker not yet in its FTS-committed form (or a delete not yet
+	// unlinked) means the index may disagree with the vault files.
+	ops, err := listPendingOps(cfg)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, op := range ops {
+		if !op.FTSCommitted && !op.Unlinked {
+			return 0, 0, errIndexNotSettled
+		}
+	}
+	// The later busy_timeout pragma overrides the 15 s one in the shared DSN.
+	db, err := sql.Open("sqlite", roIndexDSN(cfg)+"&_pragma=busy_timeout(100)")
+	if err != nil {
+		return 0, 0, err
+	}
+	defer db.Close()
+	var v int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&v); err != nil {
+		return 0, 0, err
+	}
+	if v != indexSchemaVersion {
+		return 0, 0, fmt.Errorf("index schema v%d, want v%d", v, indexSchemaVersion)
+	}
+	// instr is case-sensitive, like memory.IsTentative; LIKE is not.
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories WHERE instr(','||tags||',', ?) > 0`, ","+memory.TentativeTag+",").Scan(&saved); err != nil {
+		return 0, 0, err
+	}
+	if held, err = pendingMCPProposalCount(cfg); err != nil {
+		return 0, 0, err
+	}
+	return saved, held, nil
+}
+
+// reviewNotice is the one-line notice that agent notes wait for review. It is
+// empty when nothing waits, and when a count fails: the notice must never fail
+// the write, brief, hook or doctor call that carries it.
+func reviewNotice(ctx context.Context, cfg Config) string {
+	saved, held, err := unreviewedAgentNoteCounts(ctx, cfg)
+	return reviewNoticeText(saved, held, err)
+}
+
+func reviewNoticeText(saved, held int, err error) string {
+	if err != nil || saved+held == 0 {
+		return ""
+	}
+	return fmt.Sprintf("Agent notes not reviewed: %d saved, %d held. The owner can run \"mora review\".", saved, held)
 }
 
 // mcpClientName reads clientInfo.name from an initialize request.
