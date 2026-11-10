@@ -66,7 +66,11 @@ func approveHeldWriteByPopup(ctx context.Context, cfg Config, held any) any {
 		fmt.Fprintf(&msg, "%s: %s\n", field.name, strconv.Quote(field.value))
 	}
 	msg.WriteString("flags:")
-	for _, reason := range tentativeHoldReasons(m) {
+	reasons := tentativeHoldReasons(m)
+	if len(reasons) == 0 {
+		msg.WriteString(" none")
+	}
+	for _, reason := range reasons {
 		msg.WriteString(" " + strconv.Quote(reason))
 	}
 	yes, err := mcppkg.Elicit(ctx, msg.String(), "save", "Save this memory?", mcpPopupTimeout)
