@@ -392,12 +392,17 @@ func TestProjectBriefSessionStartHook(t *testing.T) {
 	if got := pbHook(t, filepath.Join(dir, "sub")); got != want || daily != 0 {
 		t.Fatalf("corrupt projects.json: calls %d, got %q", daily, got)
 	}
-	// A binding that is found but cannot build shows one line too.
-	bad := fmt.Sprintf(`{"bindings":[{"dir":%q,"scope":"personal"}]}`, dir)
-	if err := os.WriteFile(filepath.Join(cfg.ConfigDir, "projects.json"), []byte(bad), 0o600); err != nil {
+	// A valid binding whose brief cannot build (corrupt governance ledger) shows one line too.
+	if err := os.WriteFile(filepath.Join(cfg.ConfigDir, "projects.json"), []byte(fmt.Sprintf(`{"bindings":[{"dir":%q,"scope":%q}]}`, dir, pbScope)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	want = `Mora: the brief for personal could not be built. Run "mora doctor".`
+	if err := os.MkdirAll(filepath.Dir(governancePath(cfg)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(governancePath(cfg), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want = fmt.Sprintf(`Mora: the brief for %s could not be built. Run "mora doctor".`, pbScope)
 	if got := pbHook(t, dir); got != want || daily != 0 {
 		t.Fatalf("builder failure: calls %d, got %q", daily, got)
 	}
