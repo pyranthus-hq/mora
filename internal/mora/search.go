@@ -93,9 +93,8 @@ func searchMemoriesObserved(ctx context.Context, cfg Config, query, scope string
 			full.Score = row.Score
 			out[i] = full
 		} else {
-			// Fail closed: a confirmed tag matches the old indexed content, so a
-			// file that no longer parses must not read as owner-confirmed.
-			out[i].Tags = withoutOwnerConfirmedTags(out[i].Tags)
+			// The row was not verified against the live file.
+			out[i] = memory.WithoutOwnerConfirmedTags(out[i])
 		}
 	}
 	if err := overlayActivityStamps(ctx, db, out); err != nil {
@@ -212,14 +211,4 @@ func withProvenance(mems []Memory) []Memory {
 func ftsQuery(q string) string { return searchpkg.FTSQuery(q) }
 func parseSearchArgs(args []string) (string, int, bool, []string, error) {
 	return searchpkg.ParseArgs(args)
-}
-
-func withoutOwnerConfirmedTags(tags []string) []string {
-	kept := make([]string, 0, len(tags))
-	for _, t := range tags {
-		if !strings.HasPrefix(t, memory.OwnerConfirmedTagPrefix) {
-			kept = append(kept, t)
-		}
-	}
-	return kept
 }

@@ -610,3 +610,58 @@ func TestUnreadableFileIsNotOwnerConfirmedInSearch(t *testing.T) {
 		t.Fatalf("unreadable file still owner-confirmed:\n%s", got)
 	}
 }
+
+// ownerBrokenConfirmed confirms a note, breaks its file, and returns the id.
+func ownerBrokenConfirmed(t *testing.T, cfg Config, title string) string {
+	t.Helper()
+	id := ownerSaved(t, title)
+	ownerKeepAll(t, 1)
+	m := ownerMemory(t, cfg, id)
+	if err := os.WriteFile(m.Path, []byte("---\nid: [unclosed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseMemory(m.Path); err == nil {
+		t.Fatal("test file still parses")
+	}
+	return id
+}
+
+// context_memory reads the indexed row when the live file is unreadable; it
+// must not claim the owner confirmed it.
+func TestUnreadableFileIsNotOwnerConfirmedInContext(t *testing.T) {
+	cfg := reviewSetup(t)
+	id := ownerBrokenConfirmed(t, cfg, "Quillon fragile")
+	got := ownerCall(t, "context_memory", map[string]any{"query": "quillon fragile"})
+	if !strings.Contains(got, "Quillon fragile") {
+		t.Fatalf("indexed row gone, test proves nothing (%s):\n%s", id, got)
+	}
+	for _, bad := range []string{"owner-confirmed", "the owner confirmed", "owner then confirmed"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("unreadable file shows %q:\n%s", bad, got)
+		}
+	}
+}
+
+// The hybrid path loads rows by id from the index and falls back to them when
+// hydration fails.
+func TestUnreadableFileIsNotOwnerConfirmedInHybridSearch(t *testing.T) {
+	cfg := reviewSetup(t)
+	id := ownerBrokenConfirmed(t, cfg, "Marlow fragile")
+	mems, _, err := hybridSearchTrace(testCtx(t), cfg, "marlow fragile", "", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, m := range memory.WithProvenanceAll(mems) {
+		if m.ID != id {
+			continue
+		}
+		found = true
+		if m.Trust == memory.TrustOwnerConfirmed || memory.IsOwnerConfirmed(m) {
+			t.Fatalf("unreadable file is owner-confirmed via hybrid: %+v", m.Tags)
+		}
+	}
+	if !found {
+		t.Fatalf("indexed row gone, test proves nothing: %d rows", len(mems))
+	}
+}

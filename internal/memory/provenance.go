@@ -229,6 +229,21 @@ func IsOwnerConfirmed(m Memory) bool {
 	return false
 }
 
+// WithoutOwnerConfirmedTags returns the record without owner-confirmed tags.
+// Read paths call it on a row built from index columns when the live file
+// could not be parsed: the tag matches the old indexed content, so the row
+// must not read as owner-confirmed.
+func WithoutOwnerConfirmedTags(m Memory) Memory {
+	kept := make([]string, 0, len(m.Tags))
+	for _, t := range m.Tags {
+		if !strings.HasPrefix(t, OwnerConfirmedTagPrefix) {
+			kept = append(kept, t)
+		}
+	}
+	m.Tags = kept
+	return m
+}
+
 func deriveTrust(m Memory) string {
 	if IsTentative(m) {
 		return TrustTentative

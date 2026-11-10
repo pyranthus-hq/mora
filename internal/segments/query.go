@@ -159,6 +159,9 @@ func AdmitCandidates(ctx context.Context, db *sql.DB, candidates []memory.Memory
 		if hydrate != nil {
 			if full, ferr := hydrate(m.Path); ferr == nil {
 				m = full
+			} else {
+				// The row was not verified against the live file.
+				m = memory.WithoutOwnerConfirmedTags(m)
 			}
 		}
 		loaded[m.ID] = m
