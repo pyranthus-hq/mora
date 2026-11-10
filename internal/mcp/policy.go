@@ -71,3 +71,9 @@ func MutationAction(policy, tool string) (string, error) {
 		return ActionExecute, nil
 	}
 }
+
+// ProjectInstruction is the one sentence a server started for a bound project
+// folder adds to its instructions. The caller cleans scope and root.
+func ProjectInstruction(scope, root string) string {
+	return fmt.Sprintf("This server was started for project %s (folder %s). Call brief first for the owner's rules of this project; write_memory without a scope saves to %s.", scope, root, scope)
+}

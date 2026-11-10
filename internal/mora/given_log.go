@@ -218,7 +218,7 @@ func givenFromMCP(name string, args map[string]any, inv mcpToolInvocation) (ids 
 		return nil, -1, true
 	case "brief":
 		res, isProject := inv.value.(projectBriefResult)
-		if strArg(args, "project_dir", "") == "" || !isProject {
+		if !isProject {
 			return nil, 0, false
 		}
 		return res.IDs, len(res.IDs), true
