@@ -148,18 +148,53 @@ func TestRerankBoundedMovement(t *testing.T) {
 		}
 	}
 	got := RerankByMetadata(rows)
-	maxUp := rerankCorrection + rerankOwnerConfirmed
+	maxBonus := rerankCorrection + rerankOwnerConfirmed
 	for from, m := range rows {
 		to := rrIndex(got, m.ID)
-		net := rerankNet(m)
-		up := max(net, 0)
-		// Up: own bonus, plus at most one place per tentative row it passes.
-		if from-to > up+rerankTentative {
-			t.Fatalf("%s moved up %d with bonus %d", m.ID, from-to, up)
+		if up := from - to; up > rerankBonus(m) {
+			t.Fatalf("%s moved up %d with bonus %d", m.ID, up, rerankBonus(m))
 		}
-		if to-from > max(-net, 0)+maxUp {
-			t.Fatalf("%s moved down %d", m.ID, to-from)
+		if down := to - from; down > maxBonus {
+			t.Fatalf("%s moved down %d, more than the largest bonus %d", m.ID, down, maxBonus)
 		}
+	}
+}
+
+// Codex's input: six tentative tasks, then an unconfirmed correction. With a
+// negative bonus the correction moved six places; it may move only four.
+func TestRerankCodexInputMovesAtMostItsBonus(t *testing.T) {
+	var rows []memory.Memory
+	for i := 0; i < 6; i++ {
+		rows = append(rows, rrNote(fmt.Sprintf("mem_task%d", i), "task", memory.TentativeTag))
+	}
+	rows = append(rows, rrNote("mem_corr", "correction"))
+	got := RerankByMetadata(rows)
+	if at := rrIndex(got, "mem_corr"); at != 6-rerankCorrection {
+		t.Fatalf("order = %v, correction at %d, want %d", rrIDs(got), at, 6-rerankCorrection)
+	}
+	for i := 0; i < 6; i++ {
+		if rrIndex(got, rows[i].ID) < i {
+			t.Fatalf("tentative task %d moved up: %v", i, rrIDs(got))
+		}
+	}
+}
+
+func TestRerankTentativeNoteNeverPassesEvidence(t *testing.T) {
+	evidence := memory.Memory{ID: "gmail_thread/t1", Type: "email", Provider: "gmail", Score: -9}
+	for _, typ := range []string{"decision", "correction", "fact", "insight"} {
+		rows := []memory.Memory{evidence, rrNote("mem_tent", typ, memory.TentativeTag)}
+		if got := rrIDs(RerankByMetadata(rows)); !reflect.DeepEqual(got, []string{"gmail_thread/t1", "mem_tent"}) {
+			t.Fatalf("tentative %s passed evidence: %v", typ, got)
+		}
+	}
+	// Owner-confirmed still passes it, and an equal confirmed note beats a tentative one.
+	got := RerankByMetadata([]memory.Memory{evidence, rrConfirmed(rrNote("mem_conf", "decision"))})
+	if got[0].ID != "mem_conf" {
+		t.Fatalf("confirmed decision did not pass evidence: %v", rrIDs(got))
+	}
+	got = RerankByMetadata([]memory.Memory{rrNote("mem_tent", "decision", memory.TentativeTag), rrConfirmed(rrNote("mem_conf", "decision"))})
+	if got[0].ID != "mem_conf" {
+		t.Fatalf("tentative decision stayed ahead of an equal confirmed one: %v", rrIDs(got))
 	}
 }
 
