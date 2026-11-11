@@ -760,3 +760,54 @@ func TestWriteDegradesWhenRebuildBlocked(t *testing.T) {
 		t.Fatalf("expected a degraded-success warning about the index on stderr; got:\n%s", errOut.String())
 	}
 }
+
+// TestForcedRebuildRebindsIndexToMarkerID pins that a forced rebuild proceeding
+// past an identity mismatch (marker present, different id) binds the index to the
+// MARKER's id, so --force is idempotent: later ordinary rebuilds no longer block
+// and a plain authored write is indexed.
+func TestForcedRebuildRebindsIndexToMarkerID(t *testing.T) {
+	cfg := coreBIdxpopulatedVault(t, "v_marker_new",
+		[]Memory{coreBIdxmem("mem_rebind_a", "global", "insight", "A", "alpha body")})
+	ctx := testCtx(t)
+	idxUpsertStampVaultID(t, cfg, "v_index_old")
+
+	// Ordinary rebuild still refuses and records the block.
+	if _, err := rebuildIndex(ctx, cfg); !errors.Is(err, errRebuildBlocked) {
+		t.Fatalf("enforce rebuild on identity mismatch = %v, want errRebuildBlocked", err)
+	}
+	if _, present, _ := readBlockRecord(cfg); !present {
+		t.Fatal("expected a block record after the refused rebuild")
+	}
+
+	// Forced rebuild succeeds and rebinds to the marker's id.
+	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
+		t.Fatalf("forced rebuild: %v", err)
+	}
+	id, err := readIndexVaultID(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "v_marker_new" {
+		t.Fatalf("index vault_id after forced rebuild = %q, want v_marker_new", id)
+	}
+
+	// An ordinary rebuild now succeeds and the block record is gone.
+	if _, err := rebuildIndex(ctx, cfg); err != nil {
+		t.Fatalf("ordinary rebuild after forced rebind: %v", err)
+	}
+	if _, present, _ := readBlockRecord(cfg); present {
+		t.Fatal("block record should be cleared after a successful rebuild")
+	}
+
+	// A plain authored write is indexed (searchable), not blocked.
+	m := coreBIdxmem("mem_rebind_w", "global", "insight", "W", "rebindneedle written after force")
+	if err := writeMemory(cfg, m); err != nil {
+		t.Fatal(err)
+	}
+	if err := indexUpsert(ctx, cfg, m); err != nil {
+		t.Fatalf("indexUpsert after forced rebind: %v", err)
+	}
+	if res, err := searchMemories(ctx, cfg, "rebindneedle", "", 8); err != nil || len(res) != 1 {
+		t.Fatalf("search rebindneedle = %+v err=%v, want one hit", res, err)
+	}
+}

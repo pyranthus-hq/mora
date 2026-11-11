@@ -648,6 +648,13 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	}
 	// Bind the vault id (adopt a fresh one if neither marker nor index had it).
 	effID := indexID
+	if decision == decBlockIdentity && markerPresent && marker.VaultID != "" {
+		// An explicit (non-enforce) rebuild proceeded past an identity mismatch with
+		// the marker present: the operator declared the vault's marker correct, so
+		// rebind the index to the MARKER's id. Keeping the old id would leave every
+		// later ordinary rebuild blocked again (--force not idempotent).
+		effID = marker.VaultID
+	}
 	if effID == "" {
 		seed := marker.VaultID
 		if seed == "" {
