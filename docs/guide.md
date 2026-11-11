@@ -712,7 +712,8 @@ mora confirm <memory-id>       # remove the tag; the memory becomes normal
 ```
 
 `mora confirm` has no MCP tool, and it logs a `confirm` line. Both commands
-accept `--json`.
+accept `--json`. Plain `mora confirm` never makes a note owner-confirmed. To do
+that, use `mora confirm <id> --mine` (see owner-confirmed below).
 
 To see every agent note that waits for you, saved or held, and to keep or
 reject each one in a single pass:
@@ -745,21 +746,53 @@ of those fields (`OwnerConfirmedFields` and `OwnerConfirmedDigest` in
 exact text in their own terminal. Agents are told to treat such a note as your
 own words. The keep logs an `owner-confirm` line.
 
-Only the keep in `mora review` sets this status. `mora confirm`,
-`mora mcp proposals approve`, `mora write`, `mora teach`, every MCP tool, the
-loopback HTTP routes and companion captures do not. `mora write --tags` and
+Three actions set this status, each only in your own terminal:
+
+```bash
+mora review                       # the keep action
+mora write --mine ...             # a new note, saved as your own statement
+mora confirm <memory-id> --mine   # an existing agent note
+```
+
+Plain `mora write` and plain `mora confirm` never set it, in any terminal.
+`--mine` needs your own terminal: it refuses, saves nothing and exits non-zero
+when stdin is not a terminal or an agent session variable is set. In your own
+terminal it prints the note (scope, type, title, the other fields the digest
+binds, and the full text) and asks `Save this as your own statement? [y/N]`
+(`Confirm this exact text as your own statement? [y/N]` for `confirm`). Only `y`
+or `yes` counts. Any other answer, or end of input, saves nothing, prints
+`Not saved.` and exits non-zero. The prompt goes to stderr, so `--json` keeps
+stdout for the receipt, which then has `owner_confirmed: true`. `mora confirm
+--mine` works on a tentative or an ordinary agent note and binds the tag to the
+text it showed: if the file changes before the write, it refuses. Connector
+records, copied files and shared records are refused. A note that is already
+owner-confirmed is left alone.
+
+`mora mcp proposals approve`, `mora teach`, every MCP tool, the loopback HTTP
+routes and companion captures never set it. `mora write --tags` and
 `mora teach memory --tags` refuse a tag that starts with
 `mora-owner-confirmed-`, and a `teach correct` or `teach supersede` revision
-does not keep the tag, and `mora confirm` removes one it finds. The tag counts
-only while the note matches what you saw. If anyone edits one of the shown
-fields, or copies the tag to another note, the note shows no trust value. A tag on a connector record, a file copied
-from disk, a tentative note or a row from a subscribed share also counts for
-nothing.
+does not keep the tag. Plain `mora confirm` on a tentative note drops any
+owner-confirmed tag the note carries. The tag counts only while the note matches
+what you saw. If anyone edits one of the shown fields, or copies the tag to
+another note, the note shows no trust value. A tag on a connector record, a file
+copied from disk, a tentative note or a row from a subscribed share also counts
+for nothing.
 
-Owner-confirmed is a review record, not a signature. The terminal check stops
-an agent that runs `mora review` through its normal shell tool. It does not stop
-a program that fakes a terminal. A program that can write vault files can also
-write the tag itself.
+A decision you confirmed as your own, with no durability, flip condition or
+review date of its own, reads as `decision_status: current` and the context line
+says `Decision status: current (owner-confirmed; no review date set)`, so agents
+do not doubt it for lacking a review date. A review date that has passed still
+reads `needs_review`, and so does any decision that is not owner-confirmed.
+
+Owner-confirmed is a record, not a signature, and Mora cannot prove that a human
+typed the answer. The terminal check stops an agent that pipes input or runs in
+a session it recognizes: the variables it reads are those Claude Code and Codex
+set (`CLAUDECODE`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`,
+`CODEX_THREAD_ID`, `CODEX_CI`, `CODEX_MANAGED_BY_NPM`). It does not detect
+Cursor or Antigravity sessions. A program that runs Mora inside a fake terminal
+and types `y` passes, and a program that can write vault files can write the tag
+itself.
 
 The hold filter is coarse. It does not stop a false claim written in plain
 words. An agent with a shell can run `mora confirm` or
@@ -1544,8 +1577,11 @@ mora write --scope project:acme --type decision --title "OAuth" --text "Use PKCE
 Mora stores authored memories as readable Markdown in the vault. They can be
 searched, corrected, backed up, and shared. Connector data stays read-only.
 
+Add `--mine` to save the note as your own statement, owner-confirmed. It needs
+your own terminal and a typed yes (see owner-confirmed under agent writes).
 `mora write --json` emits the `mora.write` v1 receipt with the saved memory's
-id, path, scope, type, and title, plus `index_updated`. A `false` value means
+id, path, scope, type, and title, plus `owner_confirmed` (present only when it
+is true) and `index_updated`. A `false` `index_updated` means
 the vault write succeeded but the derived search index needs a later rebuild;
 the accompanying human warning stays on stderr.
 

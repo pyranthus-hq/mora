@@ -286,8 +286,10 @@ Run `mora review` in your own terminal to go through them. It shows each note
 in full, with every field an agent acts on, and asks keep, reject, skip or
 quit. A note you keep becomes owner-confirmed: agents see
 `"trust":"owner-confirmed"` and are told to treat it as your own statement. If
-one of the shown fields changes later, that status drops. `mora review --list` prints the list
-in any shell. `mora confirm <id>` keeps one note without that status, and
+one of the shown fields changes later, that status drops. `mora review --list`
+prints the list in any shell. `mora confirm <id>` keeps one note without that
+status. `mora confirm <id> --mine` and `mora write --mine` make a note
+owner-confirmed, in your own terminal, after you read it and type yes.
 `mora undo <id>` removes an agent write. Under this policy `delete_memory` is
 refused, and phone captures go to the queue.
 
@@ -295,8 +297,10 @@ The hold filter is coarse. It does not stop a false claim written in plain
 words. An agent with a shell can run `mora confirm` or
 `mora mcp proposals approve`, so this is not a sandbox. `mora review` refuses to
 run inside an agent session, but a program that fakes a terminal or writes
-vault files can still forge the owner-confirmed status. It is a review record,
-not a signature.
+vault files can still forge the owner-confirmed status. The check knows the
+Claude Code and Codex session variables, not Cursor or Antigravity, and a
+program that types `y` in a fake terminal passes `--mine`. It is a review
+record, not a signature.
 
 `open`, `propose` and `readonly` stay explicit choices. v0.15.3 defaulted to
 `propose`. v0.15.2 and earlier defaulted to `open`.

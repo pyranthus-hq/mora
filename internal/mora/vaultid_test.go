@@ -736,7 +736,7 @@ func TestWriteDegradesWhenRebuildBlocked(t *testing.T) {
 	seedForeignMarker(t, cfg)
 
 	var out, errOut bytes.Buffer
-	err := cmdWrite(testCtx(t), []string{"--title", "new note", "--text", "do not lose me"}, &out, &errOut)
+	err := cmdWrite(testCtx(t), []string{"--title", "new note", "--text", "do not lose me"}, &out, &errOut, strings.NewReader(""))
 	if err != nil {
 		t.Fatalf("cmdWrite must NOT fail when the rebuild is blocked (the memory is saved): %v", err)
 	}

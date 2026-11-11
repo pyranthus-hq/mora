@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -64,26 +65,34 @@ type tentativeRow struct {
 }
 
 type confirmReceipt struct {
-	ID          string         `json:"id,omitempty"`
-	Confirmed   bool           `json:"confirmed"`
-	AuditLogged bool           `json:"audit_logged"`
-	Tentative   []tentativeRow `json:"tentative,omitempty"`
+	ID             string         `json:"id,omitempty"`
+	Confirmed      bool           `json:"confirmed"`
+	OwnerConfirmed bool           `json:"owner_confirmed,omitempty"`
+	AuditLogged    bool           `json:"audit_logged"`
+	Tentative      []tentativeRow `json:"tentative,omitempty"`
 }
 
 // cmdConfirm is the owner action that turns a tentative memory into a normal
 // one. There is no MCP tool for it, so an agent cannot confirm through Mora's
 // tools. An agent with a shell can still run this command, the same limit
-// `mora mcp proposals approve` has.
-func cmdConfirm(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+// `mora mcp proposals approve` has. With --mine it asks to make the note
+// owner-confirmed instead: see confirmMine.
+func cmdConfirm(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	fs := flag.NewFlagSet("confirm", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	list := fs.Bool("list", false, "list tentative memories")
 	jsonOut := fs.Bool("json", false, "json")
+	mine := fs.Bool("mine", false, "make the note your own statement (owner-confirmed); needs your own terminal and a typed yes")
 	if err := fs.Parse(flagsFirst(args)); err != nil {
 		return err
 	}
-	if *list == (fs.NArg() == 1) || fs.NArg() > 1 {
-		return errors.New("usage: mora confirm <memory-id> [--json] | mora confirm --list [--json]")
+	if *list == (fs.NArg() == 1) || fs.NArg() > 1 || (*mine && *list) {
+		return errors.New("usage: mora confirm <memory-id> [--mine] [--json] | mora confirm --list [--json]")
+	}
+	if *mine {
+		if err := requireMineTerminal(stdin, "mora confirm"); err != nil {
+			return err
+		}
 	}
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
@@ -105,6 +114,9 @@ func cmdConfirm(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if err := refuseDashLedPositional("confirm", "memory id", fs.Arg(0)); err != nil {
 		return err
 	}
+	if *mine {
+		return confirmMine(ctx, cfg, fs.Arg(0), *jsonOut, stdout, stderr, stdin)
+	}
 	m, logged, err := confirmMemory(ctx, cfg, fs.Arg(0), "", "", stderr)
 	if err != nil {
 		return err
@@ -116,13 +128,90 @@ func cmdConfirm(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	return nil
 }
 
+// requireMineTerminal is the check `mora review` makes, worded for --mine: a
+// person at their own terminal, not a pipe and not a known agent session. It
+// cannot prove a human typed: a program inside a fake terminal passes.
+func requireMineTerminal(stdin io.Reader, cmd string) error {
+	if key := rulesAgentSession(); key != "" {
+		return fmt.Errorf("refusing %s --mine from inside an agent session (%s is set). Run it in your own terminal.", cmd, key)
+	}
+	if !rulesInteractive(stdin) {
+		return fmt.Errorf("refusing %s --mine from a non-interactive shell. Run it in your own terminal.", cmd)
+	}
+	return nil
+}
+
+// askOwner shows every field the owner-confirmed digest binds, with the text
+// last, then reads one answer line from stdin. Only y or yes counts. The prompt
+// goes to stderr so a --json receipt keeps stdout.
+func askOwner(stderr io.Writer, stdin io.Reader, m Memory, question string) bool {
+	for _, f := range memory.OwnerConfirmedFields(m) {
+		if f[0] == "text" {
+			fmt.Fprintf(stderr, "text:\n%s\n", reviewShowText(f[1]))
+			continue
+		}
+		fmt.Fprintf(stderr, "%s: %s\n", f[0], rulesShow(f[1]))
+	}
+	fmt.Fprintf(stderr, "%s [y/N] ", question)
+	// Not rulesReadConfirm: that one drops the read error, so "y" then EOF
+	// would count as yes. Only a complete line, ending in a newline, counts.
+	line, err := bufio.NewReader(stdin).ReadString('\n')
+	fmt.Fprintln(stderr)
+	if err != nil || !strings.HasSuffix(line, "\n") {
+		return false
+	}
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer == "y" || answer == "yes"
+}
+
+// confirmMine makes one agent note owner-confirmed after the owner reads it and
+// types yes. The digest and content hash are of the file as shown; confirmMemory
+// refuses if the file changed before it writes.
+func confirmMine(ctx context.Context, cfg Config, id string, jsonOut bool, stdout, stderr io.Writer, stdin io.Reader) error {
+	found, err := findMemory(cfg, id)
+	if err != nil {
+		return err
+	}
+	m, err := parseMemory(found.Path)
+	if err != nil {
+		return err
+	}
+	if m.Owner != "" || !strings.HasPrefix(m.ID, "mem_") || memory.DeriveProvenance(m) != memory.ProvenanceAuthored {
+		return fmt.Errorf("memory %s is not an agent-written note; only those can be confirmed as your own statement", m.ID)
+	}
+	if memory.IsOwnerConfirmed(m) {
+		if jsonOut {
+			return emitReceipt(stdout, "mora.confirm", 1, confirmReceipt{ID: m.ID, Confirmed: true, OwnerConfirmed: true})
+		}
+		fmt.Fprintf(stdout, "%s is already owner-confirmed; nothing changed\n", m.ID)
+		return nil
+	}
+	raw, err := os.ReadFile(m.Path)
+	if err != nil {
+		return err
+	}
+	if !askOwner(stderr, stdin, m, "Confirm this exact text as your own statement?") {
+		return errors.New("Not confirmed. Nothing was changed.")
+	}
+	m, logged, err := confirmMemory(ctx, cfg, id, indexstore.ContentSHA256(raw), memory.OwnerConfirmedDigest(m), stderr)
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return emitReceipt(stdout, "mora.confirm", 1, confirmReceipt{ID: m.ID, Confirmed: true, OwnerConfirmed: true, AuditLogged: logged})
+	}
+	fmt.Fprintf(stdout, "owner-confirmed %s (%s)\n", m.ID, agentLogTitle(m))
+	return nil
+}
+
 // confirmMemory removes the tentative tag from one memory. A non-empty
 // expectSHA is the content hash of the file the owner saw: the core refuses if
 // the file it reads differs, and writes from that same read. A file system has
 // no compare-and-swap, so the window left is the time between that read and the
-// write. A non-empty ownerDigest (only the `mora review` keep passes one) swaps
-// the tentative tag for the owner-confirmed tag in the same write, and needs
-// expectSHA so the digest is of the bytes the owner saw.
+// write. A non-empty ownerDigest (only the `mora review` keep and
+// `mora confirm --mine` pass one) swaps the tentative tag for the
+// owner-confirmed tag in the same write, or adds it to a note that is not
+// tentative, and needs expectSHA so the digest is of the bytes the owner saw.
 func confirmMemory(ctx context.Context, cfg Config, id, expectSHA, ownerDigest string, stderr io.Writer) (Memory, bool, error) {
 	if ownerDigest != "" && expectSHA == "" {
 		return Memory{}, false, errors.New("owner confirmation needs the content hash of the shown note")
@@ -136,7 +225,7 @@ func confirmMemory(ctx context.Context, cfg Config, id, expectSHA, ownerDigest s
 	if err != nil {
 		return Memory{}, false, err
 	}
-	if !memory.IsTentative(m) {
+	if ownerDigest == "" && !memory.IsTentative(m) {
 		return Memory{}, false, fmt.Errorf("memory %s is not tentative", m.ID)
 	}
 	raw, err := os.ReadFile(m.Path)
@@ -189,7 +278,8 @@ func confirmMemory(ctx context.Context, cfg Config, id, expectSHA, ownerDigest s
 
 // withoutTentativeTag edits only the frontmatter tags line, because a render
 // round trip would trim the body and drop keys this binary does not know. A
-// non-empty swap takes the tentative tag's place instead of nothing. Any
+// non-empty swap takes the tentative tag's place instead of nothing, or is
+// added when the note has no tentative tag. Any
 // owner-confirmed tag already on the line is dropped, so only the swap here
 // can make the note owner-confirmed.
 func withoutTentativeTag(raw []byte, swap string) ([]byte, error) {
@@ -219,6 +309,9 @@ func withoutTentativeTag(raw []byte, swap string) ([]byte, error) {
 			default:
 				kept = append(kept, tag)
 			}
+		}
+		if !found && swap != "" {
+			kept, found = append(kept, swap), true
 		}
 		if !found {
 			break
