@@ -77,17 +77,20 @@ From your project root:
 ```bash
 mora init
 mora hook install --project --scope project:my-app
-claude mcp add mora -s user -- mora mcp serve --project-dir "$PWD"
+claude mcp add mora -- mora mcp serve --project-dir "$PWD"
 codex mcp add mora -- mora mcp serve --project-dir "$PWD"
 ```
 
-- `mora hook install --project --scope project:my-app` binds the current folder to `project:my-app` and wires lifecycle hooks (`SessionStart`, `UserPromptSubmit`, `SessionEnd`). Pass `--client antigravity` (or `--client all`) to wire Antigravity hooks in `~/.gemini/config/hooks.json`.
+- `mora hook install --project --scope project:my-app` binds the current folder to `project:my-app` and wires Claude Code lifecycle hooks (`SessionStart`, `UserPromptSubmit`, `SessionEnd`) for this folder only.
+- The `--project-dir` in the MCP commands pins that server to one folder, so register it once per project.
 - To bind a folder without installing hooks, run `mora project bind --scope project:my-app .`.
+- Antigravity hooks are separate and **experimental**: `mora hook install --client antigravity` writes `SessionStart` and `PreInvocation` (no `Stop`) into `~/.gemini/config/hooks.json`. It has not been tested against a real Antigravity install. Under WSL it refuses unless you pass `--hooks-file /mnt/c/Users/<name>/.gemini/config/hooks.json`.
 
 ### 2. Record an owner rule and see what your agent gets
 
 ```bash
-# Save an owner-confirmed decision in your own terminal
+# Save an owner-confirmed decision. It asks "Save this as your own statement? [y/N]"
+# and refuses outside your own terminal (a pipe, a script, or an agent session).
 mora write --mine --scope project:my-app --type decision \
   --title "Package manager" \
   --text "Use pnpm in this repository, not npm."
@@ -96,12 +99,15 @@ mora write --mine --scope project:my-app --type decision \
 mora brief --project .
 ```
 
+Without `--mine`, `mora write` saves the note but the brief lists it under `Notes, not instructions`, not under `Owner rules`. Run inside a bound folder, `mora write` defaults to that project's scope and says so on stderr; `--scope` overrides it.
+
 ### 3. Inspect delivery, review agent notes, or undo
 
 ```bash
 mora given                                   # see which notes Mora handed to your agent (with titles)
 mora review                                  # keep (confirm as yours) or reject notes agents saved
-mora status --web                            # open the local status and review dashboard on 127.0.0.1:7781
+mora status                                  # folder, health, notes waiting for review, last delivery
+mora status --web                            # same, as a read-only page on 127.0.0.1 (URL with a random token is printed)
 mora undo <memory-id>                        # remove an agent-written note from the vault
 mora teach memory retract --id <id> --yes    # hide an authored memory from retrieval while keeping history
 ```
@@ -113,13 +119,14 @@ mora handoff write --scope project:my-app \
   --title "Auth migration handoff" \
   --direction "Move session cookies to PKCE flow" \
   --why "Legacy token refresh fails on mobile WebViews" \
-  --state "PKCE verifier merged; callback handler tests passing" \
+  --where "PKCE verifier merged; callback handler tests passing" \
   --next "Wire token exchange in internal/auth/callback.go"
 
-mora handoff show --scope project:my-app
+mora handoff show --scope project:my-app   # bare `mora handoff` shows the latest too
+mora handoff list
 ```
 
-A `handoff` is a vault memory (`type: handoff`) that carries work direction, why, key turns, current state, and the next step into the next session's Project Brief — across Claude Code, Codex, and Antigravity, and across synced machines. When a session ends without writing a structured handoff, the `SessionEnd` hook records the last five user requests in that bound folder as a crash-safe fallback.
+A `handoff` is a vault memory (`type: handoff`) that carries direction, why, key turns, where the work stands, and the next step into the next session's Project Brief, and across machines if you sync the vault. Other flags: `--project DIR`, `--turns`, `--text`, `--short`, `--json`. Add `--mine` to save it owner-confirmed (it asks at your terminal). Without `--mine`, and for any handoff an agent writes, it is unconfirmed and the brief labels it `Last handoff (unconfirmed)`; the brief prefers the newest owner-confirmed handoff. When a session ends without a handoff, the `SessionEnd` hook records the last five user requests in that bound folder as a crash-safe fallback.
 
 ## The two-sided contract
 
@@ -131,9 +138,9 @@ A `handoff` is a vault memory (`type: handoff`) that carries work direction, why
 
 1. **Project Brief at `SessionStart` (`<2,000` characters):** When a session starts in a bound project folder, Mora injects two separated blocks instead of a general inbox digest:
    - `Owner rules for project:NAME`: confirmed corrections and decisions from `project:NAME` and `global`, ordered project-first and newest-first.
-   - `Notes, not instructions`: up to three recent unconfirmed project decisions written by agents, the count of unreviewed notes, and the latest session `handoff`.
+   - `Notes, not instructions`: up to three recent project decisions you have not confirmed (agent notes, and anything saved without `--mine`), the count of notes waiting for review, and the latest session `handoff`.
    - Notes from `personal` or other `project:*` scopes never appear on their own in a bound project.
-2. **Scoped recall on prompts (`UserPromptSubmit` / Antigravity `PreInvocation`):** Searches only the bound project scope and `global` using stemmed full-text search (`porter unicode61`) and metadata reranking, adding up to three short confirmed matches within 0.7 seconds. It skips slash commands and prompts under 12 characters.
+2. **Scoped recall on prompts (`UserPromptSubmit` / Antigravity `PreInvocation`):** Searches only the bound project scope and `global` using stemmed full-text search (`porter unicode61`) and metadata reranking, adding up to three short matches within 0.7 seconds. A note is added only if it shares two content words with the prompt, or one word that is in its title or rare in the index. Tentative notes are never added. It skips slash commands and prompts under 12 characters.
 3. **Project-aware MCP tools (`mora mcp serve --project-dir "$PWD"`):** Exposes `brief`, `search_memory`, `context_memory`, `read_memory`, `write_memory`, `list_memory`, `think`, `calendar_events`, `list_entities`, `get_entity`, `digest`, `meeting_prep`, and `delete_memory`. With `--project-dir`, `write_memory` defaults an omitted scope to the bound project and `brief` returns the project brief.
 4. **Opt-in Bash warning rules (`mora rules`):** Checks Bash tool calls in Claude Code against regex patterns you approved in your own terminal:
    ```bash
@@ -141,12 +148,12 @@ A `handoff` is a vault memory (`type: handoff`) that carries work direction, why
    mora rules approve no-sudo --mode warn   # run in your own terminal
    mora hook install --pre-tool
    ```
-   When a command matches, the warning returns with the command result and changes what the agent does next. Today this is opt-in, covers Bash calls in Claude Code on one device, and warns without blocking. Rules drafted from your corrections (`mora checkup`) and Codex warnings are planned, not shipped. See [Bash warning rules](docs/guide.md#bash-warning-rules).
+   When a command matches, the warning returns with the command result and changes what the agent does next. Today this is opt-in, covers Bash calls in Claude Code on one device, and warns without blocking. Rules drafted from your corrections, and Codex warnings, are not built. See [Bash warning rules](docs/guide.md#bash-warning-rules).
 
 ### For you (transparency and control)
 
 - **See everything handed to an agent (`mora given`):** Every time a hook or MCP tool hands notes to an agent, Mora appends the timestamp, surface (`hook-session-start`, `hook-recall`, `mcp:<tool>`), caller, scope, and note IDs/titles to `given.log`. It says "given", never "used": Mora cannot prove whether the agent followed the note.
-- **Inspect and review in one place (`mora review`, `mora status --web`, macOS `Mora Status.app`):** Review unreviewed agent notes from the terminal (`mora review`), the local loopback web UI (`mora status --web` on `127.0.0.1:7781`), or the macOS menu bar app.
+- **See status (`mora status`, `mora status --web`, macOS `Mora Status.app`):** `mora status --web` serves a read-only page on `127.0.0.1` behind a random per-run URL token printed at start. It shows health, notes waiting for review, and the last delivery; it has no Keep/Reject buttons. Reviewing (keep or reject agent notes) happens with `mora review` in a terminal.
 - **Plain Markdown on disk (`~/vault/mora`):** Every memory is a readable `.md` file with YAML frontmatter. No AI model is called when Mora saves or searches.
 - **Read-only command repeat check (`mora check`):** Counts rejected or interrupted Bash commands in local Claude Code and Codex transcripts and compares repeat rates against a baseline of unrejected commands, making no network connection.
 
@@ -163,7 +170,7 @@ This policy governs the MCP `write_memory` and `delete_memory` tools, the loopba
 | How it is saved | Waits for your approval? |
 | --- | --- |
 | `mora write` in Terminal | No. Saved at once (`--mine` marks it owner-confirmed after you confirm in your terminal). |
-| `mora handoff write` | No. Saved at once as `type: handoff` in the project scope. |
+| `mora handoff write` | No. Saved at once as `type: handoff` (`--mine` marks it owner-confirmed). |
 | Connectors (files, mail, calendar, messages, GitHub) | No. Saved at once as read-only source evidence. |
 | `mora teach ... --yes` corrections | No. Saved at once, and reversible with `mora teach undo`. |
 | An agent's `write_memory` call over MCP | **Default (`tentative`):** low-risk notes save at once with a `mora-tentative` tag (`save now, review later` via `mora review`). High-risk notes wait in the proposal queue. Under `propose`, all agent writes wait for approval. |
@@ -171,14 +178,14 @@ This policy governs the MCP `write_memory` and `delete_memory` tools, the loopba
 
 ### How `tentative` ("save now, review later") works
 
-By default (`mcp_write_policy = "tentative"`), an agent's `write_memory` call saves immediately with a `mora-tentative` tag when its type is `insight`, `fact`, `decision`, `task`, or `handoff` and its text passes Mora's deterministic write checks. A write is held in the proposal queue (`held_because`) when:
+By default (`mcp_write_policy = "tentative"`), an agent's `write_memory` call is tentative: it saves immediately with a `mora-tentative` tag when its type is `insight`, `fact`, `decision`, `task`, `correction`, or `handoff` and its text passes Mora's deterministic write checks. It stays tentative until you review it; nothing an agent writes becomes owner-confirmed on its own. Ordinary coding rules such as "always use pnpm" save as tentative. A write is held in the proposal queue (`held_because`) when:
 
-- its type is `correction` (which alters how other memories are decorated); or
-- its text matches a credential/secret pattern, contains invisible format/tag Unicode characters, or attempts to exempt a check, route data externally, or override agent instructions.
+- its type is not one of those; or
+- its text matches a credential/secret pattern, contains invisible format/tag Unicode characters, matches a short sensitive-word list (medical, passport, and similar), or talks to agents: tells them to approve, accept, or skip review, to hide things from the user or owner, to ignore earlier instructions, or pipes a download to a shell.
 
-A tentative memory appears in `search`, `read`, `list`, and `context` with `"trust":"tentative"` (and `handoff` memories appear in the Project Brief's `Notes, not instructions` section), but tentative notes do not enter `Owner rules`, the prompt recall hook, the daily brief, `think`, or `mora share` until confirmed.
+A tentative memory appears in `search`, `read`, `list`, and `context` with `"trust":"tentative"`, and tentative decisions and handoffs appear in the Project Brief's `Notes, not instructions` section. They do not enter `Owner rules`, the prompt recall hook, the daily brief, `think`, or `mora share` until confirmed, and a tentative `correction` does not change how other notes are shown.
 
-Run `mora review` in your own terminal to step through saved tentative notes and held proposals (`[k]eep [r]eject [s]kip [q]uit`). Keeping a note removes `mora-tentative` and binds `"trust":"owner-confirmed"` to the exact fields shown. You can also mark a note owner-confirmed in your terminal with `mora write --mine` or `mora confirm <id> --mine`. When an agent saves a statement that matches text you typed directly in the active session transcript, Mora can verify user origin without a second terminal step.
+Run `mora review` in your own terminal to step through saved tentative notes and held proposals (`[k]eep [r]eject [s]kip [q]uit`). Keeping a note removes `mora-tentative` and binds `"trust":"owner-confirmed"` to the exact fields shown. You can also mark a note owner-confirmed in your terminal with `mora write --mine` or `mora confirm <id> --mine`. Plain `mora confirm <id>` only removes the tentative tag; the note becomes ordinary, not owner-confirmed.
 
 **Honest limits:**
 
@@ -270,7 +277,7 @@ After any update, run `mora version` and `mora doctor`.
 ## Uninstall
 
 ```bash
-mora schedule list
+mora schedule list                 # on WSL this prints "cron listing not implemented"; remove your own cron line instead
 mora schedule uninstall <each-job-name-shown>
 mora hook uninstall
 mora serve http uninstall
@@ -300,7 +307,7 @@ Run `mora config` to see active paths. `MORA_VAULT` selects another absolute vau
 
 ## Search and proof
 
-With the default static embedder, Mora searches parent memories and bounded Gmail/iMessage message segments with stemmed SQLite FTS5 (`porter unicode61`), title/tag BM25 weighting, one-hop person-graph expansion, and metadata reranking so confirmed project corrections and decisions rank above long source files. With an active loopback Ollama embedder, it joins full-text, vector, person-graph, and message-segment lists using Reciprocal Rank Fusion (RRF).
+With the default static embedder, Mora searches parent memories and bounded Gmail/iMessage message segments with stemmed SQLite FTS5 (`porter unicode61`; title and tag hits rank ahead of body hits) and metadata reranking so confirmed project corrections and decisions rank above long source files. The query ORs its content words (common words are dropped) and ranks the best matches first. An index built by an older version gets stemming after `mora index rebuild --if-needed`. With an active loopback Ollama embedder, it joins full-text, vector, person-graph, and message-segment lists using Reciprocal Rank Fusion (RRF).
 
 Mora's frozen evaluation corpora start from a written answer key, pin every byte, run the real brief, search, and meeting code, and verify citations and commitment fields. The fixtures and scores live in [`internal/mora/eval/`](internal/mora/eval/) and [evaluation and testing](docs/architecture/09-eval-and-testing.md).
 

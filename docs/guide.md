@@ -561,7 +561,7 @@ The reply is a single document with these field groups:
 | `schemas` | Every published CLI payload schema name and its version. |
 | `error_codes` | Every published error code, its class, its connector `error_class` where it has one, its exit code, whether a retry can succeed, and its meaning. |
 | `exit_codes` | The allocated process exit codes (1, 2, and 10), the reserved range, and the first code a future release may allocate. |
-| `mcp` | The write policy in force on this machine, the 12 MCP tool names, and the payload schema version for each tool. |
+| `mcp` | The write policy in force on this machine, the 13 MCP tool names, and the payload schema version for each tool. |
 | `features` | Top-level support for repair and deep links. |
 
 Support is reported with three words and only three: `supported`, `unsupported`,
@@ -597,14 +597,16 @@ mora config mcp-write-policy readonly
 - `tentative` is the default whenever `config.toml` has no `mcp_write_policy`
   line, however Mora was started (`mora init`, `mora setup`, or `mora mcp serve`
   on a machine that was never initialized). A low-risk write saves at once with
-  the tag `mora-tentative`. It holds a write only for these reasons: the type
-  is not `insight`, `fact`, `decision`, `task`, or `handoff` (a `correction`
-  changes how other records are retrieved, so it stays held), or the text looks
-  like a secret, contains invisible format/tag Unicode characters, matches the
-  sensitive word list, or attempts to exempt a check, route data externally, or
-  override agent instructions (ordinary developer rules such as `"Always use pnpm"`
-  save as tentative). When an agent saves a statement that matches text the user
-  typed in the active session transcript, Mora can verify user origin directly.
+  the tag `mora-tentative`, and stays tentative until you review it: nothing an
+  agent writes becomes owner-confirmed by itself. It holds a write only for these
+  reasons: the type is not `insight`, `fact`, `decision`, `task`, `correction`,
+  or `handoff`, or the text looks like a secret, contains invisible format/tag
+  Unicode characters, matches the sensitive word list (medical, passport, and
+  similar), or talks to agents: it tells them to approve, accept, or skip review,
+  to hide things from the user or owner, to ignore earlier instructions, or pipes
+  a download to a shell. Ordinary developer rules such as `"Always use pnpm"`
+  save as tentative. A tentative `correction` is saved but does not change how
+  other records are shown until you confirm it.
   Any scope saves, and money words do not hold a write. A held write goes to the
   proposal queue, and the result has `held_because`. It refuses deletes. Phone
   captures go to the queue.
@@ -1064,11 +1066,19 @@ Mora supports two layers of session handoff for a bound project:
      --title "Auth migration handoff" \
      --direction "Move session cookies to PKCE flow" \
      --why "Legacy token refresh fails on mobile WebViews" \
-     --state "PKCE verifier merged; callback handler tests passing" \
+     --where "PKCE verifier merged; callback handler tests passing" \
      --next "Wire token exchange in internal/auth/callback.go"
    mora handoff show --scope project:my-app
    mora handoff list --scope project:my-app
    ```
+
+   Bare `mora handoff` shows the latest one. Flags: `--scope`, `--project DIR`,
+   `--direction`, `--why`, `--turns`, `--where`, `--next`, `--text`, `--short`,
+   `--json` (and `--limit N` on `list`). `write --mine` asks at your terminal and
+   saves the handoff owner-confirmed. Without `--mine`, and for every handoff an
+   agent writes, it is unconfirmed and the brief labels it
+   `Last handoff (unconfirmed)`. The brief picks the newest owner-confirmed
+   handoff over any unconfirmed one.
 
    Because a `type: handoff` record lives in `~/vault/mora/memories/`, it travels
    across machines with `mora sync git` without waiting for manual proposal
@@ -1112,10 +1122,14 @@ mora hook status
 mora hook status --json
 ```
 
-Pass `--client antigravity` (or `--client all`) to install `SessionStart`,
-`PreInvocation` (prompt recall), and `Stop` hooks in `~/.gemini/config/hooks.json`.
-Mora auto-detects Antigravity's `lastUserInput` and `workspacePaths` fields and
-returns the `injectSteps` envelope.
+Antigravity support is **experimental and has not been tested against a real
+Antigravity install**. `mora hook install|uninstall|status --client antigravity
+[--hooks-file PATH]` manages `SessionStart` and `PreInvocation` (prompt recall)
+in `~/.gemini/config/hooks.json`; there is no `Stop` hook, and `--client all` does
+not exist. Mora reads Antigravity's `lastUserInput` and `workspacePaths` fields
+and returns the `injectSteps` envelope. Under WSL the command refuses unless you
+pass `--hooks-file /mnt/c/Users/<name>/.gemini/config/hooks.json`; it then writes
+a `wsl.exe` command into that Windows file.
 
 The installer adds three commands to `~/.claude/settings.json`:
 
@@ -1240,8 +1254,10 @@ Mora's state folder (`state_dir` in `mora config`). Run `mora given` to read the
 newest ten lines (including resolved note titles alongside IDs), `mora given --limit 50`
 for more, or `mora given --json` for the raw lines. `mora doctor --json` shows the
 newest one as `last_given`. You can also inspect recent deliveries, project bindings,
-and unreviewed agent notes in a local browser dashboard with `mora status --web`
-(bound to `127.0.0.1:7781`).
+and the count of agent notes waiting for review on a read-only page with
+`mora status --web [--port N]`. It listens on `127.0.0.1` (default port 7781)
+behind a random per-run token in the URL, which is printed at start. The page has
+no Keep or Reject buttons; review with `mora review` in a terminal.
 
 Mora writes a line when the session-start hook prints a brief, when the recall
 hook prints notes, and when an agent calls `search_memory`, `read_memory`,
@@ -1532,6 +1548,9 @@ mora write --scope project:acme --type decision --title "OAuth" --text "Use PKCE
 Mora stores authored memories as readable Markdown in the vault. They can be
 searched, corrected, backed up, and shared. Connector data stays read-only.
 
+Run inside a bound project folder, `mora write` defaults to that project's
+scope and prints a notice on stderr; `--scope` overrides it.
+
 Add `--mine` to save the note as your own statement, owner-confirmed. It needs
 your own terminal and a typed yes (see owner-confirmed under agent writes).
 `mora write --json` emits the `mora.write` v1 receipt with the saved memory's
@@ -1544,6 +1563,7 @@ the accompanying human warning stays on stderr.
 
 ```bash
 mora search "OAuth status" --scope project:acme
+mora read <id>          # prints the note body; cut at a limit with a notice that points to --json
 mora read <id> --json
 mora list --scope project:acme --json
 mora context --query "auth" --scope project:acme --budget 6000 --json
@@ -2285,9 +2305,12 @@ Search has two routes.
 The default static embedder uses:
 
 1. stemmed full-text search (`porter unicode61`) over each parent memory, with
-   BM25 weights boosting `title` (`5.0`) and `tags` (`3.0`), trailing `'s`
-   stripped on query tokens, and a 2+ term `OR` fallback when `AND` returns no
-   rows;
+   BM25 weights boosting `title` (`5.0`) and `tags` (`3.0`) so title and tag hits
+   rank ahead of body hits, and trailing `'s` stripped on query tokens. The
+   query ORs its content terms (common words such as "the" are dropped; a query
+   of only common words keeps them all), and bm25 ranks the best match first. An
+   index built before stemming was added picks it up with
+   `mora index rebuild --if-needed`;
 2. one-hop person-graph expansion (`graphExpandIDs`); and
 3. bounded stemmed full-text search over message segments inside Gmail and
    iMessage.
@@ -2348,6 +2371,10 @@ mora graph "Sam"
 mora entities --json
 mora graph --json
 ```
+
+`mora entities <name>` also accepts a first name: it says "matched by name
+prefix" and lists the other candidates. The MCP `get_entity` tool does not do
+this and needs the full name.
 
 Mora uses strict rules for identity merges. Address Book evidence can create a
 proposal, but only `mora teach identity confirm` applies it.
