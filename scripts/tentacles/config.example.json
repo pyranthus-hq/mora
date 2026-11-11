@@ -1,0 +1,6 @@
+{
+  "peers": [
+    {"id": "devbox", "name": "Devbox", "ssh": "devbox", "profile": "devbox"},
+    {"id": "windows", "name": "Windows (WSL)", "ssh": "windows-wsl", "profile": "windows"}
+  ]
+}
