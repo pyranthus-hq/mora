@@ -27,9 +27,12 @@ const (
 var projectBriefIDPattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,80}$`)
 
 // flatProjectBrief turns every control character and line separator into a
-// space, then collapses runs of spaces.
+// space, strips invisible format/tag characters, then collapses runs of spaces.
 func flatProjectBrief(s string) string {
 	s = strings.Map(func(r rune) rune {
+		if isInvisibleRune(r) {
+			return -1
+		}
 		if unicode.IsControl(r) || r == '\u0085' || r == '\u2028' || r == '\u2029' {
 			return ' '
 		}
@@ -128,6 +131,9 @@ func buildProjectBrief(cfg Config, scope, root string, now time.Time) (text stri
 		return "", nil, err
 	}
 	var rules, notes []projectBriefLine
+	var latestHandoff *Memory
+	var latestHandoffLine projectBriefLine
+	var latestHandoffConfirmed bool
 	for rank, sc := range []string{scope, "global"} {
 		mems, err := listMemories(cfg, sc, 0)
 		if err != nil {
@@ -147,6 +153,22 @@ func buildProjectBrief(cfg Config, scope, root string, now time.Time) (text stri
 				rules = append(rules, newProjectBriefLine(m, rank, now))
 			case rank == 0 && m.Type == "decision" && memory.DeriveProvenance(m) == memory.ProvenanceAuthored:
 				notes = append(notes, newProjectBriefLine(m, rank, now))
+			case rank == 0 && m.Type == memory.TypeHandoff && memory.DeriveProvenance(m) == memory.ProvenanceAuthored:
+				// An owner-confirmed handoff beats any unconfirmed one, however
+				// new; among equals the newest wins. A handoff that fails the
+				// write gate never competes, so it cannot displace a good one.
+				if !handoffBriefable(m) {
+					continue
+				}
+				cand := newProjectBriefLine(m, rank, now)
+				confirmed := memory.IsOwnerConfirmed(m)
+				if latestHandoff == nil || (confirmed && !latestHandoffConfirmed) ||
+					(confirmed == latestHandoffConfirmed && projectBriefLess(cand, latestHandoffLine)) {
+					mCopy := m
+					latestHandoff = &mCopy
+					latestHandoffLine = cand
+					latestHandoffConfirmed = confirmed
+				}
 			}
 		}
 	}
@@ -157,12 +179,11 @@ func buildProjectBrief(cfg Config, scope, root string, now time.Time) (text stri
 	}
 	all := append(rules, notes...)
 	shown := clipProjectScope(scope)
+	handoffMemLine := renderProjectHandoffLine(latestHandoff)
 	handoff := handoffBlock(cfg, scope, now)
 	if len(all) == 0 {
 		text := fmt.Sprintf("Project %s: no owner rules recorded yet.", shown)
-		if h := handoffFrame(handoff, false); h != "" && len(text)+1+len(h) <= projectBriefMaxChars {
-			text += "\n" + h
-		}
+		text = appendProjectHandoff(text, false, handoffMemLine, handoff)
 		return capProjectBrief(text, []string{})
 	}
 	notice := reviewNotice(context.Background(), cfg)
@@ -213,15 +234,83 @@ func buildProjectBrief(cfg Config, scope, root string, now time.Time) (text stri
 		}
 		// The handoff goes last and is the first thing dropped: it never costs
 		// a rule, a note or the review notice a place.
-		if h := handoffFrame(handoff, k > min(k, len(rules))); h != "" && len(text)+1+len(h) <= projectBriefMaxChars {
-			text += "\n" + h
-		}
+		text = appendProjectHandoff(text, k > min(k, len(rules)), handoffMemLine, handoff)
 		emittedIDs = make([]string, 0, k)
 		for _, l := range all[:k] {
 			emittedIDs = append(emittedIDs, l.id)
 		}
 		return capProjectBrief(text, emittedIDs)
 	}
+}
+
+// handoffSectionValue returns the one-line value of a "Label:" section of a
+// structured handoff body, or "".
+func handoffSectionValue(body, label string) string {
+	for _, line := range strings.Split(body, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), label+":"); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// handoffBriefable reports whether a handoff memory may ride into a prompt.
+// Text the owner confirmed is trusted as written. Any other handoff (agent
+// written, or synced from another machine) must pass the same write gate an
+// agent write passes, so a hand-edited or injected file stays out.
+func handoffBriefable(m Memory) bool {
+	return memory.IsOwnerConfirmed(m) || len(tentativeHoldReasons(m)) == 0
+}
+
+func renderProjectHandoffLine(m *Memory) string {
+	if m == nil || !handoffBriefable(*m) {
+		return ""
+	}
+	date := "undated"
+	if len(m.CreatedAt) >= 10 {
+		date = m.CreatedAt[:10]
+	}
+	title := hookspkg.ClipRunes(flatProjectBrief(m.Title), projectBriefTitleRunes)
+	// A structured handoff is condensed to where it stands and the next step; a
+	// free-form or short one is cut from the start.
+	var parts []string
+	for _, label := range []string{"Direction", "Where it stands", "Next step"} {
+		if v := flatProjectBrief(handoffSectionValue(m.Text, label)); v != "" {
+			parts = append(parts, label+": "+v)
+		}
+	}
+	body := strings.Join(parts, "; ")
+	if body == "" {
+		body = flatProjectBrief(m.Text)
+	}
+	body = hookspkg.ClipRunes(body, 300)
+	label := "Last handoff"
+	if !memory.IsOwnerConfirmed(*m) {
+		label = "Last handoff (unconfirmed)"
+	}
+	if body != "" {
+		return fmt.Sprintf("%s: [%s] %s. %s (%s)", label, date, title, body, m.ID)
+	}
+	return fmt.Sprintf("%s: [%s] %s (%s)", label, date, title, m.ID)
+}
+
+func appendProjectHandoff(base string, framed bool, handoffMemLine, transcriptHandoff string) string {
+	var candidates []string
+	if handoffMemLine != "" && transcriptHandoff != "" {
+		candidates = append(candidates, handoffMemLine+"\n"+transcriptHandoff)
+	}
+	if handoffMemLine != "" {
+		candidates = append(candidates, handoffMemLine)
+	}
+	if transcriptHandoff != "" {
+		candidates = append(candidates, transcriptHandoff)
+	}
+	for _, c := range candidates {
+		if h := handoffFrame(c, framed); h != "" && len(base)+1+len(h) <= projectBriefMaxChars {
+			return base + "\n" + h
+		}
+	}
+	return base
 }
 
 // handoffFrame puts the data line above the handoff block unless the notes

@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
@@ -27,21 +28,70 @@ var tentativeHoldPatterns = []struct {
 	pattern *regexp.Regexp
 }{
 	{"sensitive", regexp.MustCompile(`(?i)\b(ssn|social security|passport|medical|diagnos(is|ed)|lawsuit|attorney|immigration|visa status)\b`)},
-	{"aimed at agents", regexp.MustCompile(`(?i)\b(ignore|disregard|forget)\b.{0,30}\b(previous|prior|above|earlier|all)\b|\bsystem prompt\b|\b(you|agents?|assistants?|claude|codex)\s+(must|should|shall|need to|have to)\b|\bfrom now on\b|\b(always|never)\s+(use|run|call|do|say|tell|ask|write|approve|trust)\b`)},
+	{"aimed at agents", agentAimedPattern},
+}
+
+// agentAimedPattern matches text that talks to an agent instead of recording a
+// fact: instruction overrides, standing orders, approval or review bypasses,
+// concealment from the owner, and pipe-to-shell. Ordinary coding rules ("always
+// use pnpm", "never run migrations by hand") do not match. (?s) lets a line
+// break stand between words.
+var agentAimedPattern = regexp.MustCompile(`(?is)` +
+	`\b(ignore|disregard|forget)\b.{0,30}\b(previous|prior|above|earlier|all)\b` +
+	`|\bsystem prompt\b` +
+	`|\b(you|agents?|assistants?|claude|codex)\s+(must|should|shall|need to|have to)\b` +
+	`|\bfrom now on\b` +
+	`|\b(always|never|don'?t|do not)\s+(auto-?approve|approve|accept|grant|trust|ignore|bypass|override|disregard|reveal|exfiltrate|disable)\b` +
+	`|\balways\s+(allow|merge|skip)\b` +
+	`|\b(never|don'?t|do not|stop|without)\s+(ask|asking|wait|waiting|prompt|prompting)\b.{0,40}\b(confirm\w*|approv\w*|permission|review|consent)` +
+	`|\b(always|never|don'?t|do not|must not|should not|shouldn'?t)\s+(tell|ask|mention|inform|notify|warn|show|let|alert|report)\b.{0,30}\b(users?|owners?|humans?)\b` +
+	`|\b(never|don'?t|do not)\s+(tell|mention|inform|notify|let)\b.{0,30}\b(about\s+(this|it|that)|know)\b` +
+	`|\b(curl|wget)\b[^|]{0,300}\|\s*(sudo\s+)?(ba|z|da)?sh\b`)
+
+// isInvisibleRune reports a character that renders as nothing or reorders text:
+// format characters (zero width, bidi controls, BOM, soft hyphen, tag characters
+// U+E0000..E007F), variation selectors (FE00..FE0F, E0100..E01EF, 180B..180D),
+// the combining grapheme joiner, Hangul and Braille blanks, and private use. The
+// write gate holds text that has one and the project brief strips them, both
+// from this one predicate.
+func isInvisibleRune(r rune) bool {
+	switch {
+	case unicode.Is(unicode.Cf, r), unicode.Is(unicode.Co, r):
+		return true
+	case r >= 0xFE00 && r <= 0xFE0F, r >= 0xE0100 && r <= 0xE01EF, r >= 0x180B && r <= 0x180D:
+		return true
+	case r >= 0xE0000 && r <= 0xE007F:
+		return true
+	}
+	switch r {
+	case 0x034F, 0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800, 0x17B4, 0x17B5:
+		return true
+	}
+	return false
+}
+
+// hasInvisibleUnicode reports whether s contains an invisible rune.
+func hasInvisibleUnicode(s string) bool {
+	for _, r := range s {
+		if isInvisibleRune(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // tentativeHoldReasons returns why a write must wait for the owner. An empty
 // result means it may save at once as tentative. Type is an allow list, so a
-// new type is held until someone decides otherwise. A correction stays held
-// because it changes how other records are retrieved, and those readers do not
-// leave out tentative rows. Scope does not matter. The named automatic readers
-// (see docs/guide.md, "MCP write policy") leave out a tentative row of any type
-// and scope. Vault sync (`mora sync git`) and `mora backup` carry the file, tag
-// included, so a saved tentative note can leave the machine that way.
+// new type is held until someone decides otherwise. Scope does not matter. The
+// named automatic readers (see docs/guide.md, "MCP write policy") leave out a
+// tentative row of any type and scope, and decorateCorrectionRows ignores
+// tentative corrections until confirmed. Vault sync (`mora sync git`) and
+// `mora backup` carry the file, tag included, so a saved tentative note can
+// leave the machine that way.
 func tentativeHoldReasons(m Memory) []string {
 	var reasons []string
 	switch m.Type {
-	case "insight", "fact", "decision", "task":
+	case "insight", "fact", "decision", "task", "correction", memory.TypeHandoff:
 	default:
 		reasons = append(reasons, "type "+m.Type)
 	}
@@ -50,9 +100,18 @@ func tentativeHoldReasons(m Memory) []string {
 	if _, redacted := redactProposalText(text); redacted {
 		reasons = append(reasons, "secret")
 	}
+	if hasInvisibleUnicode(text) {
+		reasons = append(reasons, "invisible unicode")
+	}
+	// Match the whole text and also title+body alone (source can sit between an
+	// instruction split across them), with line breaks flattened to spaces.
+	bodies := []string{text, m.Title + "\n" + m.Text, strings.Join(strings.Fields(m.Title+" "+m.Text), " ")}
 	for _, p := range tentativeHoldPatterns {
-		if p.pattern.MatchString(text) {
-			reasons = append(reasons, p.reason)
+		for _, b := range bodies {
+			if p.pattern.MatchString(b) {
+				reasons = append(reasons, p.reason)
+				break
+			}
 		}
 	}
 	return reasons

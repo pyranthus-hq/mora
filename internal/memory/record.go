@@ -1,5 +1,15 @@
 package memory
 
+// Canonical authored memory types stored in <vault>/memories/<scope>/.
+const (
+	TypeInsight    = "insight"
+	TypeFact       = "fact"
+	TypeDecision   = "decision"
+	TypeTask       = "task"
+	TypeCorrection = "correction"
+	TypeHandoff    = "handoff"
+)
+
 // Memory is Mora's shared memory record across persistence, indexing, retrieval, and API surfaces.
 type Memory struct {
 	ID          string   `json:"id"`
