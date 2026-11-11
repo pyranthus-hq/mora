@@ -22,7 +22,7 @@ import (
 func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	fs := flag.NewFlagSet("write", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	scope := fs.String("scope", "global", "scope")
+	scope := fs.String("scope", "global", "scope (default: the project this folder is bound to, else global)")
 	mtype := fs.String("type", "insight", "memory type")
 	title := fs.String("title", "", "title")
 	text := fs.String("text", "", "text")
@@ -56,7 +56,11 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 	_, targetSupplied := false, false
 	_, dispositionSupplied := false, false
 	_, typeSupplied := false, false
+	scopeSupplied := false
 	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "scope" {
+			scopeSupplied = true
+		}
 		if f.Name == "target" {
 			targetSupplied = true
 		}
@@ -82,6 +86,16 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 	}
 	if *scope == "" {
 		*scope = "global"
+	}
+	if !scopeSupplied && *target == "" {
+		// Standing in a folder bound to a project, a note belongs to that project
+		// unless the person says otherwise. Anything unreadable keeps global.
+		if wd, werr := os.Getwd(); werr == nil {
+			if bound, _, found, lerr := lookupProject(cfg, wd); lerr == nil && found {
+				*scope = bound
+				fmt.Fprintf(stderr, "saving to %s (this folder is bound to it); pass --scope global to save it for everything\n", clipProjectScope(bound))
+			}
+		}
 	}
 	m := Memory{Scope: *scope, Type: *mtype, Title: *title, Tags: genericutil.SplitCSV(*tags), Source: *source, CreatedAt: time.Now().Format(time.RFC3339), Text: *text}
 	if *target != "" {
@@ -203,7 +217,7 @@ func cmdRead(ctx context.Context, args []string, stdout, stderr io.Writer) error
 				return emitReceipt(stdout, "mora.read", 1, memory.WithProvenance(sm))
 			}
 			printHealthBannerLine(stdout, cfg, time.Now())
-			return emit(stdout, sm, false)
+			return emitMemoryWithBody(stdout, sm)
 		}
 		return err
 	}
@@ -213,7 +227,31 @@ func cmdRead(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return emitReceipt(stdout, "mora.read", 1, memory.WithProvenance(m))
 	}
 	printHealthBannerLine(stdout, cfg, time.Now())
-	return emit(stdout, m, false)
+	return emitMemoryWithBody(stdout, m)
+}
+
+// readBodyRunes bounds the note text `mora read` prints for a person. A note
+// can be a whole chat export; --json always carries the full text.
+const readBodyRunes = 8000
+
+// emitMemoryWithBody prints the id/scope/title header line, then the note's
+// text, so `mora read <id>` shows what the note says and not only that it exists.
+func emitMemoryWithBody(w io.Writer, m Memory) error {
+	// Titles and bodies of ingested notes are untrusted text: escape control
+	// characters so a note cannot write to the terminal or the clipboard.
+	sty := newStyler(w, false)
+	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n", sty.dim(m.ID), sty.dim(m.Scope), rulesShow(labelledTitle(m))); err != nil {
+		return err
+	}
+	body := strings.TrimSpace(m.Text)
+	if body == "" {
+		return nil
+	}
+	if r := []rune(body); len(r) > readBodyRunes {
+		body = strings.TrimSpace(string(r[:readBodyRunes])) + "\n... (text cut at " + strconv.Itoa(readBodyRunes) + " characters; `mora read " + m.ID + " --json` has all of it)"
+	}
+	_, err := fmt.Fprintf(w, "\n%s\n", reviewShowText(body))
+	return err
 }
 
 // memoriesPayload carries a memory list under a named key. `list --json` and

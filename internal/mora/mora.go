@@ -194,6 +194,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdProject(ctx, args[1:], stdout, stderr)
 	case "given":
 		return cmdGiven(ctx, args[1:], stdout)
+	case "status":
+		return cmdStatus(ctx, args[1:], stdout, stderr)
 	case "rules":
 		return cmdRules(ctx, args[1:], stdout, stderr, stdin)
 	case "check":
@@ -251,10 +253,24 @@ func cmdVersion(_ context.Context, args []string, stdout, stderr io.Writer) erro
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `mora — local memory utility
 
-USAGE:
+USAGE: mora <command> [flags]   (every command, grouped by what you want to do)
+
+GET STARTED AND CHECK HEALTH:
   mora init --vault ~/vault/mora
   mora setup --plan                # read-only verified-onboarding foundation plan
   mora setup status --json         # machine-readable foundation status
+  mora status                      # one screen: this folder, vault and index health, notes waiting for review, what was last given to an agent
+  mora status --json               # the same, machine-readable
+  mora status --web [--port 7781]  # the same as a read-only page on 127.0.0.1 only (Windows/Linux counterpart of the macOS menu bar app)
+  mora doctor                      # health checks, incl. per-source freshness (HEALTH-01)
+  mora doctor --json               # machine-readable evidence, diagnosis, and repair plan
+  mora doctor --repair --dry-run --json # preview exact safe repair mutations
+  mora doctor --repair --yes --json     # approve, apply, and verify safe repairs
+  mora doctor --pulse              # freshness-only check: exit 2 + a native toast when any source is unhealthy, exit 0 when all fresh
+  mora doctor --pulse --json       # --pulse combined with --json emits ONLY the sources array (no banner text)
+  mora version
+
+SAVE, FIND AND READ NOTES:
   mora write --scope project:acme --type decision --title "OAuth" --text "..."
   mora search "OAuth status" --scope project:acme --json
   mora entities                    # the people/projects/topics across your memory
@@ -264,44 +280,38 @@ USAGE:
   mora read <id> --json
   mora list --scope project:acme --json
   mora delete <id> --yes
-  mora confirm <memory-id> | --list   # keep a tentative agent write (confirm --list shows them)
-  mora review --list [--json]      # list every agent note that waits for you: saved (tentative) and held
-  mora review                      # keep or reject each one; in your own terminal only
-  mora undo <memory-id> [--force]  # remove an agent-written memory; refuses others without --force (log: <vault>/agent-writes.log)
   mora context --scope project:acme --query "auth" --budget 6000 --json
   mora think "what did Sam decide about the launch" --json   # cited evidence + gap analysis
   mora brief --event-id <id>       # cited unfinished-business brief for one calendar event
   mora brief correct --memory-id <id> --attendee <identity> --confirm
   mora brief                       # the latest what-changed/what-matters brief (session-start default; local-only)
   mora brief --envelope --json     # add a synthesis prompt / emit structured {generated, body}
-  mora teach identity list         # review typed identity proposals and affected memories
-  mora teach commitment wrong-direction --memory-id <id> --direction owed_by_self --yes
-  mora teach memory correct --id <id> --title "Corrected" --text "..." --yes
-  mora teach history --memory-id <id>
-  mora teach undo <ledger-id>      # reverse a commitment or authored-memory decision
   mora index rebuild
-  mora share init acme --scope project:acme --recipient age1... --remote <PRIVATE git URL>   # publish a scope, always encrypted
-  mora share fingerprint           # publisher: give this bucket-share fingerprint through a separate trusted channel
-  mora share push acme             # preview exactly what leaves, then publish
-  mora share subscribe neil --remote <URL>   # read someone's share beside your vault (never merged into it)
   mora tasks sync --write
   mora tasks add "Reply to Sam about the launch" --pri P0   # capture an open loop (name first, then flags)
   mora tasks list --json                                    # the current live tasks
   mora tasks done "Set up Mora"    # mark a live task complete so it stops resurfacing as stale
   mora pulse --write --digest
+  mora reingest [--full]           # re-fetch + rewrite memories with latest metadata, rebuild graph
+
+REVIEW WHAT AGENTS SAVED AND RECEIVED:
+  mora confirm <memory-id> | --list   # keep a tentative agent write (confirm --list shows them)
+  mora review --list [--json]      # list every agent note that waits for you: saved (tentative) and held
+  mora review                      # keep or reject each one; in your own terminal only
+  mora undo <memory-id> [--force]  # remove an agent-written memory; refuses others without --force (log: <vault>/agent-writes.log)
+  mora project bind --scope project:acme .   # make a folder belong to a project; also: project which|list|unbind
+  mora given [--limit N] [--json]  # what Mora handed to your agents lately, with each note's title
+
+CORRECT AND TEACH:
+  mora teach identity list         # review typed identity proposals and affected memories
+  mora teach commitment wrong-direction --memory-id <id> --direction owed_by_self --yes
+  mora teach memory correct --id <id> --title "Corrected" --text "..." --yes
+  mora teach history --memory-id <id>
+  mora teach undo <ledger-id>      # reverse a commitment or authored-memory decision
+
+CONNECT YOUR SOURCES:
   mora sources add filesystem --name docs --path ~/Documents --scope personal
   mora ingest run --source docs
-  mora doctor                      # health checks, incl. per-source freshness (HEALTH-01)
-  mora doctor --json               # machine-readable evidence, diagnosis, and repair plan
-  mora doctor --repair --dry-run --json # preview exact safe repair mutations
-  mora doctor --repair --yes --json     # approve, apply, and verify safe repairs
-  mora doctor --pulse              # freshness-only check: exit 2 + a native toast when any source is unhealthy, exit 0 when all fresh
-  mora doctor --pulse --json       # --pulse combined with --json emits ONLY the sources array (no banner text)
-  mora schedule install pulse-daily
-  mora schedule install doctor-pulse   # daily 09:00 freshness alarm (after the 08:00 brief)
-  mora config context large        # context profile: small | default | large (budget + snippet density)
-  mora config mmr on               # diversity-aware rerank of hybrid results (needs embedder=ollama)
-  mora config mcp-write-policy propose   # tentative | open | propose | readonly for MCP mutations
   mora connectors list|enable <type>|disable <type>
   mora connect google              # sign in with Google in your browser, then backfill Gmail + Calendar (last 90 days)
   mora connect google --since-days 365   # widen the gmail backfill window
@@ -315,16 +325,21 @@ USAGE:
   mora sync google
   mora sync github                # refresh enabled GitHub issue sources (read-only)
   mora sync eywa                  # pull new and replaced company-memory facts (read-only records)
-  mora eywa push enable            # opt in to pushing authored memories (off by default)
-  mora eywa push --scope project:acme   # preview, confirm, then send as governed agent updates
-  mora eywa status                 # re-check whether pushed updates were admitted, in review, or held
   mora sync filesystem            # re-index enabled filesystem sources
   mora sync imessage               # macOS: read local Messages (read-only) into memories
   mora sync applecalendar          # macOS: re-read local Apple Calendar (read-only) into memories
-  mora reingest [--full]           # re-fetch + rewrite memories with latest metadata, rebuild graph
-  mora usage report
-  mora usage off|on
   mora disconnect google
+
+SHARE:
+  mora share init acme --scope project:acme --recipient age1... --remote <PRIVATE git URL>   # publish a scope, always encrypted
+  mora share fingerprint           # publisher: give this bucket-share fingerprint through a separate trusted channel
+  mora share push acme             # preview exactly what leaves, then publish
+  mora share subscribe neil --remote <URL>   # read someone's share beside your vault (never merged into it)
+  mora eywa push enable            # opt in to pushing authored memories (off by default)
+  mora eywa push --scope project:acme   # preview, confirm, then send as governed agent updates
+  mora eywa status                 # re-check whether pushed updates were admitted, in review, or held
+
+AGENTS, HOOKS AND SERVERS:
   mora mcp serve
   mora mcp serve-http              # profile-bound Streamable HTTP MCP on 127.0.0.1 (tunnel separately)
   mora remote expose               # print tunnel commands; executes none
@@ -332,14 +347,14 @@ USAGE:
   mora mcp proposals show <id>     # inspect full staged content before approving
   mora mcp proposals approve <id>...  # publish staged writes (one rebuild per call)
   mora mcp proposals recover <id>  # finish a decision a crash left half done (--retry | --close if asked)
-
   mora serve http                  # loopback HTTP for sandboxed AI browsers (Aside); token in ~/.config/mora/http.json
   mora serve http install          # run it as an auto-restarting background service (launchd/systemd); also: uninstall|status
   mora companion pair              # pair a phone: prints a QR-able payload with a one-time code
   mora companion list|status       # the paired devices, and whether a pairing window is open
   mora companion revoke <id>       # end one device's access
   mora companion serve             # the narrow loopback listener a paired phone reads (Today/context/health only)
-  mora hook install|uninstall|status
+  mora hook install|uninstall|status   # Claude Code hooks
+  mora hook install --client antigravity [--hooks-file PATH]   # Antigravity hooks in ~/.gemini/config/hooks.json (also: uninstall|status)
   mora hook install --pre-tool     # opt in to Bash warnings from approved rules (see mora rules)
   mora rules add --template compound-cd
   mora rules approve <id> --mode warn|shadow [--holdout]   # in your own terminal only
@@ -351,11 +366,19 @@ USAGE:
   mora rules verify <grant-file> [--signers PATH] [--scope SCOPE]
   mora rules import <grant-file> --scope SCOPE [--signers PATH]
   mora check [--since 30d] [--json]   # read-only count of rejected or interrupted commands
+
+SETTINGS AND UPKEEP:
+  mora schedule install pulse-daily
+  mora schedule install doctor-pulse   # daily 09:00 freshness alarm (after the 08:00 brief)
+  mora config context large        # context profile: small | default | large (budget + snippet density)
+  mora config mmr on               # diversity-aware rerank of hybrid results (needs embedder=ollama)
+  mora config mcp-write-policy propose   # tentative | open | propose | readonly for MCP mutations
+  mora usage report
+  mora usage off|on
   mora upgrade                     # manually self-update to the latest release
   mora upgrade --check             # check + cache published stable release availability
   mora upgrade --policy auto|notify|off
-  mora upgrade --status [--json]   # cached policy/check/notification status; no network
-  mora version`)
+  mora upgrade --status [--json]   # cached policy/check/notification status; no network`)
 }
 
 // confirmVaultRepointFn is the repoint-confirmation gate cmdInit calls. It is a
