@@ -16,7 +16,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	hookspkg "github.com/pyranthus-hq/mora/internal/hooks"
 	"github.com/pyranthus-hq/mora/internal/leasefile"
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 const (
@@ -350,6 +352,7 @@ func cmdGiven(ctx context.Context, args []string, stdout io.Writer) error {
 		_, err := fmt.Fprintln(stdout, "Nothing given yet.")
 		return err
 	}
+	titles := givenTitles(cfg, givenIDsOf(lines))
 	for _, raw := range lines {
 		var g givenLine
 		if json.Unmarshal(raw, &g) != nil {
@@ -376,6 +379,67 @@ func cmdGiven(ctx context.Context, args []string, stdout io.Writer) error {
 		if _, err := fmt.Fprintf(stdout, "%s  %s  %s  %s  %s  ids: %s  %s\n", g.At, g.Surface, g.Caller, folder, notes, ids, status); err != nil {
 			return err
 		}
+		// Titles are read from the vault now, never stored in the log. A note
+		// that is gone or not found simply has no title line.
+		for _, id := range g.IDs {
+			if t, ok := titles[id]; ok {
+				if _, err := fmt.Fprintf(stdout, "    %s  %s\n", id, t); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	return nil
+}
+
+func givenIDsOf(lines []json.RawMessage) []string {
+	var ids []string
+	for _, raw := range lines {
+		var g givenLine
+		if json.Unmarshal(raw, &g) == nil {
+			ids = append(ids, g.IDs...)
+		}
+	}
+	return ids
+}
+
+// givenTitleRunes bounds one printed title.
+const givenTitleRunes = 100
+
+// givenTitles resolves note ids to one-line titles with a single walk of the
+// vault, best effort: a missing vault, an unreadable file or an id that matches
+// no file yields no entry. Files are matched by the same name shapes
+// findMemoryRaw uses first (id, SafeFilename id, and their Windows forms) and
+// the parsed id must equal the logged id.
+func givenTitles(cfg Config, ids []string) map[string]string {
+	out := map[string]string{}
+	if len(ids) == 0 {
+		return out
+	}
+	wanted := map[string]bool{}
+	byBase := map[string]string{}
+	for _, id := range ids {
+		wanted[id] = true
+		for _, b := range []string{id, memory.SafeFilename(id), osSafeBase(id), osSafeBase(memory.SafeFilename(id))} {
+			byBase[b+".md"] = id
+		}
+	}
+	files, err := allMemoryFiles(cfg)
+	if err != nil {
+		return out
+	}
+	for _, path := range files {
+		id, ok := byBase[filepath.Base(path)]
+		if !ok {
+			continue
+		}
+		m, err := parseMemory(path)
+		if err != nil || m.ID != id || !wanted[id] {
+			continue
+		}
+		if title := hookspkg.ClipRunes(flatProjectBrief(labelledTitle(m)), givenTitleRunes); title != "" {
+			out[id] = title
+		}
+	}
+	return out
 }

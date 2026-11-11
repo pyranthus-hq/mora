@@ -251,6 +251,7 @@ func seedRecallMemories(t *testing.T, n int) Config {
 
 func withTempHookHome(t *testing.T) string {
 	t.Helper()
+	withWSLDistro(t, "")
 	tmp := t.TempDir()
 	setTestHome(t, tmp)
 	t.Setenv("MORA_CONFIG_DIR", "")

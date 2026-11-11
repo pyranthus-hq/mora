@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -72,7 +74,72 @@ func validProjectScope(scope string) error {
 	return nil
 }
 
+var (
+	wslHostOS    = runtime.GOOS
+	wslMountRoot = "/mnt"
+	// wslDistro names the WSL distribution mora runs in, "" outside WSL. It is a
+	// variable so tests can stand in for WSL.
+	wslDistro = func() string { return os.Getenv("WSL_DISTRO_NAME") }
+)
+
+// normalizeWSLWindowsPath rewrites paths a Windows program hands to a mora that
+// runs inside WSL:
+//   - a drive path (C:\Users\x or C:/Users/x) becomes /mnt/c/Users/x when
+//     /mnt/<drive> exists; a path whose ".." segments climb above the drive root
+//     is left unchanged, so it is rejected later as not absolute;
+//   - a WSL network path (\\wsl.localhost\<distro>\home\x, \\wsl$\<distro>\...,
+//     or the forward-slash forms) becomes /home/x when <distro> is the distro
+//     mora runs in. A path for another distro is left unchanged.
+//
+// Everything else, and every path on Windows or outside WSL, comes back as is.
+func normalizeWSLWindowsPath(p string) string {
+	trimmed := strings.TrimSpace(p)
+	if trimmed == "" || wslHostOS == "windows" {
+		return p
+	}
+	slash := strings.ReplaceAll(trimmed, `\`, "/")
+	for _, prefix := range []string{"//wsl.localhost/", "//wsl$/"} {
+		if len(slash) > len(prefix) && strings.EqualFold(slash[:len(prefix)], prefix) {
+			distro, rest, _ := strings.Cut(slash[len(prefix):], "/")
+			cur := wslDistro()
+			if cur == "" || !strings.EqualFold(distro, cur) {
+				return p
+			}
+			return path.Clean("/" + rest)
+		}
+	}
+	if len(trimmed) < 2 || trimmed[1] != ':' {
+		return p
+	}
+	drive := trimmed[0]
+	if !((drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')) {
+		return p
+	}
+	if len(trimmed) > 2 && trimmed[2] != '\\' && trimmed[2] != '/' {
+		return p
+	}
+	driveDir := filepath.Join(wslMountRoot, strings.ToLower(string(drive)))
+	if info, err := os.Stat(driveDir); err != nil || !info.IsDir() {
+		return p
+	}
+	var parts []string
+	for _, seg := range strings.Split(slash[2:], "/") {
+		switch seg {
+		case "", ".":
+		case "..":
+			if len(parts) == 0 {
+				return p
+			}
+			parts = parts[:len(parts)-1]
+		default:
+			parts = append(parts, seg)
+		}
+	}
+	return filepath.Join(append([]string{driveDir}, parts...)...)
+}
+
 func resolveProjectDir(dir string) (string, error) {
+	dir = normalizeWSLWindowsPath(dir)
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return "", err
@@ -133,6 +200,7 @@ func sameProjectDir(a, b string) bool {
 // resolveExisting resolves symlinks in the deepest existing ancestor of path
 // and appends the missing rest. It reports false when no ancestor resolves.
 func resolveExisting(path string) (string, bool) {
+	path = normalizeWSLWindowsPath(path)
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", false

@@ -2,6 +2,7 @@ package mora
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -69,6 +70,15 @@ func TestHookRecallPreviewCentersOnLateMatch(t *testing.T) {
 		Text:      filler + "The vendor contract renewal uses codeword quillbarrow and closes Friday.",
 	}); err != nil {
 		t.Fatal(err)
+	}
+	// A word is only rare against a real corpus, so give the index one.
+	for i := 0; i < 24; i++ {
+		if err := writeMemory(cfg, Memory{
+			ID: newID(), Scope: "personal", Type: "note", Title: fmt.Sprintf("Filler %d", i), Source: "test",
+			CreatedAt: "2026-06-01T00:00:00Z", Text: fmt.Sprintf("Ordinary planning note number %d.", i),
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := rebuildIndex(testCtx(t), cfg); err != nil {
 		t.Fatal(err)

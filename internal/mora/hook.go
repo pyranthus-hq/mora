@@ -1,7 +1,9 @@
 package mora
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -47,13 +49,23 @@ type hookSpecificOutput struct {
 }
 
 type sessionStartHookInput struct {
-	Source string `json:"source"`
-	CWD    string `json:"cwd"`
+	Source              string   `json:"source"`
+	CWD                 string   `json:"cwd"`
+	LastUserInput       string   `json:"lastUserInput"`
+	WorkspacePaths      []string `json:"workspacePaths"`
+	TranscriptPath      string   `json:"transcript_path"`
+	TranscriptPathCamel string   `json:"transcriptPath"`
+	ConversationID      string   `json:"conversationId"`
 }
 
 type recallHookInput struct {
-	Prompt string `json:"prompt"`
-	CWD    string `json:"cwd"`
+	Prompt              string   `json:"prompt"`
+	CWD                 string   `json:"cwd"`
+	LastUserInput       string   `json:"lastUserInput"`
+	WorkspacePaths      []string `json:"workspacePaths"`
+	TranscriptPath      string   `json:"transcript_path"`
+	TranscriptPathCamel string   `json:"transcriptPath"`
+	ConversationID      string   `json:"conversationId"`
 }
 
 func cmdHook(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
@@ -66,7 +78,7 @@ func cmdHook(ctx context.Context, args []string, stdout, stderr io.Writer, stdin
 	case "recall":
 		return hookRecall(ctx, args[1:], stdout, stdin)
 	case "session-end":
-		return hookSessionEnd(ctx, args[1:], stdin)
+		return runHookSessionEnd(ctx, args[1:], stdout, stdin)
 	case "pre-tool-use":
 		return hookPreToolUse(ctx, stdout, stdin)
 	case "install":
@@ -76,11 +88,22 @@ func cmdHook(ctx context.Context, args []string, stdout, stderr io.Writer, stdin
 		fs.SetOutput(io.Discard)
 		project := fs.Bool("project", false, "remove hooks from the current project")
 		preTool := fs.Bool("pre-tool", false, "remove only the PreToolUse warning hook")
+		client := fs.String("client", "", "hook client (claude or antigravity)")
+		hooksFile := fs.String("hooks-file", "", "Antigravity hooks.json path")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		if fs.NArg() != 0 {
 			return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+		}
+		if strings.EqualFold(*client, "antigravity") {
+			if *project || *preTool {
+				return errors.New("usage: mora hook uninstall --client antigravity [--hooks-file PATH]")
+			}
+			return hookUninstallAntigravity(ctx, stdout, *hooksFile)
+		}
+		if *client != "" && !strings.EqualFold(*client, "claude") {
+			return fmt.Errorf("unknown hook client %q: use claude or antigravity", *client)
 		}
 		if *preTool {
 			if *project {
@@ -95,11 +118,22 @@ func cmdHook(ctx context.Context, args []string, stdout, stderr io.Writer, stdin
 		jsonOut := fs.Bool("json", false, "emit JSON")
 		project := fs.Bool("project", false, "inspect hooks in the current project")
 		preTool := fs.Bool("pre-tool", false, "show only the PreToolUse warning hook")
+		client := fs.String("client", "", "hook client (claude or antigravity)")
+		hooksFile := fs.String("hooks-file", "", "Antigravity hooks.json path")
 		if parseErr := fs.Parse(args[1:]); parseErr != nil {
 			return newMoraError(errCodeUsageUnknownFlag, "usage", parseErr, "%v", parseErr)
 		}
 		if fs.NArg() != 0 {
 			return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unexpected argument %q", fs.Arg(0))
+		}
+		if *client != "" && !strings.EqualFold(*client, "claude") && !strings.EqualFold(*client, "antigravity") {
+			return newMoraError(errCodeUsageUnknownValue, "usage", nil, "unknown hook client %q: use claude or antigravity", *client)
+		}
+		if strings.EqualFold(*client, antigravityClient) {
+			if *project || *preTool {
+				return newMoraError(errCodeUsageUnknownValue, "usage", nil, "--client antigravity cannot be combined with --project or --pre-tool")
+			}
+			return hookStatusAntigravity(ctx, stdout, *hooksFile, *jsonOut)
 		}
 		if *preTool && *project {
 			return newMoraError(errCodeUsageUnknownValue, "usage", nil, "--pre-tool cannot be combined with --project: the PreToolUse hook is global only")
@@ -117,10 +151,76 @@ func cmdHook(ctx context.Context, args []string, stdout, stderr io.Writer, stdin
 // parseProjectDirArg reads the one optional flag of session-start and
 // session-end. A project install writes it; ok is false on any other argument.
 func parseProjectDirArg(name string, args []string) (dir string, ok bool) {
+	dir, _, ok = parseHookSubArgs(name, args)
+	return dir, ok
+}
+
+func parseHookSubArgs(name string, args []string) (dir, client string, ok bool) {
 	fs := flag.NewFlagSet("mora hook "+name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&dir, "project-dir", "", "project directory bound at installation")
-	return dir, fs.Parse(args) == nil && fs.NArg() == 0
+	fs.StringVar(&client, "client", "", "hook client (claude or antigravity)")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		return "", "", false
+	}
+	if client != "" && !strings.EqualFold(client, "claude") && !strings.EqualFold(client, "antigravity") {
+		return "", "", false
+	}
+	return normalizeWSLWindowsPath(dir), strings.ToLower(client), true
+}
+
+func runHookSessionEnd(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
+	dir, client, ok := parseHookSubArgs("session-end", args)
+	if !ok {
+		return nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(stdin, handoffInputBytes+1))
+	if err != nil {
+		return nil
+	}
+	var payload map[string]any
+	isAntigravity := client == "antigravity"
+	if len(bytes.TrimSpace(raw)) > 0 && json.Unmarshal(raw, &payload) == nil {
+		if _, has := payload["workspacePaths"]; has {
+			isAntigravity = true
+		}
+		if _, has := payload["transcriptPath"]; has {
+			isAntigravity = true
+		}
+		if _, has := payload["lastUserInput"]; has {
+			isAntigravity = true
+		}
+		cwd, _ := payload["cwd"].(string)
+		if cwd == "" {
+			if wps, ok := payload["workspacePaths"].([]any); ok && len(wps) > 0 {
+				if wp, ok := wps[0].(string); ok {
+					cwd = wp
+				}
+			}
+		}
+		if cwd != "" {
+			payload["cwd"] = normalizeWSLWindowsPath(cwd)
+		}
+		tp, _ := payload["transcript_path"].(string)
+		if tp == "" {
+			tp, _ = payload["transcriptPath"].(string)
+		}
+		if tp != "" {
+			payload["transcript_path"] = normalizeWSLWindowsPath(tp)
+		}
+		if updated, merr := json.Marshal(payload); merr == nil {
+			raw = updated
+		}
+	}
+	var forwardArgs []string
+	if dir != "" {
+		forwardArgs = []string{"--project-dir", dir}
+	}
+	err = hookSessionEnd(ctx, forwardArgs, bytes.NewReader(raw))
+	if isAntigravity && stdout != nil {
+		_, _ = fmt.Fprintln(stdout, "{}")
+	}
+	return err
 }
 
 // hookProjectGate is the fail-closed check of a project-installed hook: cwd must
@@ -135,23 +235,37 @@ func hookProjectGate(cfg Config, projectDir, cwd string) bool {
 }
 
 func hookSessionStart(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
-	projectDir, ok := parseProjectDirArg("session-start", args)
+	projectDir, client, ok := parseHookSubArgs("session-start", args)
 	if !ok {
 		return nil
 	}
 	var in sessionStartHookInput
 	if err := json.NewDecoder(stdin).Decode(&in); err != nil {
+		if client == "antigravity" {
+			_ = writeAntigravityEmpty(stdout)
+		}
+		return nil
+	}
+	isAntigravity := client == "antigravity" || in.LastUserInput != "" || len(in.WorkspacePaths) > 0 || in.TranscriptPathCamel != ""
+	if in.CWD == "" && len(in.WorkspacePaths) > 0 {
+		in.CWD = in.WorkspacePaths[0]
+	}
+	in.CWD = normalizeWSLWindowsPath(in.CWD)
+	emitEmpty := func() error {
+		if isAntigravity {
+			_ = writeAntigravityEmpty(stdout)
+		}
 		return nil
 	}
 	if in.Source == "compact" {
-		return nil
+		return emitEmpty()
 	}
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
-		return nil
+		return emitEmpty()
 	}
 	if projectDir != "" && !hookProjectGate(cfg, projectDir, in.CWD) {
-		return nil // a project install never falls back to the daily brief
+		return emitEmpty() // a project install never falls back to the daily brief
 	}
 	// A folder bound to a project gets that project's owner rules instead of the
 	// daily brief. No binding file, or no match for cwd, keeps the daily brief.
@@ -172,9 +286,15 @@ func hookSessionStart(ctx context.Context, args []string, stdout io.Writer, stdi
 			}
 		}
 		if text != "" {
-			werr := writeHookOutput(stdout, "SessionStart", prependBannerLine(boundHealthBanner(cfg), text))
+			fullText := prependBannerLine(boundHealthBanner(cfg), text)
+			var werr error
+			if isAntigravity {
+				werr = writeAntigravityHookOutput(stdout, fullText, projectBriefMarkdown(len(emitted)))
+			} else {
+				werr = writeHookOutput(stdout, "SessionStart", fullText)
+			}
 			if len(emitted) > 0 {
-				_ = appendGiven(cfg, givenLine{Surface: "hook-session-start", Kind: "project-brief", Caller: "claude-code", Dir: root, Scope: givenScope(scope), Written: boolPtr(werr == nil)}, emitted, len(emitted))
+				_ = appendGiven(cfg, givenLine{Surface: "hook-session-start", Kind: "project-brief", Caller: hookCaller(isAntigravity), Dir: root, Scope: givenScope(scope), Written: boolPtr(werr == nil)}, emitted, len(emitted))
 			}
 			return nil
 		}
@@ -190,19 +310,29 @@ func hookSessionStart(ctx context.Context, args []string, stdout io.Writer, stdi
 		// this is scoped to the one gap that isn't otherwise covered: inject
 		// just the banner line instead of staying silent.
 		if banner := healthBannerFrom(healthOf(cfg, hookNow())); banner != "" {
-			_ = writeHookOutput(stdout, "SessionStart", banner)
+			if isAntigravity {
+				_ = writeAntigravityHookOutput(stdout, banner, "🧠 **Mora** · memory health needs attention")
+			} else {
+				_ = writeHookOutput(stdout, "SessionStart", banner)
+			}
+			return nil
 		}
-		return nil
+		return emitEmpty()
 	}
 	if strings.TrimSpace(body) == "" {
-		return nil
+		return emitEmpty()
 	}
 	if notice := reviewNotice(ctx, cfg); notice != "" {
 		body += "\n" + notice
 	}
-	werr := writeHookOutput(stdout, "SessionStart", body)
+	var werr error
+	if isAntigravity {
+		werr = writeAntigravityHookOutput(stdout, body, "🧠 **Mora** · daily brief loaded")
+	} else {
+		werr = writeHookOutput(stdout, "SessionStart", body)
+	}
 	// The daily brief is a digest, not a list of notes: no ids, count 0.
-	_ = appendGiven(cfg, givenLine{Surface: "hook-session-start", Kind: "daily-brief", Caller: "claude-code", Dir: givenHookDir(in.CWD), Written: boolPtr(werr == nil)}, nil, 0)
+	_ = appendGiven(cfg, givenLine{Surface: "hook-session-start", Kind: "daily-brief", Caller: hookCaller(isAntigravity), Dir: givenHookDir(in.CWD), Written: boolPtr(werr == nil)}, nil, 0)
 	return nil
 }
 
@@ -213,23 +343,45 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 	}
 	var in recallHookInput
 	if err := json.NewDecoder(stdin).Decode(&in); err != nil {
+		if opts.client == "antigravity" {
+			_ = writeAntigravityEmpty(stdout)
+		}
+		return nil
+	}
+	isAntigravity := opts.client == "antigravity" || in.LastUserInput != "" || len(in.WorkspacePaths) > 0 || in.TranscriptPathCamel != ""
+	if in.Prompt == "" && in.LastUserInput != "" {
+		in.Prompt = in.LastUserInput
+	}
+	if in.CWD == "" && len(in.WorkspacePaths) > 0 {
+		in.CWD = in.WorkspacePaths[0]
+	}
+	in.CWD = normalizeWSLWindowsPath(in.CWD)
+	emitEmpty := func() error {
+		if isAntigravity {
+			_ = writeAntigravityEmpty(stdout)
+		}
 		return nil
 	}
 	if opts.scope != "" && !hookWithinProject(opts.projectDir, in.CWD) {
-		return nil
+		return emitEmpty()
 	}
 	prompt := strings.TrimSpace(in.Prompt)
 	if skipRecallPrompt(prompt) {
-		return nil
+		return emitEmpty()
 	}
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
-		return nil
+		return emitEmpty()
+	}
+	if isAntigravity && antigravityRecallSeen(cfg, in.ConversationID, prompt) {
+		// PreInvocation fires before every model call of a turn, not once per
+		// user message: the notes for this message are already in the context.
+		return emitEmpty()
 	}
 	// A binding file that cannot be read gives no recall and writes nothing.
 	scopeFilter, bound, ok := recallScopeFilter(cfg, opts, in.CWD)
 	if !ok {
-		return nil
+		return emitEmpty()
 	}
 	// C2 ▸A: hook recall injects into EVERY user prompt, so it gets the same
 	// one-line treatment as session-start — the banner rides along whenever the
@@ -262,13 +414,34 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 	}
 	body = prependBannerLine(banner, body)
 	if body == "" {
-		return nil
+		return emitEmpty()
 	}
-	werr := writeHookOutputWithMessage(stdout, "UserPromptSubmit", body, hookspkg.SteppedInLine(len(recalledIDs)))
+	var werr error
+	if isAntigravity {
+		werr = writeAntigravityHookOutput(stdout, body, recallMarkdown(len(recalledIDs)))
+	} else {
+		werr = writeHookOutputWithMessage(stdout, "UserPromptSubmit", body, hookspkg.SteppedInLine(len(recalledIDs)))
+	}
 	if len(recalledIDs) > 0 {
-		_ = appendGiven(cfg, givenLine{Surface: "hook-recall", Kind: "recall", Caller: "claude-code", Dir: givenHookDir(in.CWD), Scope: givenScope(opts.scope), Written: boolPtr(werr == nil)}, recalledIDs, len(recalledIDs))
+		_ = appendGiven(cfg, givenLine{Surface: "hook-recall", Kind: "recall", Caller: hookCaller(isAntigravity), Dir: givenHookDir(in.CWD), Scope: givenScope(opts.scope), Written: boolPtr(werr == nil)}, recalledIDs, len(recalledIDs))
 	}
 	return nil
+}
+
+func projectBriefMarkdown(n int) string {
+	if n <= 0 {
+		return "🧠 **Mora** · project brief loaded"
+	}
+	return fmt.Sprintf("🧠 **Mora** · project brief loaded · %d note(s)", n)
+}
+
+// recallMarkdown is the Antigravity banner for a recall: the stepped-in line
+// when notes were injected, a health line when only the banner was.
+func recallMarkdown(n int) string {
+	if n <= 0 {
+		return "🧠 **Mora** · memory health needs attention"
+	}
+	return hookspkg.SteppedInMarkdown(n)
 }
 
 // prependBannerLine puts the health banner on its own leading line above body,
@@ -287,23 +460,97 @@ func formatRecallContext(mems []Memory, threshold float64, now time.Time) string
 // each row's Score is put back to its parent-grain BM25 cost. A row admitted
 // only by the segment arm has no parent cost and gets 0, which the default
 // threshold keeps and a stricter (negative) threshold drops.
+//
+// Two guards keep recall from speaking on noise. Generic verbs ("use", "run",
+// "set"...) are stripped from the query, so they cannot be the only reason a
+// note matches. And because the search layer ORs every remaining term, a row
+// must still share at least two of the prompt's content tokens (one, when the
+// prompt has only one) or it is dropped, whatever its score. That check is
+// independent of how many terms the search layer requires.
 func hookRecallSearch(ctx context.Context, cfg Config, query, scope string, limit int, filters ...searchFilters) ([]Memory, error) {
+	q := hookspkg.FilterRecallQuery(query)
+	if len(hookspkg.RecallTokens(q)) == 0 {
+		return nil, nil
+	}
 	var obs searchMemoryObservation
-	mems, err := searchMemoriesObserved(ctx, cfg, query, scope, limit, &obs, filters...)
-	if err != nil || !obs.ScoreFused {
-		return mems, err
+	mems, err := searchMemoriesObserved(ctx, cfg, q, scope, limit, &obs, filters...)
+	if err != nil {
+		return nil, err
 	}
-	for i := range mems {
-		mems[i].Score = obs.BM25[mems[i].ID]
+	rare, closeRare := recallRareFunc(ctx, cfg)
+	defer closeRare()
+	kept := mems[:0]
+	for _, m := range mems {
+		if obs.ScoreFused {
+			m.Score = obs.BM25[m.ID]
+		}
+		if hookspkg.RecallOverlapOK(m, q, rare) {
+			kept = append(kept, m)
+		}
 	}
-	return mems, nil
+	return kept, nil
 }
+
+const (
+	recallRareMinCorpus = 20 // below this many notes document frequency says nothing
+	recallRareMaxLookup = 6  // index lookups per prompt, to stay inside the hook's time budget
+)
+
+// recallRareFunc answers whether a token is rare in the index: it appears in at
+// most max(2, 2%) of the notes, in a corpus of at least recallRareMinCorpus.
+// The lookups go through FTS MATCH, so whatever tokenizer the index uses
+// (stemming included) decides what counts as the same word. Any error, an
+// exhausted lookup budget or a small corpus answers false: not rare.
+func recallRareFunc(ctx context.Context, cfg Config) (rare func(string) bool, closeFn func()) {
+	var db *sql.DB
+	var total int
+	opened, lookups := false, 0
+	cache := map[string]bool{}
+	closeFn = func() {
+		if db != nil {
+			_ = db.Close()
+		}
+	}
+	return func(tok string) bool {
+		if v, ok := cache[tok]; ok {
+			return v
+		}
+		if lookups >= recallRareMaxLookup || ctx.Err() != nil {
+			return false
+		}
+		lookups++
+		if !opened {
+			opened = true
+			d, err := openIndexRO(ctx, cfg)
+			if err != nil {
+				return false
+			}
+			db = d
+			if db.QueryRowContext(ctx, `SELECT count(*) FROM memories`).Scan(&total) != nil {
+				total = 0
+			}
+		}
+		if db == nil || total < recallRareMinCorpus {
+			return false
+		}
+		quoted := `"` + strings.ReplaceAll(tok, `"`, `""`) + `"`
+		var df int
+		if db.QueryRowContext(ctx, `SELECT count(*) FROM memories_fts WHERE memories_fts MATCH ?`, quoted+" OR "+strings.TrimSuffix(quoted, `"`)+`s"`).Scan(&df) != nil {
+			return false
+		}
+		isRare := df >= 1 && df <= max(2, total/50)
+		cache[tok] = isRare
+		return isRare
+	}, closeFn
+}
+
 func prependBannerLine(banner, body string) string { return hookspkg.PrependBanner(banner, body) }
 
 type hookRecallOptions struct {
 	threshold  float64
 	scope      string
 	projectDir string
+	client     string
 }
 
 func parseHookRecallArgs(args []string) (hookRecallOptions, bool) {
@@ -313,7 +560,13 @@ func parseHookRecallArgs(args []string) (hookRecallOptions, bool) {
 	fs.Float64Var(&opts.threshold, "threshold", hookRecallDefaultThreshold, "BM25 max-cost threshold")
 	fs.StringVar(&opts.scope, "scope", "", "exact memory scope")
 	fs.StringVar(&opts.projectDir, "project-dir", "", "project directory bound at installation")
+	fs.StringVar(&opts.client, "client", "", "hook client (claude or antigravity)")
 	if err := fs.Parse(args); err != nil {
+		return opts, false
+	}
+	opts.projectDir = normalizeWSLWindowsPath(opts.projectDir)
+	opts.client = strings.ToLower(strings.TrimSpace(opts.client))
+	if opts.client != "" && opts.client != "claude" && opts.client != "antigravity" {
 		return opts, false
 	}
 	if fs.NArg() != 0 || (opts.scope == "") != (opts.projectDir == "") || memoryfile.ValidateWriteScope(opts.scope) != nil {
@@ -404,8 +657,22 @@ func hookInstall(ctx context.Context, args []string, stdout io.Writer) error {
 	project := fs.Bool("project", false, "install recall only in the current project")
 	scope := fs.String("scope", "", "project memory scope (requires --project)")
 	preTool := fs.Bool("pre-tool", false, "install only the PreToolUse warning hook")
+	client := fs.String("client", "", "hook client (claude or antigravity)")
+	hooksFile := fs.String("hooks-file", "", "Antigravity hooks.json path")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if strings.EqualFold(*client, antigravityClient) {
+		if fs.NArg() != 0 || *project || *scope != "" || *preTool {
+			return errors.New("usage: mora hook install --client antigravity [--hooks-file PATH] [--threshold NUMBER]")
+		}
+		return hookInstallAntigravity(ctx, stdout, *hooksFile, *threshold)
+	}
+	if *client != "" && !strings.EqualFold(*client, "claude") {
+		return fmt.Errorf("unknown hook client %q: use claude or antigravity", *client)
+	}
+	if *hooksFile != "" {
+		return errors.New("--hooks-file only applies to --client antigravity")
 	}
 	if *preTool {
 		if fs.NArg() != 0 || *project || *scope != "" {

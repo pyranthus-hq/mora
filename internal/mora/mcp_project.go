@@ -57,6 +57,7 @@ func parseMCPServeArgs(args []string) (a mcpServeArgs, ok bool) {
 // directory with a project binding. Every other case serves as if no flag was given and says
 // so on stderr; stdout is the protocol stream. The working directory never counts.
 func withMCPServeProject(ctx context.Context, dir string, stderr io.Writer) context.Context {
+	dir = normalizeWSLWindowsPath(dir)
 	unbound := func(why string) context.Context {
 		fmt.Fprintf(stderr, "mora mcp serve: folder %q is not bound to a project (%s); serving without a project\n", dir, why)
 		return ctx
