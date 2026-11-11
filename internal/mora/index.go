@@ -143,7 +143,32 @@ func indexSchemaMatches(ctx context.Context, cfg Config) (bool, error) {
 		return false, err
 	}
 	defer db.Close()
-	return indexSchemaPhysicalComplete(ctx, db)
+	if ok, err := indexSchemaPhysicalComplete(ctx, db); err != nil || !ok {
+		return ok, err
+	}
+	return indexFTSTokenizersCurrent(ctx, db)
+}
+
+// indexFTSTokenizersCurrent reports false when memories_fts or gmail_segments_fts
+// exists with DDL lacking the porter tokenizer (an index built before stemming).
+// It is deliberately NOT part of indexSchemaPhysicalComplete, which the share
+// index also uses. Only `index rebuild --if-needed` consumes it; it feeds no
+// refusal path, so semantic-embedder users are not blocked by it.
+func indexFTSTokenizersCurrent(ctx context.Context, db *sql.DB) (bool, error) {
+	for _, name := range []string{"memories_fts", "gmail_segments_fts"} {
+		var ddl string
+		err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&ddl)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if !strings.Contains(strings.ToLower(ddl), "porter") {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 func roIndexDSN(cfg Config) string      { return indexstore.ReadOnlyDSN(cfg) }
 func rwIndexDSN(cfg Config) string      { return indexstore.ReadWriteDSN(cfg) }
@@ -343,6 +368,10 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 	indexID := ""
 	_ = tx.QueryRowContext(ctx, `SELECT value FROM index_meta WHERE key='vault_id'`).Scan(&indexID)
 
+	if err := dropStaleFTSTables(ctx, tx); err != nil {
+		return 0, err
+	}
+
 	stmts := []string{
 		// provider/account/created_at_unix (v4, #241): indexed so search.go/
 		// hybrid.go/share.go's retrieval arms can filter by source/time
@@ -358,7 +387,7 @@ func rebuildIndexWithPolicy(ctx context.Context, cfg Config, policy rebuildPolic
 		// CREATE; an EXISTING pre-column db gets them from the additive ALTERs
 		// below (CREATE TABLE IF NOT EXISTS is a no-op once the table exists).
 		`CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, scope TEXT, type TEXT, title TEXT, tags TEXT, source TEXT, created_at TEXT, path TEXT, text TEXT, provider TEXT, account TEXT, created_at_unix INTEGER)`,
-		`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(id, scope, title, tags, source, text)`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(id, scope, title, tags, source, text, tokenize='porter unicode61')`,
 		// Entity graph (I1): rebuildable from the vault Markdown, never the only home of state.
 		// salience_micros (Phase 14): the frozen person-ranking sort key. A FRESH db gets it
 		// from this CREATE; an EXISTING pre-column db gets it from the additive ALTER below
@@ -755,3 +784,29 @@ func writeVectors(ctx context.Context, tx *sql.Tx, emb Embedder, mems []Memory) 
 // via an optional Digest() method so the Embedder interface stays minimal. The
 // static floor has no digest and returns "".
 func embedderDigestOf(emb Embedder) string { return embedpkg.DigestOf(emb) }
+
+// dropStaleFTSTables drops an FTS table that was created before the porter
+// tokenizer was adopted. CREATE VIRTUAL TABLE IF NOT EXISTS is a no-op on an
+// existing table, so without this a rebuild would refill the old unstemmed
+// table and an upgraded index would keep unstemmed matching forever. The tables
+// are derived projections: the rebuild that follows repopulates them in the
+// same transaction.
+func dropStaleFTSTables(ctx context.Context, tx *sql.Tx) error {
+	for _, name := range []string{"memories_fts", "gmail_segments_fts"} {
+		var ddl string
+		err := tx.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&ddl)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if strings.Contains(strings.ToLower(ddl), "porter") {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `DROP TABLE `+name); err != nil {
+			return err
+		}
+	}
+	return nil
+}

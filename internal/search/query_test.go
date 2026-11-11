@@ -25,8 +25,12 @@ func TestFtsQueryORSemantics(t *testing.T) {
 		{"capitalized_name_kept", "Will offsite", `"Will" OR "offsite"`},
 		{"allcaps_acronym_kept", "WHO policy", `"WHO" OR "policy"`},
 		{"allcaps_dept_kept", "IT roadmap", `"IT" OR "roadmap"`},
-		// Possessive on a capitalized name survives whole (no contraction collapse).
-		{"capitalized_possessive_kept", "Will's roadmap", `"Will's" OR "roadmap"`},
+		// Possessive on a capitalized name strips trailing 's/’s while preserving case.
+		{"capitalized_possessive_kept", "Will's roadmap", `"Will" OR "roadmap"`},
+		{"possessive_ascii_apostrophe", "Sam's", `"Sam"`},
+		{"possessive_curly_apostrophe", "Sam’s", `"Sam"`},
+		{"plural_possessive_apostrophe", "parents' meeting", `"parents" OR "meeting"`},
+		{"plural_possessive_curly_apostrophe", "parents’ meeting", `"parents" OR "meeting"`},
 		// Single-char function words are pure noise and dropped regardless of case.
 		{"single_char_dropped", "a cat I saw", `"cat" OR "saw"`},
 		{"edge_punct_trimmed", "OAuth, 2.0; flow!", `"OAuth" OR "2.0" OR "flow"`},

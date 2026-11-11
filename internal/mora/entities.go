@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Entity is a thing the vault refers to repeatedly — a scope (project/namespace),
@@ -128,6 +129,12 @@ func entityDetailGraph(ctx context.Context, cfg Config, w io.Writer, entities []
 			break
 		}
 	}
+	var prefixCandidates []string
+	matchedByPrefix := false
+	if match == nil {
+		match, prefixCandidates = entityWordPrefixMatch(entities, name)
+		matchedByPrefix = match != nil
+	}
 	if match == nil {
 		if jsonOut {
 			return emit(w, map[string]any{"name": name, "found": false, "memories": []Memory{}}, true)
@@ -147,10 +154,21 @@ func entityDetailGraph(ctx context.Context, cfg Config, w io.Writer, entities []
 	}
 	refs = withoutTentative(refs)
 	if jsonOut {
-		return emit(w, map[string]any{"name": match.Name, "kind": match.Kind, "count": match.Count, "found": true, "memories": refs}, true)
+		payload := map[string]any{"name": match.Name, "kind": match.Kind, "count": match.Count, "found": true, "memories": refs}
+		if matchedByPrefix {
+			payload["matched_by"] = "prefix"
+			payload["candidates"] = prefixCandidates
+		}
+		return emit(w, payload, true)
 	}
 	printHealthBannerLine(w, cfg, time.Now())
 	fmt.Fprintf(w, "%s (%s) — %d memories\n", match.Name, match.Kind, match.Count)
+	if matchedByPrefix {
+		fmt.Fprintf(w, "  (matched %q by name prefix)\n", name)
+		if len(prefixCandidates) > 0 {
+			fmt.Fprintf(w, "  also matched: %s\n", strings.Join(prefixCandidates, ", "))
+		}
+	}
 	for _, m := range refs {
 		fmt.Fprintf(w, "  [%s] %s\n", m.ID, m.Title)
 	}
@@ -450,4 +468,39 @@ func contextReceipts(items []Memory, budgetChars int) []contextItemJSON {
 		used += cost
 	}
 	return kept
+}
+
+// entityWordPrefixMatch is the fallback when no entity's name equals the query:
+// a query of "Saahith" resolves to the entity "Saahith Kalakuntla" (the name
+// starts with the query followed by a word boundary, compared
+// case-insensitively). Of several matches the highest-mention entity wins (ties
+// break on name); the other matching names are returned, best first, so the
+// caller can disclose them instead of picking silently. A query with no letters
+// or digits never matches.
+func entityWordPrefixMatch(entities []Entity, name string) (*Entity, []string) {
+	q := strings.ToLower(strings.TrimSpace(name))
+	if q == "" || strings.IndexFunc(q, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) < 0 {
+		return nil, nil
+	}
+	prefix := q + " "
+	var hits []*Entity
+	for i := range entities {
+		if strings.HasPrefix(strings.ToLower(entities[i].Name), prefix) {
+			hits = append(hits, &entities[i])
+		}
+	}
+	if len(hits) == 0 {
+		return nil, nil
+	}
+	sort.SliceStable(hits, func(i, j int) bool {
+		if hits[i].Count != hits[j].Count {
+			return hits[i].Count > hits[j].Count
+		}
+		return hits[i].Name < hits[j].Name
+	})
+	others := []string{}
+	for _, h := range hits[1:] {
+		others = append(others, h.Name)
+	}
+	return hits[0], others
 }
