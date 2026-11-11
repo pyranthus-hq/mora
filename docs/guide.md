@@ -23,7 +23,7 @@ read the [architecture documents](architecture/00-overview.md).
 
 ## Install
 
-Mora is alpha software. Back up important data. Check cited source records
+Mora is beta software. Back up important data. Check cited source records
 before you act on an answer.
 
 ### macOS: signed Mora.app

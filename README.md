@@ -17,7 +17,7 @@ Local, project-scoped rules, decisions, and session handoffs across Claude Code,
 </div>
 
 > [!WARNING]
-> Mora is alpha software. We use it every day, and its main paths have tests.
+> Mora is beta software. We use it every day, and its main paths have tests.
 > It has not been tested on many other people's real data. Read the cited source
 > before you act on a result. A failed or old sync can make the local copy stale.
 
