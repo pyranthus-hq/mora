@@ -358,6 +358,10 @@ func hybridSearchTraceWithEmbedder(ctx context.Context, cfg Config, query, scope
 			visible = append(visible, m)
 		}
 	}
+	// Promote a written decision above long files that share its words; ids
+	// follows so the slot rule in clusterAndTruncate stays true. tr.Fused above
+	// keeps the pre-rerank order.
+	ids, visible = searchpkg.RerankPool(ids, visible)
 	result := clusterAndTruncate(ids, visible, limit)
 	// Issue #243 — attach evidence AFTER slot accounting: a pure function of
 	// "does this SURVIVING row's parent have a query-matching segment" (DQ5),

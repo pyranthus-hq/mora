@@ -149,6 +149,9 @@ func searchMemoriesObserved(ctx context.Context, cfg Config, query, scope string
 	if err != nil {
 		return nil, err
 	}
+	// A written decision must not rank behind long files that share its words.
+	// Rerank after filtering and before the cut; rawIDs follows (RerankPool).
+	rawIDs, filtered = searchpkg.RerankPool(rawIDs, filtered)
 	if limit <= 0 {
 		if len(segIDs) > 0 {
 			gsegEvidence = completeGmailSegmentEvidence(ctx, db, query, scope, filtered, gsegEvidence, f)
