@@ -14,7 +14,7 @@ var toolCatalog = []ToolDefinition{
 			{"title", "string", "Short human-readable title for the memory", true},
 			{"text", "string", "The memory body (Markdown allowed)", true},
 			{"scope", "string", `Scope/namespace, e.g. "global" or "project:acme" (default "global")`, false},
-			{"type", "string", `Memory type: insight|fact|decision|task|correction (default "insight")`, false},
+			{"type", "string", `Memory type: insight|fact|decision|task|correction|handoff (default "insight")`, false},
 			{"source", "string", `Origin label (default "mcp")`, false},
 			{"target", "string", "Existing same-scope local memory id for an explicit correction", false},
 			{"disposition", "string", "Correction value: not-context|keep|done|outdated; implies type=correction", false},

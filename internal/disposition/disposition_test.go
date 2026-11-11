@@ -94,3 +94,19 @@ func TestFieldAndTargetValidation(t *testing.T) {
 		t.Fatal("cross-scope target accepted")
 	}
 }
+
+// A tentative correction (an agent write nobody has confirmed) must not hide or
+// retire a confirmed note: it projects nothing until the tag is gone.
+func TestProjectIgnoresTentativeCorrections(t *testing.T) {
+	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	target := memory.Memory{ID: "target", Scope: "personal", CreatedAt: "2026-09-01T00:00:00Z"}
+	c := memory.Memory{ID: "c", Type: "correction", Scope: "personal", CreatedAt: "2026-09-02T00:00:00Z", Meta: map[string]any{"target": "target", "disposition": "not-context"}}
+	c.Tags = []string{memory.TentativeTag}
+	if got := Project([]memory.Memory{target, c}, now); len(got) != 0 {
+		t.Fatalf("tentative correction projected: %#v", got)
+	}
+	c.Tags = nil
+	if got := Project([]memory.Memory{target, c}, now); len(got) != 1 || got[Key{"personal", "target"}].Value != "not-context" {
+		t.Fatalf("confirmed correction did not project: %#v", got)
+	}
+}

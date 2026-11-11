@@ -41,7 +41,7 @@ func InstructionsFor(policy string) string {
 	replacement := OpenWriteInstruction
 	switch policy {
 	case WritePolicyTentative:
-		replacement = "You may save durable facts, insights, decisions and tasks with write_memory. A write saves at once as tentative: it is searchable and labelled, and nobody has confirmed it. Corrections, other types, sensitive text, secrets and text aimed at agents wait in a proposal queue for the owner; the result says which happened. Treat a tentative row as an unverified lead. delete_memory is unavailable in this mode."
+		replacement = "You may save durable facts, insights, decisions, tasks, corrections and handoffs with write_memory. A write saves at once as tentative: it is searchable and labelled, and nobody has confirmed it. Other types, sensitive text, secrets, invisible unicode and text aimed at agents wait in a proposal queue for the owner; the result says which happened. Treat a tentative row as an unverified lead. delete_memory is unavailable in this mode."
 	case WritePolicyPropose:
 		replacement = "You may submit durable facts and decisions with write_memory, but they enter a pending proposal queue and are NOT part of the vault until the owner approves them locally. delete_memory is unavailable in this mode."
 	case WritePolicyReadonly:

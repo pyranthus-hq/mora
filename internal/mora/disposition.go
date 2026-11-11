@@ -104,7 +104,7 @@ func decorateCorrectionRows(cfg Config, rows []Memory, now time.Time, filter sea
 			}
 		}
 		for _, c := range all {
-			if c.Type != "correction" || c.Owner != "" || c.Provider != "" || c.ProviderID != "" || !disposition.IsLocalAuthored(c) || c.Meta == nil {
+			if c.Type != "correction" || memory.IsTentative(c) || c.Owner != "" || c.Provider != "" || c.ProviderID != "" || !disposition.IsLocalAuthored(c) || c.Meta == nil {
 				continue
 			}
 			targetID, ok := c.Meta["target"].(string)
