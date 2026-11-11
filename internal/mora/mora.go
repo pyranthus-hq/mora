@@ -105,6 +105,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdWrite(ctx, args[1:], stdout, stderr, stdin)
 	case "read":
 		return cmdRead(ctx, args[1:], stdout, stderr)
+	case "handoff":
+		return cmdHandoffCLI(ctx, args[1:], stdout, stderr, stdin)
 	case "list":
 		return cmdList(ctx, args[1:], stdout, stderr)
 	case "search":
@@ -272,8 +274,9 @@ GET STARTED AND CHECK HEALTH:
 
 SAVE, FIND AND READ NOTES:
   mora write --scope project:acme --type decision --title "OAuth" --text "..."
+  mora handoff [show|list|write]   # carry work between sessions (write --mine = owner-confirmed)
   mora search "OAuth status" --scope project:acme --json
-  mora entities                    # the people/projects/topics across your memory
+  mora entities                  # the people/projects/topics across your memory
   mora entities "Sam" --json       # what's known about one entity
   mora graph                       # visual map of the entity graph (top people + topics)
   mora graph "Sam"                 # expand one entity: connections, edges, evidence
@@ -1017,8 +1020,10 @@ func withTentative() createOption {
 
 // withOwnerConfirmed saves the memory owner-confirmed, with the tag bound to
 // the memory as written. Only the keep action of `mora review`,
-// `mora write --mine` and `mora confirm --mine` set it; the review keep
+// `mora write --mine` and `mora handoff write --mine` set it; the review keep
 // does so only after the proposal arguments matched the ones the owner was shown.
+// (`mora confirm --mine` reaches the same owner-confirmed state through
+// confirmMemory with a digest check, not through this option.)
 // (The digest is not compared to the shown one: a decision with no as_of
 // takes the time of the write.)
 func withOwnerConfirmed() createOption {

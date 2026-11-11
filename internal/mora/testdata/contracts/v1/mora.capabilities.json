@@ -123,6 +123,14 @@
     {
       "json_contract": "exempt",
       "kind": "subcommand",
+      "path": "handoff write",
+      "payload": "",
+      "platform": "all",
+      "reason": "--json emits the mora.write receipt, which is pinned through the write row; a bare probe is a usage error because --title is required"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "subcommand",
       "path": "hook install",
       "payload": "",
       "platform": "native-seam",
@@ -391,6 +399,14 @@
       "payload": "",
       "platform": "all",
       "reason": "bare JSON array of given lines; not enveloped yet"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "handoff",
+      "payload": "",
+      "platform": "all",
+      "reason": "dispatch-only group; a bare invocation defaults to handoff show, whose receipt is registered on that row"
     },
     {
       "json_contract": "exempt",
@@ -686,6 +702,22 @@
       "path": "eywa status",
       "payload": "mora.eywa.status",
       "platform": "network-seam",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "handoff list",
+      "payload": "mora.handoff.list",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "handoff show",
+      "payload": "mora.handoff.show",
+      "platform": "all",
       "reason": ""
     },
     {
@@ -1133,6 +1165,14 @@
       "kind": "verb",
       "path": "review",
       "payload": "mora.review",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "verb",
+      "path": "status",
+      "payload": "mora.status",
       "platform": "all",
       "reason": ""
     },
@@ -2028,6 +2068,14 @@
       "version": 1
     },
     {
+      "name": "mora.handoff.list",
+      "version": 1
+    },
+    {
+      "name": "mora.handoff.show",
+      "version": 1
+    },
+    {
       "name": "mora.hook.status",
       "version": 1
     },
@@ -2229,6 +2277,10 @@
     },
     {
       "name": "mora.sources.verify",
+      "version": 1
+    },
+    {
+      "name": "mora.status",
       "version": 1
     },
     {

@@ -372,6 +372,20 @@
       "reason": "bare JSON array of given lines; not enveloped yet"
     },
     {
+      "path": "status",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.status"
+    },
+    {
+      "path": "handoff",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "dispatch-only group; a bare invocation defaults to handoff show, whose receipt is registered on that row"
+    },
+    {
       "path": "loop",
       "kind": "verb",
       "platform": "all",
@@ -1114,6 +1128,27 @@
       "platform": "all",
       "json_contract": "exempt",
       "reason": "bare JSON object of dir and scope; not enveloped yet"
+    },
+    {
+      "path": "handoff show",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.handoff.show"
+    },
+    {
+      "path": "handoff list",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.handoff.list"
+    },
+    {
+      "path": "handoff write",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "--json emits the mora.write receipt, which is pinned through the write row; a bare probe is a usage error because --title is required"
     },
     {
       "path": "rules compile",

@@ -180,6 +180,7 @@ func TestCLIRegistryMatchesProductionDispatch(t *testing.T) {
 		{"rules", "cmdRules", []string{"args[0]"}},
 		{"loop", "cmdLoop", []string{"sub"}},
 		{"remote", "cmdRemote", []string{"args[0]"}},
+		{"handoff", "cmdHandoffIO", []string{"sub"}},
 	} {
 		assertDispatchSet(t, registry, funcs, family.prefix, family.function, family.discriminants...)
 	}

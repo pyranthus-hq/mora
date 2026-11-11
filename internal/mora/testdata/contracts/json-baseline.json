@@ -232,6 +232,22 @@
     "status": "parses"
   },
   {
+    "path": "handoff",
+    "status": "parses"
+  },
+  {
+    "path": "handoff list",
+    "status": "parses"
+  },
+  {
+    "path": "handoff show",
+    "status": "parses"
+  },
+  {
+    "path": "handoff write",
+    "status": "empty"
+  },
+  {
     "path": "help",
     "status": "static_only"
   },
@@ -601,6 +617,10 @@
   },
   {
     "path": "sources verify",
+    "status": "parses"
+  },
+  {
+    "path": "status",
     "status": "parses"
   },
   {

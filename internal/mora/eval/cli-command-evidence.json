@@ -532,6 +532,28 @@
       }
     },
     {
+      "name": "status screen",
+      "paths": ["status"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestStatusTextUnboundEmptyVault", "TestStatusShowsBindingReviewQueueAndLastGiven"]},
+        "json": {"status": "test", "tests": ["TestStatusShowsBindingReviewQueueAndLastGiven"], "reason": "status --json emits the versioned mora.status receipt."},
+        "state": {"status": "test", "tests": ["TestStatusHandlerIsReadOnlyEscapedAndLoopbackOnly"], "reason": "status is read-only; the --web handler test proves it writes nothing."},
+        "error": {"status": "test", "tests": ["TestStatusFlagValidation"]},
+        "refusal": {"status": "test", "tests": ["TestStatusHostOK"], "reason": "the --web page refuses any Host header that is not loopback."}
+      }
+    },
+    {
+      "name": "handoff memories",
+      "paths": ["handoff", "handoff show", "handoff list", "handoff write"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestHandoffVerbReachableThroughRunDispatch", "TestCmdHandoffWriteShowList", "TestCmdHandoffCLIResolvesConfigAndWrites"]},
+        "json": {"status": "test", "tests": ["TestCmdHandoffWriteShowList"], "reason": "show --json emits mora.handoff.show and list --json emits mora.handoff.list; write --json emits the mora.write receipt."},
+        "state": {"status": "test", "tests": ["TestCmdHandoffWriteShowList", "TestCmdHandoffShowAddsNewerTranscriptFallback"]},
+        "error": {"status": "test", "tests": ["TestHandoffVerbReachableThroughRunDispatch", "TestCmdHandoffWriteShowList"]},
+        "refusal": {"status": "test", "tests": ["TestHandoffWriteMineIsOwnerConfirmedOnlyAtTheTerminal"]}
+      }
+    },
+    {
       "name": "warning rules",
       "paths": ["rules", "rules add", "rules test", "rules approve", "rules off", "rules list", "rules compile", "rules grant", "rules verify", "rules import"],
       "evidence": {
