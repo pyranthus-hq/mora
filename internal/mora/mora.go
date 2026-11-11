@@ -90,7 +90,16 @@ type jsonRPCRequest = mcppkg.Request
 
 type jsonRPCResponse = mcppkg.Response
 
-func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
+func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) (err error) {
+	// A verb that reports flag.ErrHelp (`mora read --help`, `mora hook install -h`)
+	// prints that verb's lines of the usage text and succeeds, instead of failing
+	// with "flag: help requested".
+	defer func() {
+		if err != nil && len(args) > 0 && errors.Is(err, flag.ErrHelp) {
+			printVerbHelp(stdout, args)
+			err = nil
+		}
+	}()
 	if len(args) == 0 {
 		printUsage(stdout)
 		return nil

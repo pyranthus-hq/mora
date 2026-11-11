@@ -99,7 +99,9 @@ mora write --mine --scope project:my-app --type decision \
 mora brief --project .
 ```
 
-Without `--mine`, `mora write` saves the note but the brief lists it under `Notes, not instructions`, not under `Owner rules`. Run inside a bound folder, `mora write` defaults to that project's scope and says so on stderr; `--scope` overrides it.
+`--mine` (and `mora review` below) ask a question at a real terminal and refuse inside an agent session or an IDE-agent terminal, so run them in a plain terminal window.
+
+Without `--mine`, `mora write` saves the note but the brief lists it under `Notes, not instructions`, not under `Owner rules`. At a terminal, outside an agent session, it prints one extra stderr line saying so and pointing at `--mine`. Run inside a bound folder, `mora write` defaults to that project's scope and says so on stderr; `--scope` overrides it.
 
 ### 3. Inspect delivery, review agent notes, or undo
 
@@ -126,7 +128,7 @@ mora handoff show --scope project:my-app   # bare `mora handoff` shows the lates
 mora handoff list
 ```
 
-A `handoff` is a vault memory (`type: handoff`) that carries direction, why, key turns, where the work stands, and the next step into the next session's Project Brief, and across machines if you sync the vault. Other flags: `--project DIR`, `--turns`, `--text`, `--short`, `--json`. Add `--mine` to save it owner-confirmed (it asks at your terminal). Without `--mine`, and for any handoff an agent writes, it is unconfirmed and the brief labels it `Last handoff (unconfirmed)`; the brief prefers the newest owner-confirmed handoff. When a session ends without a handoff, the `SessionEnd` hook records the last five user requests in that bound folder as a crash-safe fallback.
+A `handoff` is a vault memory (`type: handoff`) that carries direction, why, key turns, where the work stands, and the next step into the next session's Project Brief, and across machines if you sync the vault. Other flags: `--project DIR`, `--turns`, `--text`, `--short`, `--json`. Add `--mine` to save it owner-confirmed (it asks at your terminal). Without `--mine`, and for any handoff an agent writes, it is unconfirmed and the brief labels it `Last handoff (unconfirmed)`. The brief shows the newest handoff when you confirmed it. If the newest is unconfirmed, the brief shows your newest confirmed one from the last 14 days instead, with a line saying a newer unconfirmed handoff exists (`mora handoff show` prints it, escaped, and says whether it is confirmed). With no recent confirmed handoff it shows the newest, labelled unconfirmed; and if that one fails the write checks it says only that the newest handoff is withheld, never the text. When a session ends without a handoff, the `SessionEnd` hook records the last five user requests in that bound folder as a crash-safe fallback.
 
 ## The two-sided contract
 
@@ -181,7 +183,7 @@ This policy governs the MCP `write_memory` and `delete_memory` tools, the loopba
 By default (`mcp_write_policy = "tentative"`), an agent's `write_memory` call is tentative: it saves immediately with a `mora-tentative` tag when its type is `insight`, `fact`, `decision`, `task`, `correction`, or `handoff` and its text passes Mora's deterministic write checks. It stays tentative until you review it; nothing an agent writes becomes owner-confirmed on its own. Ordinary coding rules such as "always use pnpm" save as tentative. A write is held in the proposal queue (`held_because`) when:
 
 - its type is not one of those; or
-- its text matches a credential/secret pattern, contains invisible format/tag Unicode characters, matches a short sensitive-word list (medical, passport, and similar), or talks to agents: tells them to approve, accept, or skip review, to hide things from the user or owner, to ignore earlier instructions, or pipes a download to a shell.
+- its text matches a credential/secret pattern; contains terminal control characters; contains invisible characters that hide or reorder text (bidirectional overrides, tag characters, zero-width spaces, word joiners, blank fillers) or three or more invisible characters in a row (ordinary emoji, joined emoji, and zero-width joiners in other scripts are fine); matches a short sensitive-word list (medical, passport, and similar); or talks to agents: tells them to auto-approve or accept all proposals or tool calls, to proceed without review or confirmation, to hide something from "the user" or "the owner", to ignore previous instructions, or pipes a download into a shell or interpreter. Ordinary rules such as "never ignore errors" or "always merge with squash" are not held.
 
 A tentative memory appears in `search`, `read`, `list`, and `context` with `"trust":"tentative"`, and tentative decisions and handoffs appear in the Project Brief's `Notes, not instructions` section. They do not enter `Owner rules`, the prompt recall hook, the daily brief, `think`, or `mora share` until confirmed, and a tentative `correction` does not change how other notes are shown.
 

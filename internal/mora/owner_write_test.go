@@ -173,6 +173,14 @@ func TestPlainWriteIsNeverOwnerConfirmed(t *testing.T) {
 	cfg := reviewSetup(t)
 	reviewTerminal(t) // even in the owner terminal
 	out := run(t, mineArgs("write")...)
+	// run merges stderr: the one-line terminal hint is expected, the receipt is the rest.
+	var kept []string
+	for _, l := range strings.SplitAfter(out, "\n") {
+		if !strings.HasPrefix(l, "note: saved as unconfirmed") {
+			kept = append(kept, l)
+		}
+	}
+	out = strings.Join(kept, "")
 	if strings.Contains(out, "owner-confirmed") || strings.Count(out, "\n") != 1 {
 		t.Fatalf("plain write receipt changed:\n%s", out)
 	}

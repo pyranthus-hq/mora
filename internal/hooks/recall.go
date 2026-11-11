@@ -64,15 +64,55 @@ func recallWords(text string, dropStop bool) []string {
 		if utf8.RuneCountInString(w) < 2 || (dropStop && (searchpkg.IsStopword(w, lower) || recallStopwords[lower])) {
 			continue
 		}
-		if len(lower) > 3 && strings.HasSuffix(lower, "s") && !strings.HasSuffix(lower, "ss") {
-			lower = strings.TrimSuffix(lower, "s")
-		}
+		lower = foldRecallWord(lower)
 		if !seen[lower] {
 			seen[lower] = true
 			out = append(out, lower)
 		}
 	}
 	return out
+}
+
+// recallFoldSuffixes are tried in order. Folding is deliberately small and
+// deterministic, so "deploying", "deployed" and "deploys" meet "deploy", and
+// "migrate" meets "migration", the way the index's stemmer already matched
+// them. It is applied to both the prompt and the note.
+var recallFoldSuffixes = []string{"ions", "ion", "ing", "ed", "es", "s"}
+
+// recallFoldMinStem is the fewest letters a word may be left with. It stops
+// "string" folding to "str" and "nation" to "nat".
+const recallFoldMinStem = 4
+
+// foldRecallWord folds the endings -ions, -ion, -ing, -ed, -es and -s, then a
+// trailing -e, from a lower case word. A word of 3 letters or fewer is left
+// alone. A 4 letter word only loses a plural -s (not -ss), as before, so
+// "dogs" still meets "dog"; every other ending is folded from words of 5 or
+// more letters.
+func foldRecallWord(w string) string {
+	n := utf8.RuneCountInString(w)
+	if n <= 3 {
+		return w
+	}
+	if n == 4 {
+		if strings.HasSuffix(w, "s") && !strings.HasSuffix(w, "ss") {
+			return strings.TrimSuffix(w, "s")
+		}
+		return w
+	}
+	for _, suf := range recallFoldSuffixes {
+		if !strings.HasSuffix(w, suf) || n-len(suf) < recallFoldMinStem {
+			continue
+		}
+		if suf == "s" && strings.HasSuffix(w, "ss") {
+			continue
+		}
+		w = strings.TrimSuffix(w, suf)
+		break
+	}
+	if utf8.RuneCountInString(w) > recallFoldMinStem && strings.HasSuffix(w, "e") {
+		w = strings.TrimSuffix(w, "e")
+	}
+	return w
 }
 
 // RecallOverlapOK reports whether a candidate shares enough of the prompt's

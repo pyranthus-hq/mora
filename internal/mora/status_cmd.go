@@ -43,6 +43,14 @@ type statusReport struct {
 	LastGiven   *statusGiven    `json:"last_given,omitempty"`
 	RecentGiven []statusGiven   `json:"recent_given,omitempty"`
 	Project     []statusProjRow `json:"project_memories,omitempty"`
+	// Errors lists every part that could not be read. A part in this list is
+	// unknown, not empty: its zero value must not be read as "nothing there".
+	Errors []statusError `json:"errors,omitempty"`
+}
+
+type statusError struct {
+	Part  string `json:"part"`
+	Error string `json:"error"`
 }
 
 type statusFolder struct {
@@ -118,8 +126,13 @@ func buildStatus(cfg Config, cwd string, now time.Time, recent int, rich bool) s
 	r := statusReport{Folder: statusFolder{Cwd: cwd}}
 	r.Vault.Dir = cfg.VaultDir
 	r.Vault.Sources = []statusSource{}
+	fail := func(part string, err error) {
+		r.Errors = append(r.Errors, statusError{Part: part, Error: err.Error()})
+	}
 	if files, err := allMemoryFiles(cfg); err == nil {
 		r.Vault.Memories = len(files)
+	} else {
+		fail("vault", err)
 	}
 	h := healthOf(cfg, now)
 	r.Vault.Health = h.State
@@ -128,10 +141,14 @@ func buildStatus(cfg Config, cwd string, now time.Time, recent int, rich bool) s
 	for _, s := range h.Sources {
 		r.Vault.Sources = append(r.Vault.Sources, statusSource{Key: s.Key, State: s.State, LastSuccessAt: s.LastSuccessAt})
 	}
-	if scope, root, found, err := lookupProject(cfg, cwd); err == nil && found {
+	if scope, root, found, err := lookupProject(cfg, cwd); err != nil {
+		fail("folder", err)
+	} else if found {
 		r.Folder.Bound, r.Folder.Scope, r.Folder.Root = true, scope, root
 	}
-	if notes, err := listReviewNotes(cfg, io.Discard); err == nil {
+	if notes, err := listReviewNotes(cfg, io.Discard); err != nil {
+		fail("review", err)
+	} else {
 		for _, n := range notes {
 			if n.Kind == reviewKindHeld {
 				r.Review.Held++
@@ -155,7 +172,9 @@ func buildStatus(cfg Config, cwd string, now time.Time, recent int, rich bool) s
 		r.RecentGiven = nil
 	}
 	if rich && r.Folder.Bound {
-		if mems, err := listMemories(cfg, r.Folder.Scope, statusProjectRows); err == nil {
+		if mems, err := listMemories(cfg, r.Folder.Scope, statusProjectRows); err != nil {
+			fail("project notes", err)
+		} else {
 			for _, m := range mems {
 				r.Project = append(r.Project, statusProjRow{ID: m.ID, Type: m.Type, Title: statusClip(reviewTitle(m), statusTitleRunes), CreatedAt: m.CreatedAt, Tentative: memory.IsTentative(m)})
 			}
@@ -220,6 +239,19 @@ func cmdStatus(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	return nil
 }
 
+// ReviewFailed is for the status page template.
+func (r statusReport) ReviewFailed() bool { return r.statusFailed("review") }
+
+// statusFailed reports whether the named part could not be read.
+func (r statusReport) statusFailed(part string) bool {
+	for _, e := range r.Errors {
+		if e.Part == part {
+			return true
+		}
+	}
+	return false
+}
+
 func printStatus(w io.Writer, r statusReport) {
 	if r.Folder.Bound {
 		fmt.Fprintf(w, "Folder:  bound to %s (%s)\n", rulesShow(clipProjectScope(r.Folder.Scope)), rulesShow(r.Folder.Root))
@@ -245,9 +277,15 @@ func printStatus(w io.Writer, r statusReport) {
 		}
 		fmt.Fprintf(w, "Source:  %s: %s, %s\n", rulesShow(s.Key), s.State, last)
 	}
-	if r.Review.Saved+r.Review.Held == 0 {
+	for _, e := range r.Errors {
+		fmt.Fprintf(w, "Error:   could not read %s: %s\n", rulesShow(e.Part), rulesShow(e.Error))
+	}
+	switch {
+	case r.statusFailed("review"):
+		fmt.Fprintln(w, "Review:  unknown, the review notes could not be read (see the error above)")
+	case r.Review.Saved+r.Review.Held == 0:
 		fmt.Fprintln(w, "Review:  nothing waits for review")
-	} else {
+	default:
 		fmt.Fprintf(w, "Review:  %d saved (tentative), %d held (proposals) wait for you: run `mora review`\n", r.Review.Saved, r.Review.Held)
 	}
 	if r.LastGiven == nil {
@@ -394,6 +432,7 @@ ul{margin:0;padding-left:18px}li{margin:4px 0}
 .note{border-top:1px solid var(--line);padding:8px 0}.note:first-of-type{border-top:0}
 </style></head><body><main>
 <h1>Mora status <span class="mut">(read-only)</span></h1>
+{{if .Errors}}<section class="card"><h2 class="bad">Could not read</h2><ul>{{range .Errors}}<li><b>{{.Part}}</b>: {{.Error}}</li>{{end}}</ul></section>{{end}}
 
 <section class="card"><h2>This folder</h2>
 {{if .Folder.Bound}}Bound to <b>{{.Folder.Scope}}</b> <span class="mut"><code>{{.Folder.Root}}</code></span>
@@ -411,6 +450,7 @@ ul{margin:0;padding-left:18px}li{margin:4px 0}
 {{range .Review.Notes}}<div class="note"><b>{{.Title}}</b> <span class="mut">{{.Kind}} · {{.Scope}} · {{.Type}} · <code>{{.ID}}</code></span>
 {{if .Reasons}}<div class="warn">held because: {{range $i, $r := .Reasons}}{{if $i}}, {{end}}{{$r}}{{end}}</div>{{end}}
 {{if .Snippet}}<div class="mut">{{.Snippet}}</div>{{end}}</div>{{end}}
+{{else if .ReviewFailed}}<span class="bad">Unknown: the review notes could not be read (see the errors above).</span>
 {{else}}Nothing waits for review.{{end}}</section>
 
 <section class="card"><h2>Recently handed to agents</h2>

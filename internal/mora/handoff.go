@@ -86,7 +86,7 @@ func handoffClean(req string) (string, bool) {
 		}
 	}
 	for _, p := range tentativeHoldPatterns {
-		if p.reason == "aimed at agents" && p.pattern.MatchString(flat) {
+		if p.reason == "aimed at agents" && p.match(flat) {
 			return "", false
 		}
 	}
@@ -495,7 +495,13 @@ func cmdHandoffShow(cfg Config, args []string, stdout io.Writer) error {
 		if len(latest.CreatedAt) >= 10 {
 			date = latest.CreatedAt[:10]
 		}
-		out = append(out, fmt.Sprintf("Handoff [%s] %s (%s, %s)\n%s", date, latest.Title, latest.ID, latest.Scope, latest.Text))
+		// Escaped like `mora read`: an agent-written handoff can carry terminal
+		// control sequences (OSC 52 writes the clipboard). --json stays raw.
+		trust := "unconfirmed, written by an agent or the CLI"
+		if memory.IsOwnerConfirmed(*latest) {
+			trust = "owner-confirmed"
+		}
+		out = append(out, fmt.Sprintf("Handoff [%s] %s (%s, %s, %s)\n%s", date, rulesShow(latest.Title), rulesShow(latest.ID), rulesShow(latest.Scope), trust, reviewShowText(latest.Text)))
 	}
 	if fallback != nil {
 		if blk := handoffBlock(cfg, fallback.Scope, now); blk != "" {
@@ -540,7 +546,7 @@ func cmdHandoffList(cfg Config, args []string, stdout io.Writer) error {
 		if len(m.CreatedAt) >= 10 {
 			date = m.CreatedAt[:10]
 		}
-		if _, err := fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\n", m.ID, date, m.Scope, m.Title); err != nil {
+		if _, err := fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\n", rulesShow(m.ID), date, rulesShow(m.Scope), rulesShow(m.Title)); err != nil {
 			return err
 		}
 	}

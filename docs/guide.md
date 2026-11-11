@@ -600,12 +600,26 @@ mora config mcp-write-policy readonly
   the tag `mora-tentative`, and stays tentative until you review it: nothing an
   agent writes becomes owner-confirmed by itself. It holds a write only for these
   reasons: the type is not `insight`, `fact`, `decision`, `task`, `correction`,
-  or `handoff`, or the text looks like a secret, contains invisible format/tag
-  Unicode characters, matches the sensitive word list (medical, passport, and
-  similar), or talks to agents: it tells them to approve, accept, or skip review,
-  to hide things from the user or owner, to ignore earlier instructions, or pipes
-  a download to a shell. Ordinary developer rules such as `"Always use pnpm"`
-  save as tentative. A tentative `correction` is saved but does not change how
+  or `handoff`, or the text looks like a secret, contains terminal control
+  characters (everything below space except tab and line breaks, DEL, and the
+  C1 range), contains invisible characters that hide or reorder text
+  (bidirectional overrides and isolates, tag characters, zero-width space, word
+  joiners, blank fillers, the other variation selectors, supplementary private
+  use) or three or more invisible characters in a row, matches the sensitive
+  word list (medical, passport, and similar), or talks to agents: it tells them
+  to auto-approve or accept all proposals or tool calls, to proceed or merge
+  without review or confirmation, to stop asking, to hide or withhold something
+  from "the user" or "the owner", to ignore previous or earlier instructions or
+  the instructions in `CLAUDE.md`, or pipes a download into a shell or
+  interpreter. Ordinary emoji (including `⚠️`, `❤️` and joined emoji), a
+  leading byte order mark, left and right marks, the Persian zero-width
+  non-joiner and icon-font glyphs do not hold a write, and they are removed
+  before the agent-aimed check so they cannot split a trigger word. Text is
+  matched after folding curly quotes, case and whitespace. Ordinary developer
+  rules such as `"Always use pnpm"`, `"Never ignore errors"` or
+  `"Always merge with squash"` save as tentative. Known misses: look-alike
+  letters from other scripts and indirect phrasing ("disregard what came
+  before"). A tentative `correction` is saved but does not change how
   other records are shown until you confirm it.
   Any scope saves, and money words do not hold a write. A held write goes to the
   proposal queue, and the result has `held_because`. It refuses deletes. Phone
@@ -1077,8 +1091,17 @@ Mora supports two layers of session handoff for a bound project:
    `--json` (and `--limit N` on `list`). `write --mine` asks at your terminal and
    saves the handoff owner-confirmed. Without `--mine`, and for every handoff an
    agent writes, it is unconfirmed and the brief labels it
-   `Last handoff (unconfirmed)`. The brief picks the newest owner-confirmed
-   handoff over any unconfirmed one.
+   `Last handoff (unconfirmed)`. Which handoff the brief shows: the newest
+   handoff in the project's scope if you confirmed it; otherwise your newest
+   confirmed handoff from the last 14 days, followed by one line saying a newer
+   unconfirmed handoff exists (its text is not shown; `mora handoff show` prints
+   it); otherwise the newest handoff, labelled unconfirmed, if it passes the
+   write checks; otherwise one line saying the newest handoff is withheld from
+   the brief. A newer handoff that fails the checks is never silently skipped in
+   favour of an older one. The handoff shown is listed in `mora given` and
+   `mora status`. `mora handoff show` and `list` print titles and text escaped
+   (a note an agent wrote can carry terminal control sequences), say whether the
+   handoff is owner-confirmed, and keep `--json` as raw data.
 
    Because a `type: handoff` record lives in `~/vault/mora/memories/`, it travels
    across machines with `mora sync git` without waiting for manual proposal
@@ -1549,7 +1572,10 @@ Mora stores authored memories as readable Markdown in the vault. They can be
 searched, corrected, backed up, and shared. Connector data stays read-only.
 
 Run inside a bound project folder, `mora write` defaults to that project's
-scope and prints a notice on stderr; `--scope` overrides it.
+scope and prints a notice on stderr; `--scope` overrides it. Without `--mine`
+the note is saved as unconfirmed, and at a terminal outside an agent session
+`mora write` adds one stderr line saying so (no line for pipes, agent sessions
+or `--json`); the saved note is the same either way.
 
 Add `--mine` to save the note as your own statement, owner-confirmed. It needs
 your own terminal and a typed yes (see owner-confirmed under agent writes).
@@ -2311,12 +2337,14 @@ The default static embedder uses:
    of only common words keeps them all), and bm25 ranks the best match first. An
    index built before stemming was added picks it up with
    `mora index rebuild --if-needed`;
-2. one-hop person-graph expansion (`graphExpandIDs`); and
-3. bounded stemmed full-text search over message segments inside Gmail and
-   iMessage.
+2. bounded stemmed full-text search over message segments inside Gmail and
+   iMessage, added as extra candidates when a message body matches.
 
-The static hash vectors are built for compatibility, but the default route does
-not use them as semantic search.
+The static route is the keyword surface. It does not run the person-graph
+expansion (that step, `graphExpandIDs`, exists only in the semantic route
+below), so a query that names a person finds notes by their words, not by the
+people they mention. The static hash vectors are built for compatibility, but
+the default route does not use them as semantic search.
 
 ### Semantic route
 

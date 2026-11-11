@@ -132,8 +132,17 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		if *jsonOut {
 			return emitReceipt(stdout, "mora.write", 1, newWriteReceipt(m, indexed, *mine))
 		}
-		if err := emit(stdout, m, false); err != nil || !*mine {
+		if err := emit(stdout, m, false); err != nil {
 			return err
+		}
+		if !*mine {
+			// A person at their own terminal who typed `mora write` meant their
+			// own note, but without --mine it is stored as unconfirmed. Say so
+			// once, on stderr. Agents, pipes and --json never get the hint.
+			if rulesAgentSession() == "" && rulesInteractive(stdin) {
+				fmt.Fprintln(stderr, "note: saved as unconfirmed. Agents see it as a note written by agents, not as your rule. Pass --mine to save it as an owner rule (it asks you to confirm here).")
+			}
+			return nil
 		}
 		_, err := fmt.Fprintln(stdout, "saved as owner-confirmed: agents read it as your own statement")
 		return err

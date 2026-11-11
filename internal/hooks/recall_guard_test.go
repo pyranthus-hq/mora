@@ -63,6 +63,15 @@ func TestRecallOverlapOK(t *testing.T) {
 		{"all generic prompt", pnpm, "please use run set add", nil, false},
 		{"acronym IT survives", memory.Memory{Title: "IT policy", Text: "Laptops are rotated yearly."}, "How does IT handle backups here", nil, true},
 		{"lower case it is a stopword", memory.Memory{Title: "IT policy", Text: "Laptops are rotated yearly."}, "how does it handle backups here", nil, false},
+		// Word endings fold on both sides, as the index's stemmer does.
+		{"deploying meets deploy in the title", memory.Memory{Title: "Deploy steps", Text: "Ship from main."}, "how do I keep deploying safely", nil, true},
+		{"migrate meets migration in the title", memory.Memory{Title: "Migration policy", Text: "Review each one."}, "we need to migrate the users table", nil, true},
+		{"tested meets tests in the title", memory.Memory{Title: "Tests run in CI", Text: "Every push."}, "who tested this", nil, true},
+		{"two folded body hits", memory.Memory{Title: "Notes", Text: "We deploy the staging stack nightly."}, "deploying the staging stack", nil, true},
+		{"a folded body-only word is still not enough in a small vault", memory.Memory{Title: "Notes", Text: "we keep deploying on fridays"}, "deploy this now", nil, false},
+		{"a folded body-only word counts when rare", memory.Memory{Title: "Notes", Text: "we keep deploying on fridays"}, "deploy this now", rareOnly("deploy"), true},
+		{"folding does not join unrelated words", memory.Memory{Title: "Station map", Text: "Platforms and exits."}, "which nation is it", nil, false},
+		{"short words stay whole", memory.Memory{Title: "Bring list", Text: "Rope."}, "what is the string handling here", nil, false},
 	}
 	for _, c := range cases {
 		if got := RecallOverlapOK(c.m, c.prompt, c.rare); got != c.want {

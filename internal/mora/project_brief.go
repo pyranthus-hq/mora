@@ -131,9 +131,7 @@ func buildProjectBrief(cfg Config, scope, root string, now time.Time) (text stri
 		return "", nil, err
 	}
 	var rules, notes []projectBriefLine
-	var latestHandoff *Memory
-	var latestHandoffLine projectBriefLine
-	var latestHandoffConfirmed bool
+	var handoffs []Memory
 	for rank, sc := range []string{scope, "global"} {
 		mems, err := listMemories(cfg, sc, 0)
 		if err != nil {
@@ -154,21 +152,7 @@ func buildProjectBrief(cfg Config, scope, root string, now time.Time) (text stri
 			case rank == 0 && m.Type == "decision" && memory.DeriveProvenance(m) == memory.ProvenanceAuthored:
 				notes = append(notes, newProjectBriefLine(m, rank, now))
 			case rank == 0 && m.Type == memory.TypeHandoff && memory.DeriveProvenance(m) == memory.ProvenanceAuthored:
-				// An owner-confirmed handoff beats any unconfirmed one, however
-				// new; among equals the newest wins. A handoff that fails the
-				// write gate never competes, so it cannot displace a good one.
-				if !handoffBriefable(m) {
-					continue
-				}
-				cand := newProjectBriefLine(m, rank, now)
-				confirmed := memory.IsOwnerConfirmed(m)
-				if latestHandoff == nil || (confirmed && !latestHandoffConfirmed) ||
-					(confirmed == latestHandoffConfirmed && projectBriefLess(cand, latestHandoffLine)) {
-					mCopy := m
-					latestHandoff = &mCopy
-					latestHandoffLine = cand
-					latestHandoffConfirmed = confirmed
-				}
+				handoffs = append(handoffs, m)
 			}
 		}
 	}
@@ -179,12 +163,16 @@ func buildProjectBrief(cfg Config, scope, root string, now time.Time) (text stri
 	}
 	all := append(rules, notes...)
 	shown := clipProjectScope(scope)
-	handoffMemLine := renderProjectHandoffLine(latestHandoff)
+	handoffMemLine, handoffID, handoffPointer := pickProjectHandoff(handoffs, now)
 	handoff := handoffBlock(cfg, scope, now)
 	if len(all) == 0 {
 		text := fmt.Sprintf("Project %s: no owner rules recorded yet.", shown)
-		text = appendProjectHandoff(text, false, handoffMemLine, handoff)
-		return capProjectBrief(text, []string{})
+		text, withID := appendProjectHandoff(text, false, handoffMemLine, handoffPointer, handoff)
+		ids := []string{}
+		if withID && handoffID != "" {
+			ids = append(ids, handoffID)
+		}
+		return capProjectBrief(text, ids)
 	}
 	notice := reviewNotice(context.Background(), cfg)
 	render := func(k, form int, withNotice bool) string {
@@ -234,10 +222,15 @@ func buildProjectBrief(cfg Config, scope, root string, now time.Time) (text stri
 		}
 		// The handoff goes last and is the first thing dropped: it never costs
 		// a rule, a note or the review notice a place.
-		text = appendProjectHandoff(text, k > min(k, len(rules)), handoffMemLine, handoff)
-		emittedIDs = make([]string, 0, k)
+		text, withID := appendProjectHandoff(text, k > min(k, len(rules)), handoffMemLine, handoffPointer, handoff)
+		emittedIDs = make([]string, 0, k+1)
 		for _, l := range all[:k] {
 			emittedIDs = append(emittedIDs, l.id)
+		}
+		// The handoff id is listed only when its line is in the text, so
+		// `mora given` and `mora status` count what the agent was shown.
+		if withID && handoffID != "" {
+			emittedIDs = append(emittedIDs, handoffID)
 		}
 		return capProjectBrief(text, emittedIDs)
 	}
@@ -260,6 +253,46 @@ func handoffSectionValue(body, label string) string {
 // agent write passes, so a hand-edited or injected file stays out.
 func handoffBriefable(m Memory) bool {
 	return memory.IsOwnerConfirmed(m) || len(tentativeHoldReasons(m)) == 0
+}
+
+// projectHandoffFreshDays is how old an owner-confirmed handoff may be and
+// still stand in for a newer unconfirmed one.
+const projectHandoffFreshDays = 14
+
+// pickProjectHandoff chooses what the brief says about handoffs. A is the
+// newest owner-confirmed handoff at most projectHandoffFreshDays old; B is the
+// newest handoff overall. B owner-confirmed: show B. Else A: show A and point
+// at the newer unconfirmed one without printing it. Else B if it passes the
+// write gate, labelled unconfirmed. Else one line saying the newest is
+// withheld. A held handoff is never skipped silently in favour of an older one.
+// id is the memory id when the line shows a handoff (empty for the withheld
+// line), and pointer is the extra line that follows A.
+func pickProjectHandoff(cands []Memory, now time.Time) (line, id, pointer string) {
+	var newest, fresh *Memory
+	var newestLine, freshLine projectBriefLine
+	for i := range cands {
+		m := &cands[i]
+		l := newProjectBriefLine(*m, 0, now)
+		if newest == nil || projectBriefLess(l, newestLine) {
+			newest, newestLine = m, l
+		}
+		if memory.IsOwnerConfirmed(*m) && !l.at.IsZero() && now.Sub(l.at) <= projectHandoffFreshDays*24*time.Hour {
+			if fresh == nil || projectBriefLess(l, freshLine) {
+				fresh, freshLine = m, l
+			}
+		}
+	}
+	switch {
+	case newest == nil:
+		return "", "", ""
+	case memory.IsOwnerConfirmed(*newest):
+		return renderProjectHandoffLine(newest), newest.ID, ""
+	case fresh != nil:
+		return renderProjectHandoffLine(fresh), fresh.ID, "A newer unconfirmed handoff exists; run `mora handoff show`."
+	case handoffBriefable(*newest):
+		return renderProjectHandoffLine(newest), newest.ID, ""
+	}
+	return "Newest handoff withheld from this brief; run `mora handoff show`.", "", ""
 }
 
 func renderProjectHandoffLine(m *Memory) string {
@@ -294,23 +327,38 @@ func renderProjectHandoffLine(m *Memory) string {
 	return fmt.Sprintf("%s: [%s] %s (%s)", label, date, title, m.ID)
 }
 
-func appendProjectHandoff(base string, framed bool, handoffMemLine, transcriptHandoff string) string {
-	var candidates []string
-	if handoffMemLine != "" && transcriptHandoff != "" {
-		candidates = append(candidates, handoffMemLine+"\n"+transcriptHandoff)
+// appendProjectHandoff adds the handoff lines after the rules, only if they fit
+// under the cap. pointer, when set, follows the handoff line and never carries
+// handoff content. withID reports whether the memory handoff line itself made
+// it into the text.
+func appendProjectHandoff(base string, framed bool, handoffMemLine, pointer, transcriptHandoff string) (text string, withID bool) {
+	type candidate struct {
+		text   string
+		hasMem bool
 	}
-	if handoffMemLine != "" {
-		candidates = append(candidates, handoffMemLine)
+	var candidates []candidate
+	memBlock := handoffMemLine
+	if memBlock != "" && pointer != "" {
+		memBlock += "\n" + pointer
+	}
+	if memBlock != "" && transcriptHandoff != "" {
+		candidates = append(candidates, candidate{memBlock + "\n" + transcriptHandoff, true})
+	}
+	if memBlock != "" {
+		candidates = append(candidates, candidate{memBlock, true})
+	}
+	if handoffMemLine != "" && memBlock != handoffMemLine {
+		candidates = append(candidates, candidate{handoffMemLine, true})
 	}
 	if transcriptHandoff != "" {
-		candidates = append(candidates, transcriptHandoff)
+		candidates = append(candidates, candidate{transcriptHandoff, false})
 	}
 	for _, c := range candidates {
-		if h := handoffFrame(c, framed); h != "" && len(base)+1+len(h) <= projectBriefMaxChars {
-			return base + "\n" + h
+		if h := handoffFrame(c.text, framed); h != "" && len(base)+1+len(h) <= projectBriefMaxChars {
+			return base + "\n" + h, c.hasMem
 		}
 	}
-	return base
+	return base, false
 }
 
 // handoffFrame puts the data line above the handoff block unless the notes
