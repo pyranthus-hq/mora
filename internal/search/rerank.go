@@ -14,17 +14,21 @@ const (
 	rerankCorrection     = 4 // a written correction
 	rerankDecision       = 3 // a written decision
 	rerankNote           = 1 // a written fact or insight
+	rerankAuthored       = 1 // an authored memory (mem_*) vs ingested source
 	rerankOwnerConfirmed = 2 // the owner kept this exact text in `mora review`
 )
 
 // rerankBonus is the row's promotion in positions. A tentative note gets 0:
 // an agent chooses its own type, so an unreviewed claim must not rise above
 // evidence by naming itself a decision. An owner-confirmed note gets its type
-// bonus plus 2. Any other written note gets its type bonus. A source file or
-// connector record gets 0, because its type says what the file is, not what
-// anyone decided.
+// bonus plus 2. Any other written note gets its type bonus, plus 1 when it is
+// an authored memory (mem_*). A source file or connector record gets 0,
+// because its type says what the file is, not what anyone decided.
 func rerankBonus(m memory.Memory) int {
 	if memory.IsTentative(m) || memory.DeriveProvenance(m) != memory.ProvenanceAuthored {
+		return 0
+	}
+	if strings.HasPrefix(m.ID, "src_") {
 		return 0
 	}
 	bonus := 0
@@ -35,6 +39,9 @@ func rerankBonus(m memory.Memory) int {
 		bonus = rerankDecision
 	case "fact", "insight":
 		bonus = rerankNote
+	}
+	if strings.HasPrefix(m.ID, "mem_") {
+		bonus += rerankAuthored
 	}
 	if memory.IsOwnerConfirmed(m) {
 		bonus += rerankOwnerConfirmed

@@ -148,7 +148,7 @@ func TestRerankBoundedMovement(t *testing.T) {
 		}
 	}
 	got := RerankByMetadata(rows)
-	maxBonus := rerankCorrection + rerankOwnerConfirmed
+	maxBonus := rerankCorrection + rerankAuthored + rerankOwnerConfirmed
 	for from, m := range rows {
 		to := rrIndex(got, m.ID)
 		if up := from - to; up > rerankBonus(m) {
@@ -161,20 +161,33 @@ func TestRerankBoundedMovement(t *testing.T) {
 }
 
 // Codex's input: six tentative tasks, then an unconfirmed correction. With a
-// negative bonus the correction moved six places; it may move only four.
+// negative bonus the correction moved six places; it may move only its bonus.
 func TestRerankCodexInputMovesAtMostItsBonus(t *testing.T) {
 	var rows []memory.Memory
 	for i := 0; i < 6; i++ {
 		rows = append(rows, rrNote(fmt.Sprintf("mem_task%d", i), "task", memory.TentativeTag))
 	}
-	rows = append(rows, rrNote("mem_corr", "correction"))
+	corr := rrNote("mem_corr", "correction")
+	rows = append(rows, corr)
 	got := RerankByMetadata(rows)
-	if at := rrIndex(got, "mem_corr"); at != 6-rerankCorrection {
-		t.Fatalf("order = %v, correction at %d, want %d", rrIDs(got), at, 6-rerankCorrection)
+	want := 6 - rerankBonus(corr)
+	if at := rrIndex(got, "mem_corr"); at != want {
+		t.Fatalf("order = %v, correction at %d, want %d", rrIDs(got), at, want)
 	}
 	for i := 0; i < 6; i++ {
 		if rrIndex(got, rows[i].ID) < i {
 			t.Fatalf("tentative task %d moved up: %v", i, rrIDs(got))
+		}
+	}
+}
+
+func TestRerankAuthoredMemoryBeatsIngestedSources(t *testing.T) {
+	for _, srcID := range []string{"src_cold_outreach", "gmail_thread/t1", "imessage_chat/c1"} {
+		src := memory.Memory{ID: srcID, Type: "note", Score: -5}
+		authored := rrNote("mem_authored", "note")
+		got := RerankByMetadata([]memory.Memory{src, authored})
+		if got[0].ID != "mem_authored" {
+			t.Fatalf("source %s stayed ahead of authored mem_: %v", srcID, rrIDs(got))
 		}
 	}
 }

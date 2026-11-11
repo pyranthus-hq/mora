@@ -593,6 +593,9 @@ func gmailSegFTSColumnSignature(t *testing.T, ddl string) []string {
 	parts := strings.Split(inner, ",")
 	cols := make([]string, 0, len(parts))
 	for _, p := range parts {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(p)), "tokenize") {
+			continue // a tokenizer option is not a column
+		}
 		cols = append(cols, strings.Join(strings.Fields(p), " ")) // collapse internal whitespace too
 	}
 	return cols
@@ -1046,6 +1049,10 @@ func TestGmailSegmentsContractIndexTablesCreated(t *testing.T) {
 	}
 	if !strings.EqualFold(strings.TrimSpace(cols[1]), "text") {
 		t.Errorf("second fts5 column = %q, want EXACTLY %q (no qualifiers — DQ1's frozen shape)", cols[1], "text")
+	}
+
+	if !strings.Contains(strings.ToLower(ddl), "tokenize='porter unicode61'") {
+		t.Errorf("gmail_segments_fts must use the porter tokenizer: %s", ddl)
 	}
 
 	rows := gmailSegRowsFor(t, cfg, gsWellFormedID)
