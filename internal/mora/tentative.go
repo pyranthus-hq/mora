@@ -72,10 +72,11 @@ type confirmReceipt struct {
 }
 
 // cmdConfirm is the owner action that turns a tentative memory into a normal
-// one. There is no MCP tool for it, so an agent cannot confirm through Mora's
-// tools. An agent with a shell can still run this command, the same limit
-// `mora mcp proposals approve` has. With --mine it asks to make the note
-// owner-confirmed instead: see confirmMine.
+// one. There is no MCP tool for a plain confirm, so an agent cannot confirm
+// through Mora's tools. An agent with a shell can still run this command, the
+// same limit `mora mcp proposals approve` has. With --mine it asks to make the
+// note owner-confirmed instead: see confirmMine, and mcpConfirmMemory, its
+// chat-client twin, which asks through MCP elicitation.
 func cmdConfirm(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	fs := flag.NewFlagSet("confirm", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -167,27 +168,16 @@ func askOwner(stderr io.Writer, stdin io.Reader, m Memory, question string) bool
 // types yes. The digest and content hash are of the file as shown; confirmMemory
 // refuses if the file changed before it writes.
 func confirmMine(ctx context.Context, cfg Config, id string, jsonOut bool, stdout, stderr io.Writer, stdin io.Reader) error {
-	found, err := findMemory(cfg, id)
+	m, raw, already, err := ownerConfirmCandidate(cfg, id)
 	if err != nil {
 		return err
 	}
-	m, err := parseMemory(found.Path)
-	if err != nil {
-		return err
-	}
-	if m.Owner != "" || !strings.HasPrefix(m.ID, "mem_") || memory.DeriveProvenance(m) != memory.ProvenanceAuthored {
-		return fmt.Errorf("memory %s is not an agent-written note; only those can be confirmed as your own statement", m.ID)
-	}
-	if memory.IsOwnerConfirmed(m) {
+	if already {
 		if jsonOut {
 			return emitReceipt(stdout, "mora.confirm", 1, confirmReceipt{ID: m.ID, Confirmed: true, OwnerConfirmed: true})
 		}
 		fmt.Fprintf(stdout, "%s is already owner-confirmed; nothing changed\n", m.ID)
 		return nil
-	}
-	raw, err := os.ReadFile(m.Path)
-	if err != nil {
-		return err
 	}
 	if !askOwner(stderr, stdin, m, "Confirm this exact text as your own statement?") {
 		return errors.New("Not confirmed. Nothing was changed.")
@@ -203,6 +193,31 @@ func confirmMine(ctx context.Context, cfg Config, id string, jsonOut bool, stdou
 	return nil
 }
 
+// ownerConfirmCandidate loads the note `mora confirm --mine` and the MCP
+// confirm_memory tool may offer the owner: an agent-written note in the
+// owner's own vault. raw is the file as read, so the caller can bind the
+// content hash of exactly what it shows. already is true when the note is
+// owner-confirmed as it stands.
+func ownerConfirmCandidate(cfg Config, id string) (m Memory, raw []byte, already bool, err error) {
+	found, err := findMemory(cfg, id)
+	if err != nil {
+		return Memory{}, nil, false, err
+	}
+	if m, err = parseMemory(found.Path); err != nil {
+		return Memory{}, nil, false, err
+	}
+	if m.Owner != "" || !strings.HasPrefix(m.ID, "mem_") || memory.DeriveProvenance(m) != memory.ProvenanceAuthored {
+		return Memory{}, nil, false, fmt.Errorf("memory %s is not an agent-written note; only those can be confirmed as your own statement", m.ID)
+	}
+	if memory.IsOwnerConfirmed(m) {
+		return m, nil, true, nil
+	}
+	if raw, err = os.ReadFile(m.Path); err != nil {
+		return Memory{}, nil, false, err
+	}
+	return m, raw, false, nil
+}
+
 // confirmMemory removes the tentative tag from one memory. A non-empty
 // expectSHA is the content hash of the file the owner saw: the core refuses if
 // the file it reads differs, and writes from that same read. A file system has
@@ -211,7 +226,15 @@ func confirmMine(ctx context.Context, cfg Config, id string, jsonOut bool, stdou
 // `mora confirm --mine` pass one) swaps the tentative tag for the
 // owner-confirmed tag in the same write, or adds it to a note that is not
 // tentative, and needs expectSHA so the digest is of the bytes the owner saw.
+// The MCP confirm_memory tool passes one too, through confirmMemoryVia, and
+// only after the owner answered yes in its elicitation prompt.
 func confirmMemory(ctx context.Context, cfg Config, id, expectSHA, ownerDigest string, stderr io.Writer) (Memory, bool, error) {
+	return confirmMemoryVia(ctx, cfg, id, expectSHA, ownerDigest, "cli", stderr)
+}
+
+// confirmMemoryVia is confirmMemory with the audit-log caller named: "cli" for
+// the commands, mcpConfirmCaller for the MCP elicitation path.
+func confirmMemoryVia(ctx context.Context, cfg Config, id, expectSHA, ownerDigest, caller string, stderr io.Writer) (Memory, bool, error) {
 	if ownerDigest != "" && expectSHA == "" {
 		return Memory{}, false, errors.New("owner confirmation needs the content hash of the shown note")
 	}
@@ -257,7 +280,7 @@ func confirmMemory(ctx context.Context, cfg Config, id, expectSHA, ownerDigest s
 		return Memory{}, false, err
 	}
 	logged := true
-	if lerr := appendAgentWriteLog(cfg, time.Now(), action, m, "cli"); lerr != nil {
+	if lerr := appendAgentWriteLog(cfg, time.Now(), action, m, caller); lerr != nil {
 		logged = false
 		fmt.Fprintf(stderr, "warning: memory %s confirmed, but %s could not be appended: %v\n", m.ID, agentWriteLogName, lerr)
 	}

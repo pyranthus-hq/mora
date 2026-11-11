@@ -227,6 +227,7 @@ var mcpToolHandlers = map[string]func(context.Context, Config, map[string]any) (
 	"calendar_events": mcpCalendarEvents,
 	"list_memory":     mcpListMemory,
 	"delete_memory":   mcpDeleteMemory,
+	"confirm_memory":  mcpConfirmMemory,
 	"context_memory":  mcpContextMemory,
 	"think":           mcpThink,
 	"list_entities":   mcpListEntities,

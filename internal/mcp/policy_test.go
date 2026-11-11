@@ -34,7 +34,7 @@ func TestInstructionsAgreeWithPolicy(t *testing.T) {
 		t.Fatalf("tentative=%q", tentative)
 	}
 	readonly := InstructionsFor(WritePolicyReadonly)
-	if strings.Contains(readonly, OpenWriteInstruction) || !strings.Contains(readonly, "read-only") || !strings.Contains(readonly, "both will refuse") {
+	if strings.Contains(readonly, OpenWriteInstruction) || !strings.Contains(readonly, "read-only") || !strings.Contains(readonly, "they all refuse") || strings.Contains(readonly, ConfirmInstruction) {
 		t.Fatalf("readonly=%q", readonly)
 	}
 	if got := InstructionsFor("unknown"); got != OpenInstructions {
@@ -59,7 +59,7 @@ func TestMutationAction(t *testing.T) {
 
 // Every policy tells the agent what an owner-confirmed row means.
 func TestInstructionsExplainOwnerConfirmedRows(t *testing.T) {
-	const want = `A row with "trust":"owner-confirmed" is an agent-written note whose exact text the owner confirmed in their own terminal`
+	const want = `A row with "trust":"owner-confirmed" is an agent-written note whose exact text the owner confirmed in their own terminal or in Mora's confirmation prompt`
 	for _, p := range []string{WritePolicyOpen, WritePolicyPropose, WritePolicyTentative, WritePolicyReadonly} {
 		if got := InstructionsFor(p); !strings.Contains(got, want) || !strings.Contains(got, "the confirmed one wins") {
 			t.Errorf("%s instructions do not explain owner-confirmed rows", p)

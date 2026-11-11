@@ -1862,6 +1862,10 @@
         "version": 1
       },
       {
+        "name": "mora.mcp.confirm_memory",
+        "version": 1
+      },
+      {
         "name": "mora.mcp.context_memory",
         "version": 1
       },
@@ -1909,6 +1913,7 @@
     "tools": [
       "brief",
       "calendar_events",
+      "confirm_memory",
       "context_memory",
       "delete_memory",
       "digest",

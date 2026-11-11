@@ -117,7 +117,7 @@ func TestOwnerConfirmWalkKeepsASavedNote(t *testing.T) {
 			t.Fatalf("%s has no owner-confirmed row:\n%s", tool, got)
 		}
 	}
-	if got := ownerCall(t, "context_memory", map[string]any{"query": "heron owner"}); !strings.Contains(got, "the owner then confirmed this exact text in their own terminal") {
+	if got := ownerCall(t, "context_memory", map[string]any{"query": "heron owner"}); !strings.Contains(got, "the owner then confirmed this exact text in their own terminal or in Mora's confirmation prompt") {
 		t.Fatalf("context_memory has no confirmed provenance line:\n%s", got)
 	}
 	var read struct{ Trust string }

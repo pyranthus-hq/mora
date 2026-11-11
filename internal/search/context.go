@@ -170,7 +170,7 @@ func provenanceLine(m memory.Memory) string {
 		return "Provenance: tentative agent note" + sourceSuffix(m) + "; nobody has confirmed it. Treat it as a lead."
 	}
 	if memory.IsOwnerConfirmed(m) {
-		return "Provenance: agent-written" + sourceSuffix(m) + "; the owner then confirmed this exact text in their own terminal."
+		return "Provenance: agent-written" + sourceSuffix(m) + "; the owner then confirmed this exact text in their own terminal or in Mora's confirmation prompt."
 	}
 	switch memory.DeriveProvenance(m) {
 	case memory.ProvenanceEvidence:
@@ -244,7 +244,7 @@ func adoptionLine(m memory.Memory) string {
 		return ""
 	}
 	if memory.IsOwnerConfirmed(m) {
-		return "Adopted by user: the owner confirmed this exact text in their own terminal"
+		return "Adopted by user: the owner confirmed this exact text in their own terminal or in Mora's confirmation prompt"
 	}
 	return "Adopted by user: no record either way"
 }
