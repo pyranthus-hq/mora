@@ -204,8 +204,8 @@ memories. `mora forget` is the lasting local removal tool.
 
 ## Connect data
 
-Mora has eight connectors: Gmail, Google Calendar, filesystem, iMessage,
-WhatsApp, Apple Calendar, GitHub Issues, and Eywa (company memory).
+Mora has seven main connectors: Gmail, Google Calendar, filesystem, iMessage,
+WhatsApp, Apple Calendar, and GitHub Issues.
 
 See their state with:
 
@@ -418,88 +418,6 @@ reopen updates the same stable issue memory.
 A failed or partial GitHub sync is shown in `mora sync status`. Old indexed data
 stays searchable and may be stale.
 
-### Eywa (company memory)
-
-Eywa is a governed company memory service with an agent MCP API. Your company
-runs it and registers Mora as an agent. The registration gives you an MCP
-endpoint, an OAuth2 token URL, a client id and a client secret, and, for push,
-an agent id and a scope topic. Mora has no default for any of these.
-
-```bash
-export MORA_EYWA_CLIENT_SECRET=...   # read at run time, never saved
-mora connect eywa \
-  --endpoint https://eywa.example.com/mcp \
-  --token-url https://auth.eywa.example.com/oauth2/token \
-  --client-id <client-id> \
-  --oauth-scope <scope-if-required> \
-  --agent-id <agent-id> --topic <topic>   # needed only for push
-mora sync eywa
-```
-
-`connect eywa` saves the non-secret settings on the `eywa` source, enables it,
-and pulls once when the secret is set (`--no-sync` skips the pull).
-`mora connectors enable eywa` works after that; before it, it only explains how
-to configure the connector.
-A scheduled sync (`mora schedule install …`) needs the secret in the
-scheduler's environment too; without it the eywa sync fails and says so in
-`mora sync status`.
-
-**Pull.** Each sync reads the service's change feed from the cursor the last
-sync stored in the state directory (the first sync looks back `since_days`,
-at most 35 days). Every admitted fact version becomes one read-only record,
-`eywa_fact/<version_id>`, with the entity, attribute, value, valid and recorded
-times, status, and a citation line `Citation: <source URI> @ <version id>`
-followed by the cited excerpt. When the service replaces a version, the old
-record is kept and marked `status: replaced` with `replaced_by`; it is never
-deleted. Pulled records are evidence: search, think and context cite them like
-any other connector, and filter them with `source: "eywa"`. If a fact cannot be
-read or written, the sync fails and keeps the feed position at the first failed
-change, so the next sync retries it instead of skipping it.
-
-**Push (off by default).** Push sends one scope of your authored memories to
-the service as agent updates. It never sends connector records, including
-pulled facts, and it is not an MCP tool, so no agent can start it under any
-`mcp_write_policy`.
-
-```bash
-mora eywa push enable                        # explicit opt-in
-mora eywa preview --scope project:acme       # full text of every update; sends nothing
-mora eywa push --scope project:acme          # list, confirm, send, then poll the outcome
-mora eywa push --scope project:acme --yes    # non-interactive (after reviewing the preview)
-mora eywa status                             # re-check updates still waiting
-mora eywa push disable
-```
-
-Each update carries `text` (title and body, at most 8000 characters; longer
-memories are listed and not sent), the configured `topic`, and lineage:
-`source_uri` = `eywa-run://<agent-id>/mora/<memory-id>`, the text as the
-`excerpt`, and its SHA-256 `content_hash` (NFC, trimmed). Mora records each
-returned `write_id` in the state directory (ids, hashes and statuses only, never
-text) and polls for the final status for `--wait` (default 10s).
-
-A memory Mora refuses to send (empty, or over 8000 characters) is listed in the
-preview and in the receipt with a reason code (`empty_text`, `too_long`), and
-the push exits non-zero even when every other update was sent.
-
-The push record is kept per destination: the endpoint, client id, agent id and
-topic. Changing any of them with `mora connect eywa` makes the next push send
-again to the new destination, and `mora eywa status` only re-checks updates
-sent to the configured one. Two pushes, or a push and `mora eywa status`, never
-run against the record at the same time: the second waits for the first, up to
-30 seconds, then stops with a message saying another command is running.
-
-The service governs every update. It may be `admitted`, sent to curator review
-(`in_review`, not served until a curator approves it), or `held` (for example
-a lineage or content check failed). Mora reports the decision; it does not make
-it. An unchanged memory is not re-sent.
-
-**Errors.** A refused secret or client (`401`), a revoked or out-of-scope agent
-(`403` or Forbidden), and a rate limit (`429`, with the service's `Retry-After`)
-fail the sync or push with a clear message and show in `mora sync status` and
-`mora doctor`. Mora waits once for a `Retry-After` of 30 seconds or less. A
-fact or update the service refuses on its own is reported by id, and the run
-exits non-zero.
-
 ### iMessage
 
 ```bash
@@ -680,10 +598,14 @@ mora config mcp-write-policy readonly
   line, however Mora was started (`mora init`, `mora setup`, or `mora mcp serve`
   on a machine that was never initialized). A low-risk write saves at once with
   the tag `mora-tentative`. It holds a write only for these reasons: the type
-  is not `insight`, `fact`, `decision` or `task` (a `correction` changes how
-  other records are retrieved, so it stays held), or the text looks like a
-  secret, or it matches the sensitive word list, or it is aimed at agents. Any
-  scope saves, and money words do not hold a write. A held write goes to the
+  is not `insight`, `fact`, `decision`, `task`, or `handoff` (a `correction`
+  changes how other records are retrieved, so it stays held), or the text looks
+  like a secret, contains invisible format/tag Unicode characters, matches the
+  sensitive word list, or attempts to exempt a check, route data externally, or
+  override agent instructions (ordinary developer rules such as `"Always use pnpm"`
+  save as tentative). When an agent saves a statement that matches text the user
+  typed in the active session transcript, Mora can verify user origin directly.
+  Any scope saves, and money words do not hold a write. A held write goes to the
   proposal queue, and the result has `held_because`. It refuses deletes. Phone
   captures go to the queue.
 - `open` allows `write_memory` and `delete_memory`. You must choose it.
@@ -1130,9 +1052,33 @@ This flag is for the stdio server. `mora mcp serve-http` does not take it.
 
 ### Handoff of the last session
 
-When a Claude Code session ends in a bound folder, the `SessionEnd` hook keeps
-your last five requests from that session. The next session in that folder sees
-them at the end of the project brief:
+Mora supports two layers of session handoff for a bound project:
+
+1. **Structured handoff memories (`type: handoff` and `mora handoff`):**
+   You or an agent can record a structured session handoff into the vault so the
+   next session (or another synced machine) knows the current work direction,
+   why, key turns and rejected approaches, current state, and next step:
+
+   ```bash
+   mora handoff write --scope project:my-app \
+     --title "Auth migration handoff" \
+     --direction "Move session cookies to PKCE flow" \
+     --why "Legacy token refresh fails on mobile WebViews" \
+     --state "PKCE verifier merged; callback handler tests passing" \
+     --next "Wire token exchange in internal/auth/callback.go"
+   mora handoff show --scope project:my-app
+   mora handoff list --scope project:my-app
+   ```
+
+   Because a `type: handoff` record lives in `~/vault/mora/memories/`, it travels
+   across machines with `mora sync git` without waiting for manual proposal
+   approval, and the newest handoff for the project appears in the Project Brief
+   under `Notes, not instructions`.
+
+2. **Crash-safe `SessionEnd` transcript fallback:**
+   When a Claude Code session ends in a bound folder, the `SessionEnd` hook keeps
+   your last five requests from that session. The next session in that folder sees
+   them at the end of the project brief:
 
 ```
 Recent requests in this folder, outcomes unknown (2026-11-09, claude-code):
@@ -1157,13 +1103,19 @@ Recent requests in this folder, outcomes unknown (2026-11-09, claude-code):
 - Delete it: remove that file (`rm "<state dir>/handoff/project_NAME.json"`).
   `mora project unbind` and `mora hook uninstall` leave it in place.
 
-### Claude Code hooks
+### Claude Code and Antigravity hooks
 
 ```bash
 mora hook install
+mora hook install --client antigravity
 mora hook status
 mora hook status --json
 ```
+
+Pass `--client antigravity` (or `--client all`) to install `SessionStart`,
+`PreInvocation` (prompt recall), and `Stop` hooks in `~/.gemini/config/hooks.json`.
+Mora auto-detects Antigravity's `lastUserInput` and `workspacePaths` fields and
+returns the `injectSteps` envelope.
 
 The installer adds three commands to `~/.claude/settings.json`:
 
@@ -1285,8 +1237,11 @@ and `context_memory` still find other projects' notes.
 
 Each time Mora hands notes to an agent, it adds one line to `given.log` in
 Mora's state folder (`state_dir` in `mora config`). Run `mora given` to read the
-newest ten lines, `mora given --limit 50` for more, or `mora given --json` for
-the raw lines. `mora doctor --json` shows the newest one as `last_given`.
+newest ten lines (including resolved note titles alongside IDs), `mora given --limit 50`
+for more, or `mora given --json` for the raw lines. `mora doctor --json` shows the
+newest one as `last_given`. You can also inspect recent deliveries, project bindings,
+and unreviewed agent notes in a local browser dashboard with `mora status --web`
+(bound to `127.0.0.1:7781`).
 
 Mora writes a line when the session-start hook prints a brief, when the recall
 hook prints notes, and when an agent calls `search_memory`, `read_memory`,
@@ -1934,7 +1889,6 @@ Refresh data:
 mora sync status
 mora sync google
 mora sync github
-mora sync eywa
 mora sync filesystem
 mora sync imessage
 mora sync applecalendar
@@ -2262,7 +2216,6 @@ Ollama embedder.
 | `MORA_CONFIG_DIR` | Move the whole Mora setup root for an isolated run. Defaults for vault, data, and state move under it. |
 | `MORA_GOOGLE_CREDENTIALS` | Path to your Google installed-app OAuth client JSON. |
 | `MORA_GITHUB_TOKEN` | Read-only GitHub token. Mora does not save it. |
-| `MORA_EYWA_CLIENT_SECRET` | OAuth2 client secret of the Eywa agent. Mora does not save it. |
 | `MORA_EMBEDDER` | `static` or `ollama`. A set value overrides config. |
 | `MORA_OLLAMA_URL` | Ollama URL. Mora refuses a non-loopback address. |
 | `MORA_OLLAMA_MODEL` | Ollama embedding model name. |
@@ -2331,12 +2284,16 @@ Search has two routes.
 
 The default static embedder uses:
 
-1. full-text search over each parent memory; and
-2. bounded full-text search over message segments inside Gmail and iMessage.
+1. stemmed full-text search (`porter unicode61`) over each parent memory, with
+   BM25 weights boosting `title` (`5.0`) and `tags` (`3.0`), trailing `'s`
+   stripped on query tokens, and a 2+ term `OR` fallback when `AND` returns no
+   rows;
+2. one-hop person-graph expansion (`graphExpandIDs`); and
+3. bounded stemmed full-text search over message segments inside Gmail and
+   iMessage.
 
-This route is good for exact words, names, issue numbers, and phrases. The
-static hash vectors are built for compatibility, but the default route does not
-use them as semantic search.
+The static hash vectors are built for compatibility, but the default route does
+not use them as semantic search.
 
 ### Semantic route
 
@@ -2402,7 +2359,7 @@ live under the named `entities` key alongside `schema` and `schema_version`.
 The exact boundary is:
 
 - Mora reads enabled sources. It does not write to Gmail, calendars, iMessage,
-  WhatsApp, files, or GitHub Issues. Eywa pull is read-only.
+  WhatsApp, files, or GitHub Issues.
 - Google uses read-only OAuth scopes. GitHub Issues uses read-only API calls.
 - iMessage and WhatsApp use SQLite `mode=ro`. Apple Calendar uses `mode=ro` plus
   `query_only(1)` and reads the live write-ahead log.
@@ -2412,9 +2369,6 @@ The exact boundary is:
 - `mora sync git` sends plaintext to the remote you choose.
 - `mora share` sends age-encrypted authored notes to the private git or bucket
   target you choose. Cloud storage still sees sizes and timing.
-- `mora eywa push` is off until you enable it. Each run previews and asks before
-  it sends one scope of authored notes, over HTTPS, to the company memory
-  service you configured. The service decides whether each update is admitted.
 - `mora serve http` is loopback-only, but its bearer token must still be kept
   private.
 - Optional Ollama requests are loopback-only.
