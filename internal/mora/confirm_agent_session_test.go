@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,14 +75,28 @@ func TestDoctorSurfacesAnUnreadableProposalQueue(t *testing.T) {
 	if out := run(t, "doctor"); !strings.Contains(out, "MCP proposal queue unreadable") {
 		t.Fatalf("doctor text hides the failed read:\n%s", out)
 	}
-	out := run(t, "doctor", "--json")
-	if !strings.Contains(out, `"mcp_proposals_readable"`) {
-		t.Fatalf("doctor --json has no mcp_proposals_readable check:\n%s", out)
+	// readable reports the mcp_proposals_readable check from the decoded report:
+	// present says whether doctor emitted it, ok is its verdict.
+	readable := func() (present, ok bool) {
+		t.Helper()
+		var rep doctorReport
+		if err := json.Unmarshal([]byte(run(t, "doctor", "--json")), &rep); err != nil {
+			t.Fatalf("doctor --json: %v", err)
+		}
+		for _, c := range rep.Checks {
+			if c.Name == "mcp_proposals_readable" {
+				return true, c.OK
+			}
+		}
+		return false, false
+	}
+	if present, ok := readable(); !present || ok {
+		t.Fatalf("unreadable queue: mcp_proposals_readable present=%v ok=%v, want a failed check", present, ok)
 	}
 	if err := os.Remove(dir); err != nil {
 		t.Fatal(err)
 	}
-	if out := run(t, "doctor", "--json"); strings.Contains(out, "mcp_proposals_readable") {
-		t.Fatalf("a readable queue produced the check:\n%s", out)
+	if present, _ := readable(); present {
+		t.Fatal("a readable queue produced the mcp_proposals_readable check")
 	}
 }

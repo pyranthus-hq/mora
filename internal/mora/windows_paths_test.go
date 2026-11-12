@@ -12,11 +12,9 @@ import (
 // Windows caller hands it over: backslashes, forward slashes, a trailing
 // separator, all lower case and a flipped drive-letter case.
 func windowsDriveForms(dir string) map[string]string {
-	flipped := dir
+	flipped := strings.ToLower(dir[:1]) + dir[1:]
 	if c := dir[0]; c >= 'a' && c <= 'z' {
 		flipped = strings.ToUpper(dir[:1]) + dir[1:]
-	} else {
-		flipped = strings.ToLower(dir[:1]) + dir[1:]
 	}
 	return map[string]string{
 		"backslash":       dir,
