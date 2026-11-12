@@ -224,8 +224,28 @@
     "status": "parses"
   },
   {
+    "path": "given",
+    "status": "parses"
+  },
+  {
     "path": "graph",
     "status": "parses"
+  },
+  {
+    "path": "handoff",
+    "status": "parses"
+  },
+  {
+    "path": "handoff list",
+    "status": "parses"
+  },
+  {
+    "path": "handoff show",
+    "status": "parses"
+  },
+  {
+    "path": "handoff write",
+    "status": "empty"
   },
   {
     "path": "help",
@@ -245,6 +265,10 @@
   },
   {
     "path": "hook recall",
+    "status": "empty"
+  },
+  {
+    "path": "hook session-end",
     "status": "empty"
   },
   {
@@ -593,6 +617,10 @@
   },
   {
     "path": "sources verify",
+    "status": "parses"
+  },
+  {
+    "path": "status",
     "status": "parses"
   },
   {

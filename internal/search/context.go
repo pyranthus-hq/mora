@@ -85,7 +85,9 @@ func BuildContext(cfg config.Config, items []memory.Memory, budget int, hasQuery
 		if m.CorrectionOmitted {
 			warning.WriteString("Additional correction context was omitted by this request's filters or the per-record cap; do not rely on the prior claim alone.\n")
 		}
-		if m.Decision != nil {
+		if m.Decision != nil && memory.OwnerDecisionWithoutValidity(m) {
+			fmt.Fprintf(&body, "Decision status: current (owner-confirmed; no review date set)\nAs of: %s\n", m.Decision.AsOf)
+		} else if m.Decision != nil {
 			fmt.Fprintf(&body, "Decision status: %s\nAs of: %s\nDurability: %s\nFlip conditions: %s\n", m.DecisionStatus, m.Decision.AsOf, m.Decision.Durability, strings.Join(m.Decision.FlipConditions, "; "))
 			if m.Decision.ReviewBy != "" {
 				fmt.Fprintf(&body, "Review by: %s\n", m.Decision.ReviewBy)

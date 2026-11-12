@@ -47,7 +47,7 @@ func TestProjectBindListLookup(t *testing.T) {
 	if err := json.Unmarshal([]byte(run(t, "project", "list", "--json")), &list); err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 2 || list[0] != (projectBinding{filepath.Join(w, "a"), "project:alpha"}) {
+	if len(list) != 2 || list[0] != (projectBinding{Dir: filepath.Join(w, "a"), Scope: "project:alpha"}) {
 		t.Fatalf("list = %+v", list)
 	}
 	for dir, want := range map[string]string{"a/b/c": "project:beta", "a/b": "project:beta", "a/bc": "project:alpha", "a": "project:alpha"} {

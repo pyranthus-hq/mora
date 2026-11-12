@@ -238,7 +238,7 @@ var SchemaStatements = []string{
 		block_refs TEXT,
 		text TEXT
 	)`,
-	`CREATE VIRTUAL TABLE IF NOT EXISTS gmail_segments_fts USING fts5(evidence_ref UNINDEXED, text)`,
+	`CREATE VIRTUAL TABLE IF NOT EXISTS gmail_segments_fts USING fts5(evidence_ref UNINDEXED, text, tokenize='porter unicode61')`,
 	`CREATE TABLE IF NOT EXISTS gmail_segment_diagnostics (
 		memory_id TEXT PRIMARY KEY,
 		reason TEXT,

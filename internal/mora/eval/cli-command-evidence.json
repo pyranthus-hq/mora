@@ -500,7 +500,7 @@
     },
     {
       "name": "claude hooks",
-      "paths": ["hook", "hook session-start", "hook recall", "hook pre-tool-use", "hook install", "hook uninstall", "hook status"],
+      "paths": ["hook", "hook session-start", "hook session-end", "hook recall", "hook pre-tool-use", "hook install", "hook uninstall", "hook status"],
       "evidence": {
         "success": {"status": "platform_seam", "tests": ["TestCLIRegistryHookIOThroughRun", "TestHookInstallFreshSettings", "TestHookStatusReportsInstalledHooks", "TestHookUninstallRemovesOnlyMoraHooks", "TestHookPreToolWarnedGroupPrintsGolden", "TestHookInstallPreToolThroughRun"], "reason": "Hook I/O and settings mutations run through Run in a hermetic HOME; executable discovery is injected."},
         "json": {"status": "test", "tests": ["TestCLIRegistryHookIOThroughRun", "TestHookStatusPreToolJSON"], "reason": "session-start, recall and pre-tool-use emit Claude hook JSON; lifecycle commands emit text; status --json carries pre_tool_use."},
@@ -518,6 +518,39 @@
         "state": {"status": "test", "tests": ["TestProjectBindStoreSurvivesReload", "TestProjectBindHookInstallRecordsBinding"]},
         "error": {"status": "test", "tests": ["TestProjectBindRefusals"]},
         "refusal": {"status": "test", "tests": ["TestProjectBindRefusals"]}
+      }
+    },
+    {
+      "name": "given log",
+      "paths": ["given"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestGivenCommandNewestFirstAndEmpty"]},
+        "json": {"status": "test", "tests": ["TestGivenCommandNewestFirstAndEmpty"], "reason": "--json emits a bare JSON array, not an enveloped receipt yet."},
+        "state": {"status": "test", "tests": ["TestGivenLogRotatesAtTwoMegabytes"]},
+        "error": {"status": "test", "tests": ["TestGivenCommandNewestFirstAndEmpty"]},
+        "refusal": {"status": "test", "tests": ["TestGivenCommandNewestFirstAndEmpty"]}
+      }
+    },
+    {
+      "name": "status screen",
+      "paths": ["status"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestStatusTextUnboundEmptyVault", "TestStatusShowsBindingReviewQueueAndLastGiven"]},
+        "json": {"status": "test", "tests": ["TestStatusShowsBindingReviewQueueAndLastGiven"], "reason": "status --json emits the versioned mora.status receipt."},
+        "state": {"status": "test", "tests": ["TestStatusHandlerIsReadOnlyEscapedAndLoopbackOnly"], "reason": "status is read-only; the --web handler test proves it writes nothing."},
+        "error": {"status": "test", "tests": ["TestStatusFlagValidation"]},
+        "refusal": {"status": "test", "tests": ["TestStatusHostOK"], "reason": "the --web page refuses any Host header that is not loopback."}
+      }
+    },
+    {
+      "name": "handoff memories",
+      "paths": ["handoff", "handoff show", "handoff list", "handoff write"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestHandoffVerbReachableThroughRunDispatch", "TestCmdHandoffWriteShowList", "TestCmdHandoffCLIResolvesConfigAndWrites"]},
+        "json": {"status": "test", "tests": ["TestCmdHandoffWriteShowList"], "reason": "show --json emits mora.handoff.show and list --json emits mora.handoff.list; write --json emits the mora.write receipt."},
+        "state": {"status": "test", "tests": ["TestCmdHandoffWriteShowList", "TestCmdHandoffShowAddsNewerTranscriptFallback"]},
+        "error": {"status": "test", "tests": ["TestHandoffVerbReachableThroughRunDispatch", "TestCmdHandoffWriteShowList"]},
+        "refusal": {"status": "test", "tests": ["TestHandoffWriteMineIsOwnerConfirmedOnlyAtTheTerminal"]}
       }
     },
     {

@@ -441,7 +441,7 @@ func TestReviewShowsAndBindsGoverningFields(t *testing.T) {
 		"as_of": "2026-01-02T00:00:00Z", "durability": "standing", "flip_conditions": "latency regresses;cost doubles", "review_by": "2027-01-01T00:00:00Z",
 	}))
 	correction := held(tentativeServe(t, map[string]any{
-		"title": "Retire old plan", "text": "The old plan no longer holds.", "type": "correction", "scope": "project:demo",
+		"title": "Retire old plan", "text": "The old plan no longer holds. Passport renewal.", "type": "correction", "scope": "project:demo",
 		"target": target.ID, "disposition": "outdated",
 	}))
 

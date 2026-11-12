@@ -98,6 +98,10 @@ var contractVolatileLeaves = map[string]any{
 	"mora.version.go_version":     "<go-version>",
 	"mora.doctor.report.platform": "<goos>",
 
+	// The working directory the status screen reports: an absolute path of the
+	// checkout the test runs from, so freezing it would red every other checkout.
+	"mora.status.folder.cwd": "<cwd>",
+
 	// The token estimate for the context pack. It is computed over the RAW
 	// payload, whose timestamps carry the machine's zone offset: the same two
 	// memories render as `...T03:55:23-07:00` (25 bytes) in a developer's local

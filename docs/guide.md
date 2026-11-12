@@ -23,7 +23,7 @@ read the [architecture documents](architecture/00-overview.md).
 
 ## Install
 
-Mora is alpha software. Back up important data. Check cited source records
+Mora is beta software. Back up important data. Check cited source records
 before you act on an answer.
 
 ### macOS: signed Mora.app
@@ -204,8 +204,8 @@ memories. `mora forget` is the lasting local removal tool.
 
 ## Connect data
 
-Mora has eight connectors: Gmail, Google Calendar, filesystem, iMessage,
-WhatsApp, Apple Calendar, GitHub Issues, and Eywa (company memory).
+Mora has seven main connectors: Gmail, Google Calendar, filesystem, iMessage,
+WhatsApp, Apple Calendar, and GitHub Issues.
 
 See their state with:
 
@@ -418,88 +418,6 @@ reopen updates the same stable issue memory.
 A failed or partial GitHub sync is shown in `mora sync status`. Old indexed data
 stays searchable and may be stale.
 
-### Eywa (company memory)
-
-Eywa is a governed company memory service with an agent MCP API. Your company
-runs it and registers Mora as an agent. The registration gives you an MCP
-endpoint, an OAuth2 token URL, a client id and a client secret, and, for push,
-an agent id and a scope topic. Mora has no default for any of these.
-
-```bash
-export MORA_EYWA_CLIENT_SECRET=...   # read at run time, never saved
-mora connect eywa \
-  --endpoint https://eywa.example.com/mcp \
-  --token-url https://auth.eywa.example.com/oauth2/token \
-  --client-id <client-id> \
-  --oauth-scope <scope-if-required> \
-  --agent-id <agent-id> --topic <topic>   # needed only for push
-mora sync eywa
-```
-
-`connect eywa` saves the non-secret settings on the `eywa` source, enables it,
-and pulls once when the secret is set (`--no-sync` skips the pull).
-`mora connectors enable eywa` works after that; before it, it only explains how
-to configure the connector.
-A scheduled sync (`mora schedule install …`) needs the secret in the
-scheduler's environment too; without it the eywa sync fails and says so in
-`mora sync status`.
-
-**Pull.** Each sync reads the service's change feed from the cursor the last
-sync stored in the state directory (the first sync looks back `since_days`,
-at most 35 days). Every admitted fact version becomes one read-only record,
-`eywa_fact/<version_id>`, with the entity, attribute, value, valid and recorded
-times, status, and a citation line `Citation: <source URI> @ <version id>`
-followed by the cited excerpt. When the service replaces a version, the old
-record is kept and marked `status: replaced` with `replaced_by`; it is never
-deleted. Pulled records are evidence: search, think and context cite them like
-any other connector, and filter them with `source: "eywa"`. If a fact cannot be
-read or written, the sync fails and keeps the feed position at the first failed
-change, so the next sync retries it instead of skipping it.
-
-**Push (off by default).** Push sends one scope of your authored memories to
-the service as agent updates. It never sends connector records, including
-pulled facts, and it is not an MCP tool, so no agent can start it under any
-`mcp_write_policy`.
-
-```bash
-mora eywa push enable                        # explicit opt-in
-mora eywa preview --scope project:acme       # full text of every update; sends nothing
-mora eywa push --scope project:acme          # list, confirm, send, then poll the outcome
-mora eywa push --scope project:acme --yes    # non-interactive (after reviewing the preview)
-mora eywa status                             # re-check updates still waiting
-mora eywa push disable
-```
-
-Each update carries `text` (title and body, at most 8000 characters; longer
-memories are listed and not sent), the configured `topic`, and lineage:
-`source_uri` = `eywa-run://<agent-id>/mora/<memory-id>`, the text as the
-`excerpt`, and its SHA-256 `content_hash` (NFC, trimmed). Mora records each
-returned `write_id` in the state directory (ids, hashes and statuses only, never
-text) and polls for the final status for `--wait` (default 10s).
-
-A memory Mora refuses to send (empty, or over 8000 characters) is listed in the
-preview and in the receipt with a reason code (`empty_text`, `too_long`), and
-the push exits non-zero even when every other update was sent.
-
-The push record is kept per destination: the endpoint, client id, agent id and
-topic. Changing any of them with `mora connect eywa` makes the next push send
-again to the new destination, and `mora eywa status` only re-checks updates
-sent to the configured one. Two pushes, or a push and `mora eywa status`, never
-run against the record at the same time: the second waits for the first, up to
-30 seconds, then stops with a message saying another command is running.
-
-The service governs every update. It may be `admitted`, sent to curator review
-(`in_review`, not served until a curator approves it), or `held` (for example
-a lineage or content check failed). Mora reports the decision; it does not make
-it. An unchanged memory is not re-sent.
-
-**Errors.** A refused secret or client (`401`), a revoked or out-of-scope agent
-(`403` or Forbidden), and a rate limit (`429`, with the service's `Retry-After`)
-fail the sync or push with a clear message and show in `mora sync status` and
-`mora doctor`. Mora waits once for a `Retry-After` of 30 seconds or less. A
-fact or update the service refuses on its own is reported by id, and the run
-exits non-zero.
-
 ### iMessage
 
 ```bash
@@ -643,7 +561,7 @@ The reply is a single document with these field groups:
 | `schemas` | Every published CLI payload schema name and its version. |
 | `error_codes` | Every published error code, its class, its connector `error_class` where it has one, its exit code, whether a retry can succeed, and its meaning. |
 | `exit_codes` | The allocated process exit codes (1, 2, and 10), the reserved range, and the first code a future release may allocate. |
-| `mcp` | The write policy in force on this machine, the 12 MCP tool names, and the payload schema version for each tool. |
+| `mcp` | The write policy in force on this machine, the 13 MCP tool names, and the payload schema version for each tool. |
 | `features` | Top-level support for repair and deep links. |
 
 Support is reported with three words and only three: `supported`, `unsupported`,
@@ -679,11 +597,31 @@ mora config mcp-write-policy readonly
 - `tentative` is the default whenever `config.toml` has no `mcp_write_policy`
   line, however Mora was started (`mora init`, `mora setup`, or `mora mcp serve`
   on a machine that was never initialized). A low-risk write saves at once with
-  the tag `mora-tentative`. It holds a write only for these reasons: the type
-  is not `insight`, `fact`, `decision` or `task` (a `correction` changes how
-  other records are retrieved, so it stays held), or the text looks like a
-  secret, or it matches the sensitive word list, or it is aimed at agents. Any
-  scope saves, and money words do not hold a write. A held write goes to the
+  the tag `mora-tentative`, and stays tentative until you review it: nothing an
+  agent writes becomes owner-confirmed by itself. It holds a write only for these
+  reasons: the type is not `insight`, `fact`, `decision`, `task`, `correction`,
+  or `handoff`, or the text looks like a secret, contains terminal control
+  characters (everything below space except tab and line breaks, DEL, and the
+  C1 range), contains invisible characters that hide or reorder text
+  (bidirectional overrides and isolates, tag characters, zero-width space, word
+  joiners, blank fillers, the other variation selectors, supplementary private
+  use) or three or more invisible characters in a row, matches the sensitive
+  word list (medical, passport, and similar), or talks to agents: it tells them
+  to auto-approve or accept all proposals or tool calls, to proceed or merge
+  without review or confirmation, to stop asking, to hide or withhold something
+  from "the user" or "the owner", to ignore previous or earlier instructions or
+  the instructions in `CLAUDE.md`, or pipes a download into a shell or
+  interpreter. Ordinary emoji (including `⚠️`, `❤️` and joined emoji), a
+  leading byte order mark, left and right marks, the Persian zero-width
+  non-joiner and icon-font glyphs do not hold a write, and they are removed
+  before the agent-aimed check so they cannot split a trigger word. Text is
+  matched after folding curly quotes, case and whitespace. Ordinary developer
+  rules such as `"Always use pnpm"`, `"Never ignore errors"` or
+  `"Always merge with squash"` save as tentative. Known misses: look-alike
+  letters from other scripts and indirect phrasing ("disregard what came
+  before"). A tentative `correction` is saved but does not change how
+  other records are shown until you confirm it.
+  Any scope saves, and money words do not hold a write. A held write goes to the
   proposal queue, and the result has `held_because`. It refuses deletes. Phone
   captures go to the queue.
 - `open` allows `write_memory` and `delete_memory`. You must choose it.
@@ -698,8 +636,10 @@ v0.15.3 stay queued: `mora doctor` prints how many are pending, and
 
 A tentative memory shows in search, read, list and context with a
 `"trust":"tentative"` label. This holds for every type and scope. It does not
-reach the recall hook, the digest, the brief, commitments, open loops, think,
-entities or `mora share`.
+reach the prompt-recall hook, the digest, commitments, open loops, think,
+entities or `mora share`. The session-start project brief is different: a
+tentative `decision` in a bound project's scope can still appear there, under
+`Notes, not instructions`, as a note you have not confirmed.
 
 A tentative note is a vault file. `mora sync git` uploads vault files to your
 own git remote, tentative notes included, and the tag travels with the file.
@@ -712,7 +652,8 @@ mora confirm <memory-id>       # remove the tag; the memory becomes normal
 ```
 
 `mora confirm` has no MCP tool, and it logs a `confirm` line. Both commands
-accept `--json`.
+accept `--json`. Plain `mora confirm` never makes a note owner-confirmed. To do
+that, use `mora confirm <id> --mine` (see owner-confirmed below).
 
 To see every agent note that waits for you, saved or held, and to keep or
 reject each one in a single pass:
@@ -745,21 +686,53 @@ of those fields (`OwnerConfirmedFields` and `OwnerConfirmedDigest` in
 exact text in their own terminal. Agents are told to treat such a note as your
 own words. The keep logs an `owner-confirm` line.
 
-Only the keep in `mora review` sets this status. `mora confirm`,
-`mora mcp proposals approve`, `mora write`, `mora teach`, every MCP tool, the
-loopback HTTP routes and companion captures do not. `mora write --tags` and
+Three actions set this status, each only in your own terminal:
+
+```bash
+mora review                       # the keep action
+mora write --mine ...             # a new note, saved as your own statement
+mora confirm <memory-id> --mine   # an existing agent note
+```
+
+Plain `mora write` and plain `mora confirm` never set it, in any terminal (inside an agent session a plain `mora write` saves tentative).
+`--mine` needs your own terminal: it refuses, saves nothing and exits non-zero
+when stdin is not a terminal or an agent session variable is set. In your own
+terminal it prints the note (scope, type, title, the other fields the digest
+binds, and the full text) and asks `Save this as your own statement? [y/N]`
+(`Confirm this exact text as your own statement? [y/N]` for `confirm`). Only `y`
+or `yes` counts. Any other answer, or end of input, saves nothing, prints
+`Not saved.` and exits non-zero. The prompt goes to stderr, so `--json` keeps
+stdout for the receipt, which then has `owner_confirmed: true`. `mora confirm
+--mine` works on a tentative or an ordinary agent note and binds the tag to the
+text it showed: if the file changes before the write, it refuses. Connector
+records, copied files and shared records are refused. A note that is already
+owner-confirmed is left alone.
+
+`mora mcp proposals approve`, `mora teach`, every MCP tool, the loopback HTTP
+routes and companion captures never set it. `mora write --tags` and
 `mora teach memory --tags` refuse a tag that starts with
 `mora-owner-confirmed-`, and a `teach correct` or `teach supersede` revision
-does not keep the tag, and `mora confirm` removes one it finds. The tag counts
-only while the note matches what you saw. If anyone edits one of the shown
-fields, or copies the tag to another note, the note shows no trust value. A tag on a connector record, a file copied
-from disk, a tentative note or a row from a subscribed share also counts for
-nothing.
+does not keep the tag. Plain `mora confirm` on a tentative note drops any
+owner-confirmed tag the note carries. The tag counts only while the note matches
+what you saw. If anyone edits one of the shown fields, or copies the tag to
+another note, the note shows no trust value. A tag on a connector record, a file
+copied from disk, a tentative note or a row from a subscribed share also counts
+for nothing.
 
-Owner-confirmed is a review record, not a signature. The terminal check stops
-an agent that runs `mora review` through its normal shell tool. It does not stop
-a program that fakes a terminal. A program that can write vault files can also
-write the tag itself.
+A decision you confirmed as your own, with no durability, flip condition or
+review date of its own, reads as `decision_status: current` and the context line
+says `Decision status: current (owner-confirmed; no review date set)`, so agents
+do not doubt it for lacking a review date. A review date that has passed still
+reads `needs_review`, and so does any decision that is not owner-confirmed.
+
+Owner-confirmed is a record, not a signature, and Mora cannot prove that a human
+typed the answer. The terminal check stops an agent that pipes input or runs in
+a session it recognizes: the variables it reads are those Claude Code and Codex
+set (`CLAUDECODE`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`,
+`CODEX_THREAD_ID`, `CODEX_CI`, `CODEX_MANAGED_BY_NPM`). It does not detect
+Cursor or Antigravity sessions. A program that runs Mora inside a fake terminal
+and types `y` passes, and a program that can write vault files can write the tag
+itself.
 
 The hold filter is coarse. It does not stop a false claim written in plain
 words. An agent with a shell can run `mora confirm` or
@@ -971,6 +944,7 @@ Tell Mora that a folder belongs to a project scope:
 mora project bind --scope project:my-app ~/code/my-app
 mora project which ~/code/my-app/src   # project:my-app, plus the bound root
 mora project list --json               # [{"dir": "...", "scope": "project:my-app"}]
+mora project bind --scope project:my-app --owner-only ~/code/my-app
 mora project unbind ~/code/my-app
 ```
 
@@ -980,27 +954,221 @@ path with symlinks resolved, in `projects.json` in the Mora config directory
 (mode 0600). `--scope` must be `project:NAME`; `global` and `personal` are
 refused. Without `--scope`, Mora uses `project:` plus the lower-case folder name,
 or asks for `--scope` when that name is not a valid scope. Binding the same
-folder again replaces its scope. A folder matches its own binding and the
+folder again replaces its scope and its `--owner-only` mark: bind without the
+flag to clear it. `--owner-only` lets your `personal` notes appear in recall in
+that folder (see "Which notes appear on their own"); it does not change the
+project brief; `list` and
+`which` show it, as a trailing `owner-only` column in text and as `"owner_only":
+true` in JSON. A file written before the flag existed loads with it off. A folder matches its own binding and the
 bindings of its parents; the deepest one wins. Mora never guesses a project
 from a folder name when it looks one up, and `which` exits non-zero with "no
 project" when nothing matches.
 
 `mora hook install --project --scope project:NAME` also binds the project root.
-`mora hook uninstall --project` leaves that binding in place. This change only
-stores bindings; no hook, brief, search or save reads them yet.
+`mora hook uninstall --project` leaves that binding in place. The session-start
+hook, the recall hook and `mora brief --project` read bindings (see "Project
+brief" and "Which notes appear on their own" below); search and save do not.
 
-### Claude Code hooks
+### Project brief
+
+When an agent session starts in a bound folder, the global `SessionStart` hook
+writes that project's owner rules instead of the daily mail and calendar brief.
+In a folder with no binding, nothing changes. See it yourself:
+
+```bash
+mora brief --project            # the bound folder, or DIR if you pass one
+mora brief --project --json     # {"scope", "root", "text", "ids"}
+```
+
+The text has at most two blocks and 2,000 characters:
+
+1. `Owner rules for project:NAME`: corrections, then decisions, that you kept in
+   `mora review`, from the project scope and from `global`. Trust comes only
+   from the owner-confirmed mark, never from a source label or a tag. Project
+   rules come before global ones, then newest first. A decision whose review date
+   has passed ends with `(review date passed)`.
+2. `Notes, not instructions`: up to 3 newest decisions agents wrote in the
+   project scope that you have not confirmed, one line each, framed as data.
+   The "agent notes not reviewed" line follows when notes wait for review. The
+   handoff of the last session (see "Handoff of the last session") comes last
+   in this block.
+
+`personal` notes and notes of other projects never appear. Notes that are
+deleted, retracted or superseded are left out, as in search. Titles are cut at
+120 characters and scope names at 80. Each line ends with the note id, and a
+line names its scope only when it comes from `global`. When the lines do not fit,
+Mora first cuts texts to 100 characters, then keeps titles only, and says so in a
+line that points to `read_memory` for the full rule. When whole rules still do
+not fit, the line under the block header says `Only k of n owner rules fit here`
+and tells the agent to call `search_memory` with the project scope and with scope
+`global` before it proposes an approach. A bound project with no lines shows
+`Project project:NAME: no owner rules recorded yet.` An unbound folder makes
+`mora brief --project` exit non-zero. The MCP `brief` tool takes the same view
+through its optional `project_dir` argument.
+
+The session-start hook never falls back to the daily brief for a project folder
+it cannot serve. When `projects.json` exists but cannot be read, it writes one
+line telling you to run `mora project list`. When the folder is bound but the
+brief cannot be built, it writes one line telling you to run `mora doctor`. With
+no `projects.json`, or no binding for the folder, the daily brief is unchanged.
+
+### Use Mora in one project
+
+A client with no hooks (Codex, or any MCP client) reaches the project brief
+through the MCP config. First bind the folder (`mora project bind`, above), then
+start the server with the folder's absolute path.
+
+Claude Code, in the project's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "mora": {
+      "command": "mora",
+      "args": ["mcp", "serve", "--project-dir", "/abs/path/to/my-app"]
+    }
+  }
+}
+```
+
+Codex, in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.mora]
+command = "mora"
+args = ["mcp", "serve", "--project-dir", "/abs/path/to/my-app"]
+```
+
+`--project-dir` also works with `--profile NAME`, in either order. Mora looks the
+folder up once, when the server starts. When the folder is bound, three things
+change for that server, and only then:
+
+1. `write_memory` with no `scope` saves to the project scope, not `global`. An
+   explicit `scope`, including `global`, always wins. Your write policy keeps its
+   meaning: `tentative` saves a labelled tentative note, `propose` queues a
+   proposal for that scope, `readonly` refuses. An agent profile that may not
+   write the project scope is refused, as for any scope it lacks.
+2. `brief` with no `project_dir` returns the project brief. An explicit
+   `project_dir` still wins. `brief` with `daily: true` returns the daily brief.
+3. The server instructions gain one sentence that tells the client to call
+   `brief` first and names the project scope. The sentence never holds the
+   folder path or any note text. A scope that is not a plain name
+   (`project:` and up to 64 letters, digits, `.`, `_` or `-`) is left out and the
+   sentence says "one bound project folder" instead.
+
+When the folder is not bound, is not an absolute path, is not an existing
+directory (a missing path or a file counts), or the bindings file cannot be read, the server starts and behaves exactly like
+`mora mcp serve`. It prints one line on stderr and nothing on stdout. The
+server's own working directory never counts, and Mora does not guess a project
+from the client's roots.
+
+A running server keeps the project it found at start. If you unbind or rebind the
+folder, restart the client so the server starts again. A value that starts with
+`-` after `--project-dir` or `--profile` is a missing value and a usage error.
+
+This flag is for the stdio server. `mora mcp serve-http` does not take it.
+
+### Handoff of the last session
+
+Mora supports two layers of session handoff for a bound project:
+
+1. **Structured handoff memories (`type: handoff` and `mora handoff`):**
+   You or an agent can record a structured session handoff into the vault so the
+   next session (or another synced machine) knows the current work direction,
+   why, key turns and rejected approaches, current state, and next step:
+
+   ```bash
+   mora handoff write --scope project:my-app \
+     --title "Auth migration handoff" \
+     --direction "Move session cookies to PKCE flow" \
+     --why "Legacy token refresh fails on mobile WebViews" \
+     --where "PKCE verifier merged; callback handler tests passing" \
+     --next "Wire token exchange in internal/auth/callback.go"
+   mora handoff show --scope project:my-app
+   mora handoff list --scope project:my-app
+   ```
+
+   Bare `mora handoff` shows the latest one. Flags: `--scope`, `--project DIR`,
+   `--direction`, `--why`, `--turns`, `--where`, `--next`, `--text`, `--short`,
+   `--json` (and `--limit N` on `list`). `write --mine` asks at your terminal and
+   saves the handoff owner-confirmed. Without `--mine`, and for every handoff an
+   agent writes, it is unconfirmed and the brief labels it
+   `Last handoff (unconfirmed)`. Which handoff the brief shows: the newest
+   handoff in the project's scope if you confirmed it; otherwise your newest
+   confirmed handoff from the last 14 days, followed by one line saying a newer
+   unconfirmed handoff exists (its text is not shown; `mora handoff show` prints
+   it); otherwise the newest handoff, labelled unconfirmed, if it passes the
+   write checks; otherwise one line saying the newest handoff is withheld from
+   the brief. A newer handoff that fails the checks is never silently skipped in
+   favour of an older one. The handoff shown is listed in `mora given` and
+   `mora status`. `mora handoff show` and `list` print titles and text escaped
+   (a note an agent wrote can carry terminal control sequences), say whether the
+   handoff is owner-confirmed, and keep `--json` as raw data.
+
+   Because a `type: handoff` record lives in `~/vault/mora/memories/`, it travels
+   across machines with `mora sync git` without waiting for manual proposal
+   approval, and the newest handoff for the project appears in the Project Brief
+   under `Notes, not instructions`.
+
+2. **Crash-safe `SessionEnd` transcript fallback:**
+   When a Claude Code session ends in a bound folder, the `SessionEnd` hook keeps
+   your last five requests from that session. The next session in that folder sees
+   them at the end of the project brief:
+
+```
+Recent requests in this folder, outcomes unknown (2026-11-09, claude-code):
+- "fix the parser"
+```
+
+- What is stored: only what you typed, never a reply or a tool result. Each
+  request must pass the same credential and agent-aimed text checks Mora runs
+  on agent writes; a request that fails is dropped whole. Line breaks become
+  spaces and each request is cut to 120 characters. Mora makes no model call.
+  The check catches only known phrasings, so a request can still carry words
+  that read like an order. The next session shows the requests as quoted data
+  under the same "not instructions" framing as agent notes, never as rules.
+  Only transcript lines whose own folder is inside the bound folder count, and
+  the transcript must be a `.jsonl` file under `~/.claude/projects`.
+- Where: `handoff/<scope>.json` in the state dir, one file per bound project,
+  mode 0600. Each session end replaces it, so it holds the latest session only.
+  A session with no usable request removes it.
+- Limits: a handoff older than 14 days is not shown. It is the first thing the
+  brief drops when space is short, and it never changes the note ids the brief
+  reports.
+- Delete it: remove that file (`rm "<state dir>/handoff/project_NAME.json"`).
+  `mora project unbind` and `mora hook uninstall` leave it in place.
+
+### Claude Code and Antigravity hooks
 
 ```bash
 mora hook install
+mora hook install --client antigravity
 mora hook status
 mora hook status --json
 ```
 
-The installer adds two commands to `~/.claude/settings.json`:
+Antigravity support is **experimental and has not been tested against a real
+Antigravity install**. `mora hook install|uninstall|status --client antigravity
+[--hooks-file PATH]` manages `SessionStart` and `PreInvocation` (prompt recall)
+in `~/.gemini/config/hooks.json`; there is no `Stop` hook, and `--client all` does
+not exist. Mora reads Antigravity's `lastUserInput` and `workspacePaths` fields
+and returns the `injectSteps` envelope. Under WSL the command refuses unless you
+pass `--hooks-file /mnt/c/Users/<name>/.gemini/config/hooks.json`; it then writes
+a `wsl.exe` command into that Windows file.
 
-- `SessionStart` adds the current brief when a session begins.
+The installer adds three commands to `~/.claude/settings.json`:
+
+- `SessionStart` adds the current brief when a session begins. In a bound
+  folder it adds that project's brief.
 - `UserPromptSubmit` adds up to three short related memories for a prompt.
+- `SessionEnd` keeps your last requests of the session in a bound folder (see
+  "Handoff of the last session"). It writes nothing to the session.
+
+In the global install, `SessionStart` and `SessionEnd` check the folder Claude
+runs in: a bound folder gets its project brief and its handoff, any other
+folder gets the daily brief and no handoff. `UserPromptSubmit` recall follows the
+folder too (see "Which notes appear on their own"). Run `mora hook install` again to add a missing one; it never adds a
+second copy.
 
 Mora keeps other valid settings and hooks. It refuses to change an unreadable
 or invalid JSON settings file. Remove only Mora's managed hooks with:
@@ -1009,8 +1177,11 @@ or invalid JSON settings file. Remove only Mora's managed hooks with:
 mora hook uninstall
 ```
 
-`mora hook status --json` emits the `mora.hook.status` v1 receipt. Its
-`harnesses` field is always an array, including when no hook is installed.
+`mora hook status` lists the three hooks as `installed` or `not installed`
+and names the project the current folder is bound to. `mora hook status --json`
+emits the `mora.hook.status` v1 receipt. Its `harnesses` field is always an
+array, including when no hook is installed. It also carries `global` and
+`project` (each with the three hooks) and `bound_scope`.
 
 For one project's corrections, run from its root directory:
 
@@ -1022,9 +1193,16 @@ mora write --scope project:my-app --type decision --title "Use pnpm" \
 ```
 
 Project installation writes only `.claude/settings.local.json`. It installs
-`UserPromptSubmit` recall for that exact memory scope and omits `SessionStart`,
-whose brief is global. It binds the installation directory explicitly instead
-of guessing a scope from a folder name. The hook checks Claude's `cwd` on every
+`UserPromptSubmit` recall for that project's scope and `global`, plus `SessionStart` and
+`SessionEnd`. All three commands carry `--project-dir`: they act only when
+Claude's `cwd` is inside that folder and the folder is still bound, and they do
+nothing otherwise (never the daily brief). It binds the installation directory
+explicitly instead of guessing a scope from a folder name. When the global
+hooks are already installed, the command only records the binding and prints
+`global Mora hooks already serve this folder; binding recorded`; it writes no
+project hooks and removes any Mora hooks left in this folder's local settings
+(other hooks stay). An older project install that has only recall gains the two
+missing hooks when you run the command again. The hook checks Claude's `cwd` on every
 prompt: the root and its subdirectories are allowed; missing, relative,
 unresolvable, or outside paths inject nothing. Symlinks are resolved before
 checking containment. Use a different scope name for each project.
@@ -1037,24 +1215,101 @@ commands from the main checkout root: Claude may use the root local settings fil
 even when started below it. No alternate or main-checkout settings are changed
 on refusal. See the [Claude settings location rules](https://code.claude.com/docs/en/settings#where-claude-code-keeps-the-local-file-in-a-git-repository).
 
-The installer refuses if it finds managed global Mora hooks; remove those with
-`mora hook uninstall` first. It also refuses managed hooks in the project's
-`.claude/settings.json`, or existing local managed hooks outside
-`UserPromptSubmit` recall. Multiple managed local recall entries are refused
-without writing; remove duplicates explicitly before retrying. Other settings
+The installer refuses managed hooks in the project's `.claude/settings.json`,
+and existing local managed hooks other than one each of the three above.
+Duplicate managed entries are refused without writing; remove them explicitly
+before retrying. Other settings
 and hooks are preserved. From the same project root, remove the local
 Mora hook with `mora hook uninstall --project`.
 
 The binding is a directory subtree, not a repository identity: nested
 repositories inside it are included. Moving or renaming the installed root stops
-new recall until you reinstall there. Global hooks added after project setup can
-reintroduce broad context; this installer does not monitor future settings edits.
+new recall until you reinstall there. A global recall hook added after project
+setup follows the folder's binding, as described in the next section.
+`mora hook uninstall` and `mora hook uninstall --project` remove every
+Mora-managed hook of that level and nothing else in the file.
 
-The plain `mora hook install` remains global and reads across scopes. Project
-hooks filter automatic recall only: MCP reads still use their existing scope
-arguments, other hooks may inject context, and previously read context remains
-in an agent's session. This installer supports Claude Code; Codex can use MCP
+The plain `mora hook install` is global, but its recall also follows the folder
+binding. Project hooks filter automatic recall only: MCP reads still use their
+existing scope arguments, other hooks may inject context, and previously read
+context remains in an agent's session. This installer supports Claude Code; Codex can use MCP
 but has no automatic Mora hook route.
+
+### Which notes appear on their own
+
+Two hooks hand notes to an agent without being asked: recall on each prompt, and
+the brief at session start. Both follow the folder the session runs in:
+
+| Where the session runs | Notes that appear on their own |
+| --- | --- |
+| In a folder bound to `project:X` | `project:X` and `global` |
+| In a folder bound with `--owner-only` | `project:X`, `global` and `personal` in recall. The project brief never shows `personal` notes. |
+| In a folder with no binding | every scope except `project:*` (so `global`, `personal` and any other) |
+
+The binding of the folder the hook runs in decides, and the deepest binding wins:
+an owner-only parent gives no `personal` notes inside a nested binding that is not
+owner-only. `mora hook install --project --scope project:X` is used only when
+the folder is inside its install directory and has no binding (an install older
+than bindings): then `project:X` and `global`, never `personal`. Rebinding the
+directory takes effect without a reinstall. If `projects.json` exists and cannot
+be read, recall gives nothing and writes nothing, whatever the folder is. An
+empty or relative folder counts as unbound. Notes nobody has confirmed stay out
+of recall, as before.
+
+In a folder with a binding, the health banner is replaced by one fixed line,
+`Mora: memory health needs attention. Run "mora doctor".`, shown only when the
+detailed banner would not be empty, so a source error of another project cannot
+leak. Folders without a binding keep the detailed banner.
+
+The scope limit is applied inside every search arm before ranking, so a note of
+another project is never fetched and cannot push a matching note out of the
+result. At session start in a folder with no binding, the daily brief leaves out
+every record whose scope starts with `project:`, whatever its origin (authored
+notes, mail, messages, calendar). Records in other scopes are unchanged. That
+brief is built fresh each time, because the saved daily brief can hold project
+records. `mora brief` typed in your own terminal is unchanged.
+
+A deliberate search is not limited by any of this: `mora search`, `search_memory`
+and `context_memory` still find other projects' notes.
+
+### What Mora gave an agent
+
+Each time Mora hands notes to an agent, it adds one line to `given.log` in
+Mora's state folder (`state_dir` in `mora config`). Run `mora given` to read the
+newest ten lines (including resolved note titles alongside IDs), `mora given --limit 50`
+for more, or `mora given --json` for the raw lines. `mora doctor --json` shows the
+newest one as `last_given`. You can also inspect recent deliveries, project bindings,
+and the count of agent notes waiting for review on a read-only page with
+`mora status --web [--port N]`. It listens on `127.0.0.1` (default port 7781)
+behind a random per-run token in the URL, which is printed at start. The page has
+no Keep or Reject buttons; review with `mora review` in a terminal.
+
+Mora writes a line when the session-start hook prints a brief, when the recall
+hook prints notes, and when an agent calls `search_memory`, `read_memory`,
+`list_memory`, `context_memory`, `think`, or `brief` with `project_dir` and
+gets notes back. It writes nothing for write or delete tools, or when nothing
+was handed over. Each line is JSON with these fields:
+
+- `at`: UTC time, RFC 3339.
+- `surface`: `hook-session-start`, `hook-recall`, or `mcp:<tool>`.
+- `kind`: `project-brief`, `daily-brief`, `recall`, or the tool name.
+- `caller`: the client name from the MCP handshake, or `claude-code` for hooks.
+- `dir`: a bound project root, or a hook folder that exists on disk. Empty
+  otherwise. Mora never copies an argument or path it cannot check.
+- `scope`: the project scope, when one applies.
+- `count`, `ids`, `more`: how many notes, the first 20 ids in order, and how
+  many ids are not listed. `context_memory` trims its notes to a budget, so it
+  logs `"count_known":false` with no `count`, `more` or ids. The daily brief
+  logs a count of 0, because it is a text digest.
+- `written`: for hooks, whether the hook output was written (`mora given` shows
+  "sent" or "send failed"). MCP lines omit it, because the transport writes
+  after Mora returns (`mora given` shows "handed to transport").
+
+The log holds ids and counts only: never a prompt, a query, a title or note
+text. It says "given", never "used": Mora cannot know whether the agent read the
+notes. The log is your own record and it ignores `mora usage off`. It lives in
+Mora's state folder, so it follows that folder if you sync or link it. Mora keeps at most 2 MB, then moves it to `given.log.1`. On Windows a line can be skipped while the log rotates. To
+delete it, remove `given.log` and `given.log.1` from the state folder.
 
 ### Bash warning rules
 
@@ -1318,8 +1573,26 @@ mora write --scope project:acme --type decision --title "OAuth" --text "Use PKCE
 Mora stores authored memories as readable Markdown in the vault. They can be
 searched, corrected, backed up, and shared. Connector data stays read-only.
 
+Run inside a bound project folder, `mora write` defaults to that project's
+scope and prints a notice on stderr; `--scope` overrides it. Without `--mine`
+the note is saved as unconfirmed, and at a terminal outside an agent session
+`mora write` adds one stderr line saying so (no line for pipes or `--json`); the
+saved note is the same either way. Run inside an agent session (the session
+variables `--mine` refuses on), `mora write` instead saves an unreviewed agent
+note: it carries the `mora-tentative` tag like an MCP write under the default
+policy, appears in `mora review`, stays out of the prompt-recall hook (a
+decision can still show in the project brief as an unconfirmed note), and
+prints one stderr line saying so. An agent session cannot clear the tag: `mora
+confirm <id>` and `mora mcp proposals approve` refuse there, and the owner runs
+them from their own terminal. It does not run the hold checks an MCP write gets (credential-like or
+hidden text), and piped stdin alone does not count as an agent session.
+
+Add `--mine` to save the note as your own statement, owner-confirmed. It needs
+your own terminal and a typed yes (see owner-confirmed under agent writes).
 `mora write --json` emits the `mora.write` v1 receipt with the saved memory's
-id, path, scope, type, and title, plus `index_updated`. A `false` value means
+id, path, scope, type, and title, plus `owner_confirmed` (present only when it
+is true), `trust` (`"tentative"` for an agent-session write, absent otherwise)
+and `index_updated`. A `false` `index_updated` means
 the vault write succeeded but the derived search index needs a later rebuild;
 the accompanying human warning stays on stderr.
 
@@ -1327,6 +1600,7 @@ the accompanying human warning stays on stderr.
 
 ```bash
 mora search "OAuth status" --scope project:acme
+mora read <id>          # prints the note body; cut at a limit with a notice that points to --json
 mora read <id> --json
 mora list --scope project:acme --json
 mora context --query "auth" --scope project:acme --budget 6000 --json
@@ -1672,7 +1946,6 @@ Refresh data:
 mora sync status
 mora sync google
 mora sync github
-mora sync eywa
 mora sync filesystem
 mora sync imessage
 mora sync applecalendar
@@ -2000,7 +2273,6 @@ Ollama embedder.
 | `MORA_CONFIG_DIR` | Move the whole Mora setup root for an isolated run. Defaults for vault, data, and state move under it. |
 | `MORA_GOOGLE_CREDENTIALS` | Path to your Google installed-app OAuth client JSON. |
 | `MORA_GITHUB_TOKEN` | Read-only GitHub token. Mora does not save it. |
-| `MORA_EYWA_CLIENT_SECRET` | OAuth2 client secret of the Eywa agent. Mora does not save it. |
 | `MORA_EMBEDDER` | `static` or `ollama`. A set value overrides config. |
 | `MORA_OLLAMA_URL` | Ollama URL. Mora refuses a non-loopback address. |
 | `MORA_OLLAMA_MODEL` | Ollama embedding model name. |
@@ -2069,12 +2341,21 @@ Search has two routes.
 
 The default static embedder uses:
 
-1. full-text search over each parent memory; and
-2. bounded full-text search over message segments inside Gmail and iMessage.
+1. stemmed full-text search (`porter unicode61`) over each parent memory, with
+   BM25 weights boosting `title` (`5.0`) and `tags` (`3.0`) so title and tag hits
+   rank ahead of body hits, and trailing `'s` stripped on query tokens. The
+   query ORs its content terms (common words such as "the" are dropped; a query
+   of only common words keeps them all), and bm25 ranks the best match first. An
+   index built before stemming was added picks it up with
+   `mora index rebuild --if-needed`;
+2. bounded stemmed full-text search over message segments inside Gmail and
+   iMessage, added as extra candidates when a message body matches.
 
-This route is good for exact words, names, issue numbers, and phrases. The
-static hash vectors are built for compatibility, but the default route does not
-use them as semantic search.
+The static route is the keyword surface. It does not run the person-graph
+expansion (that step, `graphExpandIDs`, exists only in the semantic route
+below), so a query that names a person finds notes by their words, not by the
+people they mention. The static hash vectors are built for compatibility, but
+the default route does not use them as semantic search.
 
 ### Semantic route
 
@@ -2099,6 +2380,26 @@ mora config embedder ollama
 Mora uses `nomic-embed-text` by default. It accepts only a loopback Ollama URL.
 If Ollama is not available, Mora warns and falls back to the static route.
 
+A note longer than the model can read does not stop a rebuild. Mora halves the
+text and retries until the model accepts it, so the vector covers the start of
+the note only. Full-text search still covers the whole note.
+
+### Written decisions rank above long files
+
+After either route has ranked its matches, Mora moves a note that someone wrote
+a few places up the list. A correction moves up at most 4 places, a decision at
+most 3, and a fact or insight at most 1. A note you confirmed in `mora review`
+gets the same bonus plus 2 more. A note nobody has reviewed yet (tentative)
+does not move, and neither does a source file or connector record. A row never
+moves up more than its own bonus. This stops a short decision from sitting
+behind long files that only repeat its words. The reorder changes no score and
+drops no row. A weak decision far down the list still stays behind a strong
+match, and Mora does not claim this makes search more accurate.
+
+Under the default `tentative` write policy an agent's note is tentative, so it
+cannot raise itself by choosing a type. Under the `open` write policy an
+agent's note is not tentative, so its type can raise it.
+
 ### Entity graph
 
 Mora builds people from connector metadata such as sender, recipient,
@@ -2114,6 +2415,10 @@ mora entities --json
 mora graph --json
 ```
 
+`mora entities <name>` also accepts a first name: it says "matched by name
+prefix" and lists the other candidates. The MCP `get_entity` tool does not do
+this and needs the full name.
+
 Mora uses strict rules for identity merges. Address Book evidence can create a
 proposal, but only `mora teach identity confirm` applies it.
 The JSON receipts are `mora.entities` v1 and `mora.graph` v1; their arrays now
@@ -2124,7 +2429,7 @@ live under the named `entities` key alongside `schema` and `schema_version`.
 The exact boundary is:
 
 - Mora reads enabled sources. It does not write to Gmail, calendars, iMessage,
-  WhatsApp, files, or GitHub Issues. Eywa pull is read-only.
+  WhatsApp, files, or GitHub Issues.
 - Google uses read-only OAuth scopes. GitHub Issues uses read-only API calls.
 - iMessage and WhatsApp use SQLite `mode=ro`. Apple Calendar uses `mode=ro` plus
   `query_only(1)` and reads the live write-ahead log.
@@ -2134,9 +2439,6 @@ The exact boundary is:
 - `mora sync git` sends plaintext to the remote you choose.
 - `mora share` sends age-encrypted authored notes to the private git or bucket
   target you choose. Cloud storage still sees sizes and timing.
-- `mora eywa push` is off until you enable it. Each run previews and asks before
-  it sends one scope of authored notes, over HTTPS, to the company memory
-  service you configured. The service decides whether each update is admitted.
 - `mora serve http` is loopback-only, but its bearer token must still be kept
   private.
 - Optional Ollama requests are loopback-only.

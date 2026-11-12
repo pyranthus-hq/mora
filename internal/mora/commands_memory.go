@@ -16,10 +16,13 @@ import (
 	"time"
 )
 
-func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+// cmdWrite saves an agent-written note. With --mine it saves the note
+// owner-confirmed instead, but only in the owner's own terminal and only after
+// the owner reads the note and types yes.
+func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
 	fs := flag.NewFlagSet("write", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	scope := fs.String("scope", "global", "scope")
+	scope := fs.String("scope", "global", "scope (default: the project this folder is bound to, else global)")
 	mtype := fs.String("type", "insight", "memory type")
 	title := fs.String("title", "", "title")
 	text := fs.String("text", "", "text")
@@ -31,9 +34,15 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	durability := fs.String("durability", "", "decision durability: provisional|working|standing")
 	flip := fs.String("flip-conditions", "", "semicolon-separated conditions that reverse a decision")
 	reviewBy := fs.String("review-by", "", "optional decision review deadline (RFC3339)")
+	mine := fs.Bool("mine", false, "save as your own statement (owner-confirmed); needs your own terminal and a typed yes")
 	jsonOut := fs.Bool("json", false, "json")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *mine {
+		if err := requireMineTerminal(stdin, "mora write"); err != nil {
+			return err
+		}
 	}
 	if *text == "" && fs.NArg() > 0 {
 		*text = strings.Join(fs.Args(), " ")
@@ -47,7 +56,11 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	_, targetSupplied := false, false
 	_, dispositionSupplied := false, false
 	_, typeSupplied := false, false
+	scopeSupplied := false
 	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "scope" {
+			scopeSupplied = true
+		}
 		if f.Name == "target" {
 			targetSupplied = true
 		}
@@ -74,6 +87,16 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	if *scope == "" {
 		*scope = "global"
 	}
+	if !scopeSupplied && *target == "" {
+		// Standing in a folder bound to a project, a note belongs to that project
+		// unless the person says otherwise. Anything unreadable keeps global.
+		if wd, werr := os.Getwd(); werr == nil {
+			if bound, _, found, lerr := lookupProject(cfg, wd); lerr == nil && found {
+				*scope = bound
+				fmt.Fprintf(stderr, "saving to %s (this folder is bound to it); pass --scope global to save it for everything\n", clipProjectScope(bound))
+			}
+		}
+	}
 	m := Memory{Scope: *scope, Type: *mtype, Title: *title, Tags: genericutil.SplitCSV(*tags), Source: *source, CreatedAt: time.Now().Format(time.RFC3339), Text: *text}
 	if *target != "" {
 		m.Meta = map[string]any{"target": *target}
@@ -93,11 +116,52 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	// memory (os.Link fails EEXIST → re-mint), so a same-instant concurrent writer
 	// never silently loses its write. createMemory sets m.ID and m.Path.
 	var op pendingOp
-	m, op, err = createMemory(ctx, cfg, m)
+	var opts []createOption
+	// Inside an agent session (the check --mine refuses on) a plain write is an
+	// agent write: it saves tentative, like write_memory under the default
+	// policy, so it waits for `mora review` and stays out of prompt recall. Unlike the
+	// MCP tool this does not run tentativeHoldReasons: a held write there goes to
+	// the proposal queue, and the CLI receipt has no shape for "not written".
+	agentKey := ""
+	if *mine {
+		if !askOwner(stderr, stdin, m, "Save this as your own statement?") {
+			return errors.New("Not saved.")
+		}
+		opts = append(opts, withOwnerConfirmed())
+	} else if agentKey = rulesAgentSession(); agentKey != "" {
+		opts = append(opts, withTentative())
+	}
+	m, op, err = createMemory(ctx, cfg, m, opts...)
 	if err != nil {
 		return err
 	}
+	if agentKey != "" {
+		// The same audit line an MCP write leaves, so `mora undo` reaches it.
+		if lerr := appendAgentWriteLog(cfg, time.Now(), "write", m, "cli"); lerr != nil {
+			fmt.Fprintf(stderr, "warning: memory %s saved, but %s could not be appended: %v\n", m.ID, agentWriteLogName, lerr)
+		}
+		fmt.Fprintf(stderr, "saved as an unreviewed agent note (%s is set): it stays out of prompt recall until the owner confirms it with `mora review`\n", agentKey)
+	}
 	m = decorateDecision(m, time.Now())
+	done := func(indexed bool) error {
+		if *jsonOut {
+			return emitReceipt(stdout, "mora.write", 1, newWriteReceipt(m, indexed, *mine))
+		}
+		if err := emit(stdout, m, false); err != nil {
+			return err
+		}
+		if !*mine {
+			// A person at their own terminal who typed `mora write` meant their
+			// own note, but without --mine it is stored as unconfirmed. Say so
+			// once, on stderr. Agents, pipes and --json never get the hint.
+			if agentKey == "" && rulesAgentSession() == "" && rulesInteractive(stdin) {
+				fmt.Fprintln(stderr, "note: saved as unconfirmed. Agents see it as a note written by agents, not as your rule. Pass --mine to save it as an owner rule (it asks you to confirm here).")
+			}
+			return nil
+		}
+		_, err := fmt.Fprintln(stdout, "saved as owner-confirmed: agents read it as your own statement")
+		return err
+	}
 	// The vault write already succeeded (vault is truth; the index is a derived
 	// cache). Reflect just this one memory into the index (O(1)) instead of a full
 	// vault rebuild, so concurrent agent writers don't serialize whole-vault
@@ -111,10 +175,7 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		// so the index reads dirty until a rebuild covers it (A2). Do not retire it.
 		if errors.Is(err, errRebuildBlocked) {
 			fmt.Fprintf(stderr, "warning: memory saved but the search index was not updated (vault looks empty or unfamiliar); run `mora index rebuild --force` after checking vault_dir\n")
-			if *jsonOut {
-				return emitReceipt(stdout, "mora.write", 1, newWriteReceipt(m, false))
-			}
-			return emit(stdout, m, false)
+			return done(false)
 		}
 		return err
 	}
@@ -132,10 +193,7 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	if err := reconcileAuthoredWrites(ctx, cfg); err != nil {
 		fmt.Fprintf(stderr, "warning: memory saved and text search updated, but full index reconciliation is pending: %v\n", err)
 	}
-	if *jsonOut {
-		return emitReceipt(stdout, "mora.write", 1, newWriteReceipt(m, true))
-	}
-	return emit(stdout, m, false)
+	return done(true)
 }
 
 type writeReceipt struct {
@@ -145,16 +203,23 @@ type writeReceipt struct {
 	Type         string `json:"type"`
 	Title        string `json:"title"`
 	IndexUpdated bool   `json:"index_updated"`
+	// OwnerConfirmed is set only when the note was saved owner-confirmed.
+	OwnerConfirmed bool `json:"owner_confirmed,omitempty"`
+	// Trust is "tentative" when the note was saved as an unreviewed agent note,
+	// the same value write_memory reports on memory.trust. Absent otherwise.
+	Trust string `json:"trust,omitempty"`
 }
 
-func newWriteReceipt(m Memory, indexUpdated bool) writeReceipt {
+func newWriteReceipt(m Memory, indexUpdated, ownerConfirmed bool) writeReceipt {
 	return writeReceipt{
-		ID:           m.ID,
-		Path:         m.Path,
-		Scope:        m.Scope,
-		Type:         m.Type,
-		Title:        m.Title,
-		IndexUpdated: indexUpdated,
+		ID:             m.ID,
+		Path:           m.Path,
+		Scope:          m.Scope,
+		Type:           m.Type,
+		Title:          m.Title,
+		IndexUpdated:   indexUpdated,
+		OwnerConfirmed: ownerConfirmed,
+		Trust:          m.Trust,
 	}
 }
 func cmdRead(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -180,7 +245,7 @@ func cmdRead(ctx context.Context, args []string, stdout, stderr io.Writer) error
 				return emitReceipt(stdout, "mora.read", 1, memory.WithProvenance(sm))
 			}
 			printHealthBannerLine(stdout, cfg, time.Now())
-			return emit(stdout, sm, false)
+			return emitMemoryWithBody(stdout, sm)
 		}
 		return err
 	}
@@ -190,7 +255,31 @@ func cmdRead(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return emitReceipt(stdout, "mora.read", 1, memory.WithProvenance(m))
 	}
 	printHealthBannerLine(stdout, cfg, time.Now())
-	return emit(stdout, m, false)
+	return emitMemoryWithBody(stdout, m)
+}
+
+// readBodyRunes bounds the note text `mora read` prints for a person. A note
+// can be a whole chat export; --json always carries the full text.
+const readBodyRunes = 8000
+
+// emitMemoryWithBody prints the id/scope/title header line, then the note's
+// text, so `mora read <id>` shows what the note says and not only that it exists.
+func emitMemoryWithBody(w io.Writer, m Memory) error {
+	// Titles and bodies of ingested notes are untrusted text: escape control
+	// characters so a note cannot write to the terminal or the clipboard.
+	sty := newStyler(w, false)
+	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n", sty.dim(m.ID), sty.dim(m.Scope), rulesShow(labelledTitle(m))); err != nil {
+		return err
+	}
+	body := strings.TrimSpace(m.Text)
+	if body == "" {
+		return nil
+	}
+	if r := []rune(body); len(r) > readBodyRunes {
+		body = strings.TrimSpace(string(r[:readBodyRunes])) + "\n... (text cut at " + strconv.Itoa(readBodyRunes) + " characters; `mora read " + m.ID + " --json` has all of it)"
+	}
+	_, err := fmt.Fprintf(w, "\n%s\n", reviewShowText(body))
+	return err
 }
 
 // memoriesPayload carries a memory list under a named key. `list --json` and

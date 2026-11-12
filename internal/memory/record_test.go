@@ -31,3 +31,9 @@ func TestSourceIsEnabled(t *testing.T) {
 		t.Fatal("explicit enablement mismatch")
 	}
 }
+
+func TestTypeHandoffConstant(t *testing.T) {
+	if TypeHandoff != "handoff" {
+		t.Fatalf("TypeHandoff = %q, want handoff", TypeHandoff)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -412,7 +413,7 @@ func TestMarkersCarryPublishedHash(t *testing.T) {
 			_ = unmarkIndexDirty(cfg, o.OpID)
 		}
 		var buf bytes.Buffer
-		if err := cmdConfirm(testCtx(t), []string{m.ID}, &buf, testStderr); err != nil {
+		if err := cmdConfirm(testCtx(t), []string{m.ID}, &buf, testStderr, strings.NewReader("")); err != nil {
 			t.Fatal(err)
 		}
 		b, _ := os.ReadFile(m.Path)

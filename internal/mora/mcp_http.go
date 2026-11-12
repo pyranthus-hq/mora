@@ -242,7 +242,7 @@ func handleAgentMCP(ctx context.Context, p agentProfile, req jsonRPCRequest) jso
 			if instr, ok := result["instructions"].(string); ok && err == nil {
 				result["instructions"] = agentInstructions(p, instr)
 			}
-			return result
+			return withProjectInstruction(ctx, result, err == nil)
 		},
 		func() any { return map[string]any{"tools": mcppkg.RenderTools(agentToolDefs(p))} },
 		func(ctx context.Context, name string, args map[string]any) any {

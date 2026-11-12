@@ -1,0 +1,21 @@
+{
+  "folder": {
+    "bound": false,
+    "cwd": "\u003ccwd\u003e"
+  },
+  "review": {
+    "held": 0,
+    "saved": 0
+  },
+  "schema": "mora.status",
+  "schema_version": 1,
+  "vault": {
+    "dir": "\u003chome\u003e/vault/mora",
+    "health": "healthy",
+    "index_state": "fresh",
+    "indexed_at": "\u003ctimestamp\u003e",
+    "memories": 2,
+    "pending_ops": 0,
+    "sources": []
+  }
+}

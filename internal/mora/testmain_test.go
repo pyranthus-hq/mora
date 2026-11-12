@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -37,6 +38,15 @@ import (
 // ~651 tests call `run(t, "init")`. Paying for device-level crash durability
 // against a directory that `t.TempDir()` deletes moments later buys nothing.
 func TestMain(m *testing.M) {
+	// A suite run from inside an agent session inherits CLAUDECODE and friends.
+	// `mora write` reads them (it saves an unreviewed agent note instead of a
+	// plain one), so clear them for the whole package. Tests of the agent
+	// behaviour set their own with t.Setenv.
+	for _, key := range rulesAgentEnv {
+		if err := os.Unsetenv(key); err != nil {
+			panic(err)
+		}
+	}
 	// Capture the REAL resolved layout before any test can touch the process
 	// environment; loadConfig/loadConfigFor use it as the hermeticity tripwire
 	// (a test resolving this exact layout fails loud instead of silently
@@ -50,6 +60,14 @@ func TestMain(m *testing.M) {
 		if cfg, err := configstore.Load(); err == nil {
 			realHomeConfig.Store(&cfg)
 		}
+	}
+	// `mora schedule list --json` asks the OS scheduler whether each job is
+	// installed. On Windows that is the real Task Scheduler, so a machine with a
+	// real Mora task made the contract goldens fail. No test may reach the real
+	// scheduler or service manager: tests that exercise the runner install their
+	// own with withScheduleRunner or stubScheduleRunner.
+	runScheduleCommand = func(name string, args ...string) ([]byte, error) {
+		return nil, fmt.Errorf("%s: no external command runs in package tests", name)
 	}
 	// An unset mcp_write_policy resolves to propose in production
 	// (mcppkg.DefaultWritePolicy). Most tests here run `mora init` in a fresh

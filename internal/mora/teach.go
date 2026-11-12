@@ -72,8 +72,14 @@ func decisionStatusAt(d *DecisionValidity, now time.Time) string {
 }
 
 func decorateDecision(m Memory, now time.Time) Memory {
+	// Checked on the stored fields: the owner digest binds them, not the
+	// normalized copy.
+	owner := memory.OwnerDecisionWithoutValidity(m)
 	m.Decision = normalizeDecisionValidity(m)
 	m.DecisionStatus = decisionStatusAt(m.Decision, now)
+	if owner {
+		m.DecisionStatus = decisionCurrent
+	}
 	return m
 }
 

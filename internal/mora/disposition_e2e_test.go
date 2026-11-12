@@ -24,7 +24,7 @@ func TestDispositionCLIFourValuesPersistAndReadImmediately(t *testing.T) {
 			}
 			mustRebuild(t, cfg)
 			var out bytes.Buffer
-			if err := cmdWrite(testCtx(t), []string{"--title", "explicit correction", "--text", "owner choice", "--target", "target", "--disposition", value, "--json"}, &out, &out); err != nil {
+			if err := cmdWrite(testCtx(t), []string{"--title", "explicit correction", "--text", "owner choice", "--target", "target", "--disposition", value, "--json"}, &out, &out, strings.NewReader("")); err != nil {
 				t.Fatal(err)
 			}
 			rows, err := dispositionListedRows(t)
@@ -62,7 +62,7 @@ func TestDispositionCLIFourValuesPersistAndReadImmediately(t *testing.T) {
 func TestDispositionCLIInvalidFieldsAreTypedUsageErrors(t *testing.T) {
 	for _, extra := range [][]string{{"--disposition", "bogus", "--target", "target"}, {"--disposition", "keep"}, {"--target", ""}, {"--target", "target", "--disposition", ""}, {"--target", "target", "--type", "insight"}} {
 		var out bytes.Buffer
-		err := cmdWrite(testCtx(t), append([]string{"--title", "test", "--text", "test"}, extra...), &out, &out)
+		err := cmdWrite(testCtx(t), append([]string{"--title", "test", "--text", "test"}, extra...), &out, &out, strings.NewReader(""))
 		var typed moraError
 		if !errors.As(err, &typed) || typed.Code != errCodeUsageUnknownValue {
 			t.Fatalf("%v => %#v, expected typed usage", extra, err)

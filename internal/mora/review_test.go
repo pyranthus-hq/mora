@@ -25,7 +25,7 @@ func reviewSaved(t *testing.T, title string) string {
 
 func reviewHeld(t *testing.T, title string) string {
 	t.Helper()
-	res := tentativeServe(t, map[string]any{"title": title, "text": "Body of " + title + ".", "type": "correction", "scope": "project:demo"})
+	res := tentativeServe(t, map[string]any{"title": title, "text": "Body of " + title + ".", "type": "rule", "scope": "project:demo"})
 	p, ok := res["proposal"].(map[string]any)
 	if !ok {
 		t.Fatalf("write was not held: %v", res)
@@ -79,7 +79,7 @@ func TestReviewListShowsSavedThenHeldOnly(t *testing.T) {
 	run(t, "mcp", "proposals", "reject", decided)
 
 	out := run(t, "review", "--list")
-	want := saved + "\tsaved\tproject:demo\tfact\tSaved note\n" + held + "\theld\tproject:demo\tcorrection\tHeld note\n"
+	want := saved + "\tsaved\tproject:demo\tfact\tSaved note\n" + held + "\theld\tproject:demo	rule\tHeld note\n"
 	if out != want {
 		t.Fatalf("list =\n%q\nwant\n%q", out, want)
 	}
@@ -120,7 +120,7 @@ func TestReviewWalkKeepsRejectsAndSkips(t *testing.T) {
 	if !strings.HasSuffix(out, "kept 2, rejected 2, skipped 1, left 0\n") {
 		t.Fatalf("last line wrong:\n%s", out)
 	}
-	if !strings.Contains(out, "held because: type correction") {
+	if !strings.Contains(out, "held because: type rule") {
 		t.Fatalf("hold reasons not shown:\n%s", out)
 	}
 	if reviewTentative(t, cfg, keepSaved) {

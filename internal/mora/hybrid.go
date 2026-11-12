@@ -358,6 +358,10 @@ func hybridSearchTraceWithEmbedder(ctx context.Context, cfg Config, query, scope
 			visible = append(visible, m)
 		}
 	}
+	// Promote a written decision above long files that share its words; ids
+	// follows so the slot rule in clusterAndTruncate stays true. tr.Fused above
+	// keeps the pre-rerank order.
+	ids, visible = searchpkg.RerankPool(ids, visible)
 	result := clusterAndTruncate(ids, visible, limit)
 	// Issue #243 — attach evidence AFTER slot accounting: a pure function of
 	// "does this SURVIVING row's parent have a query-matching segment" (DQ5),
@@ -412,7 +416,7 @@ func ftsSearchIDs(ctx context.Context, db *sql.DB, query, scope string, pool int
 	}
 	// Secondary sort by id makes ties deterministic — bm25 alone leaves equal-score
 	// rows in undefined order, which would jitter the pool boundary run-to-run.
-	q += ` ORDER BY bm25(memories_fts), m.id LIMIT ?`
+	q += ` ORDER BY bm25(memories_fts, 0.0, 1.0, 5.0, 3.0, 1.0, 1.0), m.id LIMIT ?`
 	args = append(args, pool)
 	return queryIDs(ctx, db, q, args...)
 }

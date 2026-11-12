@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -249,7 +250,7 @@ func TestFailedUpsertLeavesIndexDirty(t *testing.T) {
 	idxUpsertStampVaultID(t, cfg, "v_someone_else")
 
 	var buf bytes.Buffer
-	if err := cmdWrite(testCtx(t), []string{"--title", "Blocked", "--text", "blockedbody"}, &buf, testStderr); err != nil {
+	if err := cmdWrite(testCtx(t), []string{"--title", "Blocked", "--text", "blockedbody"}, &buf, testStderr, strings.NewReader("")); err != nil {
 		t.Fatalf("cmdWrite should degrade-succeed on a blocked upsert, got %v", err)
 	}
 	ops, _ := listPendingOps(cfg)

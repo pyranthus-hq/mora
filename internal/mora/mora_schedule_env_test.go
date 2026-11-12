@@ -17,6 +17,9 @@ import (
 // the var is unset (embedded real creds need no override).
 func TestSchedulePlistCarriesGoogleCredsEnv(t *testing.T) {
 	withTempHome(t)
+	// The plist also snapshots MORA_CONFIG_DIR, so a sandboxed run that pins it
+	// would add the dict this test expects to be absent.
+	t.Setenv("MORA_CONFIG_DIR", "")
 	run(t, "init")
 	cfg, err := loadConfigFor(testCtx(t))
 	if err != nil {

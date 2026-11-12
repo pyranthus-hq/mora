@@ -66,7 +66,7 @@ func Project(records []memory.Memory, now time.Time) map[Key]memory.Disposition 
 	out := map[Key]memory.Disposition{}
 	times := map[Key]time.Time{}
 	for _, c := range records {
-		if c.Type != "correction" || c.Provider != "" || c.ProviderID != "" || !IsLocalAuthored(c) || c.Owner != "" || c.DeletedAt != "" || c.ID == "" {
+		if c.Type != "correction" || memory.IsTentative(c) || c.Provider != "" || c.ProviderID != "" || !IsLocalAuthored(c) || c.Owner != "" || c.DeletedAt != "" || c.ID == "" {
 			continue
 		}
 		id, targetOK := c.Meta["target"].(string)

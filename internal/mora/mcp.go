@@ -39,11 +39,14 @@ func mcpDigestBudgetChars(c Config, n int) int {
 }
 
 func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
-	if len(args) == 1 && args[0] == "serve" {
-		return serveMCP(ctx, stdout, stdin)
-	}
-	if len(args) == 3 && args[0] == "serve" && args[1] == "--profile" {
-		return serveMCPProfile(ctx, args[2], stdout, stdin)
+	if a, ok := parseMCPServeArgs(args); len(args) >= 1 && args[0] == "serve" && ok {
+		if a.hasDir {
+			ctx = withMCPServeProject(ctx, a.dir, stderr)
+		}
+		if !a.hasProfile {
+			return serveMCP(ctx, stdout, stdin)
+		}
+		return serveMCPProfile(ctx, a.profile, stdout, stdin)
 	}
 	if len(args) >= 1 && args[0] == "serve-http" {
 		return cmdMCPServeHTTP(ctx, args[1:], stdout, stderr)
@@ -51,7 +54,7 @@ func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin 
 	if len(args) >= 2 && args[0] == "proposals" {
 		return cmdMCPProposals(ctx, args[1:], stdout, stderr)
 	}
-	return errors.New("usage: mora mcp serve [--profile NAME] | mora mcp serve-http [--port N] [--allow-host HOST] | mora mcp proposals <list|show ID|approve ID|reject ID>")
+	return errors.New("usage: mora mcp serve [--profile NAME] [--project-dir DIR] | mora mcp serve-http [--port N] [--allow-host HOST] | mora mcp proposals <list|show ID|approve ID|reject ID>")
 }
 
 // serveMCPProfile is `mora mcp serve --profile NAME`: stdio MCP bound to one
@@ -182,7 +185,7 @@ func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
 	return mcppkg.Dispatch(ctx, req,
 		func() any {
 			cfg, err := loadConfigFor(ctx)
-			return mcppkg.InitializeResult(BuildVersion, configMCPWritePolicy(cfg), err == nil)
+			return withProjectInstruction(ctx, mcppkg.InitializeResult(BuildVersion, configMCPWritePolicy(cfg), err == nil), err == nil)
 		},
 		func() any { return map[string]any{"tools": mcppkg.RenderTools(mcppkg.ToolCatalog())} },
 		func(ctx context.Context, name string, args map[string]any) any {
@@ -914,6 +917,15 @@ func mcpBrief(ctx context.Context, cfg Config, args map[string]any) (any, error)
 	// advances the Phase-12 watermark (D16-2/SC#4, zero egress). The verbatim-file
 	// path is the human CLI's; the agent reads the STRUCTURED, budgeted projection
 	// (like the digest tool), not a render string.
+	if dir := strArg(args, "project_dir", ""); dir != "" {
+		return projectBriefForDir(cfg, dir, briefClock())
+	}
+	// A server started with --project-dir for a bound folder answers a bare
+	// brief with that project's rules; daily:true asks for the daily brief.
+	if p, ok := mcpProjectFrom(ctx); ok && !boolArg(args, "daily", false) {
+		text, ids, err := buildProjectBrief(cfg, p.scope, p.root, briefClock())
+		return projectBriefResult{Scope: p.scope, Root: p.root, Text: text, IDs: ids}, err
+	}
 	start := time.Now()
 	var err error
 	// A filtered brief uses the filter-aware factory (same delta→24h-window

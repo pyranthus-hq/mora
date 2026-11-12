@@ -39,7 +39,7 @@ func ExecuteFTS(ctx context.Context, db *sql.DB, query, scope string, limit int,
 		sqlq += clause
 		args = append(args, fargs...)
 	}
-	sqlq += ` ORDER BY score, m.id LIMIT ?`
+	sqlq += ` ORDER BY bm25(memories_fts, 0.0, 1.0, 5.0, 3.0, 1.0, 1.0), m.id LIMIT ?`
 	args = append(args, sqlLimit)
 	rows, err := db.QueryContext(ctx, sqlq, args...)
 	if err != nil {

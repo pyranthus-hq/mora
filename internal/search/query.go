@@ -23,7 +23,14 @@ var ftsStopwords = map[string]bool{
 }
 
 func Token(f string) (term, key string) {
-	term = strings.Trim(f, `"':;,.!?()[]{}<>-`)
+	term = strings.Trim(f, `"':;,.!?()[]{}<>-’‘“”`)
+	for _, suf := range []string{"'s", "’s", "'S", "’S", "'", "’"} {
+		if strings.HasSuffix(term, suf) {
+			term = strings.TrimSuffix(term, suf)
+			break
+		}
+	}
+	term = strings.Trim(term, `"':;,.!?()[]{}<>-’‘“”`)
 	if term == "" {
 		return "", ""
 	}
