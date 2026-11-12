@@ -271,20 +271,27 @@ func hookSessionStart(ctx context.Context, args []string, stdout io.Writer, stdi
 	// visible without falling back to the unbound daily brief.
 	if filepath.IsAbs(in.CWD) {
 		scope, root, found, lerr := lookupProject(cfg, in.CWD)
-		text := ""
+		var text, banner string
 		var emitted []string
+		if lerr != nil || found {
+			banner = boundHealthBanner(cfg)
+		}
 		switch {
 		case lerr != nil:
 			text = `Mora: the project bindings file cannot be read, so no brief is shown. Run "mora project list".`
 		case found:
+			maxBytes := projectBriefMaxChars
+			if banner != "" {
+				maxBytes -= len(banner) + 1 // Include the newline above the brief.
+			}
 			var perr error
-			if text, emitted, perr = buildProjectBrief(cfg, scope, root, hookNow()); perr != nil {
+			if text, emitted, perr = buildProjectBriefWithin(cfg, scope, hookNow(), maxBytes); perr != nil {
 				text = fmt.Sprintf(`Mora: the brief for %s could not be built. Run "mora doctor".`, clipProjectScope(scope))
 				emitted = nil
 			}
 		}
 		if text != "" {
-			fullText := prependBannerLine(boundHealthBanner(cfg), text)
+			fullText := prependBannerLine(banner, text)
 			var werr error
 			if isAntigravity {
 				werr = writeAntigravityHookOutput(stdout, fullText, projectBriefMarkdown(len(emitted)))
