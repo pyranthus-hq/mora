@@ -3,8 +3,21 @@ package mora
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
+
+// skipWSLSimulationOnWindows skips a test that stands in for Mora running in
+// WSL on a Linux host. On a Windows host every temp dir is itself a drive path
+// (C:\...), so the simulated drive rewrite cannot tell the test's own folders
+// from the Windows paths under test. A Windows host is covered by the tests in
+// windows_paths_test.go, which use real drive paths.
+func skipWSLSimulationOnWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("simulates WSL on a Linux host; a Windows temp dir is itself a drive path (see windows_paths_test.go)")
+	}
+}
 
 func withWSLEnv(t *testing.T, goos, mountRoot string) {
 	t.Helper()
@@ -72,6 +85,7 @@ func TestNormalizeWSLWindowsPathNoOpWithoutMount(t *testing.T) {
 // A Windows path handed to bind resolves to the WSL folder, so a hook that
 // reports workspacePaths in Windows form finds the same binding.
 func TestProjectBindAndLookupAcceptWindowsDrivePath(t *testing.T) {
+	skipWSLSimulationOnWindows(t)
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)

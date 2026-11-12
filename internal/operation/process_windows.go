@@ -2,21 +2,38 @@
 
 package operation
 
-import "os"
+import (
+	"errors"
+	"syscall"
+)
 
-// processAlive reports whether a process with the given pid is still running. On
-// Windows os.FindProcess calls OpenProcess, which fails for a gone pid, so a
-// successful open means the process (or a not-yet-reaped handle) still exists — a
-// best-effort liveness check, exactly like the POSIX signal-0 half. Used by the
-// ingest lease so a SIGKILLed run's lease does not pin the index dirty (A3 rule d).
+const (
+	// processQueryLimitedInformation is PROCESS_QUERY_LIMITED_INFORMATION, which
+	// the standard syscall package does not name.
+	processQueryLimitedInformation = 0x1000
+)
+
+// processAlive reports whether a process with the given pid is still running.
+// OpenProcess alone cannot tell: it also succeeds for a process that has
+// exited while some other handle to it stays open, so a killed run would read
+// as alive and its lease or rebuild receipt would never be reclaimed. A process
+// object is signalled once it has exited, so a zero-wait on it decides, and a
+// process that exited with code 259 is still read as dead. A process that
+// exists but refuses the open (another user's) reads as alive, like EPERM on
+// POSIX, because a wrong "dead" can retire a live owner's marker. Used by the
+// ingest lease so a killed run's lease does not pin the index dirty (A3 rule d).
 func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	p, err := os.FindProcess(pid)
+	h, err := syscall.OpenProcess(processQueryLimitedInformation|syscall.SYNCHRONIZE, false, uint32(pid))
 	if err != nil {
-		return false
+		return errors.Is(err, syscall.ERROR_ACCESS_DENIED)
 	}
-	_ = p.Release()
-	return true
+	defer syscall.CloseHandle(h)
+	event, err := syscall.WaitForSingleObject(h, 0)
+	if err != nil {
+		return true
+	}
+	return event == syscall.WAIT_TIMEOUT
 }

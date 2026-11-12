@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -88,27 +89,66 @@ func (e OllamaEmbedder) Digest() string { return e.digest }
 // rebuild still exited 0 (the recorded incident, HEALTH-12). A real error lets the
 // rebuild tx roll back to the last good index (index.go's deferred tx.Rollback).
 func (e OllamaEmbedder) Embed(text string) ([]float32, error) {
+	in := text
+	for {
+		vec, tooLong, err := e.embedOnce(in)
+		if err == nil {
+			return vec, nil
+		}
+		// A prompt the model cannot fit is a property of THIS text, not of the
+		// daemon: failing the call would abort a whole rebuild over a handful of
+		// long memories (four of 1,156 in the recorded vault). Halve and retry —
+		// a truncated prefix is a degraded vector, never a fabricated one, and the
+		// floor keeps a pathological input from looping.
+		runes := []rune(in)
+		if !tooLong || len(runes) <= embedTruncFloor {
+			return nil, err
+		}
+		in = string(runes[:len(runes)/2])
+	}
+}
+
+// embedTruncFloor bounds the halving ladder in Embed: below this rune count a
+// context-length refusal is no longer plausibly about input size, so it surfaces.
+const embedTruncFloor = 256
+
+// embedOnce performs one /api/embeddings call. tooLong reports whether the daemon
+// refused this prompt for exceeding the model's context window (Ollama answers 500
+// with {"error":"the input length exceeds the context length"}) — the ONE failure
+// Embed retries. Every other failure is returned as errEmbedderUnavailable carrying
+// the daemon's own message, so a healthy daemon refusing one input no longer reads
+// as "start the Ollama daemon".
+func (e OllamaEmbedder) embedOnce(text string) ([]float32, bool, error) {
 	reqBody, _ := json.Marshal(map[string]string{"model": e.model, "prompt": text})
 	resp, err := e.client.Post(e.baseURL+"/api/embeddings", "application/json", bytes.NewReader(reqBody))
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", errEmbedderUnavailable, err)
+		return nil, false, fmt.Errorf("%w: %v", errEmbedderUnavailable, err)
 	}
 	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, false, fmt.Errorf("%w: reading /api/embeddings: %v", errEmbedderUnavailable, err)
+	}
 	var out struct {
 		Embedding []float64 `json:"embedding"`
+		Error     string    `json:"error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("%w: decoding /api/embeddings: %v", errEmbedderUnavailable, err)
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, false, fmt.Errorf("%w: decoding /api/embeddings: %v", errEmbedderUnavailable, err)
 	}
 	if len(out.Embedding) == 0 {
-		return nil, fmt.Errorf("%w: /api/embeddings returned an empty vector", errEmbedderUnavailable)
+		msg := out.Error
+		if msg == "" {
+			msg = "/api/embeddings returned an empty vector"
+		}
+		return nil, strings.Contains(out.Error, "exceeds the context length"), fmt.Errorf("%w: %s", errEmbedderUnavailable, msg)
 	}
 	vec := make([]float32, len(out.Embedding))
 	for i, v := range out.Embedding {
 		vec[i] = float32(v)
 	}
 	normalize(vec) // RRF/cosine assume unit vectors; Ollama returns unnormalized
-	return vec, nil
+	return vec, false, nil
 }
 
 // isLoopbackURL reports whether the URL's host is localhost or a loopback IP, so

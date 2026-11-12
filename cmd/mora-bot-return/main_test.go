@@ -130,7 +130,7 @@ func TestCrashClaimAndExistingDecision(t *testing.T) {
 					t.Fatal(err)
 				}
 				if err := os.Symlink("/dev/null", filepath.Join(dir, id+".json")); err != nil {
-					t.Fatal(err)
+					t.Skipf("symlinks unavailable (Windows needs a privilege for them): %v", err)
 				}
 			}
 			if _, err := intake(c, b); err == nil {

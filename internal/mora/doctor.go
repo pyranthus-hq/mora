@@ -700,6 +700,11 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	for _, r := range agentRelax {
 		checks = append(checks, doctorCheck{Name: "agent_remote_defaults:" + r.Name, OK: false, Critical: false})
 	}
+	// A proposal queue that cannot be read is a failed read, not "0 pending".
+	pendingProposals, pendingErr := pendingMCPProposalCount(cfg)
+	if pendingErr != nil {
+		checks = append(checks, doctorCheck{Name: "mcp_proposals_readable", OK: false, Critical: false})
+	}
 
 	// Whole-product storage accountant (Packet H3b): doctor's storage_status and
 	// share admission measure the same footprint. A walk/stat failure is a critical
@@ -722,7 +727,6 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		}
 	}
 
-	pendingProposals, _ := pendingMCPProposalCount(cfg)
 	tentativeSaved, tentativeHeld, tentativeErr := unreviewedAgentNoteCounts(ctx, cfg)
 
 	gitSync := false
@@ -853,6 +857,9 @@ func cmdDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	// that loosens hide-raw / propose-writes / deny-deletion. Advisory only.
 	if agentStoreErr != nil {
 		fmt.Fprintf(stdout, "%s agents store unreadable: %v\n", sty.warn("warn"), agentStoreErr)
+	}
+	if pendingErr != nil {
+		fmt.Fprintf(stdout, "%s MCP proposal queue unreadable: %v\n", sty.warn("warn"), pendingErr)
 	}
 	for _, r := range agentRelax {
 		fmt.Fprintf(stdout, "%s agent profile %q relaxes remote defaults: %s\n",

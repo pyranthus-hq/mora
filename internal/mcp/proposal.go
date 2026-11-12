@@ -69,6 +69,12 @@ func ListProposals(cfg config.Config) ([]Proposal, error) {
 	entries, err := os.ReadDir(ProposalDir(cfg))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			// Windows reports "path not found", which reads as ErrNotExist, when a
+			// regular file stands where the directory belongs. That is a failed
+			// read, not an empty queue.
+			if info, serr := os.Stat(ProposalDir(cfg)); serr == nil && !info.IsDir() {
+				return nil, fmt.Errorf("MCP proposal directory %s is not a directory", ProposalDir(cfg))
+			}
 			return nil, nil
 		}
 		return nil, err
