@@ -101,7 +101,7 @@ mora brief --project .
 
 `--mine` (and `mora review` below) ask a question at a real terminal and refuse inside an agent session or an IDE-agent terminal, so run them in a plain terminal window.
 
-Without `--mine`, `mora write` saves the note but the brief lists it under `Notes, not instructions`, not under `Owner rules`. At a terminal, outside an agent session, it prints one extra stderr line saying so and pointing at `--mine`. Run inside a bound folder, `mora write` defaults to that project's scope and says so on stderr; `--scope` overrides it.
+Without `--mine`, `mora write` saves the note but the brief lists it under `Notes, not instructions`, not under `Owner rules`. At a terminal, outside an agent session, it prints one extra stderr line saying so and pointing at `--mine`. Run from inside an agent session (`CLAUDECODE`, `CODEX_SANDBOX` and the other session variables `--mine` refuses on), it saves the note as an unreviewed agent note instead, tagged `mora-tentative`: it waits in `mora review`, stays out of the prompt-recall hook (a project decision can still show in the session brief under `Notes, not instructions`), and prints one stderr line saying so. `mora confirm <id>` and `mora mcp proposals approve` refuse inside an agent session too. Run inside a bound folder, `mora write` defaults to that project's scope and says so on stderr; `--scope` overrides it.
 
 ### 3. Inspect delivery, review agent notes, or undo
 
@@ -167,11 +167,11 @@ What Mora does **not** do:
 
 ## Agent write policy
 
-This policy governs the MCP `write_memory` and `delete_memory` tools, the loopback HTTP `/call` route, and paired companion captures. It does not gate `mora write`, connectors, tasks, or `mora teach` in your terminal:
+This policy governs the MCP `write_memory` and `delete_memory` tools, the loopback HTTP `/call` route, and paired companion captures. It does not gate connectors, tasks, or `mora teach` in your terminal, and `mora write` only inside an agent session (see the table):
 
 | How it is saved | Waits for your approval? |
 | --- | --- |
-| `mora write` in Terminal | No. Saved at once (`--mine` marks it owner-confirmed after you confirm in your terminal). |
+| `mora write` in Terminal | No. Saved at once (`--mine` marks it owner-confirmed after you confirm in your terminal). Run inside an agent session, it saves tentative like an MCP write and waits for `mora review`; it does not run the hold checks. |
 | `mora handoff write` | No. Saved at once as `type: handoff` (`--mine` marks it owner-confirmed). |
 | Connectors (files, mail, calendar, messages, GitHub) | No. Saved at once as read-only source evidence. |
 | `mora teach ... --yes` corrections | No. Saved at once, and reversible with `mora teach undo`. |

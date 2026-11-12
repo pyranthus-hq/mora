@@ -117,15 +117,30 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 	// never silently loses its write. createMemory sets m.ID and m.Path.
 	var op pendingOp
 	var opts []createOption
+	// Inside an agent session (the check --mine refuses on) a plain write is an
+	// agent write: it saves tentative, like write_memory under the default
+	// policy, so it waits for `mora review` and stays out of prompt recall. Unlike the
+	// MCP tool this does not run tentativeHoldReasons: a held write there goes to
+	// the proposal queue, and the CLI receipt has no shape for "not written".
+	agentKey := ""
 	if *mine {
 		if !askOwner(stderr, stdin, m, "Save this as your own statement?") {
 			return errors.New("Not saved.")
 		}
 		opts = append(opts, withOwnerConfirmed())
+	} else if agentKey = rulesAgentSession(); agentKey != "" {
+		opts = append(opts, withTentative())
 	}
 	m, op, err = createMemory(ctx, cfg, m, opts...)
 	if err != nil {
 		return err
+	}
+	if agentKey != "" {
+		// The same audit line an MCP write leaves, so `mora undo` reaches it.
+		if lerr := appendAgentWriteLog(cfg, time.Now(), "write", m, "cli"); lerr != nil {
+			fmt.Fprintf(stderr, "warning: memory %s saved, but %s could not be appended: %v\n", m.ID, agentWriteLogName, lerr)
+		}
+		fmt.Fprintf(stderr, "saved as an unreviewed agent note (%s is set): it stays out of prompt recall until the owner confirms it with `mora review`\n", agentKey)
 	}
 	m = decorateDecision(m, time.Now())
 	done := func(indexed bool) error {
@@ -139,7 +154,7 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 			// A person at their own terminal who typed `mora write` meant their
 			// own note, but without --mine it is stored as unconfirmed. Say so
 			// once, on stderr. Agents, pipes and --json never get the hint.
-			if rulesAgentSession() == "" && rulesInteractive(stdin) {
+			if agentKey == "" && rulesAgentSession() == "" && rulesInteractive(stdin) {
 				fmt.Fprintln(stderr, "note: saved as unconfirmed. Agents see it as a note written by agents, not as your rule. Pass --mine to save it as an owner rule (it asks you to confirm here).")
 			}
 			return nil
@@ -190,6 +205,9 @@ type writeReceipt struct {
 	IndexUpdated bool   `json:"index_updated"`
 	// OwnerConfirmed is set only when the note was saved owner-confirmed.
 	OwnerConfirmed bool `json:"owner_confirmed,omitempty"`
+	// Trust is "tentative" when the note was saved as an unreviewed agent note,
+	// the same value write_memory reports on memory.trust. Absent otherwise.
+	Trust string `json:"trust,omitempty"`
 }
 
 func newWriteReceipt(m Memory, indexUpdated, ownerConfirmed bool) writeReceipt {
@@ -201,6 +219,7 @@ func newWriteReceipt(m Memory, indexUpdated, ownerConfirmed bool) writeReceipt {
 		Title:          m.Title,
 		IndexUpdated:   indexUpdated,
 		OwnerConfirmed: ownerConfirmed,
+		Trust:          m.Trust,
 	}
 }
 func cmdRead(ctx context.Context, args []string, stdout, stderr io.Writer) error {

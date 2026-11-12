@@ -93,6 +93,13 @@ func cmdConfirm(ctx context.Context, args []string, stdout, stderr io.Writer, st
 			return err
 		}
 	}
+	if !*list {
+		// Removing the tentative tag is the owner's review. An agent that wrote the
+		// note must not be able to clear it from the same shell.
+		if err := refuseInAgentSession("mora confirm"); err != nil {
+			return err
+		}
+	}
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
@@ -124,6 +131,16 @@ func cmdConfirm(ctx context.Context, args []string, stdout, stderr io.Writer, st
 		return emitReceipt(stdout, "mora.confirm", 1, confirmReceipt{ID: m.ID, Confirmed: true, AuditLogged: logged})
 	}
 	fmt.Fprintf(stdout, "confirmed %s (%s)\n", m.ID, agentLogTitle(m))
+	return nil
+}
+
+// refuseInAgentSession refuses an owner action from inside an agent session,
+// the same variable check requireReviewTerminal makes, without also demanding a
+// terminal: the owner's own scripts may pipe into these commands.
+func refuseInAgentSession(cmd string) error {
+	if key := rulesAgentSession(); key != "" {
+		return fmt.Errorf("refusing %s from inside an agent session (%s is set). The owner can run it from their own terminal.", cmd, key)
+	}
 	return nil
 }
 

@@ -32,7 +32,7 @@ The portable manifest receives the Mora release version during packaging. The Cl
 
 Skills appear namespaced, such as `/mora:dining-concierge`. They may also activate when a request matches a skill description. Skills track the repository, so updating the plugin pulls the latest versions.
 
-The Mora MCP server must be connected separately; see the [main README](../../README.md#install). Before enabling a client to read personal memory, review its data policy and choose an MCP write policy. By default (`tentative`), low-risk notes save with a `mora-tentative` tag and you review them later with `mora review`, while `correction` and high-risk notes wait in the proposal queue. `mora config mcp-write-policy propose` queues all writes until approved locally with `mora review` or `mora mcp proposals`, and `readonly` disables both mutation tools.
+The Mora MCP server must be connected separately; see the [main README](../../README.md#install). Before enabling a client to read personal memory, review its data policy and choose an MCP write policy. By default (`tentative`), low-risk notes save with a `mora-tentative` tag and you review them later with `mora review`, while high-risk notes (text that looks like a credential, hidden or control characters, text aimed at an agent, or a type outside the allow list) wait in the proposal queue. A `correction` saves as a tentative note like the others. `mora config mcp-write-policy propose` queues all writes until approved locally with `mora review` or `mora mcp proposals`, and `readonly` disables both mutation tools.
 
 ## Other agents
 

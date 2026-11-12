@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +41,7 @@ func moraCommands(t *testing.T, file string) (start, recall string) {
 }
 
 func TestAntigravityUnderWSLWritesWslExeCommandsForWindowsFile(t *testing.T) {
+	skipWSLSimulationOnWindows(t)
 	home := withTempHookHome(t)
 	file := wslHome(t, "Ubuntu")
 	if _, err := installAntigravity(t, "--hooks-file", file, "--threshold", "-1"); err != nil {
@@ -81,6 +83,7 @@ func TestAntigravityUnderWSLRefusesWithoutHooksFile(t *testing.T) {
 }
 
 func TestAntigravityUnderWSLLinuxFileKeepsShellQuoting(t *testing.T) {
+	skipWSLSimulationOnWindows(t)
 	home := withTempHookHome(t)
 	wslHome(t, "Ubuntu")
 	file := filepath.Join(t.TempDir(), "hooks.json")
@@ -99,12 +102,18 @@ func TestAntigravityNativeLinuxUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	start, _ := moraCommands(t, filepath.Join(home, ".gemini", "config", "hooks.json"))
-	if !strings.HasPrefix(start, "'") || strings.Contains(start, "wsl.exe") {
-		t.Fatalf("native install must keep the sh form, got %q", start)
+	// Antigravity runs the command through sh -c on Unix and cmd /c on Windows.
+	quote := "'"
+	if runtime.GOOS == "windows" {
+		quote = `"`
+	}
+	if !strings.HasPrefix(start, quote) || strings.Contains(start, "wsl.exe") {
+		t.Fatalf("native install must keep the platform shell form (%s), got %q", quote, start)
 	}
 }
 
 func TestAntigravityStatusPrintsInspectedFile(t *testing.T) {
+	skipWSLSimulationOnWindows(t)
 	withTempHookHome(t)
 	file := wslHome(t, "Ubuntu")
 	if _, err := installAntigravity(t, "--hooks-file", file); err != nil {
@@ -179,13 +188,14 @@ func TestAntigravityWriteFollowsSymlinkKeepsModeAndDoesNotEscape(t *testing.T) {
 	if !strings.Contains(string(body), `a.cmd && b.cmd > <out>`) || strings.Contains(string(body), `\u0026`) || strings.Contains(string(body), `\u003c`) {
 		t.Fatalf("another hook's command was re-encoded:\n%s", body)
 	}
-	if info, _ := os.Stat(target); info.Mode().Perm() != 0o640 {
+	// Windows has no POSIX permission bits, so the mode checks are Unix only.
+	if info, _ := os.Stat(target); runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
 		t.Fatalf("mode = %v, want the existing 0640 kept", info.Mode().Perm())
 	}
 	if _, err := installAntigravity(t, "--hooks-file", filepath.Join(dir, "new.json")); err != nil {
 		t.Fatal(err)
 	}
-	if info, _ := os.Stat(filepath.Join(dir, "new.json")); info.Mode().Perm() != 0o600 {
+	if info, _ := os.Stat(filepath.Join(dir, "new.json")); runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("a new file must be 0600, got %v", info.Mode().Perm())
 	}
 }
@@ -227,6 +237,7 @@ func TestNormalizeWSLNetworkPaths(t *testing.T) {
 }
 
 func TestMCPServeAcceptsWindowsProjectDirUnderWSL(t *testing.T) {
+	skipWSLSimulationOnWindows(t)
 	cfg := mcpProjectSetup(t)
 	_ = cfg
 	mnt := t.TempDir()

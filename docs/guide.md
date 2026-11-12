@@ -636,8 +636,10 @@ v0.15.3 stay queued: `mora doctor` prints how many are pending, and
 
 A tentative memory shows in search, read, list and context with a
 `"trust":"tentative"` label. This holds for every type and scope. It does not
-reach the recall hook, the digest, the brief, commitments, open loops, think,
-entities or `mora share`.
+reach the prompt-recall hook, the digest, commitments, open loops, think,
+entities or `mora share`. The session-start project brief is different: a
+tentative `decision` in a bound project's scope can still appear there, under
+`Notes, not instructions`, as a note you have not confirmed.
 
 A tentative note is a vault file. `mora sync git` uploads vault files to your
 own git remote, tentative notes included, and the tag travels with the file.
@@ -692,7 +694,7 @@ mora write --mine ...             # a new note, saved as your own statement
 mora confirm <memory-id> --mine   # an existing agent note
 ```
 
-Plain `mora write` and plain `mora confirm` never set it, in any terminal.
+Plain `mora write` and plain `mora confirm` never set it, in any terminal (inside an agent session a plain `mora write` saves tentative).
 `--mine` needs your own terminal: it refuses, saves nothing and exits non-zero
 when stdin is not a terminal or an agent session variable is set. In your own
 terminal it prints the note (scope, type, title, the other fields the digest
@@ -1574,14 +1576,23 @@ searched, corrected, backed up, and shared. Connector data stays read-only.
 Run inside a bound project folder, `mora write` defaults to that project's
 scope and prints a notice on stderr; `--scope` overrides it. Without `--mine`
 the note is saved as unconfirmed, and at a terminal outside an agent session
-`mora write` adds one stderr line saying so (no line for pipes, agent sessions
-or `--json`); the saved note is the same either way.
+`mora write` adds one stderr line saying so (no line for pipes or `--json`); the
+saved note is the same either way. Run inside an agent session (the session
+variables `--mine` refuses on), `mora write` instead saves an unreviewed agent
+note: it carries the `mora-tentative` tag like an MCP write under the default
+policy, appears in `mora review`, stays out of the prompt-recall hook (a
+decision can still show in the project brief as an unconfirmed note), and
+prints one stderr line saying so. An agent session cannot clear the tag: `mora
+confirm <id>` and `mora mcp proposals approve` refuse there, and the owner runs
+them from their own terminal. It does not run the hold checks an MCP write gets (credential-like or
+hidden text), and piped stdin alone does not count as an agent session.
 
 Add `--mine` to save the note as your own statement, owner-confirmed. It needs
 your own terminal and a typed yes (see owner-confirmed under agent writes).
 `mora write --json` emits the `mora.write` v1 receipt with the saved memory's
 id, path, scope, type, and title, plus `owner_confirmed` (present only when it
-is true) and `index_updated`. A `false` `index_updated` means
+is true), `trust` (`"tentative"` for an agent-session write, absent otherwise)
+and `index_updated`. A `false` `index_updated` means
 the vault write succeeded but the derived search index needs a later rebuild;
 the accompanying human warning stays on stderr.
 

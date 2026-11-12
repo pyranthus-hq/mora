@@ -353,7 +353,7 @@ func TestConnectSymlinkWritesThrough(t *testing.T) {
 	writeFixture(t, target, `{"keep":true}`)
 	path := ConfigPath(home, Claude)
 	if err := os.Symlink(target, path); err != nil {
-		t.Fatal(err)
+		t.Skipf("symlinks unavailable (Windows needs a privilege for them): %v", err)
 	}
 	seams := fsSeams(t, home)
 	for _, op := range []string{"connect", "disconnect"} {

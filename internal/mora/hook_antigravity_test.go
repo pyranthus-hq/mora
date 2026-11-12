@@ -159,6 +159,7 @@ func TestAntigravityStopAnswersEmptyObject(t *testing.T) {
 
 // A Windows workspace path in the payload reaches the project binding on WSL.
 func TestAntigravityWorkspacePathWindowsFormUsesBinding(t *testing.T) {
+	skipWSLSimulationOnWindows(t)
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)

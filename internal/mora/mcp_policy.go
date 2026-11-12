@@ -187,6 +187,9 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 		return showMCPWriteProposal(cfg, args[1], stdout)
 	}
 	if len(args) >= 2 && args[0] == "approve" {
+		if err := refuseInAgentSession("mora mcp proposals approve"); err != nil {
+			return err
+		}
 		ids := args[1:]
 		for _, id := range ids {
 			if err := refuseDashLedPositional("mcp proposals approve", "proposal id", id); err != nil {
