@@ -20,6 +20,9 @@ The self-test uses a disposable **software** P-256 key and checks saved and
 held decisions, single use, fresh challenge, stale preview, changed scope or
 action, expiry, missing proof, absent enrollment, Cancel, credential/RP
 mismatch, user verification, signature rejection, and enrollment-key parsing.
+Stale preview rejection uses a changed synthetic fixture in this software
+self-test.
+
 A native probe reports WebAuthn version, process session, and whether Windows
 reports a user-verifying platform authenticator. Neither command opens a
 Windows Hello prompt or creates a credential.
@@ -43,11 +46,15 @@ and enter the full path to `MoraWindowsApprovalSpike.exe` with no arguments.
    `PASS: Windows Hello assertion verified for Keep project:review-spike revision …`.
    Switch fixtures and repeat with **Discard**. Verify Windows requests a
    separate user action for each decision. Report cached or absent prompts
-   as a failed per-action presence check.
-5. Close the experiment. Its directory contains `receipt.txt` with local
-   result lines and synthetic digests. The app holds the enrolled public key
-   in memory. Windows may retain the test passkey. The operator can remove it
-   from Windows passkey settings if it appears there.
+   as a failed per-action presence check. A PASS shows that the experiment
+   verified an assertion with the user-verification flag from the enrolled
+   platform-attached authenticator. The experiment requests no attestation,
+   so device-bound key custody remains unverified.
+5. Close the experiment. Its directory contains `receipt.txt`, an
+   unauthenticated diagnostic log with local result lines and synthetic
+   digests. The app holds the enrolled public key in memory. Windows may
+   retain the test passkey. The operator can remove it from Windows passkey
+   settings if it appears there.
 
 ## Decision binding and limits
 
@@ -69,9 +76,9 @@ authority, and protection for the installed public key. The smoke has no
 trusted display beyond this process and no persistent authority. It does not
 qualify Windows, WSL transport, the real desktop client, or the release.
 
-The spike was built with the native x64 compiler and passed all 17 software checks. WebAuthn
-reported API v9 and a platform verifier in SSH Session 0. Session 0 cannot
-show the interactive desktop. The actual enrollment, cancellation, and per-
-decision Windows Hello prompts remain open.
+The spike was built with the native x64 compiler and passed all 17 software
+checks. WebAuthn reported API v9 and a platform verifier in SSH Session 0.
+Session 0 cannot show the interactive desktop. Enrollment, cancellation,
+and per-decision Windows Hello prompts remain unverified.
 
 [Microsoft WebAuthn API](https://learn.microsoft.com/en-us/windows/win32/api/webauthn/)
