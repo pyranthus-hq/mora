@@ -5,7 +5,8 @@
 
 ## Phase 1 — Establish the desktop boundary
 
-- [ ] T001 Record the approved 0.17.1 baseline ([PR #666](https://github.com/pyranthus-hq/mora/pull/666)) and map queue, preview,
+- [ ] T001 Use the reviewed 0.17.1 baseline from
+  [governance T003](../002-governance-baseline/tasks.md), then map queue, preview,
   Keep, Discard, and current authority behavior in `internal/mora/`
   against FR-002 and FR-004. Check the [Mac draft](https://github.com/pyranthus-hq/mora/pull/656)
   for existing review behavior.
