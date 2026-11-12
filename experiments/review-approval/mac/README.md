@@ -1,7 +1,7 @@
 # Mac approval spike
 
-The runner shows a complete saved or held synthetic note in a native AppKit
-alert. Cancel is the default. **Keep with macOS approval** requests a signature
+The native AppKit alert shows one of two fixed synthetic notes in full,
+one saved and one held. Cancel is the default. **Keep with macOS approval** requests a signature
 from a Secure Enclave P-256 key protected by a user-presence policy. The test
 key is ephemeral and its device-wrapped representation stays in memory.
 The runner uses a fresh LocalAuthentication context for signing with Touch ID
@@ -59,15 +59,22 @@ source, provenance, queue kind and review state. The verifier expects a
 nonce, the revision, scope and Keep. It checks the signature against the
 ephemeral key registered in that process and rechecks the current preview.
 Each run accepts at most one synthetic decision. There is no vault access,
-IPC service, exported key, or persistent approval. The app shows the full
-fixture. macOS controls the authentication prompt's layout and text.
+IPC service, exported key, or persistent approval. macOS controls the
+authentication prompt's layout and text. The signature receipt verifies
+the challenge and signer. Confirm the fresh prompt by observing it during
+each native test.
 
 The spike can demonstrate hardware-backed user-presence signing in the
 local runner. A production integration still needs a trusted app identity
 and owner-controlled persistent key enrollment, an authenticated path to the
 Go verifier, atomic receipt consumption and vault mutation, and a live
-test that proves the person sees what the verifier commits. The local
-compiler build and hardware preflight do not establish those conditions.
+test that proves the person sees what the verifier commits. Before
+approving arbitrary note text, use structured, unambiguous fields with
+scrolling within a bounded preview area. Verify equality between the full
+rendered preview and the revision bound to the challenge. Leave approval
+read-only if the preview is incomplete. The canonical encoding shared by
+Swift and Go remains an integration decision. The spike's sorted Swift JSON
+only serves the in-process verifier.
 
 [Apple Secure Enclave key guidance](https://developer.apple.com/documentation/security/protecting-keys-with-the-secure-enclave)
 
