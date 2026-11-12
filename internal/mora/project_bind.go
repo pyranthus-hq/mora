@@ -112,7 +112,7 @@ func normalizeWSLWindowsPath(p string) string {
 		return p
 	}
 	drive := trimmed[0]
-	if !((drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')) {
+	if !isASCIILetter(drive) {
 		return p
 	}
 	if len(trimmed) > 2 && trimmed[2] != '\\' && trimmed[2] != '/' {
@@ -377,4 +377,9 @@ func ownerOnlyColumn(b projectBinding) string {
 		return "\towner-only"
 	}
 	return ""
+}
+
+// isASCIILetter reports whether b is an ASCII letter, as a drive letter is.
+func isASCIILetter(b byte) bool {
+	return ('a' <= b && b <= 'z') || ('A' <= b && b <= 'Z')
 }
