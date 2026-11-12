@@ -373,6 +373,16 @@ func TestProjectBriefSessionStartHook(t *testing.T) {
 	if !strings.HasPrefix(got, "Owner rules for project:demo") || strings.Contains(got, "daily brief body") || daily != 0 {
 		t.Fatalf("bound cwd: daily calls %d, context:\n%s", daily, got)
 	}
+	if got := pbHook(t, t.TempDir()); got != "" || daily != 0 {
+		t.Fatalf("unbound cwd by default: calls %d, context %q", daily, got)
+	}
+	enableUnboundSessionBrief(t)
+	if got := hoProjectStart(t, dir, t.TempDir()); got != "" || daily != 0 {
+		t.Fatalf("project-only hook outside the bound folder: calls %d, output %q", daily, got)
+	}
+	if got := pbHook(t, filepath.Join(dir, "sub")); !strings.HasPrefix(got, "Owner rules for project:demo") || strings.Contains(got, "daily brief body") || daily != 0 {
+		t.Fatalf("bound cwd after opt-in: daily calls %d, context:\n%s", daily, got)
+	}
 	if got := pbHook(t, t.TempDir()); got != "daily brief body" || daily != 1 {
 		t.Fatalf("unbound cwd: calls %d, context %q", daily, got)
 	}
@@ -406,7 +416,7 @@ func TestProjectBriefSessionStartHook(t *testing.T) {
 	if got := pbHook(t, dir); got != want || daily != 0 {
 		t.Fatalf("builder failure: calls %d, got %q", daily, got)
 	}
-	// No store at all keeps today's behaviour.
+	// No binding store still permits the opted-in daily brief.
 	if err := os.Remove(filepath.Join(cfg.ConfigDir, "projects.json")); err != nil {
 		t.Fatal(err)
 	}

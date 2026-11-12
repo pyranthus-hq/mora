@@ -127,6 +127,7 @@ func TestAntigravityClientFlagWithClaudeShapedInput(t *testing.T) {
 func TestAntigravitySessionStartEnvelope(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
+	enableUnboundSessionBrief(t)
 	defer stubHookBrief(t, "today's local brief")()
 	in := `{"conversationId":"c","workspacePaths":["` + filepath.ToSlash(t.TempDir()) + `"],"modelName":"auto"}`
 	env := decodeAntigravity(t, runHookRaw(t, []string{"session-start"}, in))
@@ -141,6 +142,7 @@ func TestAntigravitySessionStartEnvelope(t *testing.T) {
 func TestAntigravitySessionStartSilentIsEmptyObject(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
+	enableUnboundSessionBrief(t)
 	defer stubHookBrief(t, "  ")()
 	raw := runHookRaw(t, []string{"session-start", "--client", "antigravity"}, `{"workspacePaths":["`+filepath.ToSlash(t.TempDir())+`"]}`)
 	if strings.TrimSpace(raw) != "{}" {

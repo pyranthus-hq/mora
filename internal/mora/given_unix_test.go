@@ -31,6 +31,7 @@ func TestGivenFIFOLogNeverBlocks(t *testing.T) {
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
+	enableUnboundSessionBrief(t)
 	defer stubHookBrief(t, "daily brief body")()
 	if err := syscall.Mkfifo(givenLogPath(cfg), 0o600); err != nil {
 		t.Fatal(err)
