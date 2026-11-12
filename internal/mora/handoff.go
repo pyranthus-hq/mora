@@ -287,11 +287,6 @@ func handoffBlock(cfg Config, scope string, now time.Time) string {
 
 const handoffUsage = "usage: mora handoff [show [--scope S] [--project DIR] [--json] | list [--scope S] [--project DIR] [--limit N] [--json] | write [--scope S] [--project DIR] --title TITLE [--direction D] [--why W] [--turns T] [--where W] [--next N] [--text TEXT] [--short] [--mine] [--json]]"
 
-// cmdHandoff implements `mora handoff [show|list|write]` writing to os.Stdout/os.Stderr.
-func cmdHandoff(cfg Config, args []string) error {
-	return cmdHandoffIO(context.Background(), cfg, args, os.Stdin, os.Stdout, os.Stderr)
-}
-
 // cmdHandoffCLI is the entry point the Run dispatch calls: it resolves the
 // config the way the other verbs do, then runs cmdHandoffIO on the given writers.
 func cmdHandoffCLI(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {

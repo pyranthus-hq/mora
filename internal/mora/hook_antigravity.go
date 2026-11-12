@@ -161,7 +161,7 @@ func antigravityWindowsFile(path string) (distro string, ok bool) {
 		return "", false
 	}
 	first, _, _ := strings.Cut(filepath.ToSlash(rel), "/")
-	if len(first) != 1 || !((first[0] >= 'a' && first[0] <= 'z') || (first[0] >= 'A' && first[0] <= 'Z')) {
+	if len(first) != 1 || !isASCIILetter(first[0]) {
 		return "", false
 	}
 	return d, true
