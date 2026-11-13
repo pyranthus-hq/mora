@@ -33,6 +33,13 @@ authorized share. The friction feedback check is a companion pilot and can use
 existing read paths. Full kits, broader skill management, 15-minute sync,
 and friction import expansion each require a separate scope decision.
 
+The [NightShift factory-memory workstream](011-nightshift-factory-memory/spec.md)
+extends the existing foundation with a scoped provider integration. Start with
+one factory, one repository, one writable host and read-only context. Its plan
+reuses the governance, project isolation, handoff, budget and friction packages.
+Factory acceptance gates default use in NightShift; wider rollout is not a
+0.18 release gate, and this planning update implements no product behavior.
+
 ## Feature packages
 
 | 0.18 item | Workstream | Package | Status and dependency | Cases |
@@ -47,6 +54,7 @@ and friction import expansion each require a separate scope decision.
 | 7 | Startup and diagnostics | [Spec](008-startup-budget/spec.md) · [Plan](008-startup-budget/plan.md) · [Tasks](008-startup-budget/tasks.md) | Proposed. Final measurements use the chosen catalog and scoped setup. | E, E2 |
 | 8 | Release validation | [Spec](009-release-validation/spec.md) · [Plan](009-release-validation/plan.md) · [Tasks](009-release-validation/tasks.md) | Last. Validate approved scope on the release candidate. | G, H, H1 |
 | Companion | Friction feedback | [Spec](010-friction-feedback/spec.md) · [Plan](010-friction-feedback/plan.md) · [Tasks](010-friction-feedback/tasks.md) | Pilot. One reviewed report. No release dependency. | DR1 |
+| Integration | NightShift factory memory | [Spec](011-nightshift-factory-memory/spec.md) · [Plan](011-nightshift-factory-memory/plan.md) · [Tasks](011-nightshift-factory-memory/tasks.md) | Read-only pilot after baseline; reuse 001/002/003/005/006/007/008/009/010. Capture follows the read gate. Wider rollout is separate. | FM-A–FM-E |
 
 ## Open any package
 
@@ -86,3 +94,17 @@ require their own scope decision before becoming release criteria.
 | H | Release prerequisite | The candidate commit is on main and all required jobs, including Windows, are green before tagging. |
 | H1 | Pilot comparison | Rerun the shared-repo decision-recall prompts against a plain `DECISIONS.md`. Mora meets or exceeds its correct-answer count on the same fixture. Record the score separately from H. |
 | DR1 | Companion pilot | Verify idempotent, scoped recall of one reviewed report from a fresh agent, including devbox eligibility and an index refresh. See [friction acceptance](010-friction-feedback/spec.md#success-criteria). |
+
+## NightShift factory integration acceptance
+
+The factory cases extend existing checks; they do not replace A–H1 or DR1.
+See [011 specification](011-nightshift-factory-memory/spec.md) for complete
+pass conditions and the read-only versus write-capture gates.
+
+| Case | Extends | Factory pass condition |
+| --- | --- | --- |
+| FM-A | E1 | Same-repo factories remain isolated across tools, evidence, generated files, filesystem access, refresh and restore. Unbound/revoked identities refuse. |
+| FM-B | F/G1 | Exact trust mapping and human proof; no worker self-approval or injected authority; reproducible bundles and revocation-aware replay. |
+| FM-C | D1/DR1 write paths | Four workers, 100 unique events, duplicate delivery and crash injection preserve captures/proposals exactly once logically, including restore and changed-payload conflicts. |
+| FM-D1/FM-D2 | D1 | FM-D1: visible bounded advisory failure and required-context blocking. FM-D2: ledger-backed checkpoint recovery and isolated restore. |
+| FM-E | H1 | Frozen 20-task comparison with curated files and memory off; no harmful carry-over, baseline recall parity and a pre-registered material benefit, with cost measurements. |
