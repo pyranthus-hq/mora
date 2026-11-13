@@ -1,26 +1,26 @@
-# Tasks: NightShift factory memory
+# Tasks: NightShift consumes Mora
 
-All boxes remain open. Owner labels identify repository/deployment responsibility; they are not parallel-execution instructions.
+All boxes remain open. The current next step is inspection of the actual v0.4.0 integration. Subsequent implementation needs that evidence; deferred options are not commitments or release gates.
 
-## Phase 1 — Pin and contract
+## Inspect before designing
 
-- [ ] T001 [Joint] Record the selected Mora/NightShift SHAs, reviewed 002 baseline, provider interface, supported operations and deployment boundary. Inventory all exposed mutation paths and distinguish the tool catalog from access grants. Covers FM01/FM02; prerequisite for all other tasks.
-- [ ] T002 [Joint] Freeze identity, trust-state, source, context-bundle, receipt and stable event-key schemas; agree compatibility/versioning, supported factory OS, corpus seeding/destination review, stable producer-origin identity, canonical payload hashing and authorization on replay, required-memory defaults and evidence retention. Pin the numeric context caps and counting rules from FM05. Pre-register the 20-task corpus and material benefit threshold. Depends on T001. Covers FM01–FM05 and FM-E.
+- [ ] T001 [NightShift] When v0.4.0 is available, pin its actual revision and inspect the Mora integration/introduction, provider contract and existing adapter. Record availability and behavior without assuming either. No competing adapter before this checkpoint. If v0.4.0 is unavailable or provides no usable Mora integration, report that gap to Adit and stop; do not start T002 or design a substitute without a separate scope decision.
+- [ ] T002 [Joint] Pin Mora's revision; map supported scoped operations, generic authorization, provenance/trust/status metadata and demonstrated gaps. Keep factory/run semantics in NightShift. Propose any missing generic Mora capability separately. Depends on T001.
 
-## Phase 2 — Read-only pilot
+## Pull integration, subject to inspection
 
-- [ ] T003 [Joint/deployment] Provision immutable factory/repo bindings and isolated service/worker access. Mora must enforce the binding/profile and policy-preserving status/receipt reads server-side; adapter filtering alone cannot satisfy this task. Seed/review the synthetic corpus through a proven owner path, without importing approval implicitly. Remove mutation/proposal tools from the worker read-only profile. Add same-repo A/B/personal fixtures and unbound/revoked controls, including filesystem and generated-file routes. Depends on T002. Covers FM01/FM-A.
-- [ ] T004 [Joint] Implement the scoped Mora provider read/admission mapping and immutable source validation. Preserve agent authorship, exact revision approval and unknown-state refusal; no worker self-approval. Depends on T003. Covers FM02/FM04/FM-B.
-- [ ] T005 [NightShift] Record frozen bundles and access-controlled prompt evidence; implement authority revalidation, conflict handling, total deadlines/cancellation and advisory/required outcomes. Depends on T004. Covers FM04/FM05/FM-B/FM-D.
-- [ ] T006 [Independent tester] Run existing provider conformance and the read-only gate: FM-A/FM-B read cases, FM-D1 and FM-E. Publish exact commands and receipts; do not widen scope or proceed after an isolation/authority failure. Depends on T005. Covers read-only acceptance.
+- [ ] T003 [NightShift/deployment] Select the bounded pilot, supported OS, factory-to-scope mapping, approved corpus and read-only worker access. Verify provider/deployment isolation including shell access; consumer filtering alone is insufficient. Depends on T002.
+- [ ] T004 [NightShift] Reuse the upstream integration path and adapt only demonstrated gaps. Preserve source/revision/trust mapping, exclude unapproved context and keep execution approvals authoritative in NightShift. Depends on T003.
+- [ ] T005 [NightShift] Confirm actual context limits/deadlines; record supplied context and visible advisory/required-context behavior through supported interfaces. Keep retries, snapshots and run recovery consumer-owned. Depends on T004.
+- [ ] T006 [Independent tester] Run relevant FM-A/FM-B read cases, FM-D1 and FM-E on pinned builds. Publish commands and receipts; stop on isolation/authority failures. No write-back gate is required for pull-only acceptance. Depends on T005.
 
-## Phase 3 — Durable capture and handoffs
+## Deferred options — separate scope decision required
 
-- [ ] T007 [Mora] Implement canonical event-key/payload-hash deduplication and outcome recovery for direct writes, held proposals and later decisions. Test same-key replay, changed-payload conflict, save-before-response failure and saved-but-unindexed recovery. Depends on T002 and T006. Covers FM03/FM-C.
-- [ ] T008 [NightShift] Implement durable outbox/acknowledgements against T007, preserving event IDs across restarts and retries. Implement run/session checkpoint handoffs using existing governed paths and ledger provenance; unreviewed recovery views cannot become approved context. Depends on T007. Covers FM03/FM04/FM-C/FM-D.
-- [ ] T009 [Joint/deployment] Verify simultaneous writers and readers during rebuild, crash recovery, pending decisions and backup/restore of records plus control state. Enforce snapshot retention and revocation on reuse. Depends on T008. Covers FM03–FM05/FM-A–FM-D.
+- [ ] T007 [Deferred] Consider write-back only after a concrete need and separate scope decision. If chosen, design generic receipt/idempotency guarantees; do not add factory semantics to Mora or claim adapter-only deduplication is crash-safe.
+- [ ] T008 [Deferred] Consider NightShift outbox and factory checkpoint capture only if write-back is chosen. Retain authoritative run state in NightShift and preserve governed writes. Depends on separately activated T007.
+- [ ] T009 [Deferred] If capture is chosen, specify and run FM-C/FM-D2 concurrency/crash/restore cases against the selected generic interfaces. Depends on separately activated T008. Not a read-only gate.
 
-## Phase 4 — Decide deployment readiness
+## Decide the tested read-only deployment
 
-- [ ] T010 [Independent tester] Run FM-A through FM-E on pinned integrated builds, compare the pre-registered benefit target and report every failure/limitation. Do not count document or baseline-unit checks as integration acceptance. Depends on T009. Covers all factory acceptance.
-- [ ] T011 [Release owner] Review the receipts and decide default use only for the tested deployment shape. Record wider rollout/replication as separate work with explicit scope and new isolation/load evidence. Depends on T010. Covers FM05.
+- [ ] T010 [Independent tester] Summarize the read-only receipts and measured usefulness/cost from T006. Report limitations; document checks are not integration acceptance. No dependency on deferred T007–T009.
+- [ ] T011 [Deployment owner] Decide default read-only use for the tested deployment from T010 evidence. Broader rollout, replication or write-back remain separate decisions; none is a Mora 0.18 release prerequisite.

@@ -34,11 +34,11 @@ existing read paths. Full kits, broader skill management, 15-minute sync,
 and friction import expansion each require a separate scope decision.
 
 The [NightShift factory-memory workstream](011-nightshift-factory-memory/spec.md)
-extends the existing foundation with a scoped provider integration. Start with
-one factory, one repository, one writable host and read-only context. Its plan
-reuses the governance, project isolation, handoff, budget and friction packages.
-Factory acceptance gates default use in NightShift; wider rollout is not a
-0.18 release gate, and this planning update implements no product behavior.
+keeps Mora abstract: NightShift pulls from supported scoped memory interfaces
+and owns factory semantics. First inspect the actual NightShift v0.4.0
+integration/introduction once available, then reuse it and address demonstrated
+gaps. Pull-only acceptance is separate from deferred capture/write-back.
+This planning work adds no product behavior or factory rollout gate to 0.18.
 
 ## Feature packages
 
@@ -54,7 +54,7 @@ Factory acceptance gates default use in NightShift; wider rollout is not a
 | 7 | Startup and diagnostics | [Spec](008-startup-budget/spec.md) · [Plan](008-startup-budget/plan.md) · [Tasks](008-startup-budget/tasks.md) | Proposed. Final measurements use the chosen catalog and scoped setup. | E, E2 |
 | 8 | Release validation | [Spec](009-release-validation/spec.md) · [Plan](009-release-validation/plan.md) · [Tasks](009-release-validation/tasks.md) | Last. Validate approved scope on the release candidate. | G, H, H1 |
 | Companion | Friction feedback | [Spec](010-friction-feedback/spec.md) · [Plan](010-friction-feedback/plan.md) · [Tasks](010-friction-feedback/tasks.md) | Pilot. One reviewed report. No release dependency. | DR1 |
-| Integration | NightShift factory memory | [Spec](011-nightshift-factory-memory/spec.md) · [Plan](011-nightshift-factory-memory/plan.md) · [Tasks](011-nightshift-factory-memory/tasks.md) | Read-only pilot after baseline; reuse 001/002/003/005/006/007/008/009/010. Capture follows the read gate. Wider rollout is separate. | FM-A–FM-E |
+| Integration | NightShift factory memory | [Spec](011-nightshift-factory-memory/spec.md) · [Plan](011-nightshift-factory-memory/plan.md) · [Tasks](011-nightshift-factory-memory/tasks.md) | Inspect v0.4.0 first; Mora stays abstract. Reuse generic governance/scope/budgets. Capture is deferred, not a pull-only gate. | Read: FM-A/FM-B, FM-D1, FM-E; deferred: FM-C/FM-D2 |
 
 ## Open any package
 
@@ -99,12 +99,14 @@ require their own scope decision before becoming release criteria.
 
 The factory cases extend existing checks; they do not replace A–H1 or DR1.
 See [011 specification](011-nightshift-factory-memory/spec.md) for complete
-pass conditions and the read-only versus write-capture gates.
+pass conditions and the controlling architecture clarification. Relevant FM-A/FM-B
+read cases, FM-D1 and FM-E govern pull-only use; capture/write-back is deferred.
+Earlier numeric limits and topology are provisional until the v0.4.0 inspection.
 
 | Case | Extends | Factory pass condition |
 | --- | --- | --- |
 | FM-A | E1 | Same-repo factories remain isolated across tools, evidence, generated files, filesystem access, refresh and restore. Unbound/revoked identities refuse. |
 | FM-B | F/G1 | Exact trust mapping and human proof; no worker self-approval or injected authority; reproducible bundles and revocation-aware replay. |
-| FM-C | D1/DR1 write paths | Four workers, 100 unique events, duplicate delivery and crash injection preserve captures/proposals exactly once logically, including restore and changed-payload conflicts. |
-| FM-D1/FM-D2 | D1 | FM-D1: visible bounded advisory failure and required-context blocking. FM-D2: ledger-backed checkpoint recovery and isolated restore. |
+| FM-C (deferred) | D1/DR1 write paths | Four workers, 100 unique events, duplicate delivery and crash injection preserve captures/proposals exactly once logically, including restore and changed-payload conflicts. |
+| FM-D1/FM-D2 | D1 | FM-D1: visible bounded advisory failure and required-context blocking. FM-D2 (deferred capture): ledger-backed checkpoint recovery and isolated restore. |
 | FM-E | H1 | Frozen 20-task comparison with curated files and memory off; no harmful carry-over, baseline recall parity and a pre-registered material benefit, with cost measurements. |

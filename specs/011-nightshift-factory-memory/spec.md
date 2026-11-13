@@ -2,9 +2,9 @@
 
 **Feature**: `011-nightshift-factory-memory`
 
-**Status**: Integration workstream specified at the owner's request. Read-only pilot first; product acceptance open. Wider rollout is not a 0.18 release gate.
+**Status**: Consumer integration planning; product acceptance open. Mora stays abstract and NightShift pulls from it. Inspect the actual v0.4.0 integration before further design. The architecture clarification below controls over earlier implementation and rollout proposals.
 
-**Acceptance**: FM-A through FM-E, extending F/G1, E1, D1, DR1 and H1. E2 remains the separate startup-budget prerequisite. FM-D has read-only (FM-D1) and capture/restore (FM-D2) subcases.
+**Acceptance**: Relevant FM-A/FM-B read cases, FM-D1 and FM-E for the pull integration. FM-C/FM-D2 and capture-specific requirements are deferred options, not read-only or Mora 0.18 gates. E2 remains the separate startup-budget prerequisite.
 
 ## User Scenarios and Testing
 
@@ -12,7 +12,7 @@
 
 As a factory operator, I can give a run reviewed, cited knowledge from its own factory, keep its execution approvals intact, and see unavailable or conflicting context before it matters.
 
-### User Story 2 — Recover a learning or handoff after interruption (Priority: P2)
+### Deferred User Story 2 — Recover a learning or handoff after interruption
 
 As a factory operator, I can recover acknowledged captures and the last verified checkpoint without duplicates, lost updates, or invented progress.
 
@@ -51,3 +51,17 @@ FM-D2 — Handoff and restore recovery. Kill a worker/service at each persisted 
 FM-E — Usefulness. Freeze 20 representative factory tasks with expected evidence and negative controls. Compare Mora, curated DECISIONS.md plus handoff files, and memory off using the same model and prompt budget. Require zero harmful or unauthorized carry-over, at least the curated-file baseline's correct-context count, and a material benefit target chosen before scoring, such as fewer repeated mistakes or less operator handoff time. Record latency/token cost. This is a directional pilot, not statistical proof; parity alone does not justify making Mora the default.
 
 Read-only pilot: FM01, the read/admission portion of FM02, source/context controls in FM04, and FM05 failure/access/retention controls; run FM-A/FM-B read cases, FM-D1 and FM-E. Write-capture pilot: add FM03, capture metadata and checkpoint handoffs; complete FM-A through FM-E before defaulting to Mora for the tested deployment. Wider rollout requires new isolation/load evidence and the separate replication gate where applicable. NightShift owns factory binding, provider adapter, outbox, context snapshots and runtime policy. Mora owns scoped record/receipt/governance APIs and crash-safe idempotent publication. Conformance is joint; no product implementation is completed by this planning update.
+
+### Architecture direction — Mora stays abstract
+
+This clarification supersedes the implementation ownership and rollout commitments in the preceding factory section. Mora remains a general-purpose, agent-agnostic memory service. NightShift is a consumer that pulls from Mora through supported scoped interfaces. Mora does not acquire factory, task, run, pipeline, scheduling or execution-approval concepts for this integration. This also overrides earlier requirement verbs: factory identity mapping and adapter implementation belong to NightShift/deployment; FM03's proposed Mora publication changes are deferred generic capability candidates, not current requirements or a transfer of integrity guarantees to adapter-only deduplication. The earlier writable-host wording concerns a deferred capture topology; the initial consumer is read-only on a supported host selected after inspection.
+
+NightShift owns the adapter, factory-to-scope mapping, retrieval timing, admission to prompts, context snapshots, budgets, retries and run recovery. Mora owns generic authorization, scope enforcement, memory records, provenance, revision/trust metadata and honest retrieval/index status. A namespace may be opaque to Mora; the meaning of a factory ID belongs to NightShift. Consumer-side filtering never substitutes for the provider/deployment access boundary. Existing governed writes and review semantics remain intact.
+
+The next checkpoint is to inspect NightShift v0.4.0's actual Mora integration or introduction once available, pin its revision and document the interface it exposes. This is an inspection target, not a claim that v0.4.0 has shipped or that its integration works. Reuse that path and fill only demonstrated gaps. Do not freeze a new factory protocol, Mora schema, service topology or duplicated adapter before this inspection.
+
+For the initial pull integration, retain the relevant FM-A/FM-B read cases, FM-D1 outage behavior and FM-E usefulness comparison as consumer acceptance targets. Scope isolation, trustworthy provenance, exclusion of unapproved context and unchanged execution approvals remain required. FM-A restore repetition applies if the tested deployment restores from backup; FM-D2 capture restore remains deferred. Its installed rules/skills routes apply only if that deployment installs them, in which case the existing 003/005 contracts apply. Confirm the adapter's actual context limits, deadline and supported deployment after inspecting v0.4.0; earlier numbers and the dedicated-service topology are provisional candidates, not new Mora guarantees.
+
+Write-back, the outbox and canonical idempotency proposal in FM03, persisted factory checkpoints, FM-C and FM-D2 capture/restore tests are deferred design options. They are not prerequisites for the pull integration, default read-only use, or Mora 0.18. Default read-only use requires its read gates and an explicit deployment decision. If later work needs a missing Mora capability, propose a generic memory capability separately, with evidence that the consumer cannot meet the need through existing interfaces. Do not replace provider-side integrity with adapter-only deduplication or weaken access/trust checks to keep the boundary abstract.
+
+The first implementation decision follows the v0.4.0 inspection. No factory implementation, write-back rollout, or broader deployment is authorized or claimed by this planning clarification.
