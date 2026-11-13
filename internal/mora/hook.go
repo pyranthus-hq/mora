@@ -417,8 +417,11 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 				kept = append(kept, m)
 			}
 		}
-		mems = kept
-		body, recalledIDs = hookspkg.FormatRecallContextIDs(mems, prompt, opts.threshold, hookNow())
+		maxBytes := hookRecallByteLimit
+		if banner != "" {
+			maxBytes -= len(banner) + 1 // Include the newline above the recall.
+		}
+		body, recalledIDs = hookspkg.FormatRecallContextWithin(kept, prompt, opts.threshold, hookNow(), maxBytes)
 	}
 	body = prependBannerLine(banner, body)
 	if body == "" {
