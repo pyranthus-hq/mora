@@ -65,8 +65,25 @@ separate supported fixture process, and attempt Keep on the original view.
   retrievable. Omit Keep for unreadable, truncated, or redacted content.
 - **FR-006**: Keep review local. Use the existing vault and write-policy
   boundaries. Offer the existing owner-terminal fallback where app approval
-  is unavailable and keep the app read-only on that host. Leave project management, sync management, a Windows tray,
-  and release signing outside this feature.
+  is unavailable and keep the app read-only on that host. Project management,
+  a Windows tray, and release signing remain separate.
+- **FR-007**: Show backup and sync health in the desktop app and summarize it
+  in Mora Status on Mac. Distinguish last attempt from last confirmed
+  success. Show running, stale, offline, failed, and unconfigured states.
+  Name the affected job and provide a safe, actionable failure reason.
+- **FR-008**: Offer retry when safe. For diverged history, explain how to
+  preserve and reconcile both histories before retrying. Retain last success
+  through failures and confirm recovery from a successful job receipt.
+  When owner verification is unavailable, show health and recovery guidance
+  with retry disabled.
+- **FR-009**: Notify once when an actionable failure begins. Keep it visible
+  across repeated retries and restarts. A materially different failure or
+  a new failure after confirmed recovery can notify again.
+- **FR-010**: Use one owner-selected private GitHub vault for backup and
+  authorized pull. Setup and retries reuse it without provisioning project
+  repositories. Preserve existing share data when retiring repositories.
+  Show active consumers before cutover and keep full-vault access restricted
+  to authorized readers.
 
 ## Success Criteria
 
@@ -75,6 +92,8 @@ separate supported fixture process, and attempt Keep on the original view.
 | AC-MAC | On a Mac test account, open the installed app directly and via the menu bar when Mora Status is installed. Complete the shared review and recall scenarios without a terminal. |
 | AC-WIN | Launch from Start on the supported Windows backend and actual pilot client. Complete the shared review and recall scenarios without a terminal. |
 | AC-STALE | On both hosts exercise changed and incomplete previews, expired and repeated approvals, and a caller without owner proof. No new decision applies. A fresh preview with new proof succeeds. An unavailable verifier leaves review read-only and explains the fallback. |
+| AC-BACKUP | On both hosts inject offline, stale, and diverged-history fixtures. Verify last success, actionable status, safe retry or recovery guidance, and one notification per unresolved failure across retries and restart. On Mac check the menu-bar summary. |
+| AC-DESTINATION | Configure one private backup fixture and an authorized pull. Repeat setup, health checks, and retries. Verify zero new repositories, preservation of retired share data, a list of active consumers before cutover, and no widening of scoped access. |
 
 The detailed fixture steps and evidence requirements are in
 [quickstart.md](quickstart.md).

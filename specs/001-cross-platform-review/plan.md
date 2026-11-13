@@ -22,6 +22,7 @@ missing from that draft before making the window an approval surface.
 | Shell | Plan one desktop UI in `apps/mora-review/`. Evaluate the existing Tauri shell pattern first in a small Mac and Windows spike. Keep desktop dependencies outside the Go CLI module. The spike records the selected shell and the supported Windows backend, including the actual WSL-backed pilot route if used. |
 | Transport | Prefer app-owned local IPC or a typed sidecar channel. Keep note bodies and approval payloads local. Use the existing configured vault. No generic new approval MCP tool. |
 | Launch | Install a Windows Start entry and support ordinary Mac app launch. Connect the Mac Status menu item when available. An unsigned prototype must use the host's normal permitted test path. |
+| Backup and sync | Reuse local job receipts and existing retry paths. Show last success beside current failure. Persist alert state per job. Keep retry disabled when owner verification is unavailable. Guide reconciliation before retry and reuse the configured private backup destination. Keep credentials, note bodies, and raw logs out of diagnostics. |
 
 ## Decision Contract
 
@@ -72,6 +73,7 @@ and verify both host flows separately. See
    decisions.
 3. Wire the single review window and launch entries. Run isolated vault tests
    with saved and held records and verify actual fresh-session retrieval.
-4. Have one reviewer inspect the changes and a separate tester run the
+4. Add backup and sync health, recovery, and persistent notification deduplication.
+5. Have one reviewer inspect the changes and a separate tester run the
    [acceptance script](quickstart.md) on both targets. Record build revision,
    client and backend versions, result, and any gaps in the PR.

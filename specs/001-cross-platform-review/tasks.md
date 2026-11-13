@@ -34,7 +34,13 @@
   owner-terminal guidance where proof is unavailable. Depends on T003, T004.
   Covers FR-002, FR-004, FR-005.
 
-## Phase 3 — Prove both launch and recall paths
+- [ ] T009 Add backup and sync receipts to the app and Mac Status. Add
+  safe retry, divergence guidance, and persistent alert deduplication.
+  Reuse one configured backup destination and preserve scoped access during
+  migration. Show active consumers before cutover. Depends on T002, T006.
+  Covers FR-007–FR-010.
+
+## Phase 3 — Verify desktop acceptance
 
 - [ ] T006 [US1] Add the direct launch on both systems, Windows Start entry,
   and Mac Status entry when available. Prove native Windows UI on the
@@ -43,8 +49,8 @@
 - [ ] T007 Update review and fallback docs, verify no new agent approval tool,
   and run the core tests and a pure-Go build. Confirm the focused
   `TestDesktopReview` cases actually executed. Run a cross-model review of
-  the implementation. Depends on T004–T006. Covers AC-STALE.
+  the implementation. Depends on T004–T006 and T009. Covers AC-STALE.
 - [ ] T008 Have a blind tester run [quickstart.md](quickstart.md) on Mac and
   Windows. Record which client, backend and build were tested, the correct
   and wrong-scope recall results, and any untested entry points. Depends on
-  T007. Covers AC-MAC, AC-WIN, AC-STALE.
+  T007. Covers AC-MAC, AC-WIN, AC-STALE, AC-BACKUP, AC-DESTINATION.

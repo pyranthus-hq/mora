@@ -76,6 +76,22 @@ synthetic-data screenshot, sanitized queue and decision results, and the
 scoped recall evidence IDs. Record an unresolved blocker or missing launch
 entry against the relevant case.
 
+## Both hosts — AC-BACKUP and AC-DESTINATION
+
+1. Configure a disposable private backup and an authorized pull. Record
+   a successful backup, then inject offline, stale, and diverged states.
+   Check the app shows last success, latest attempt, reason, and next
+   action. Check the Mac Status summary too. With owner verification
+   unavailable, verify status stays visible and retry is disabled.
+2. Repeat the same failure over three retries and restart the app. Expect
+   one notification and a visible failure. Verify recovery from a success
+   receipt, then inject a new failure and expect one new alert.
+3. Reconcile diverged history and verify both histories and their unique
+   records are recoverable. Repeat setup and retries and verify zero new
+   repositories. Verify a scoped reader cannot pull the full backup.
+   Verify active consumers are shown before cutover. Retire a fixture share
+   and verify its data remains recoverable.
+
 ## Core regression commands
 
 Run after implementation. The first line must list the new test group
