@@ -18,10 +18,18 @@ var (
 	errMCPProjectRootBindings   = errors.New("MCP workspace project bindings are unavailable")
 )
 
-// resolveMCPProjectRoots discovers a binding without changing session authority.
-// The caller must prefer an explicit --project-dir before consulting discovery.
-// Local URI checks reject explicit network paths and redirects. They do not
-// establish that a POSIX mount is local or protect against concurrent remounts.
+// resolveMCPProjectRoots uses client-asserted roots to choose workspace context.
+// Roots confer no authority. A caller must prefer an explicit --project-dir,
+// restrict discovery to an authorized local client, collapse errors before
+// returning them to the client, and resolve again when the roots change.
+//
+// Every root must agree. Explicit network paths and paths through symlinks or
+// Windows reparse points (including junctions) are rejected. Filesystem case
+// variants must match by identity. Other aliases, including differing Unicode
+// normalization, may fail closed. The checks do not establish POSIX mount
+// locality or protect against concurrent remounts. WSL drive conversion does
+// not verify the underlying Windows drive type or apply Windows device-name
+// rules to the mounted POSIX path.
 func resolveMCPProjectRoots(cfg Config, roots []mcppkg.Root) (mcpProject, error) {
 	if len(roots) == 0 {
 		return mcpProject{}, errMCPProjectRootsUnbound
@@ -60,7 +68,7 @@ func resolveMCPProjectRoots(cfg Config, roots []mcppkg.Root) (mcpProject, error)
 
 func mcpProjectRootPath(raw, hostOS string) (string, error) {
 	u, err := url.Parse(raw)
-	if err != nil || !strings.HasPrefix(raw, "file://") || u.User != nil ||
+	if err != nil || u.Scheme != "file" || !strings.HasPrefix(raw[len("file:"):], "//") || u.User != nil ||
 		(u.Host != "" && !strings.EqualFold(u.Host, "localhost")) || strings.ContainsAny(raw, "?#") {
 		return "", errMCPProjectRootURI
 	}

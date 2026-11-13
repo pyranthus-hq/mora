@@ -21,9 +21,18 @@ func mcpProjectTestURI(dir string) string {
 	return u.String()
 }
 
+func mcpProjectRootsTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func TestMCPProjectRootsResolveOneExistingWorkspace(t *testing.T) {
 	cfg := mcpProjectSetup(t)
-	parent := t.TempDir()
+	parent := mcpProjectRootsTempDir(t)
 	a := filepath.Join(parent, "Project A")
 	child := filepath.Join(a, "child")
 	b := filepath.Join(parent, "Project B")
@@ -53,6 +62,8 @@ func TestMCPProjectRootsResolveOneExistingWorkspace(t *testing.T) {
 		err  error
 	}{
 		{"spaces", []string{mcpProjectTestURI(a)}, mcpProject{scope: "project:a", root: aRoot}, nil},
+		{"localhost and trailing slash", []string{strings.Replace(mcpProjectTestURI(a), "file://", "file://localhost", 1) + "/"}, mcpProject{scope: "project:a", root: aRoot}, nil},
+		{"uppercase scheme", []string{strings.Replace(mcpProjectTestURI(a), "file://", "File://", 1)}, mcpProject{scope: "project:a", root: aRoot}, nil},
 		{"child and duplicate", []string{mcpProjectTestURI(child), mcpProjectTestURI(a), mcpProjectTestURI(child)}, mcpProject{scope: "project:a", root: aRoot}, nil},
 		{"other session", []string{mcpProjectTestURI(b)}, mcpProject{scope: "project:b", root: bRoot}, nil},
 		{"different projects", []string{mcpProjectTestURI(a), mcpProjectTestURI(b)}, mcpProject{}, errMCPProjectRootsAmbiguous},
@@ -61,9 +72,15 @@ func TestMCPProjectRootsResolveOneExistingWorkspace(t *testing.T) {
 		{"file", []string{mcpProjectTestURI(file)}, mcpProject{}, errMCPProjectRootsUnbound},
 		{"mixed known and unknown", []string{mcpProjectTestURI(a), mcpProjectTestURI(other)}, mcpProject{}, errMCPProjectRootsUnbound},
 		{"remote", []string{"file://server/share/fixture"}, mcpProject{}, errMCPProjectRootURI},
+		{"mixed known and remote", []string{mcpProjectTestURI(a), "file://server/share/fixture"}, mcpProject{}, errMCPProjectRootURI},
+		{"userinfo", []string{"file://user@localhost/one"}, mcpProject{}, errMCPProjectRootURI},
+		{"port", []string{"file://localhost:42/one"}, mcpProject{}, errMCPProjectRootURI},
+		{"wrong scheme", []string{"https://localhost/one"}, mcpProject{}, errMCPProjectRootURI},
 		{"escaped UNC", []string{"file:///%2Fserver/share/fixture"}, mcpProject{}, errMCPProjectRootURI},
 		{"escaped backslash", []string{"file:///%5Cserver/share/fixture"}, mcpProject{}, errMCPProjectRootURI},
 		{"malformed escape", []string{"file:///some%zz"}, mcpProject{}, errMCPProjectRootURI},
+		{"NUL", []string{"file:///some%00"}, mcpProject{}, errMCPProjectRootURI},
+		{"invalid UTF-8", []string{"file:///some%ff"}, mcpProject{}, errMCPProjectRootURI},
 		{"relative", []string{"file:workspace"}, mcpProject{}, errMCPProjectRootURI},
 		{"encoded traversal", []string{"file:///one/%2e%2e/two"}, mcpProject{}, errMCPProjectRootURI},
 		{"query", []string{"file:///one?value=x"}, mcpProject{}, errMCPProjectRootURI},
@@ -87,6 +104,18 @@ func TestMCPProjectRootsResolveOneExistingWorkspace(t *testing.T) {
 	if got != (mcpProject{}) || !errors.Is(err, errMCPProjectRootsAmbiguous) {
 		t.Fatalf("same scope on different roots = %+v, %v", got, err)
 	}
+	childRoot, _, err := bindProjectDir(testCtx(t), child, "project:child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = resolveMCPProjectRoots(cfg, []mcppkg.Root{{URI: mcpProjectTestURI(child)}})
+	if err != nil || got != (mcpProject{scope: "project:child", root: childRoot}) {
+		t.Fatalf("nearest binding = %+v, %v", got, err)
+	}
+	got, err = resolveMCPProjectRoots(cfg, []mcppkg.Root{{URI: mcpProjectTestURI(a)}, {URI: mcpProjectTestURI(child)}})
+	if got != (mcpProject{}) || err != errMCPProjectRootsAmbiguous {
+		t.Fatalf("parent and child bindings = %+v, %v", got, err)
+	}
 }
 
 func TestMCPProjectRootsRejectCorruptBindingStore(t *testing.T) {
@@ -94,9 +123,21 @@ func TestMCPProjectRootsRejectCorruptBindingStore(t *testing.T) {
 	if err := os.WriteFile(projectBindingsPath(cfg), []byte(`{"bindings": ["private config"]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := resolveMCPProjectRoots(cfg, []mcppkg.Root{{URI: mcpProjectTestURI(t.TempDir())}})
+	got, err := resolveMCPProjectRoots(cfg, []mcppkg.Root{{URI: mcpProjectTestURI(mcpProjectRootsTempDir(t))}})
 	if got != (mcpProject{}) || err != errMCPProjectRootBindings {
 		t.Fatalf("invalid store = %+v, %v", got, err)
+	}
+}
+
+func TestMCPProjectRootsRejectConflictingBindingsAtOneDirectory(t *testing.T) {
+	cfg := mcpProjectSetup(t)
+	dir := mcpProjectRootsTempDir(t)
+	if err := saveProjectBindings(cfg, []projectBinding{{Dir: dir, Scope: "project:a"}, {Dir: dir, Scope: "project:b"}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveMCPProjectRoots(cfg, []mcppkg.Root{{URI: mcpProjectTestURI(dir)}})
+	if got != (mcpProject{}) || err != errMCPProjectRootsAmbiguous {
+		t.Fatalf("conflicting bindings = %+v, %v", got, err)
 	}
 }
 
@@ -105,9 +146,10 @@ func TestMCPProjectRootsDoNotFollowSymlinks(t *testing.T) {
 		t.Skip("creating symlinks requires Windows privileges not assumed by this test")
 	}
 	cfg := mcpProjectSetup(t)
-	parent := t.TempDir()
+	parent := mcpProjectRootsTempDir(t)
 	bound := filepath.Join(parent, "bound")
-	if err := os.Mkdir(bound, 0o700); err != nil {
+	child := filepath.Join(bound, "child")
+	if err := os.MkdirAll(child, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := bindProjectDir(testCtx(t), bound, "project:bound"); err != nil {
@@ -117,9 +159,13 @@ func TestMCPProjectRootsDoNotFollowSymlinks(t *testing.T) {
 	if err := os.Symlink(bound, link); err != nil {
 		t.Fatal(err)
 	}
-	got, err := resolveMCPProjectRoots(cfg, []mcppkg.Root{{URI: mcpProjectTestURI(link)}})
-	if got != (mcpProject{}) || err != errMCPProjectRootsUnbound {
-		t.Fatalf("workspace through symlink = %+v, %v", got, err)
+	if got, err := resolveMCPProjectRoots(cfg, []mcppkg.Root{{URI: mcpProjectTestURI(child)}}); err != nil || got.scope != "project:bound" {
+		t.Fatalf("canonical fixture = %+v, %v", got, err)
+	}
+	for _, root := range []string{link, filepath.Join(link, "child")} {
+		if got, err := resolveMCPProjectRoots(cfg, []mcppkg.Root{{URI: mcpProjectTestURI(root)}}); got != (mcpProject{}) || err != errMCPProjectRootsUnbound {
+			t.Fatalf("workspace through symlink = %+v, %v", got, err)
+		}
 	}
 }
 
@@ -138,7 +184,7 @@ func TestMCPProjectRootsNativeWindowsURI(t *testing.T) {
 			t.Fatalf("Windows device name should be refused, got %v", err)
 		}
 		cfg := mcpProjectSetup(t)
-		work := t.TempDir()
+		work := mcpProjectRootsTempDir(t)
 		bound, _, err := bindProjectDir(testCtx(t), work, "project:win")
 		if err != nil {
 			t.Fatal(err)
@@ -153,7 +199,7 @@ func TestMCPProjectRootsNativeWindowsURI(t *testing.T) {
 func TestMCPProjectRootsWSLDriveURI(t *testing.T) {
 	skipWSLSimulationOnWindows(t)
 	cfg := mcpProjectSetup(t)
-	mount := t.TempDir()
+	mount := mcpProjectRootsTempDir(t)
 	withWSLEnv(t, "linux", mount)
 	withWSLDistro(t, "Ubuntu")
 	work := filepath.Join(mount, "c", "Fixture Project")
@@ -170,5 +216,11 @@ func TestMCPProjectRootsWSLDriveURI(t *testing.T) {
 	}
 	if got, err := resolveMCPProjectRoots(cfg, []mcppkg.Root{{URI: "file:///D:/Not%20Mounted"}}); got != (mcpProject{}) || err != errMCPProjectRootsUnbound {
 		t.Fatalf("unmounted WSL drive = %+v, %v", got, err)
+	}
+	if err := os.Symlink(filepath.Join(mount, "c"), filepath.Join(mount, "d")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := resolveMCPProjectRoots(cfg, []mcppkg.Root{{URI: "file:///D:/Fixture%20Project"}}); got != (mcpProject{}) || err != errMCPProjectRootsUnbound {
+		t.Fatalf("symlinked WSL drive = %+v, %v", got, err)
 	}
 }
