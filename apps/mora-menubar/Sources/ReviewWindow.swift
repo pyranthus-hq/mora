@@ -54,6 +54,7 @@ final class ReviewModel: ObservableObject {
 
     private let mora: URL
     private let previewMode: Bool
+    private var state = ReviewSelectionState()
 
     init(mora: URL, preview: Bool) {
         self.mora = mora
@@ -65,12 +66,15 @@ final class ReviewModel: ObservableObject {
         loadingQueue = true
         queueError = nil
         previewError = nil
-        defer { loadingQueue = false }
+        notes = []; selected = nil; loadingPreview = false
+        let generation = state.beginRefresh()
+        defer { if generation == state.generation { loadingQueue = false } }
         do {
             if previewMode {
-                let fixture = try Self.fixture()
-                notes = [ReviewRow(id: fixture.id, kind: fixture.kind, scope: fixture.scope, type: fixture.type, title: fixture.title)]
-                selected = fixture
+                let receipt = try Self.fixture()
+                let row = ReviewRow(id: receipt.preview.id, kind: receipt.preview.kind, scope: receipt.preview.scope, type: receipt.preview.type, title: receipt.preview.title)
+                guard row.isSafe, state.acceptQueue([row], generation: generation) else { return }
+                notes = [row]
                 return
             }
             guard FileManager.default.isExecutableFile(atPath: mora.path) else {
@@ -80,25 +84,29 @@ final class ReviewModel: ObservableObject {
             let result = try await Task.detached(priority: .utility) { try StatusModel.runCollector(mora, arguments: ["review", "--list", "--json"]) }.value
             guard result.status == 0 else { throw ReviewLoadError.failed(Self.commandMessage(result)) }
             let receipt = try JSONDecoder().decode(ReviewListReceipt.self, from: Data(result.output.utf8))
-            guard receipt.isCanonical else { throw ReviewLoadError.failed("Mora returned an unsupported review list.") }
-            notes = receipt.notes
-            selected = nil
+            let rows = try receipt.validated()
+            guard state.acceptQueue(rows, generation: generation) else { return }
+            notes = rows
         } catch let error as ReviewLoadError {
-            queueError = error
+            if generation == state.generation { notes = []; selected = nil; queueError = error }
         } catch {
-            queueError = .failed(Self.short(error.localizedDescription))
+            if generation == state.generation { notes = []; selected = nil; queueError = .failed(Self.short(error.localizedDescription)) }
         }
     }
 
     func show(_ row: ReviewRow) async {
-        guard !loadingPreview else { return }
+        guard let token = state.beginSelection(row) else {
+            previewError = .failed(ReviewReceiptError.invalidRow.localizedDescription)
+            return
+        }
         loadingPreview = true
         previewError = nil
-        defer { loadingPreview = false }
+        defer { if token.queue == state.generation && token.selection == state.selectionGeneration { loadingPreview = false } }
         do {
             if previewMode {
-                let fixture = try Self.fixture()
-                guard fixture.id == row.id else { throw ReviewLoadError.failed("The fixture item is unavailable.") }
+                let receipt = try Self.fixture()
+                let fixture = try receipt.validated(for: row)
+                guard state.acceptsPreview(fixture, row: row, queue: token.queue, selection: token.selection) else { return }
                 selected = fixture
                 return
             }
@@ -106,14 +114,13 @@ final class ReviewModel: ObservableObject {
             let result = try await Task.detached(priority: .utility) { try StatusModel.runCollector(mora, arguments: ["review", "--show", row.kind, row.id, "--json"]) }.value
             guard result.status == 0 else { throw ReviewLoadError.failed(Self.commandMessage(result)) }
             let receipt = try JSONDecoder().decode(ReviewPreviewReceipt.self, from: Data(result.output.utf8))
-            guard receipt.isCanonical, receipt.preview.id == row.id, receipt.preview.kind == row.kind else {
-                throw ReviewLoadError.failed("Mora returned a mismatched preview.")
-            }
-            selected = receipt.preview
+            let preview = try receipt.validated(for: row)
+            guard state.acceptsPreview(preview, row: row, queue: token.queue, selection: token.selection) else { return }
+            selected = preview
         } catch let error as ReviewLoadError {
-            previewError = error
+            if token.queue == state.generation && token.selection == state.selectionGeneration { previewError = error }
         } catch {
-            previewError = .failed(Self.short(error.localizedDescription))
+            if token.queue == state.generation && token.selection == state.selectionGeneration { previewError = .failed(Self.short(error.localizedDescription)) }
         }
     }
 
@@ -123,13 +130,13 @@ final class ReviewModel: ObservableObject {
 
     private static func short(_ text: String) -> String { String(text.prefix(200)) }
 
-    private static func fixture() throws -> ReviewPreview {
+    private static func fixture() throws -> ReviewPreviewReceipt {
         guard let url = Bundle.main.url(forResource: "ReviewPreviewFixture", withExtension: "json") else {
             throw ReviewLoadError.unavailable("The bundled review fixture is missing.")
         }
         let receipt = try JSONDecoder().decode(ReviewPreviewReceipt.self, from: Data(contentsOf: url))
-        guard receipt.isCanonical else { throw ReviewLoadError.failed("The bundled review fixture is invalid.") }
-        return receipt.preview
+        guard receipt.schema == "mora.review.preview", receipt.schemaVersion == 1 else { throw ReviewLoadError.failed("The bundled review fixture is invalid.") }
+        return receipt
     }
 }
 
@@ -202,17 +209,17 @@ struct ReviewView: View {
                 }
                 Text(verbatim: "Canonical revision: \(preview.canonicalRevision)").font(.system(size: 10)).foregroundStyle(.secondary).textSelection(.enabled)
                 Text(verbatim: "Display digest: \(preview.displayDigest)").font(.system(size: 10)).foregroundStyle(.secondary).textSelection(.enabled)
-                if !preview.complete {
+                if !preview.isKeepEligible {
                     Text(verbatim: "Incomplete preview: \(preview.incompleteness.joined(separator: ", ")). Keep is unavailable.")
                         .font(.system(size: 11)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                 }
                 Text("Index visibility is not reported by this read-only preview. Search may lag; this window does not claim the note is indexed.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
-                    if preview.complete { Button("Keep (unavailable)") {}.disabled(true) }
+                    if preview.isKeepEligible { Button("Keep (unavailable)") {}.disabled(true) }
                     Button("Discard (unavailable)") {}.disabled(true)
                 }
-                Text("To make a decision, run mora review in your own terminal. This app has no enrolled trusted-verifier decision path.")
+                Text("Desktop approvals are unavailable because this app has no enrolled trusted-verifier decision path.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             .padding(10)

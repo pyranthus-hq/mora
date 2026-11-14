@@ -42,6 +42,11 @@ private struct MoraMark: View {
 final class PreviewWindowDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if CommandLine.arguments.contains("--review") {
+            let directory = Bundle.main.executableURL!.deletingLastPathComponent()
+            ReviewWindowController.shared.show(mora: directory.appendingPathComponent("mora"), preview: CommandLine.arguments.contains("--preview"))
+            return
+        }
         guard CommandLine.arguments.contains("--preview") else { return }
         let view = StatusPanel(model: StatusModel(preview: true), isPreview: true)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 300), styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -172,18 +177,17 @@ struct StatusPanel: View {
                 .accessibilityLabel("Refresh status").help("Refresh status")
             }
 
-            if let text = model.snapshot?.review?.rowText {
-                Button {
-                    ReviewWindowController.shared.show(mora: model.reviewBinary, preview: isPreview)
-                } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(text).font(.system(size: 12))
-                        Text("Click to review.").font(.system(size: 11)).foregroundStyle(.secondary)
-                    }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityHint("Open the agent notes that wait for review")
+            Button {
+                ReviewWindowController.shared.show(mora: model.reviewBinary, preview: isPreview)
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.snapshot?.review?.rowText ?? "Review agent notes").font(.system(size: 12))
+                    Text("Open the read-only saved and held queues.").font(.system(size: 11)).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Review agent notes")
+            .accessibilityHint("Open the read-only saved and held queues")
 
             if let given = model.snapshot?.given, let text = given.rowText(now: Date(), timeZone: .current) {
                 VStack(alignment: .leading, spacing: 2) {

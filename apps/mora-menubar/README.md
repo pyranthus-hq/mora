@@ -11,8 +11,8 @@ snapshot may not include current source data. It starts a collector check
 immediately, refreshes every 60 seconds, and retains the last good result when
 a refresh fails.
 
-When the collector reports pending review counts, its Status entry opens a
-separate read-only review window. That window uses the bundled `mora` binary
+The Status entry always offers a separate read-only review window, even when
+the collector has not reported a pending count. That window uses the bundled `mora` binary
 and only these public commands:
 
 ```sh
@@ -28,8 +28,7 @@ is not part of this read-only receipt, so it does not claim that a note is
 already searchable.
 
 Keep and Discard are disabled. This unsigned app has no released, enrolled
-trusted-verifier decision protocol; use `mora review` in the owner’s terminal
-to make a decision. A redacted, truncated, escaped, or omitted-argument preview
+trusted-verifier decision protocol. A redacted, truncated, escaped, or omitted-argument preview
 also omits Keep. No UI or fixture path invokes `review-act` or writes the vault.
 
 ## Build
@@ -56,6 +55,7 @@ collector, or a vault.
 
 ```sh
 "apps/mora-menubar/build/Mora Status.app/Contents/MacOS/Mora Status" --preview
+"apps/mora-menubar/build/Mora Status.app/Contents/MacOS/Mora Status" --review
 ./apps/mora-menubar/test.sh
 ```
 

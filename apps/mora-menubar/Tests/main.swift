@@ -105,15 +105,31 @@ check(given("other").surfaceText == nil, "unknown surface has no word")
 
 let reviewListJSON = #"{"schema":"mora.review","schema_version":1,"notes":[{"id":"mem_1","kind":"saved","scope":"global","type":"insight","title":"A **title**"},{"id":"p_2","kind":"held","scope":"project:x","type":"fact","title":"Held"}]}"#
 let reviewList = try JSONDecoder().decode(ReviewListReceipt.self, from: Data(reviewListJSON.utf8))
-check(reviewList.isCanonical && reviewList.notes.count == 2, "canonical review queue decoded")
+let validatedRows = try reviewList.validated()
+check(validatedRows.count == 2, "canonical review queue decoded")
 check(reviewList.notes[0].summary == "Saved · global · insight", "queue fields remain plain text")
 let unsupportedList = try JSONDecoder().decode(ReviewListReceipt.self, from: Data(#"{"schema":"mora.review","schema_version":2,"notes":[]}"#.utf8))
-check(!unsupportedList.isCanonical, "unsupported queue version is rejected")
+do { _ = try unsupportedList.validated(); check(false, "unsupported queue version is rejected") } catch { }
+check((try? JSONDecoder().decode(ReviewListReceipt.self, from: Data(#"{"schema":"mora.review","schema_version":1,"notes":null}"#.utf8))) == nil, "null queue is malformed")
+let optionRow = try JSONDecoder().decode(ReviewListReceipt.self, from: Data(#"{"schema":"mora.review","schema_version":1,"notes":[{"id":"--help","kind":"saved","scope":"global","type":"fact","title":"bad"}]}"#.utf8))
+do { _ = try optionRow.validated(); check(false, "argument-like id is rejected") } catch { }
 
-let previewJSON = #"{"schema":"mora.review.preview","schema_version":1,"preview":{"id":"mem_1","kind":"saved","title":"A **title**","text":"Full text","scope":"global","type":"insight","source":"mcp","provenance":"authored","state":"tentative","details":[{"label":"created at","value":"now"}],"complete":false,"redacted":true,"truncated":false,"escaped":false,"omitted_arguments":true,"canonical_revision":"revision","display_digest":"digest"}}"#
+let previewJSON = #"{"schema":"mora.review.preview","schema_version":1,"preview":{"id":"mem_1","kind":"saved","title":"A **title**","text":"Full text","scope":"global","type":"insight","source":"mcp","provenance":"authored","state":"tentative","complete":false,"redacted":true,"truncated":false,"escaped":false,"omitted_arguments":true,"canonical_revision":"revision","display_digest":"digest"}}"#
 let preview = try JSONDecoder().decode(ReviewPreviewReceipt.self, from: Data(previewJSON.utf8))
-check(preview.isCanonical && preview.preview.id == "mem_1", "canonical full preview decoded")
+let validatedPreview = try preview.validated(for: reviewList.notes[0])
+check(validatedPreview.id == "mem_1", "canonical full preview decoded")
+check(preview.preview.details.isEmpty, "omitted details decode as an empty list")
 check(preview.preview.incompleteness == ["redacted values", "omitted arguments"], "incomplete preview remains ineligible for Keep")
 let unsupportedPreview = try JSONDecoder().decode(ReviewPreviewReceipt.self, from: Data(#"{"schema":"wrong","schema_version":1,"preview":{"id":"mem_1","kind":"saved","title":"x","text":"x","scope":"global","type":"fact","source":"mcp","provenance":"authored","state":"tentative","details":[],"complete":true,"redacted":false,"truncated":false,"escaped":false,"omitted_arguments":false,"canonical_revision":"r","display_digest":"d"}}"#.utf8))
-check(!unsupportedPreview.isCanonical, "wrong preview schema is rejected")
+do { _ = try unsupportedPreview.validated(for: reviewList.notes[0]); check(false, "wrong preview schema is rejected") } catch { }
+var selection = ReviewSelectionState()
+let queueOne = selection.beginRefresh()
+check(selection.acceptQueue(reviewList.notes, generation: queueOne), "current queue is accepted")
+let firstSelection = selection.beginSelection(reviewList.notes[0])!
+let queueTwo = selection.beginRefresh()
+check(!selection.acceptQueue(reviewList.notes, generation: queueOne), "stale queue is dropped")
+check(!selection.acceptsPreview(preview.preview, row: reviewList.notes[0], queue: firstSelection.queue, selection: firstSelection.selection), "late preview cannot reappear after refresh")
+check(selection.acceptQueue(reviewList.notes, generation: queueTwo), "fresh queue is accepted")
+let secondSelection = selection.beginSelection(reviewList.notes[1])!
+check(!selection.acceptsPreview(preview.preview, row: reviewList.notes[0], queue: secondSelection.queue, selection: secondSelection.selection), "different current selection rejects old preview")
 print("Review receipt checks passed")
