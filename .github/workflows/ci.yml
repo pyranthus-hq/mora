@@ -178,14 +178,26 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Native Windows review build and self-test
-        shell: powershell
-        run: ./apps/mora-review/windows/build.ps1
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
+      - name: Candidate Windows package and pin verification
+        shell: powershell
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP 'mora review candidate'
+          ./apps/mora-review/windows/package-test.ps1 -Source $PWD -OutputDirectory $output
+      - name: Upload candidate Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: mora-review-windows-candidate
+          path: ${{ runner.temp }}/mora review candidate/MoraReview-*-windows-amd64.zip
+          if-no-files-found: error
+          retention-days: 7
+      - name: Native Windows review build and self-test
+        shell: powershell
+        run: ./apps/mora-review/windows/build.ps1
       - name: go build
         env:
           CGO_ENABLED: "0"
