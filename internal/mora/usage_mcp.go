@@ -99,13 +99,21 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 		if profiled {
 			proposedBy = profile.Name
 		}
-		inv.value, inv.err = stageMCPWriteProposalHeld(cfg, args, proposedBy, nil)
+		if name == "submit_resource" {
+			inv.value, inv.err = stageMCPResourceProposalWith(traced, cfg, args, proposedBy)
+		} else {
+			inv.value, inv.err = stageMCPWriteProposalHeld(cfg, args, proposedBy, nil)
+		}
 		policyHandled = true
 		proposed = true
 	case mcppkg.ActionTentative:
 		// Only unprofiled clients reach this: a profile's write is open,
 		// propose or readonly (agentProfile.validate).
-		inv.value, inv.err = mcpWriteTentative(traced, cfg, args)
+		if name == "submit_resource" {
+			inv.value, inv.err = mcpSubmitResourceTentative(traced, cfg, args)
+		} else {
+			inv.value, inv.err = mcpWriteTentative(traced, cfg, args)
+		}
 		policyHandled = true
 	}
 	if !policyHandled {
@@ -119,7 +127,7 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 			receipt.ProposalID = proposalIDOf(inv.value)
 		case action == mcppkg.ActionRefuse:
 			receipt.Action = "refused"
-		case name == "write_memory" || name == "delete_memory":
+		case name == "write_memory" || name == "delete_memory" || name == "submit_resource":
 			receipt.Action = "wrote"
 		}
 		if inv.err == nil && !proposed {

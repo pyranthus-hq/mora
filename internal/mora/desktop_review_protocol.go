@@ -15,6 +15,8 @@ const (
 	desktopReviewDiscard  desktopReviewAction = "discard"
 	desktopReviewActivate desktopReviewAction = "activate"
 	desktopReviewRetire   desktopReviewAction = "retire"
+	desktopReviewDetach   desktopReviewAction = "detach"
+	desktopReviewRollback desktopReviewAction = "rollback"
 )
 
 const desktopReviewProjectRule = "project_rule"

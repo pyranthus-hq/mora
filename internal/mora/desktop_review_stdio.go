@@ -24,6 +24,7 @@ type desktopReviewFrame struct {
 	CanonicalRevision  string              `json:"canonical_revision,omitempty"`
 	DisplayDigest      string              `json:"display_digest,omitempty"`
 	ProjectDir         string              `json:"project_dir,omitempty"`
+	Path               string              `json:"path,omitempty"`
 	Client             string              `json:"client,omitempty"`
 	Nonce              string              `json:"nonce,omitempty"`
 	PublicKeyP256      string              `json:"public_key_p256_b64,omitempty"`
@@ -45,6 +46,8 @@ type desktopReviewFrameResponse struct {
 	Rules             []reviewRow              `json:"rules,omitempty"`
 	Projects          []desktopReviewProject   `json:"projects,omitempty"`
 	Preview           *desktopReviewPreview    `json:"preview,omitempty"`
+	FilePath          string                   `json:"file_path,omitempty"`
+	FileText          string                   `json:"file_text,omitempty"`
 	Enrolled          *bool                    `json:"enrolled,omitempty"`
 	ReadOnly          *bool                    `json:"read_only,omitempty"`
 	InstallationID    string                   `json:"installation_id,omitempty"`
@@ -156,6 +159,50 @@ func handleDesktopReviewFrame(ctx context.Context, cfg Config, authority *deskto
 		return nativeOwnerWebAuthnProof{CredentialID: credential, ClientDataJSON: client, AuthenticatorData: auth, SignatureDER: signature}, true
 	}
 	switch request.Op {
+	case "resource.show":
+		preview, _, _, _, _, err := resourcePreview(cfg, request.ProjectDir, request.Client, request.ID, request.CanonicalRevision)
+		if err != nil {
+			return desktopReviewFrameFailure("ERR_REVIEW_UNAVAILABLE", "resource preview is unavailable")
+		}
+		return desktopReviewFrameResponse{Preview: &preview}
+	case "resource.file":
+		text, err := readResourcePreviewFile(cfg, request.ProjectDir, request.Client, request.ID, request.CanonicalRevision, request.Path)
+		if err != nil {
+			return desktopReviewFrameFailure("ERR_REVIEW_UNAVAILABLE", "resource file is unavailable")
+		}
+		return desktopReviewFrameResponse{FilePath: request.Path, FileText: text}
+	case "resource.decision.begin":
+		action := resourceDecisionAction(request.Action)
+		challenge, err := newResourceDecisionAuthority(cfg, verifier).begin(action, request.ProjectDir, request.Client, request.ID, request.CanonicalRevision, request.DisplayDigest)
+		if err != nil {
+			return desktopReviewFrameFailure(desktopReviewErrorCode(err), "resource decision is unavailable")
+		}
+		signed, err := challenge.bytes()
+		if err != nil {
+			return desktopReviewFrameFailure("ERR_REVIEW_UNAVAILABLE", "resource decision is unavailable")
+		}
+		return desktopReviewFrameResponse{ChallengeBytesB64: base64.StdEncoding.EncodeToString(signed), KeyID: challenge.KeyID, Nonce: challenge.Nonce}
+	case "resource.decision.complete":
+		if runtime.GOOS == "windows" {
+			proof, ok := webProof(true)
+			if !ok {
+				return desktopReviewFrameFailure("ERR_INVALID_REQUEST", "invalid decision proof")
+			}
+			out, err := newResourceDecisionAuthority(cfg, nativeOwnerWebAuthnSessionVerifier{base: verifier, proof: proof}).complete(ctx, request.Nonce, nil, false)
+			if err != nil {
+				return desktopReviewFrameFailure(desktopReviewErrorCode(err), "resource decision was not accepted")
+			}
+			return desktopReviewFrameResponse{Outcome: &out}
+		}
+		proof, ok := decode(request.SignatureDER)
+		if !ok {
+			return desktopReviewFrameFailure("ERR_INVALID_REQUEST", "invalid decision proof")
+		}
+		out, err := newResourceDecisionAuthority(cfg, verifier).complete(ctx, request.Nonce, proof, false)
+		if err != nil {
+			return desktopReviewFrameFailure(desktopReviewErrorCode(err), "resource decision was not accepted")
+		}
+		return desktopReviewFrameResponse{Outcome: &out}
 	case "project_rule.list":
 		return listDesktopProjectRules(cfg, request)
 	case "project_rule.show":

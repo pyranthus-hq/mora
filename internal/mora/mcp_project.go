@@ -248,7 +248,7 @@ func mcpProjectAllowsMemory(ctx context.Context, m Memory) bool {
 // other permits it.
 func mcpProjectAllowsCall(ctx context.Context, name string, args map[string]any) error {
 	p, ok := mcpProjectFrom(ctx)
-	if !ok || !mcpWorkspaceManaged(ctx) || name != "write_memory" {
+	if !ok || !mcpWorkspaceManaged(ctx) || (name != "write_memory" && name != "submit_resource") {
 		return nil
 	}
 	scope, ok := args["scope"].(string)
@@ -265,12 +265,13 @@ func mcpProjectAllowsCall(ctx context.Context, name string, args map[string]any)
 }
 
 var mcpProjectSafeTools = map[string]bool{
-	"search_memory":  true,
-	"read_memory":    true,
-	"list_memory":    true,
-	"context_memory": true,
-	"write_memory":   true,
-	"brief":          true,
+	"search_memory":      true,
+	"read_memory":        true,
+	"context_memory":     true,
+	"write_memory":       true,
+	"brief":              true,
+	"discover_resources": true,
+	"submit_resource":    true,
 }
 
 func mcpProjectAllowsTool(ctx context.Context, name string) bool {
@@ -297,7 +298,7 @@ func withProjectInstruction(ctx context.Context, result map[string]any, configOK
 // is the client's and is left alone.
 func withProjectScope(ctx context.Context, name string, args map[string]any) map[string]any {
 	p, ok := mcpProjectFrom(ctx)
-	if _, has := args["scope"]; !ok || name != "write_memory" || has {
+	if _, has := args["scope"]; !ok || (name != "write_memory" && name != "submit_resource") || has {
 		return args
 	}
 	shaped := make(map[string]any, len(args)+1)
