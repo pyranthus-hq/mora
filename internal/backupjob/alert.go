@@ -189,7 +189,7 @@ func fingerprintFor(h Health) string {
 	return hex.EncodeToString(sum[:])
 }
 func sameAlertScope(a Alert, h Health) bool {
-	return a.JobID == h.JobID && a.TargetID == h.TargetID && a.PolicyDigest == h.PolicyDigest
+	return a.JobID == h.JobID && a.PolicyDigest == h.PolicyDigest && (a.TargetID == h.TargetID || (a.State == "unconfigured" && a.TargetID == ""))
 }
 func successAfter(success, attempted string, now time.Time) bool {
 	if !validTimestamp(success, now) || !validTimestamp(attempted, now) {

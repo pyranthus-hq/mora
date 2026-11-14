@@ -59,6 +59,8 @@ type Receipt struct {
 }
 
 // JobSpec is both the expected job identity for Classify and the input to Begin.
+// TargetID identifies this job's destination. For local archives and scoped
+// shares it is their own stable destination identity, not full-vault authority.
 type JobSpec struct {
 	JobID, TargetID, PolicyDigest, RunID, Operation string
 	RecoverRunID, RecoverStartedAt                  string

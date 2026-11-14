@@ -268,3 +268,45 @@ func TestAlertOnePerFailureEpisodeAcrossRestart(t *testing.T) {
 		t.Fatalf("new success failed recovery: %+v %v", fresh, err)
 	}
 }
+
+func TestUnconfiguredAlertClosesOnlyAfterMatchingJobSuccess(t *testing.T) {
+	state := t.TempDir()
+	spec := testSpec("")
+	spec.TargetID = ""
+	h := Classify(state, spec, nil, nil, nil, testNow)
+	first, notify, err := AdvanceAlert(state, h, testNow)
+	if err != nil || !notify {
+		t.Fatal(err)
+	}
+	h.State = "healthy"
+	h.TargetID = "selected-target"
+	h.LastSuccessAt = testNow.Add(time.Minute).Format(time.RFC3339)
+	h.PolicyDigest = "unrelated"
+	untouched, _, err := AdvanceAlert(state, h, testNow.Add(time.Minute))
+	if err != nil || untouched.RecoveredAt != "" {
+		t.Fatal("wrong policy recovered alert", err)
+	}
+	h.PolicyDigest = spec.PolicyDigest
+	closed, notify, err := AdvanceAlert(state, h, testNow.Add(2*time.Minute))
+	if err != nil || notify || closed.RecoveredAt == "" || closed.EpisodeID != first.EpisodeID {
+		t.Fatalf("configured success: %+v %v", closed, err)
+	}
+}
+
+func TestFinishFailureNeverReturnsSuccessReceipt(t *testing.T) {
+	state := t.TempDir()
+	run, err := Begin(state, testSpec("one"), testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(receiptPath(state, "vault-git")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(receiptPath(state, "vault-git"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := Finish(run, Result{State: "succeeded"}, testNow.Add(time.Minute))
+	if err == nil || receipt.State != "" {
+		t.Fatalf("failed finish returned success: %+v %v", receipt, err)
+	}
+}

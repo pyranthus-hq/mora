@@ -115,7 +115,18 @@ func Begin(stateDir string, spec JobSpec, now time.Time) (_ *Run, retErr error) 
 	if err != nil {
 		return nil, err
 	}
-	if err := lockRun(lock); err != nil {
+	// Health probes hold this lock only briefly; let an overlapping probe drain.
+	var lockErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		lockErr = lockRun(lock)
+		if lockErr == nil {
+			break
+		}
+		if attempt < 4 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if lockErr != nil {
 		_ = lock.Close()
 		return nil, ErrRunning
 	}
@@ -162,7 +173,8 @@ func Begin(stateDir string, spec JobSpec, now time.Time) (_ *Run, retErr error) 
 }
 
 // Finish cannot accept a copied Receipt: it consumes the Run which still holds
-// the OS lease established by Begin.
+// the OS lease established by Begin. Invalid input retains the lease so the
+// caller can correct the result or explicitly Close the interrupted run.
 func Finish(run *Run, result Result, now time.Time) (out Receipt, retErr error) {
 	if run == nil {
 		return Receipt{}, ErrOwnershipLost
@@ -175,7 +187,12 @@ func Finish(run *Run, result Result, now time.Time) (out Receipt, retErr error) 
 	if (result.State != "succeeded" && result.State != "failed" && result.State != "diverged") || (result.LocalOID != "" && !safeToken(result.LocalOID, maxDigest)) || (result.RemoteOID != "" && !safeToken(result.RemoteOID, maxDigest)) {
 		return Receipt{}, errors.New("invalid backup result")
 	}
-	defer func() { retErr = errors.Join(retErr, run.closeLocked()) }()
+	defer func() {
+		retErr = errors.Join(retErr, run.closeLocked())
+		if retErr != nil {
+			out = Receipt{}
+		}
+	}()
 	path, err := checkedPath(run.stateDir, receiptPath(run.stateDir, run.Receipt.JobID))
 	if err != nil {
 		return Receipt{}, err
