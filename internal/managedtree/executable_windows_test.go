@@ -24,6 +24,9 @@ func TestWindowsAcceptsImportedExecutableManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install imported executable manifest: %v", err)
 	}
+	if !manifest.Revision.Files[0].Executable {
+		t.Fatal("install did not retain imported executable metadata")
+	}
 	if _, err := DetachTree(destination, manifest); err != nil {
 		t.Fatalf("detach imported executable manifest: %v", err)
 	}

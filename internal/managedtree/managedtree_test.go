@@ -156,7 +156,7 @@ func TestInstallTreePreservesIncompleteTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeTree(t, filepath.Join(parent, stage), map[string]string{"partial": "stage"})
-	if err := beginTransaction(parent, transactionMarker(base), stage, backup); err != nil {
+	if _, err := beginTransaction(parent, transactionMarker(base), stage, backup); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := InstallTree(revision, destination, nil); !errors.Is(err, ErrConflict) {
@@ -185,7 +185,7 @@ func TestIncompleteTransactionBlocksDifferentRevisionWithoutDestination(t *testi
 		t.Fatal(err)
 	}
 	writeTree(t, filepath.Join(parent, stage), map[string]string{"managed": "first"})
-	if err := beginTransaction(parent, transactionMarker(base), stage, stage+".backup"); err != nil {
+	if _, err := beginTransaction(parent, transactionMarker(base), stage, stage+".backup"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := InstallTree(second, destination, nil); !errors.Is(err, ErrConflict) {
@@ -233,7 +233,12 @@ func TestSyncFailurePreservesPriorDestination(t *testing.T) {
 	if _, err := InstallTree(newRevision, destination, &manifest); err == nil {
 		t.Fatal("install succeeded despite staged file sync failure")
 	}
+	syncFile = originalSync
 	assertFile(t, filepath.Join(destination, "managed"), "old")
+	assertNoTransactionArtifacts(t, root, "destination")
+	if _, err := InstallTree(newRevision, destination, &manifest); err != nil {
+		t.Fatalf("retry after prepublish sync failure: %v", err)
+	}
 }
 
 func TestPostParkSyncFailurePreservesTransactionPaths(t *testing.T) {
@@ -306,8 +311,18 @@ func TestPostPublishSyncFailurePreservesNewAndPriorTrees(t *testing.T) {
 		return originalSync(path)
 	}
 	t.Cleanup(func() { syncDir = originalSync })
-	if _, err := InstallTree(newRevision, destination, &manifest); !errors.Is(err, ErrConflict) {
+	got, err := InstallTree(newRevision, destination, &manifest)
+	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("post-publish sync error = %v, want recoverable conflict", err)
+	}
+	if got.Revision.Digest != newRevision.Digest || got.Destination != destination {
+		t.Fatalf("post-publish receipt = %#v, want live new manifest", got)
+	}
+	if !strings.Contains(err.Error(), "new revision is live") {
+		t.Fatalf("post-publish error = %v, want live-revision recovery path", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, transactionMarker("destination"))); err != nil {
+		t.Fatalf("post-publish recovery marker missing: %v", err)
 	}
 	assertFile(t, filepath.Join(destination, "managed"), "new")
 	entries, err := os.ReadDir(root)
@@ -321,6 +336,113 @@ func TestPostPublishSyncFailurePreservesNewAndPriorTrees(t *testing.T) {
 		}
 	}
 	t.Fatal("prior backup was not preserved after post-publish failure")
+}
+
+func TestInstallTreePreservesTreeChangedDuringSwap(t *testing.T) {
+	for name, mutate := range map[string]func(string){
+		"managed edit":     func(destination string) { writeTree(t, destination, map[string]string{"managed": "edited"}) },
+		"new foreign file": func(destination string) { writeTree(t, destination, map[string]string{"foreign/keep": "new foreign"}) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			oldSource, newSource := filepath.Join(root, "old"), filepath.Join(root, "new")
+			destination := filepath.Join(root, "destination")
+			writeTree(t, oldSource, map[string]string{"managed": "old", "foreign/original": "keep"})
+			writeTree(t, newSource, map[string]string{"managed": "new"})
+			oldRevision, err := DigestTree(oldSource)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifest, err := InstallTree(oldRevision, destination, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			newRevision, err := DigestTree(newSource)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			originalSync := syncDir
+			mutated := false
+			syncDir = func(path string) error {
+				if !mutated && strings.HasPrefix(filepath.Base(path), ".destination.managedtree-stage-") {
+					mutated = true
+					mutate(destination)
+				}
+				return originalSync(path)
+			}
+			t.Cleanup(func() { syncDir = originalSync })
+			if _, err := InstallTree(newRevision, destination, &manifest); !errors.Is(err, ErrConflict) {
+				t.Fatalf("swap race error = %v, want recoverable conflict", err)
+			}
+			if !mutated {
+				t.Fatal("test did not stage a deterministic destination change")
+			}
+			if _, err := os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("destination should remain parked for recovery: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(root, transactionMarker("destination"))); err != nil {
+				t.Fatalf("swap-race recovery marker missing: %v", err)
+			}
+			backup := findBackup(t, root)
+			assertFile(t, filepath.Join(backup, "foreign/original"), "keep")
+			if name == "managed edit" {
+				assertFile(t, filepath.Join(backup, "managed"), "edited")
+			} else {
+				assertFile(t, filepath.Join(backup, "foreign/keep"), "new foreign")
+			}
+		})
+	}
+}
+
+func TestInstallTreePreservesForeignNewManagedPathCollision(t *testing.T) {
+	root := t.TempDir()
+	oldSource, newSource := filepath.Join(root, "old"), filepath.Join(root, "new")
+	destination := filepath.Join(root, "destination")
+	writeTree(t, oldSource, map[string]string{"managed": "old"})
+	writeTree(t, newSource, map[string]string{"managed": "new", "new-managed": "approved"})
+	oldRevision, err := DigestTree(oldSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := InstallTree(oldRevision, destination, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTree(t, destination, map[string]string{"new-managed": "foreign"})
+	newRevision, err := DigestTree(newSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InstallTree(newRevision, destination, &manifest); !errors.Is(err, ErrConflict) {
+		t.Fatalf("new managed path collision = %v, want conflict", err)
+	}
+	assertFile(t, filepath.Join(destination, "managed"), "old")
+	assertFile(t, filepath.Join(destination, "new-managed"), "foreign")
+}
+
+func TestInstallTreePreservesDestinationDirectoryMode(t *testing.T) {
+	root := t.TempDir()
+	oldSource, newSource := filepath.Join(root, "old"), filepath.Join(root, "new")
+	destination := filepath.Join(root, "destination")
+	writeTree(t, oldSource, map[string]string{"managed": "old"})
+	writeTree(t, newSource, map[string]string{"managed": "new"})
+	oldRevision, _ := DigestTree(oldSource)
+	manifest, err := InstallTree(oldRevision, destination, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(destination, 0o751); err != nil {
+		t.Fatal(err)
+	}
+	newRevision, _ := DigestTree(newSource)
+	if _, err := InstallTree(newRevision, destination, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(destination)
+	if err != nil || info.Mode().Perm() != 0o751 {
+		t.Fatalf("destination mode = %v, %v; want 0751", info.Mode(), err)
+	}
 }
 
 func TestRejectsHostileNamesAndLinks(t *testing.T) {
@@ -397,6 +519,35 @@ func assertFile(t *testing.T, path, want string) {
 	if err != nil || string(got) != want {
 		t.Fatalf("%s = %q, %v; want %q", path, got, err, want)
 	}
+}
+
+func assertNoTransactionArtifacts(t *testing.T, parent, base string) {
+	t.Helper()
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := "." + base + ".managedtree-"
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), prefix) {
+			t.Fatalf("left transaction artifact %s after prepublish failure", entry.Name())
+		}
+	}
+}
+
+func findBackup(t *testing.T, parent string) string {
+	t.Helper()
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".backup") {
+			return filepath.Join(parent, entry.Name())
+		}
+	}
+	t.Fatal("preserved backup was not found")
+	return ""
 }
 
 func TestFilesSorted(t *testing.T) {

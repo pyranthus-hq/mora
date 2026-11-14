@@ -92,6 +92,29 @@ func InstallTree(source Revision, destination string, prior *Manifest) (Manifest
 	if err := incompleteTransaction(parentRoot, parent, marker); err != nil {
 		return Manifest{}, err
 	}
+	stagePath, err := os.MkdirTemp(parent, "."+base+".managedtree-stage-")
+	if err != nil {
+		return Manifest{}, fmt.Errorf("creating staging tree: %w", err)
+	}
+	stage := filepath.Base(stagePath)
+	backup := stage + ".backup"
+	markerOwned := false
+	preserveTransaction := false
+	defer func() {
+		if !preserveTransaction {
+			_ = parentRoot.RemoveAll(stage)
+			if markerOwned {
+				_ = parentRoot.Remove(marker)
+			}
+		}
+	}()
+	markerOwned, err = beginTransaction(parent, marker, stage, backup)
+	if err != nil {
+		if markerOwned {
+			preserveTransaction = true
+		}
+		return Manifest{}, err
+	}
 
 	destInfo, err := parentRoot.Lstat(base)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -115,25 +138,10 @@ func InstallTree(source Revision, destination string, prior *Manifest) (Manifest
 		return Manifest{}, fmt.Errorf("%w: manifest destination is missing", ErrConflict)
 	}
 
-	stagePath, err := os.MkdirTemp(parent, "."+base+".managedtree-stage-")
-	if err != nil {
-		return Manifest{}, fmt.Errorf("creating staging tree: %w", err)
-	}
-	stage := filepath.Base(stagePath)
-	backup := stage + ".backup"
-	if err := beginTransaction(parent, marker, stage, backup); err != nil {
-		_ = os.RemoveAll(stagePath)
-		return Manifest{}, err
-	}
-	preserveTransaction := false
-	defer func() {
-		if !preserveTransaction {
-			_ = parentRoot.RemoveAll(stage)
-			_ = parentRoot.Remove(marker)
-		}
-	}()
-
 	if exists {
+		if err := parentRoot.Chmod(stage, destInfo.Mode().Perm()); err != nil {
+			return Manifest{}, fmt.Errorf("preserving destination mode on staging tree: %w", err)
+		}
 		if err := copyTree(parentRoot, base, parentRoot, stage); err != nil {
 			return Manifest{}, fmt.Errorf("copying destination to staging: %w", err)
 		}
@@ -142,7 +150,17 @@ func InstallTree(source Revision, destination string, prior *Manifest) (Manifest
 	if err != nil {
 		return Manifest{}, fmt.Errorf("opening staging tree: %w", err)
 	}
+	var copiedSnapshot []File
 	if prior != nil {
+		copiedSnapshot, err = scanRoot(stageRoot)
+		if err != nil {
+			stageRoot.Close()
+			return Manifest{}, fmt.Errorf("checking copied destination: %w", err)
+		}
+		if err := verifyFiles(stageRoot, prior.Revision.Files); err != nil {
+			stageRoot.Close()
+			return Manifest{}, err
+		}
 		if err := removeManaged(stageRoot, prior.Revision.Files); err != nil {
 			stageRoot.Close()
 			return Manifest{}, err
@@ -177,30 +195,37 @@ func InstallTree(source Revision, destination string, prior *Manifest) (Manifest
 		if err := syncDir(parent); err != nil {
 			return Manifest{}, transactionRecoveryError(parent, marker, stage, backup, err)
 		}
+		if err := verifySnapshot(parentRoot, backup, copiedSnapshot); err != nil {
+			return Manifest{}, transactionRecoveryError(parent, marker, stage, backup, err)
+		}
 	}
 	if err := parentRoot.Rename(stage, base); err != nil {
 		preserveTransaction = true
 		return Manifest{}, transactionRecoveryError(parent, marker, stage, backup, err)
 	}
 	preserveTransaction = true
+	installed := Manifest{Revision: source, Destination: dest, InstalledAt: time.Now().UTC()}
 	if err := syncDir(parent); err != nil {
-		return Manifest{}, transactionRecoveryError(parent, marker, stage, backup, err)
+		return installed, publishedRecoveryError(parent, marker, stage, backup, err)
 	}
 	if exists {
+		if err := verifySnapshot(parentRoot, backup, copiedSnapshot); err != nil {
+			return installed, publishedRecoveryError(parent, marker, stage, backup, err)
+		}
 		if err := parentRoot.RemoveAll(backup); err != nil {
-			return Manifest{}, transactionRecoveryError(parent, marker, stage, backup, err)
+			return installed, publishedRecoveryError(parent, marker, stage, backup, err)
 		}
 		if err := syncDir(parent); err != nil {
-			return Manifest{}, transactionRecoveryError(parent, marker, stage, backup, err)
+			return installed, publishedRecoveryError(parent, marker, stage, backup, err)
 		}
 	}
 	if err := parentRoot.Remove(marker); err != nil {
-		return Manifest{}, transactionRecoveryError(parent, marker, stage, backup, err)
+		return installed, publishedRecoveryError(parent, marker, stage, backup, err)
 	}
 	if err := syncDir(parent); err != nil {
-		return Manifest{}, transactionRecoveryError(parent, marker, stage, backup, err)
+		return installed, publishedRecoveryError(parent, marker, stage, backup, err)
 	}
-	return Manifest{Revision: source, Destination: dest, InstalledAt: time.Now().UTC()}, nil
+	return installed, nil
 }
 
 // DetachTree removes only files still byte-for-byte equal to the manifest.
@@ -229,7 +254,7 @@ func DetachTree(destination string, manifest Manifest) ([]string, error) {
 	}
 	defer root.Close()
 	if _, err := scanRoot(root); err != nil {
-		return nil, fmt.Errorf("checking destination topology: %w", err)
+		return nil, fmt.Errorf("%w: foreign destination content is unsupported: %v", ErrConflict, err)
 	}
 
 	var removed []string
@@ -291,19 +316,19 @@ func destinationParts(destination string) (string, string, string, error) {
 
 func transactionMarker(base string) string { return "." + base + ".managedtree-transaction" }
 
-func beginTransaction(parent, marker, stage, backup string) error {
+func beginTransaction(parent, marker, stage, backup string) (bool, error) {
 	body := []byte("mora-managedtree-transaction-v1\n" + stage + "\n" + backup + "\n")
 	path := filepath.Join(parent, marker)
 	if err := atomicio.CreateExclusive(path, body, 0o600); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("%w: incomplete transaction marker already exists at %s; preserve it and inspect its named paths before retrying", ErrConflict, path)
+			return false, fmt.Errorf("%w: incomplete transaction marker already exists at %s; preserve it and inspect its named paths before retrying", ErrConflict, path)
 		}
-		return fmt.Errorf("recording transaction marker: %w", err)
+		return false, fmt.Errorf("recording transaction marker: %w", err)
 	}
 	if err := syncDir(parent); err != nil {
-		return transactionRecoveryError(parent, marker, stage, backup, err)
+		return true, transactionRecoveryError(parent, marker, stage, backup, err)
 	}
-	return nil
+	return true, nil
 }
 
 func incompleteTransaction(parent *os.Root, parentPath, marker string) error {
@@ -319,6 +344,10 @@ func incompleteTransaction(parent *os.Root, parentPath, marker string) error {
 
 func transactionRecoveryError(parent, marker, stage, backup string, cause error) error {
 	return fmt.Errorf("%w: install state preserved after %v; inspect %s, %s, and %s before retrying", ErrConflict, cause, filepath.Join(parent, marker), filepath.Join(parent, stage), filepath.Join(parent, backup))
+}
+
+func publishedRecoveryError(parent, marker, stage, backup string, cause error) error {
+	return fmt.Errorf("%w: new revision is live but cleanup state is preserved after %v; retain the returned manifest and inspect %s, %s, and %s before retrying", ErrConflict, cause, filepath.Join(parent, marker), filepath.Join(parent, stage), filepath.Join(parent, backup))
 }
 
 func scanTree(path string) ([]File, error) {
@@ -419,6 +448,10 @@ func copyFiles(from, to *os.Root, files []File) error {
 			return err
 		}
 		out, err := to.OpenFile(file.Path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if errors.Is(err, os.ErrExist) {
+			_ = in.Close()
+			return fmt.Errorf("%w: managed path collides with existing destination content: %s", ErrConflict, file.Path)
+		}
 		if err == nil {
 			_, err = io.Copy(out, in)
 		}
@@ -459,9 +492,25 @@ func validateInstalled(root *os.Root, name string, files []File) error {
 	}
 	defer dest.Close()
 	if _, err := scanRoot(dest); err != nil {
-		return fmt.Errorf("%w: destination topology is unsupported", ErrConflict)
+		return fmt.Errorf("%w: foreign destination content is unsupported: %v", ErrConflict, err)
 	}
 	return verifyFiles(dest, files)
+}
+
+func verifySnapshot(parent *os.Root, name string, want []File) error {
+	root, err := parent.OpenRoot(name)
+	if err != nil {
+		return fmt.Errorf("opening parked destination: %w", err)
+	}
+	defer root.Close()
+	got, err := scanRoot(root)
+	if err != nil {
+		return fmt.Errorf("scanning parked destination: %w", err)
+	}
+	if !sameFiles(want, got) {
+		return fmt.Errorf("%w: destination changed while install was in progress", ErrConflict)
+	}
+	return nil
 }
 
 func verifyFiles(root *os.Root, files []File) error {
@@ -511,6 +560,18 @@ func sameRevision(a, b Revision) bool {
 	}
 	for i := range a.Files {
 		if a.Files[i] != b.Files[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameFiles(a, b []File) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
 			return false
 		}
 	}
