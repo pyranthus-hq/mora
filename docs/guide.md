@@ -701,7 +701,10 @@ of those fields (`OwnerConfirmedFields` and `OwnerConfirmedDigest` in
 exact text in their own terminal. Agents are told to treat such a note as your
 own words. The keep logs an `owner-confirm` line.
 
-Three actions set this status, each only in your own terminal:
+These actions need a trusted native owner verifier. None is installed in this
+release, so their mutating path fails closed with
+`ERR_OWNER_VERIFICATION_UNAVAILABLE`; a terminal, typed response, or cleared
+agent marker is not authority:
 
 ```bash
 mora review                       # the keep action
@@ -765,8 +768,9 @@ mora undo --force <memory-id>  # any memory
 ```
 
 `mora undo` uses the same delete path as `mora delete`, updates the index, and
-appends an `undo` line to the log. It refuses a memory an agent did not write
-unless you pass `--force`.
+appends an `undo` line to the log. Both destructive CLI routes require an
+explicit `mcp_write_policy=open`; tentative, propose, and readonly refuse
+before mutation, and `--force` does not bypass that policy.
 
 Review staged writes locally:
 
@@ -1845,8 +1849,11 @@ decision log lives under `entries`, and is `[]` when there is no history.
 
 ### Delete or forget
 
-`mora delete <id> --yes` removes one local memory. A connector can create it
-again on the next sync. Use `forget` for a lasting local block:
+`mora delete <id> --yes` removes one local memory only with explicit
+`mcp_write_policy=open`. A connector can create it again on the next sync.
+`forget --yes` changes durable governance and likewise needs a trusted owner
+verifier; list and `--dry-run` stay read-only. Use `forget` for a lasting local
+block:
 
 ```bash
 mora forget --chat imessage_chat/<guid> --dry-run
