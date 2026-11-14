@@ -25,12 +25,15 @@ func TestDigestTreeBindsPathsContentAndExecutableBit(t *testing.T) {
 	if err != nil || first.Digest != second.Digest || !reflect.DeepEqual(first.Files, second.Files) {
 		t.Fatalf("digest is not stable: %#v %#v %v", first, second, err)
 	}
-	if err := os.Chmod(filepath.Join(root, "bin/run"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	modeChanged, err := DigestTree(root)
-	if err != nil || modeChanged.Digest == first.Digest {
-		t.Fatalf("executable-bit change did not alter digest: %v", err)
+	modeChanged := first
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(filepath.Join(root, "bin/run"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		modeChanged, err = DigestTree(root)
+		if err != nil || modeChanged.Digest == first.Digest {
+			t.Fatalf("executable-bit change did not alter digest: %v", err)
+		}
 	}
 	if err := os.Rename(filepath.Join(root, "notes/a.txt"), filepath.Join(root, "notes/b.txt")); err != nil {
 		t.Fatal(err)
@@ -71,8 +74,10 @@ func TestInstallTreeUpdatesManagedFilesAndPreservesForeignFiles(t *testing.T) {
 	assertFile(t, filepath.Join(destination, "a.txt"), "two")
 	assertFile(t, filepath.Join(destination, "new.txt"), "new")
 	assertFile(t, filepath.Join(destination, "foreign/keep.txt"), "foreign")
-	if info, err := os.Stat(filepath.Join(destination, "foreign/keep.txt")); err != nil || info.Mode().Perm() != 0o644 {
-		t.Fatalf("foreign mode = %v, %v; want 0644", info.Mode(), err)
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(filepath.Join(destination, "foreign/keep.txt")); err != nil || info.Mode().Perm() != 0o644 {
+			t.Fatalf("foreign mode = %v, %v; want 0644", info.Mode(), err)
+		}
 	}
 	if _, err := os.Lstat(filepath.Join(destination, "old.txt")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("old managed file remains: %v", err)
@@ -483,9 +488,11 @@ func TestInstallTreePreservesDestinationDirectoryMode(t *testing.T) {
 	if _, err := InstallTree(newRevision, destination, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(destination)
-	if err != nil || info.Mode().Perm() != 0o751 {
-		t.Fatalf("destination mode = %v, %v; want 0751", info.Mode(), err)
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(destination)
+		if err != nil || info.Mode().Perm() != 0o751 {
+			t.Fatalf("destination mode = %v, %v; want 0751", info.Mode(), err)
+		}
 	}
 }
 
