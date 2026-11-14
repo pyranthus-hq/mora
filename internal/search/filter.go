@@ -147,10 +147,46 @@ func (f Filter) SQLPredicate() (clause string, args []any) {
 		parts = append(parts, "substr(m.scope, 1, 8) <> 'project:'")
 	}
 	if f.AuthoredOnly {
-		parts = append(parts, "COALESCE(m.provider, '') = ''")
+		parts = append(parts, authoredOnlySQL)
 	}
 	if len(parts) == 0 {
 		return "", nil
 	}
 	return " AND " + strings.Join(parts, " AND "), args
 }
+
+// authoredOnlySQL is the indexed counterpart to memory.DeriveProvenance's
+// authored branch. Managed project retrieval must apply it before ORDER BY and
+// LIMIT: filesystem records intentionally have no provider, so provider alone
+// is not an authorship boundary. The index already stores every field needed
+// to recognize connector IDs, filesystem documents, and agent-note mirrors.
+const authoredOnlySQL = `(
+ m.id NOT LIKE 'gmail\_thread/%' ESCAPE '\'
+ AND m.id NOT LIKE 'imessage\_chat/%' ESCAPE '\'
+ AND m.id NOT LIKE 'calendar\_event/%' ESCAPE '\'
+ AND m.id NOT LIKE 'applecal\_event/%' ESCAPE '\'
+ AND m.id NOT LIKE 'whatsapp\_conversation/%' ESCAPE '\'
+ AND m.id NOT LIKE 'github:%'
+ AND m.id NOT LIKE 'eywa\_fact/%' ESCAPE '\'
+ AND (
+  instr('/' || replace(COALESCE(m.path, ''), '\', '/'), '/sources/filesystem/claude-memory/') > 0
+  OR instr('/' || replace(COALESCE(m.path, ''), '\', '/'), '/sources/filesystem/claude-project-memory/') > 0
+  OR instr('/' || replace(COALESCE(m.path, ''), '\', '/'), '/sources/filesystem/claude-remember/') > 0
+  OR instr('/' || replace(COALESCE(m.path, ''), '\', '/'), '/sources/filesystem/codex-memory/') > 0
+  OR (',' || lower(COALESCE(m.tags, '')) || ',') LIKE '%,claude-memory,%'
+  OR (',' || lower(COALESCE(m.tags, '')) || ',') LIKE '%,claude-project-memory,%'
+  OR (',' || lower(COALESCE(m.tags, '')) || ',') LIKE '%,claude-remember,%'
+  OR (',' || lower(COALESCE(m.tags, '')) || ',') LIKE '%,codex-memory,%'
+  OR (
+   COALESCE(m.provider, '') = ''
+   AND (
+    m.id LIKE 'mem\_%' ESCAPE '\'
+    OR instr('/' || replace(COALESCE(m.path, ''), '\', '/'), '/memories/') > 0
+    OR (
+     instr('/' || replace(COALESCE(m.path, ''), '\', '/'), '/sources/') = 0
+     AND (',' || lower(COALESCE(m.tags, '')) || ',') NOT LIKE '%,filesystem,%'
+    )
+   )
+  )
+ )
+)`

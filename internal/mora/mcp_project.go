@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 var errMCPWorkspaceUnavailable = fmt.Errorf("MCP workspace is unavailable")
@@ -232,8 +233,9 @@ func mcpProjectAllowsMemory(ctx context.Context, m Memory) bool {
 	if !ok || !mcpWorkspaceManaged(ctx) {
 		return true
 	}
-	// Connector rows are raw source material, never project-session context.
-	if !mcpProjectAllowsScope(p, m.Scope) || m.Provider != "" {
+	// Raw source material is never project-session context. Provider alone is
+	// insufficient because filesystem records intentionally have none.
+	if !mcpProjectAllowsScope(p, m.Scope) || memory.DeriveProvenance(m) != memory.ProvenanceAuthored || (m.Provider != "" && !memory.IsAgentNoteMirror(m)) {
 		return false
 	}
 	profile, profiled := agentProfileFrom(ctx)

@@ -2,6 +2,7 @@ package mora
 
 import (
 	"github.com/pyranthus-hq/mora/internal/activity"
+	"github.com/pyranthus-hq/mora/internal/memory"
 	searchpkg "github.com/pyranthus-hq/mora/internal/search"
 	"sort"
 	"time"
@@ -97,7 +98,7 @@ func searchFilterPasses(f searchFilters, m Memory) bool {
 	if !f.ScopeAllowed(m.Scope) {
 		return false
 	}
-	if f.AuthoredOnly && m.Provider != "" {
+	if f.AuthoredOnly && (memory.DeriveProvenance(m) != memory.ProvenanceAuthored || (m.Provider != "" && !memory.IsAgentNoteMirror(m))) {
 		return false
 	}
 	if f.SourceFamily != "" {

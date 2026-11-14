@@ -296,6 +296,58 @@ func TestMCPProjectSessionRootsSnapshotPreventsCrossProjectReads(t *testing.T) {
 	}
 }
 
+func TestMCPProjectManagedFilesystemSourceNeverLeaks(t *testing.T) {
+	// The filesystem connector deliberately leaves Provider blank. This must
+	// still be a document, not managed-project context, even for a profile that
+	// can otherwise read raw sources outside a managed workspace.
+	t.Setenv("MORA_EMBEDDER", "")
+	cfg := mcpProjectSetup(t)
+	dir, _ := mcpProjectBind(t, "project:allowed")
+	profile := agentProfile{Name: "raw-capable", ReadScopes: []string{agentScopesAll}, RawSources: true, Write: mcpWritePolicyOpen, Tools: []string{"search_memory", "read_memory", "list_memory", "context_memory", "brief"}}
+	if err := saveAgentsStore(cfg, agentsStore{Profiles: []agentProfile{profile}}); err != nil {
+		t.Fatal(err)
+	}
+
+	const authoredMarker = "AUTHORED-ISOLATION-MARKER"
+	const rawMarker = "FILESYSTEM-RAW-MARKER"
+	if err := writeMemory(cfg, Memory{ID: "mem_isolation", Scope: "project:allowed", Type: "decision", Title: "Allowed rule", Text: "isolationneedle " + authoredMarker, Source: "mcp", CreatedAt: time.Now().Add(-time.Minute).Format(time.RFC3339)}); err != nil {
+		t.Fatal(err)
+	}
+	rawRoot := t.TempDir()
+	rawPath := filepath.Join(rawRoot, "private.txt")
+	if err := os.WriteFile(rawPath, []byte("isolationneedle isolationneedle isolationneedle "+rawMarker), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := Source{Name: "fixture", Type: "filesystem", Path: rawRoot, Scope: "project:allowed"}
+	if _, err := ingestFilesystemDetailed(context.Background(), cfg, source, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	rawID := "src_" + ContentHash(source.Name+":private.txt")
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	c := newWorkspaceMCPClientArgs(t, []string{"serve", "--workspace", "--profile", profile.Name}, []mcppkg.Root{{URI: mcpProjectTestURI(dir)}})
+	for id, call := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"search_memory", map[string]any{"query": "isolationneedle", "limit": 1}},
+		{"list_memory", map[string]any{"limit": 1}},
+		{"context_memory", map[string]any{"query": "isolationneedle"}},
+		{"brief", map[string]any{}},
+	} {
+		body := string(c.call(id+2, call.name, call.args)["result"])
+		if !strings.Contains(body, authoredMarker) || strings.Contains(body, rawMarker) || strings.Contains(body, rawPath) || strings.Contains(body, rawID) {
+			t.Fatalf("%s leaked filesystem source or omitted authored context: %s", call.name, body)
+		}
+	}
+	read := string(c.call(6, "read_memory", map[string]any{"id": rawID})["result"])
+	if !strings.Contains(read, "not found") || strings.Contains(read, rawMarker) || strings.Contains(read, rawPath) {
+		t.Fatalf("managed direct read exposed filesystem source: %s", read)
+	}
+}
+
 func TestMCPProjectSessionWorkspaceFailsClosedAndProjectDirWins(t *testing.T) {
 	mcpProjectSetup(t)
 	dir, _ := mcpProjectBind(t, "project:explicit")
