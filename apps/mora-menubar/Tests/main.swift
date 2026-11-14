@@ -133,4 +133,42 @@ check(!selection.acceptsPreview(preview.preview, row: reviewList.notes[0], queue
 check(selection.acceptQueue(reviewList.notes, generation: queueTwo), "fresh queue is accepted")
 let secondSelection = selection.beginSelection(reviewList.notes[1])!
 check(!selection.acceptsPreview(preview.preview, row: reviewList.notes[0], queue: secondSelection.queue, selection: secondSelection.selection), "different current selection rejects old preview")
+
+let rulesJSON = #"{"schema":"mora.review.desktop","schema_version":1,"projects":[{"root":"/tmp/project-a","scope":"project:a"},{"root":"/tmp/project-b","scope":"project:b"}],"rules":[{"id":"mem_rule","kind":"project_rule","scope":"project:a","type":"decision","title":"Rule"}]}"#
+let rules = try JSONDecoder().decode(ProjectRuleListReceipt.self, from: Data(rulesJSON.utf8)).validated()
+check(rules.projects.count == 2 && rules.rules.count == 1, "project rule list decoded")
+var projectSelection = ProjectRuleSelectionState()
+let projectListQueue = projectSelection.beginRefresh(root: nil)
+let selectedProjectQueue = projectSelection.beginRefresh(root: rules.projects[1].root)
+check(!projectSelection.acceptsProjects(generation: projectListQueue), "late project list cannot overwrite a selected project")
+check(selectedProjectQueue == projectSelection.generation, "selected project keeps its generation")
+let listQueue = projectSelection.beginRefresh(root: nil)
+check(projectSelection.selectedProject(from: rules.projects, keeping: rules.projects[1]) == rules.projects[1], "project list preserves a still-bound selection")
+check(projectSelection.selectedProject(from: [rules.projects[0]], keeping: rules.projects[1]) == rules.projects[0], "project list falls back only when the selection disappeared")
+check(projectSelection.acceptsProjects(generation: listQueue), "current project list is accepted")
+let projectQueue = projectSelection.beginRefresh(root: rules.projects[0].root)
+check(projectSelection.accept(rules.rules, root: rules.projects[0].root, generation: projectQueue), "current project rule list accepted")
+let projectPreviewSelection = projectSelection.beginPreview(rules.rules[0], root: rules.projects[0].root, action: "retire")!
+let projectPreviewJSON = #"{"schema":"mora.review.preview","schema_version":1,"preview":{"id":"mem_rule","kind":"project_rule","title":"Rule","text":"retire exact prior rule","scope":"project:a","type":"decision","source":"fixture","provenance":"authored","state":"active","details":[{"label":"action","value":"retire"}],"complete":true,"redacted":false,"truncated":false,"escaped":false,"omitted_arguments":false,"canonical_revision":"revision","display_digest":"digest"}}"#
+let projectPreview = try JSONDecoder().decode(ReviewPreviewReceipt.self, from: Data(projectPreviewJSON.utf8)).preview
+check(projectPreview.projectRuleEligible && projectPreview.projectRuleAction == "retire", "project action comes from the server preview")
+check(projectSelection.accepts(projectPreview, row: rules.rules[0], root: rules.projects[0].root, action: "retire", queue: projectPreviewSelection.queue, selection: projectPreviewSelection.selection), "current project preview accepted")
+let changedProjectQueue = projectSelection.beginRefresh(root: rules.projects[1].root)
+check(!projectSelection.accepts(projectPreview, row: rules.rules[0], root: rules.projects[0].root, action: "retire", queue: projectPreviewSelection.queue, selection: projectPreviewSelection.selection), "late project preview cannot replace a new project")
+check(!projectSelection.accept(rules.rules, root: rules.projects[0].root, generation: projectQueue), "late project list cannot replace a new project")
+check(changedProjectQueue == projectSelection.generation, "new project generation retained")
+check(ProjectRuleFixture.rules.count == 5, "synthetic project fixture exposes distinct reviewable states")
+for rule in ProjectRuleFixture.rules {
+    let fixturePreview = try ProjectRuleFixture.preview(for: rule, action: "retire")
+    check(fixturePreview.projectRuleEligible, "synthetic fixture retains its permitted retire action")
+    check(fixturePreview.details.contains { $0.label == "fixture" && $0.value == "synthetic read-only" }, "synthetic fixture is visibly read-only")
+}
+let deletedFixture = try ProjectRuleFixture.preview(for: ProjectRuleFixture.rules[1], action: "retire")
+check(deletedFixture.details.contains { $0.label == "source state" && $0.value == "deleted" }, "synthetic deleted source is a real distinct fixture state")
+let manifestFixture = try ProjectRuleFixture.preview(for: ProjectRuleFixture.rules[2], action: "retire")
+check(manifestFixture.details.contains { $0.label == "manifest" && $0.value.contains("missing") }, "synthetic missing manifest is a real distinct fixture state")
+let overflowFixture = try ProjectRuleFixture.preview(for: ProjectRuleFixture.rules[3], action: "retire")
+check(overflowFixture.details.contains { $0.label == "omitted rules" && $0.value == "3" }, "synthetic overflow is a real distinct fixture state")
+let conflictFixture = try ProjectRuleFixture.preview(for: ProjectRuleFixture.rules[4], action: "retire")
+check(conflictFixture.details.contains { $0.label == "loader state" && $0.value == "retired-loader-conflict" }, "synthetic loader conflict is a real distinct fixture state")
 print("Review receipt checks passed")
