@@ -15,6 +15,29 @@ function Resolve-Directory([string]$Path, [string]$Name) {
     return (Resolve-Path -LiteralPath $Path).Path
 }
 
+function Resolve-CanonicalPath([string]$Path, [string]$Name) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { throw "$Name is required." }
+    try {
+        return [System.IO.Path]::GetFullPath($Path)
+    } catch {
+        throw "Could not canonicalize $Name: $Path"
+    }
+}
+
+function Assert-OutsideSource([string]$Path, [string]$Source, [string]$Name) {
+    $root = $Source.TrimEnd([char[]]@('\'))
+    $candidate = $Path.TrimEnd([char[]]@('\'))
+    if ($candidate.Equals($root, [System.StringComparison]::OrdinalIgnoreCase) -or $candidate.StartsWith($root + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Name must be outside the source checkout: $Path"
+    }
+}
+
+function Assert-SameVolume([string]$First, [string]$Second) {
+    $firstRoot = [System.IO.Path]::GetPathRoot($First)
+    $secondRoot = [System.IO.Path]::GetPathRoot($Second)
+    if (!$firstRoot.Equals($secondRoot, [System.StringComparison]::OrdinalIgnoreCase)) { throw 'ScratchDirectory and OutputDirectory must be on the same volume for atomic publication.' }
+}
+
 function Invoke-Checked([string]$Command, [string[]]$Arguments) {
     & $Command @Arguments
     if ($LASTEXITCODE -ne 0) { throw "$Command failed with exit code $LASTEXITCODE." }
@@ -104,10 +127,16 @@ if (!(Test-Path -LiteralPath (Join-Path $sourceRoot 'go.mod') -PathType Leaf)) {
 Assert-CleanSource $sourceRoot
 $revision = (& git -C $sourceRoot rev-parse --verify HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $revision -notmatch '^[0-9a-f]{40}$') { throw "Could not resolve an exact source revision for $sourceRoot." }
-$outputRoot = Prepare-Output $OutputDirectory
 if ([string]::IsNullOrWhiteSpace($ScratchDirectory)) { $ScratchDirectory = $env:TEMP }
-$scratchRoot = Resolve-Directory $ScratchDirectory 'ScratchDirectory'
+$outputRequested = Resolve-CanonicalPath $OutputDirectory 'OutputDirectory'
+$scratchRequested = Resolve-CanonicalPath $ScratchDirectory 'ScratchDirectory'
+Assert-OutsideSource $outputRequested $sourceRoot 'OutputDirectory'
+Assert-OutsideSource $scratchRequested $sourceRoot 'ScratchDirectory'
+Assert-SameVolume $outputRequested $scratchRequested
+$outputRoot = Prepare-Output $outputRequested
+$scratchRoot = Resolve-Directory $scratchRequested 'ScratchDirectory'
 $work = Join-Path $scratchRoot ("mora-review-package-" + [guid]::NewGuid().ToString('N'))
+$failed = $false
 
 try {
     New-Item -ItemType Directory -Path $work | Out-Null
@@ -138,10 +167,20 @@ try {
     if (!$pin.Success -or $pin.Groups[1].Value -ne $helperHash) { throw 'Pinned Go source does not match the final helper bytes.' }
     Write-PackagePinTest (Join-Path $snapshot 'internal\mora\package_pin_windows_test.go')
 
-    $savedCGO = $env:CGO_ENABLED
-    $savedHelper = $env:MORA_PACKAGE_HELPER
+    $environment = @{}
+    foreach ($name in @('CGO_ENABLED', 'GOOS', 'GOARCH', 'GOFLAGS', 'GOWORK', 'MORA_PACKAGE_HELPER')) {
+        if (Test-Path -LiteralPath ("Env:" + $name)) {
+            $environment[$name] = @{ Exists = $true; Value = (Get-Item -LiteralPath ("Env:" + $name)).Value }
+        } else {
+            $environment[$name] = @{ Exists = $false; Value = $null }
+        }
+    }
     try {
         $env:CGO_ENABLED = '0'
+        $env:GOOS = 'windows'
+        $env:GOARCH = 'amd64'
+        Remove-Item -LiteralPath 'Env:GOFLAGS' -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath 'Env:GOWORK' -ErrorAction SilentlyContinue
         $env:MORA_PACKAGE_HELPER = $helper
         Push-Location $snapshot
         try {
@@ -153,8 +192,13 @@ try {
             Pop-Location
         }
     } finally {
-        $env:CGO_ENABLED = $savedCGO
-        $env:MORA_PACKAGE_HELPER = $savedHelper
+        foreach ($name in $environment.Keys) {
+            if ($environment[$name].Exists) {
+                Set-Item -LiteralPath ("Env:" + $name) -Value $environment[$name].Value
+            } else {
+                Remove-Item -LiteralPath ("Env:" + $name) -ErrorAction SilentlyContinue
+            }
+        }
     }
 
     Copy-Item -LiteralPath $helper -Destination (Join-Path $package 'MoraReview.exe')
@@ -182,9 +226,20 @@ try {
     Assert-Package $extracted $revision
 
     $published = Join-Path $outputRoot ("MoraReview-" + $revision.Substring(0, 12) + '-windows-amd64.zip')
+    Assert-CleanSource $sourceRoot
     Move-Item -LiteralPath $archive -Destination $published
     Write-Output "Created candidate package: $published"
+} catch {
+    $failed = $true
+    throw
 } finally {
-    Assert-CleanSource $sourceRoot
-    if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
+    $cleanupFailure = $null
+    if (Test-Path -LiteralPath $work) {
+        try {
+            Remove-Item -LiteralPath $work -Recurse -Force
+        } catch {
+            $cleanupFailure = $_
+        }
+    }
+    if ($null -ne $cleanupFailure) { Write-Warning "Could not remove private package work: $($cleanupFailure.Exception.Message)" }
 }
