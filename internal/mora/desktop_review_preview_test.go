@@ -319,6 +319,10 @@ func TestReviewShowRejectsInvalidCombinations(t *testing.T) {
 	for _, args := range [][]string{
 		{"review", "--show", reviewKindSaved},
 		{"review", "--show", reviewKindSaved, "mem_missing"},
+		{"review", "--show", ""},
+		{"review", "--show", "", "--json"},
+		{"review", "--show", "", "--list"},
+		{"review", "--show", "", "--list", "--json"},
 		{"review", "--show", "unknown", "mem_missing", "--json"},
 		{"review", "--list", "--show", reviewKindSaved, "mem_missing", "--json"},
 		{"review", "--show", reviewKindSaved, "mem_missing", "extra", "--json"},
@@ -326,6 +330,22 @@ func TestReviewShowRejectsInvalidCombinations(t *testing.T) {
 		var out bytes.Buffer
 		if err := Run(testCtx(t), args, &out, &out, strings.NewReader("")); err == nil || !strings.Contains(err.Error(), reviewUsage) {
 			t.Fatalf("Run(%q) = %v, %q; want usage error", args, err, out.String())
+		}
+	}
+}
+
+func TestReviewShowAcceptsFlagForms(t *testing.T) {
+	reviewSetup(t)
+	id := reviewSaved(t, "Flag form preview")
+	for _, args := range [][]string{
+		{"review", "-show", reviewKindSaved, id, "--json"},
+		{"review", "--show=" + reviewKindSaved, id, "--json"},
+	} {
+		var receipt struct {
+			Preview desktopReviewPreview `json:"preview"`
+		}
+		if err := json.Unmarshal([]byte(run(t, args...)), &receipt); err != nil || receipt.Preview.ID != id {
+			t.Fatalf("Run(%q) preview = %+v, %v", args, receipt.Preview, err)
 		}
 	}
 }

@@ -306,7 +306,11 @@ func cmdReview(ctx context.Context, args []string, stdout, stderr io.Writer, std
 	if err := fs.Parse(reviewFlagsFirst(args)); err != nil {
 		return err
 	}
-	if *show != "" {
+	showSet := false
+	fs.Visit(func(f *flag.Flag) {
+		showSet = showSet || f.Name == "show"
+	})
+	if showSet {
 		if *list || !*jsonOut || fs.NArg() != 1 || (*show != reviewKindSaved && *show != reviewKindHeld) {
 			return errors.New(reviewUsage)
 		}
@@ -353,7 +357,7 @@ func cmdReview(ctx context.Context, args []string, stdout, stderr io.Writer, std
 func reviewFlagsFirst(args []string) []string {
 	var flags, pos []string
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--show" {
+		if args[i] == "--show" || args[i] == "-show" {
 			flags = append(flags, args[i])
 			if i+1 < len(args) {
 				i++
