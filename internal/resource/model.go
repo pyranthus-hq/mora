@@ -14,6 +14,7 @@ var (
 	ErrPriorStableIDRequired = errors.New("changed resource requires prior stable ID")
 	ErrUnsafeSource          = errors.New("unsafe resource source")
 	ErrNotFound              = errors.New("resource revision not found")
+	ErrCorrupt               = errors.New("corrupt resource store")
 )
 
 type Kind string
@@ -65,6 +66,7 @@ type Candidate struct {
 	Pasted                   []byte
 	Folder                   string
 	Reference                Reference
+	RequiredFiles            []string
 }
 
 type Record struct {
@@ -89,6 +91,7 @@ type Revision struct {
 	UntrustedScopeSuggestion string             `json:"untrusted_scope_suggestion,omitempty"`
 	Source                   SourceMode         `json:"source"`
 	Reference                Reference          `json:"reference,omitempty"`
+	RequiredFiles            []string           `json:"required_files,omitempty"`
 	SourceVerified           bool               `json:"source_verified"`
 	Availability             Availability       `json:"availability"`
 	Complete                 bool               `json:"complete"`

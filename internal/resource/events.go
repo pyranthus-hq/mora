@@ -15,7 +15,7 @@ func AppendEvent(stateRoot string, event Event) error {
 	if event.TrackingDisabled {
 		return nil
 	}
-	if event.Type != EventRecommended && event.Type != EventLoaded && event.Type != EventOutcome || !validID(event.ResourceID) || !validDigest(event.RevisionDigest) || len(event.Evidence) > 512 || !validScope(event.ProjectScope) {
+	if event.Type != EventRecommended && event.Type != EventLoaded && event.Type != EventOutcome || !validID(event.ResourceID) || !validDigest(event.RevisionDigest) || len(event.Evidence) > 512 || !validScope(event.ProjectScope) || ((event.Type == EventLoaded || event.Type == EventOutcome) && strings.TrimSpace(event.Evidence) == "") {
 		return fmt.Errorf("%w: event", ErrInvalidCandidate)
 	}
 	if event.OccurredAt.IsZero() {

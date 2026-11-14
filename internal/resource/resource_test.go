@@ -9,17 +9,17 @@ import (
 	"testing"
 )
 
-func skill(id, source, text string) Candidate {
-	return Candidate{StableID: id, Kind: KindSkill, CanonicalSource: source, Purpose: "safe deployment helper", Applicability: []string{"deployment"}, EffectiveScope: "project:alpha", Source: SourcePasted, Pasted: []byte(text)}
+func skill(source, text string) Candidate {
+	return Candidate{Kind: KindSkill, CanonicalSource: source, Purpose: "safe deployment helper", Applicability: []string{"deployment"}, EffectiveScope: "project:alpha", Source: SourcePasted, Pasted: []byte(text)}
 }
 
 func TestResourceStoreIdenticalImportReusesRecord(t *testing.T) {
 	root := t.TempDir()
-	r1, v1, first, err := Import(root, skill("demo-skill", "test:demo", "# Demo\n"))
+	r1, v1, first, err := Import(root, skill("test:demo", "# Demo\n"))
 	if err != nil || !first.CreatedRecord || !first.CreatedRevision {
 		t.Fatalf("first import: %#v, %v", first, err)
 	}
-	r2, v2, second, err := Import(root, skill("demo-skill", "test:demo", "# Demo\n"))
+	r2, v2, second, err := Import(root, skill("test:demo", "# Demo\n"))
 	if err != nil || !second.Duplicate || second.CreatedRecord || second.CreatedRevision {
 		t.Fatalf("duplicate import: %#v, %v", second, err)
 	}
@@ -33,24 +33,48 @@ func TestResourceStoreIdenticalImportReusesRecord(t *testing.T) {
 
 func TestResourceStoreChangedExplicitIDCreatesImmutableRevision(t *testing.T) {
 	root := t.TempDir()
-	_, first, _, err := Import(root, skill("demo-skill", "test:demo", "# One\n"))
+	record, first, _, err := Import(root, skill("test:demo", "# One\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	changed := skill("", "test:demo", "# Two\n")
+	changed := skill("test:demo", "# Two\n")
 	if _, _, _, err := Import(root, changed); !errors.Is(err, ErrPriorStableIDRequired) {
 		t.Fatalf("changed import without ID = %v", err)
 	}
-	_, second, outcome, err := Import(root, skill("demo-skill", "test:demo", "# Two\n"))
+	changed.StableID = record.StableID
+	_, second, outcome, err := Import(root, changed)
 	if err != nil || !outcome.CreatedRevision {
 		t.Fatalf("changed import: %#v, %v", outcome, err)
 	}
 	if first.RevisionDigest == second.RevisionDigest {
 		t.Fatal("changed content reused revision")
 	}
-	_, old, err := ReadRevision(root, "demo-skill", first.RevisionDigest)
+	_, old, err := ReadRevision(root, record.StableID, first.RevisionDigest)
 	if err != nil || old.TreeDigest == second.TreeDigest {
 		t.Fatalf("old revision was not retained: %v", err)
+	}
+}
+
+func TestResourceStoreChangedDerivedIdentityAcceptsPriorIDOnly(t *testing.T) {
+	root := t.TempDir()
+	first := Candidate{Kind: KindSkill, Purpose: "helper", EffectiveScope: "project:alpha", Source: SourcePasted, Pasted: []byte("# One\n")}
+	record, _, _, err := Import(root, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := first
+	changed.Pasted = []byte("# Two\n")
+	changed.StableID = record.StableID
+	if _, _, outcome, err := Import(root, changed); err != nil || !outcome.CreatedRevision {
+		t.Fatalf("derived update with prior ID: %#v, %v", outcome, err)
+	}
+	if _, _, _, err := Import(root, skill("test:other", "# Other\n")); err != nil {
+		t.Fatal(err)
+	}
+	rogue := skill("test:other", "# Other\n")
+	rogue.StableID = "arbitrary-id"
+	if _, _, _, err := Import(root, rogue); !errors.Is(err, ErrPriorStableIDRequired) {
+		t.Fatalf("new arbitrary ID = %v", err)
 	}
 }
 
@@ -60,7 +84,7 @@ func TestResourceStoreRepoIdentityPinsCommitAndTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := Candidate{Kind: KindRepository, Purpose: "runbook", EffectiveScope: "project:alpha", Source: SourceFolder, Folder: source, Reference: Reference{URL: "https://example.test/repo", Version: "abc123"}}
-	record, first, _, err := Import(root, c)
+	_, first, _, err := Import(root, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,13 +94,23 @@ func TestResourceStoreRepoIdentityPinsCommitAndTree(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(source, "guide.md"), []byte("two"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := Import(root, c); !errors.Is(err, ErrPriorStableIDRequired) {
-		t.Fatalf("changed repo without ID = %v", err)
-	}
-	c.StableID = record.StableID
 	_, second, _, err := Import(root, c)
 	if err != nil || second.TreeDigest == first.TreeDigest {
 		t.Fatalf("changed repo: %v", err)
+	}
+}
+
+func TestResourceIntakeRepositoryRequiresDeclaredPinnedURL(t *testing.T) {
+	root, source := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "guide.md"), []byte("one"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := Candidate{Kind: KindRepository, Purpose: "runbook", EffectiveScope: "project:alpha", Source: SourceFolder, Folder: source}
+	if _, _, _, err := Import(root, c); !errors.Is(err, ErrInvalidCandidate) {
+		t.Fatalf("unidentified repository = %v", err)
+	}
+	if entries, err := os.ReadDir(root); err != nil || len(entries) != 0 {
+		t.Fatalf("unidentified repository wrote output: %v, %v", entries, err)
 	}
 }
 
@@ -96,9 +130,14 @@ func TestResourceIntakeRefusesUnsafeTreesWithoutOutput(t *testing.T) {
 	if len(entries) != 0 {
 		t.Fatalf("unsafe intake wrote output: %v", entries)
 	}
-	bad := skill("../escape", "test:bad", "# x\n")
+	bad := skill("test:bad", "# x\n")
+	bad.StableID = ".."
 	if _, _, _, err := Import(root, bad); !errors.Is(err, ErrInvalidCandidate) {
 		t.Fatalf("caller ID = %v", err)
+	}
+	bad.StableID = "con"
+	if _, _, _, err := Import(root, bad); !errors.Is(err, ErrInvalidCandidate) {
+		t.Fatalf("device ID = %v", err)
 	}
 }
 
@@ -131,11 +170,16 @@ func TestResourceIntakeCapsAndIncompleteFolderWithoutOutput(t *testing.T) {
 	if entries, err := os.ReadDir(root); err != nil || len(entries) != 0 {
 		t.Fatalf("incomplete intake wrote output: %v, %v", entries, err)
 	}
+	tooLong := skill("test:limits", "# Limits\n")
+	tooLong.KnownLimits = []string{strings.Repeat("x", 257)}
+	if _, _, _, err := Import(root, tooLong); !errors.Is(err, ErrInvalidCandidate) {
+		t.Fatalf("overlong known limit = %v", err)
+	}
 }
 
 func TestResourceStoreConcurrentPublication(t *testing.T) {
 	root := t.TempDir()
-	c := skill("concurrent-skill", "test:concurrent", "# Concurrent\n")
+	c := skill("test:concurrent", "# Concurrent\n")
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
 	for range 2 {
@@ -151,9 +195,36 @@ func TestResourceStoreConcurrentPublication(t *testing.T) {
 	}
 }
 
+func TestResourceStoreRejectsCorruptDuplicateAndVaultSymlink(t *testing.T) {
+	root := t.TempDir()
+	record, revision, _, err := Import(root, skill("test:corrupt", "# Corrupt\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "resources", record.StableID, "revisions", revision.RevisionDigest, "tree", "SKILL.md"), []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := Import(root, skill("test:corrupt", "# Corrupt\n")); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("corrupt duplicate = %v", err)
+	}
+
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "resources", "ln")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	c := skill("test:link", "# Link\n")
+	c.StableID = "ln"
+	if _, _, _, err := Import(root, c); !errors.Is(err, ErrUnsafeSource) {
+		t.Fatalf("vault symlink = %v", err)
+	}
+	if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {
+		t.Fatalf("vault link wrote outside: %v, %v", entries, err)
+	}
+}
+
 func TestResourceReferenceIsVisibleButIncomplete(t *testing.T) {
 	root := t.TempDir()
-	c := Candidate{StableID: "repo-lead", Kind: KindRepository, CanonicalSource: "https://example.test/repo", Purpose: "research lead", EffectiveScope: "project:alpha", Source: SourceReference, Reference: Reference{URL: "https://example.test/repo", Version: "deadbeef"}}
+	c := Candidate{Kind: KindRepository, CanonicalSource: "https://example.test/repo", Purpose: "research lead", EffectiveScope: "project:alpha", Source: SourceReference, Reference: Reference{URL: "https://example.test/repo", Version: "deadbeef"}}
 	_, revision, _, err := Import(root, c)
 	if err != nil {
 		t.Fatal(err)
@@ -165,15 +236,15 @@ func TestResourceReferenceIsVisibleButIncomplete(t *testing.T) {
 
 func TestDiscoverResourcesProjectOverrideBeforeRank(t *testing.T) {
 	root := t.TempDir()
-	_, global, _, err := Import(root, Candidate{StableID: "shared", Kind: KindBestPractice, CanonicalSource: "test:shared", Purpose: "database deployment", EffectiveScope: "global", Source: SourceReference, Reference: Reference{URL: "https://example.test/global"}})
+	record, global, _, err := Import(root, Candidate{Kind: KindBestPractice, CanonicalSource: "test:shared", Purpose: "database deployment", EffectiveScope: "global", Source: SourceReference, Reference: Reference{URL: "https://example.test/global"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, project, _, err := Import(root, Candidate{StableID: "shared", Kind: KindBestPractice, CanonicalSource: "test:shared", Purpose: "alpha deployment", EffectiveScope: "project:alpha", Source: SourceReference, Reference: Reference{URL: "https://example.test/project"}})
+	_, project, _, err := Import(root, Candidate{StableID: record.StableID, Kind: KindBestPractice, CanonicalSource: "test:shared", Purpose: "alpha deployment", EffectiveScope: "project:alpha", Source: SourceReference, Reference: Reference{URL: "https://example.test/project"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := Discover(root, Query{ProjectScope: "project:alpha", Task: "database deployment", Bindings: []Binding{{ResourceID: "shared", RevisionDigest: global.RevisionDigest, Scope: "global", Eligible: true}, {ResourceID: "shared", RevisionDigest: project.RevisionDigest, Scope: "project:alpha", Eligible: true}}})
+	results, err := Discover(root, Query{ProjectScope: "project:alpha", Task: "database deployment", Bindings: []Binding{{ResourceID: record.StableID, RevisionDigest: global.RevisionDigest, Scope: "global", Eligible: true}, {ResourceID: record.StableID, RevisionDigest: project.RevisionDigest, Scope: "project:alpha", Eligible: true}}})
 	if err != nil || len(results) != 1 || results[0].RevisionDigest != project.RevisionDigest || results[0].Scope != "project:alpha" {
 		t.Fatalf("override: %#v, %v", results, err)
 	}
@@ -184,11 +255,11 @@ func TestDiscoverResourcesMaxFiveAndNoSideEffects(t *testing.T) {
 	bindings := make([]Binding, 0, 6)
 	for i := 0; i < 6; i++ {
 		id := "lead-" + string(rune('a'+i))
-		_, revision, _, err := Import(root, Candidate{StableID: id, Kind: KindTool, CanonicalSource: "test:" + id, Purpose: "deployment tool", EffectiveScope: "project:alpha", Source: SourceReference, Reference: Reference{URL: "https://example.test/" + id}})
+		record, revision, _, err := Import(root, Candidate{Kind: KindTool, CanonicalSource: "test:" + id, Purpose: "deployment tool", EffectiveScope: "project:alpha", Source: SourceReference, Reference: Reference{URL: "https://example.test/" + id}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		bindings = append(bindings, Binding{ResourceID: id, RevisionDigest: revision.RevisionDigest, Scope: "project:alpha", Eligible: true})
+		bindings = append(bindings, Binding{ResourceID: record.StableID, RevisionDigest: revision.RevisionDigest, Scope: "project:alpha", Eligible: true})
 	}
 	results, err := Discover(root, Query{ProjectScope: "project:alpha", Task: "deployment", Bindings: bindings})
 	if err != nil || len(results) != 5 {
@@ -196,6 +267,26 @@ func TestDiscoverResourcesMaxFiveAndNoSideEffects(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "resources", "events")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("discover wrote event state: %v", err)
+	}
+}
+
+func TestDiscoverResourcesNoMatchAndIncompleteSkill(t *testing.T) {
+	root := t.TempDir()
+	partial := Candidate{Kind: KindSkill, CanonicalSource: "test:partial", Purpose: "deployment", EffectiveScope: "project:alpha", Source: SourcePasted, Pasted: []byte("# Partial\n[missing](guide.md)\n"), RequiredFiles: []string{"required.md"}}
+	record, revision, _, err := Import(root, partial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision.Complete || revision.Availability != AvailabilityIncomplete {
+		t.Fatalf("missing required file is active: %#v", revision)
+	}
+	results, err := Discover(root, Query{ProjectScope: "project:alpha", Task: "deployment", Bindings: []Binding{{ResourceID: record.StableID, RevisionDigest: revision.RevisionDigest, Scope: "project:alpha", Eligible: true, Active: true}}})
+	if err != nil || len(results) != 0 {
+		t.Fatalf("incomplete skill discovered: %#v, %v", results, err)
+	}
+	results, err = Discover(root, Query{ProjectScope: "project:alpha", Task: "zebra", Bindings: []Binding{{ResourceID: record.StableID, RevisionDigest: revision.RevisionDigest, Scope: "project:alpha", Eligible: true, Active: true}}})
+	if err != nil || len(results) != 0 {
+		t.Fatalf("no match discovered: %#v, %v", results, err)
 	}
 }
 
@@ -215,5 +306,8 @@ func TestResourceEventsSeparateRecommendationLoadOutcome(t *testing.T) {
 	}
 	if got := strings.Count(string(body), "\n"); got != 3 {
 		t.Fatalf("event records = %d", got)
+	}
+	if err := AppendEvent(state, Event{Type: EventLoaded, ResourceID: "event-skill", RevisionDigest: strings.Repeat("a", 64), ProjectScope: "project:alpha"}); !errors.Is(err, ErrInvalidCandidate) {
+		t.Fatalf("empty loaded receipt = %v", err)
 	}
 }

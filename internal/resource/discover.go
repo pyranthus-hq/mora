@@ -25,6 +25,9 @@ func Discover(root string, q Query) ([]Result, error) {
 		}
 	}
 	tokens := tokenSet(q.Task)
+	if len(tokens) == 0 {
+		return []Result{}, nil
+	}
 	rows := make([]scored, 0, len(selected))
 	for _, binding := range selected {
 		record, revision, err := ReadRevision(root, binding.ResourceID, binding.RevisionDigest)
@@ -38,6 +41,9 @@ func Discover(root string, q Query) ([]Result, error) {
 			continue
 		}
 		score, reason := scoreRevision(revision, tokens)
+		if score == 0 {
+			continue
+		}
 		rows = append(rows, scored{score: score, result: Result{ResourceID: record.StableID, Kind: revision.Kind, Purpose: revision.Purpose, MatchReason: reason, Scope: binding.Scope, Source: revision.Source, RevisionDigest: revision.RevisionDigest, Availability: revision.Availability, KnownLimits: append([]string(nil), revision.KnownLimits...), ReviewState: reviewState(revision, binding)}})
 	}
 	sort.Slice(rows, func(i, j int) bool {
