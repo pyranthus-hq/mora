@@ -66,6 +66,9 @@ func DigestTree(source string) (Revision, error) {
 
 // InstallTree stages an exact revision beside destination and atomically
 // publishes it. Existing unmanaged files survive; edited managed files conflict.
+// If the new revision is live but cleanup fails, it returns that live Manifest
+// with an error; callers must retain the receipt and coordinate writers through
+// the final snapshot/cleanup window.
 func InstallTree(source Revision, destination string, prior *Manifest) (Manifest, error) {
 	if err := validateRevision(source); err != nil {
 		return Manifest{}, err
@@ -138,11 +141,10 @@ func InstallTree(source Revision, destination string, prior *Manifest) (Manifest
 		return Manifest{}, fmt.Errorf("%w: manifest destination is missing", ErrConflict)
 	}
 
+	var stagedModes map[string]os.FileMode
 	if exists {
-		if err := parentRoot.Chmod(stage, destInfo.Mode().Perm()); err != nil {
-			return Manifest{}, fmt.Errorf("preserving destination mode on staging tree: %w", err)
-		}
-		if err := copyTree(parentRoot, base, parentRoot, stage); err != nil {
+		stagedModes = make(map[string]os.FileMode)
+		if err := copyTree(parentRoot, base, parentRoot, stage, stagedModes); err != nil {
 			return Manifest{}, fmt.Errorf("copying destination to staging: %w", err)
 		}
 	}
@@ -174,6 +176,9 @@ func InstallTree(source Revision, destination string, prior *Manifest) (Manifest
 	if err == nil {
 		err = verifyFiles(stageRoot, source.Files)
 	}
+	if err == nil {
+		err = applyDirectoryModes(stageRoot, stagedModes)
+	}
 	if closeErr := stageRoot.Close(); err == nil {
 		err = closeErr
 	}
@@ -182,6 +187,14 @@ func InstallTree(source Revision, destination string, prior *Manifest) (Manifest
 	}
 	if err := syncTree(stagePath); err != nil {
 		return Manifest{}, fmt.Errorf("syncing staged tree: %w", err)
+	}
+	if exists {
+		if err := parentRoot.Chmod(stage, destInfo.Mode().Perm()); err != nil {
+			return Manifest{}, fmt.Errorf("preserving destination mode on staging tree: %w", err)
+		}
+		if err := syncDir(stagePath); err != nil {
+			return Manifest{}, fmt.Errorf("syncing staged root metadata: %w", err)
+		}
 	}
 
 	if exists {
@@ -212,6 +225,9 @@ func InstallTree(source Revision, destination string, prior *Manifest) (Manifest
 		if err := verifySnapshot(parentRoot, backup, copiedSnapshot); err != nil {
 			return installed, publishedRecoveryError(parent, marker, stage, backup, err)
 		}
+		if err := makeTreeWritable(parentRoot, backup); err != nil {
+			return installed, publishedRecoveryError(parent, marker, stage, backup, err)
+		}
 		if err := parentRoot.RemoveAll(backup); err != nil {
 			return installed, publishedRecoveryError(parent, marker, stage, backup, err)
 		}
@@ -226,6 +242,32 @@ func InstallTree(source Revision, destination string, prior *Manifest) (Manifest
 		return installed, publishedRecoveryError(parent, marker, stage, backup, err)
 	}
 	return installed, nil
+}
+
+func makeTreeWritable(parent *os.Root, name string) error {
+	root, err := parent.OpenRoot(name)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	var dirs []string
+	if err := fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() && path != "." {
+			dirs = append(dirs, path)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	for _, dir := range dirs {
+		if err := root.Chmod(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	return parent.Chmod(name, 0o700)
 }
 
 // DetachTree removes only files still byte-for-byte equal to the manifest.
@@ -401,7 +443,7 @@ func scanRoot(root *os.Root) ([]File, error) {
 	return files, nil
 }
 
-func copyTree(from *os.Root, fromName string, to *os.Root, toName string) error {
+func copyTree(from *os.Root, fromName string, to *os.Root, toName string, modes map[string]os.FileMode) error {
 	source, err := from.OpenRoot(fromName)
 	if err != nil {
 		return err
@@ -424,14 +466,24 @@ func copyTree(from *os.Root, fromName string, to *os.Root, toName string) error 
 		if err != nil {
 			return err
 		}
-		if err := target.MkdirAll(path, info.Mode().Perm()); err != nil {
+		if err := target.MkdirAll(path, 0o700); err != nil {
 			return err
 		}
-		return target.Chmod(path, info.Mode().Perm())
+		modes[path] = info.Mode().Perm()
+		return nil
 	}); err != nil {
 		return err
 	}
 	return copyFiles(source, target, files)
+}
+
+func applyDirectoryModes(root *os.Root, modes map[string]os.FileMode) error {
+	for path, mode := range modes {
+		if err := root.Chmod(path, mode); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func copyFiles(from, to *os.Root, files []File) error {

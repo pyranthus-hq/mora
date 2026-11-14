@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -442,6 +443,42 @@ func TestInstallTreePreservesDestinationDirectoryMode(t *testing.T) {
 	info, err := os.Stat(destination)
 	if err != nil || info.Mode().Perm() != 0o751 {
 		t.Fatalf("destination mode = %v, %v; want 0751", info.Mode(), err)
+	}
+}
+
+func TestInstallTreeUpdatesReadOnlyRootAndNestedDirectoryModes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows permission modes are not portable")
+	}
+	root := t.TempDir()
+	oldSource, newSource, destination := filepath.Join(root, "old"), filepath.Join(root, "new"), filepath.Join(root, "destination")
+	writeTree(t, oldSource, map[string]string{"nested/managed": "old"})
+	writeTree(t, newSource, map[string]string{"nested/managed": "new"})
+	oldRevision, _ := DigestTree(oldSource)
+	manifest, err := InstallTree(oldRevision, destination, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(destination, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(destination, "nested"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(destination, 0o700)
+		_ = os.Chmod(filepath.Join(destination, "nested"), 0o700)
+	})
+	newRevision, _ := DigestTree(newSource)
+	if _, err := InstallTree(newRevision, destination, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, filepath.Join(destination, "nested", "managed"), "new")
+	for path, want := range map[string]os.FileMode{destination: 0o555, filepath.Join(destination, "nested"): 0o500} {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != want {
+			t.Fatalf("mode %s = %v, %v; want %v", path, info.Mode(), err, want)
+		}
 	}
 }
 
