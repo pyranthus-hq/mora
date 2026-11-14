@@ -17,6 +17,11 @@ func cmdTeach(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	if len(args) == 0 {
 		return errors.New("usage: mora teach <identity|commitment|memory|undo|history|consent|examples>")
 	}
+	if teachMutates(args) {
+		if err := requireVerifiedOwnerAction(ownerAction{Kind: "teach." + args[0]}); err != nil {
+			return err
+		}
+	}
 	switch args[0] {
 	case "identity":
 		if len(args) == 1 {
@@ -41,6 +46,21 @@ func cmdTeach(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	default:
 		return fmt.Errorf("unknown teach subcommand %q", args[0])
 	}
+}
+
+func teachMutates(args []string) bool {
+	if len(args) < 1 {
+		return false
+	}
+	switch args[0] {
+	case "commitment", "memory", "undo":
+		return true
+	case "identity":
+		return len(args) > 1 && args[1] != "list"
+	case "consent":
+		return len(args) > 1 && (args[1] == "enable" || args[1] == "disable")
+	}
+	return false
 }
 
 func normalizeTeachDecision(raw string) string {

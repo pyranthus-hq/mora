@@ -168,6 +168,9 @@ func mergeList(ctx context.Context, args []string, stdout io.Writer) error {
 // the graph so a confirm takes effect immediately. Non-destructive and reversible
 // (`mora merge undo <id>`): a confirm only unifies; nothing is deleted.
 func mergeDecide(ctx context.Context, args []string, stdout io.Writer, decision string) error {
+	if err := requireVerifiedOwnerAction(ownerAction{Kind: "identity." + decision}); err != nil {
+		return err
+	}
 	fs := flag.NewFlagSet("merge "+decision, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	handle := fs.String("handle", "", "iMessage phone handle (e.g. +14155550123)")
@@ -294,6 +297,9 @@ func mergeUndo(ctx context.Context, args []string, stdout io.Writer) error {
 		return errors.New("merge undo requires one governance entry id (see `mora merge list`)")
 	}
 	if err := refuseDashLedPositional("merge undo", "entry id", args[0]); err != nil {
+		return err
+	}
+	if err := requireVerifiedOwnerAction(ownerAction{Kind: "identity.undo", TargetID: args[0]}); err != nil {
 		return err
 	}
 	cfg, err := loadConfigFor(ctx)

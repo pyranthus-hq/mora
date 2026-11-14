@@ -88,15 +88,8 @@ func cmdConfirm(ctx context.Context, args []string, stdout, stderr io.Writer, st
 	if *list == (fs.NArg() == 1) || fs.NArg() > 1 || (*mine && *list) {
 		return errors.New("usage: mora confirm <memory-id> [--mine] [--json] | mora confirm --list [--json]")
 	}
-	if *mine {
-		if err := requireMineTerminal(stdin, "mora confirm"); err != nil {
-			return err
-		}
-	}
 	if !*list {
-		// Removing the tentative tag is the owner's review. An agent that wrote the
-		// note must not be able to clear it from the same shell.
-		if err := refuseInAgentSession("mora confirm"); err != nil {
+		if err := requireVerifiedOwnerAction(ownerAction{Kind: "memory.confirm", TargetID: fs.Arg(0)}); err != nil {
 			return err
 		}
 	}

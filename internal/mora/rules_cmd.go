@@ -287,7 +287,7 @@ func rulesApprove(ctx context.Context, args []string, stdout io.Writer, stdin io
 		return errors.New("use mora rules off <id> to turn a rule off")
 	}
 	id := pos[0]
-	if err := rulesRequireTerminal(stdin); err != nil {
+	if err := requireVerifiedOwnerAction(ownerAction{Kind: "rule.approve", TargetID: id}); err != nil {
 		return err
 	}
 	cfg, err := loadConfigFor(ctx)
@@ -344,7 +344,7 @@ func rulesOff(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 		return errors.New("usage: mora rules off <id>")
 	}
 	id := pos[0]
-	if err := rulesRequireTerminal(stdin); err != nil {
+	if err := requireVerifiedOwnerAction(ownerAction{Kind: "rule.off", TargetID: id}); err != nil {
 		return err
 	}
 	cfg, err := loadConfigFor(ctx)

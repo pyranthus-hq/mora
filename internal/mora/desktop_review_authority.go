@@ -19,7 +19,7 @@ import (
 
 const desktopReviewChallengeLifetime = 90 * time.Second
 
-var errDesktopReviewProofUnavailable = errors.New("ERR_OWNER_VERIFICATION_UNAVAILABLE: no trusted native owner verifier is available")
+var errDesktopReviewProofUnavailable = errOwnerVerificationUnavailable
 
 // desktopReviewVerifier is intentionally package-private: production has no
 // trusted native adapter yet, while tests can exercise the full state machine.

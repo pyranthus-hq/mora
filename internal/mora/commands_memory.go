@@ -8,6 +8,7 @@ import (
 	"github.com/pyranthus-hq/mora/internal/activity"
 	"github.com/pyranthus-hq/mora/internal/disposition"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
+	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	"github.com/pyranthus-hq/mora/internal/memory"
 	"io"
 	"os"
@@ -40,7 +41,7 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		return err
 	}
 	if *mine {
-		if err := requireMineTerminal(stdin, "mora write"); err != nil {
+		if err := requireVerifiedOwnerAction(ownerAction{Kind: "memory.write"}); err != nil {
 			return err
 		}
 	}
@@ -117,30 +118,50 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 	// never silently loses its write. createMemory sets m.ID and m.Path.
 	var op pendingOp
 	var opts []createOption
-	// Inside an agent session (the check --mine refuses on) a plain write is an
-	// agent write: it saves tentative, like write_memory under the default
-	// policy, so it waits for `mora review` and stays out of prompt recall. Unlike the
-	// MCP tool this does not run tentativeHoldReasons: a held write there goes to
-	// the proposal queue, and the CLI receipt has no shape for "not written".
-	agentKey := ""
+	// Raw CLI capture follows the configured policy even when no environment
+	// marker identifies the caller. Markers are not authority evidence.
+	tentative := false
 	if *mine {
 		if !askOwner(stderr, stdin, m, "Save this as your own statement?") {
 			return errors.New("Not saved.")
 		}
 		opts = append(opts, withOwnerConfirmed())
-	} else if agentKey = rulesAgentSession(); agentKey != "" {
-		opts = append(opts, withTentative())
+	} else {
+		action, actionErr := cliCaptureAction(cfg)
+		if actionErr != nil {
+			return actionErr
+		}
+		switch action {
+		case mcppkg.ActionRefuse:
+			return errors.New("CLI write refused by configured mutation policy")
+		case mcppkg.ActionPropose:
+			staged, err := stageCLICapture(cfg, m, nil)
+			if err != nil {
+				return err
+			}
+			return emitReceipt(stdout, "mora.write", 1, staged)
+		case mcppkg.ActionTentative:
+			if reasons := tentativeHoldReasons(m); len(reasons) > 0 {
+				staged, err := stageCLICapture(cfg, m, reasons)
+				if err != nil {
+					return err
+				}
+				return emitReceipt(stdout, "mora.write", 1, staged)
+			}
+			opts = append(opts, withTentative())
+			tentative = true
+		}
 	}
 	m, op, err = createMemory(ctx, cfg, m, opts...)
 	if err != nil {
 		return err
 	}
-	if agentKey != "" {
+	if tentative {
 		// The same audit line an MCP write leaves, so `mora undo` reaches it.
 		if lerr := appendAgentWriteLog(cfg, time.Now(), "write", m, "cli"); lerr != nil {
 			fmt.Fprintf(stderr, "warning: memory %s saved, but %s could not be appended: %v\n", m.ID, agentWriteLogName, lerr)
 		}
-		fmt.Fprintf(stderr, "saved as an unreviewed agent note (%s is set): it stays out of prompt recall until the owner confirms it with `mora review`\n", agentKey)
+		fmt.Fprintln(stderr, "saved as a tentative capture: it stays out of authoritative recall until a verified owner decision is available")
 	}
 	m = decorateDecision(m, time.Now())
 	done := func(indexed bool) error {
@@ -154,8 +175,8 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 			// A person at their own terminal who typed `mora write` meant their
 			// own note, but without --mine it is stored as unconfirmed. Say so
 			// once, on stderr. Agents, pipes and --json never get the hint.
-			if agentKey == "" && rulesAgentSession() == "" && rulesInteractive(stdin) {
-				fmt.Fprintln(stderr, "note: saved as unconfirmed. Agents see it as a note written by agents, not as your rule. Pass --mine to save it as an owner rule (it asks you to confirm here).")
+			if !tentative && rulesInteractive(stdin) {
+				fmt.Fprintln(stderr, "note: saved as unconfirmed. Owner-confirmed promotion requires a trusted native verifier.")
 			}
 			return nil
 		}

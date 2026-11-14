@@ -331,7 +331,7 @@ func cmdReview(ctx context.Context, args []string, stdout, stderr io.Writer, std
 		return errors.New(reviewUsage)
 	}
 	if !*list {
-		if err := requireReviewTerminal(stdin); err != nil {
+		if err := requireVerifiedOwnerAction(ownerAction{Kind: "review.decide"}); err != nil {
 			return err
 		}
 	}

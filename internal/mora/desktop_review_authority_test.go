@@ -418,13 +418,20 @@ func TestDesktopReviewAuthoritySerializesWithPublicMemoryMutations(t *testing.T)
 			},
 		},
 		{
-			name: "delete",
+			name: "cli delete",
 			mutate: func(ctx context.Context, cfg Config, id string) error {
 				m, err := findMemory(cfg, id)
 				if err != nil {
 					return err
 				}
 				_, err = deleteMemoryFile(ctx, cfg, m)
+				return err
+			},
+		},
+		{
+			name: "mcp delete",
+			mutate: func(ctx context.Context, cfg Config, id string) error {
+				_, err := mcpDeleteMemory(ctx, cfg, map[string]any{"id": id})
 				return err
 			},
 		},
@@ -459,7 +466,7 @@ func TestDesktopReviewAuthoritySerializesWithPublicMemoryMutations(t *testing.T)
 				t.Fatal("both desktop and public confirmation applied")
 			}
 			m, err := findMemory(cfg, id)
-			if tc.name == "delete" && publicErr == nil && err != nil {
+			if strings.Contains(tc.name, "delete") && publicErr == nil && err != nil {
 				return // deletion won, and the desktop action cannot resurrect it.
 			}
 			if err != nil {

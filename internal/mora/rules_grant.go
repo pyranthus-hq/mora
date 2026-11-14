@@ -70,7 +70,7 @@ func rulesGrant(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 		return fmt.Errorf("--days must be from 1 to %d", rulesMaxGrantDays)
 	}
 	id := pos[0]
-	if err := rulesRequireTerminal(stdin); err != nil {
+	if err := requireVerifiedOwnerAction(ownerAction{Kind: "rule.grant", TargetID: id}); err != nil {
 		return err
 	}
 	cfg, err := loadConfigFor(ctx)
@@ -186,7 +186,7 @@ func rulesImport(ctx context.Context, args []string, stdout io.Writer, stdin io.
 		return err
 	}
 	trusted := rulesSignersTrusted(signerPath)
-	g, r, body, sig, err := rulesVerifyGrant(ctx, path, signerPath, *scope)
+	g, _, body, sig, err := rulesVerifyGrant(ctx, path, signerPath, *scope)
 	if err != nil {
 		return err
 	}
@@ -195,10 +195,7 @@ func rulesImport(ctx context.Context, args []string, stdout io.Writer, stdin io.
 		return err
 	}
 	if !trusted {
-		if err := rulesRequireTerminal(stdin); err != nil {
-			return fmt.Errorf("%s is writable by this account, so a person must confirm: %w", *signers, err)
-		}
-		if err := rulesConfirm(stdout, stdin, g.Rule.ID, rulesGrantLines(g, r)); err != nil {
+		if err := requireVerifiedOwnerAction(ownerAction{Kind: "rule.import", TargetID: g.Rule.ID, Revision: g.Rule.Hash}); err != nil {
 			return err
 		}
 	}

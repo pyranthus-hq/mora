@@ -1063,28 +1063,11 @@ func mcpDeleteMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	if err := refuseConnectorDelete(m); err != nil {
 		return nil, err
 	}
-	// Mark the delete BEFORE removing the file (A5 row 5). A rebuild that fails
-	// after the file is gone would keep serving the deleted content; the pending
-	// op both reddens the index and suppresses the id on every read path (B4),
-	// so serving-deleted-content is impossible even while the rebuild is broken.
-	op, merr := markIndexDirty(ctx, cfg, deleteOp(m))
-	if merr != nil {
-		return nil, merr
-	}
-	if err := os.Remove(m.Path); err != nil {
-		_ = unmarkIndexDirty(cfg, op.OpID)
+	// The shared core holds the same saved-memory guard as CLI delete, undo,
+	// and desktop review, keeping the checked revision and mutation atomic.
+	reconcile, err := deleteMemoryFile(ctx, cfg, m)
+	if err != nil {
 		return nil, err
-	}
-	markDeleteUnlinked(cfg, op)
-	// A failed index update after a delete is worse than after a write: search
-	// keeps SERVING the deleted content as if it still existed. Delete is the
-	// privacy path, so the failure stays a LOUD error and the pending-delete
-	// marker stays (reads keep suppressing the id). The update is one targeted
-	// transaction, not a whole-vault rebuild: that rebuild held the writer lock
-	// 30-75s on a real vault, past MCP client timeouts (V3).
-	reconcile, rerr := reflectDeleteInIndex(ctx, cfg, m.ID)
-	if rerr != nil {
-		return nil, fmt.Errorf("memory %s deleted, but the search index could not be updated and may still serve it: %w — run `mora index rebuild`", id, rerr)
 	}
 	if reconcile {
 		scheduleAuthoredReconciliation(cfg)

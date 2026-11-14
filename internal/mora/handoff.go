@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
+	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	"github.com/pyranthus-hq/mora/internal/memory"
 	"github.com/pyranthus-hq/mora/internal/memoryfile"
 
@@ -624,7 +625,7 @@ func cmdHandoffWrite(ctx context.Context, cfg Config, args []string, stdin io.Re
 		return err
 	}
 	if *mine {
-		if err := requireMineTerminal(stdin, "mora handoff write"); err != nil {
+		if err := requireVerifiedOwnerAction(ownerAction{Kind: "handoff.write"}); err != nil {
 			return err
 		}
 	}
@@ -659,6 +660,30 @@ func cmdHandoffWrite(ctx context.Context, cfg Config, args []string, stdin io.Re
 			return errors.New("Not saved.")
 		}
 		opts = append(opts, withOwnerConfirmed())
+	} else {
+		action, actionErr := cliCaptureAction(cfg)
+		if actionErr != nil {
+			return actionErr
+		}
+		switch action {
+		case mcppkg.ActionRefuse:
+			return errors.New("CLI handoff write refused by configured mutation policy")
+		case mcppkg.ActionPropose:
+			staged, err := stageCLICapture(cfg, m, nil)
+			if err != nil {
+				return err
+			}
+			return emitReceipt(stdout, "mora.write", 1, staged)
+		case mcppkg.ActionTentative:
+			if reasons := tentativeHoldReasons(m); len(reasons) > 0 {
+				staged, err := stageCLICapture(cfg, m, reasons)
+				if err != nil {
+					return err
+				}
+				return emitReceipt(stdout, "mora.write", 1, staged)
+			}
+			opts = append(opts, withTentative())
+		}
 	}
 	m, op, err := createMemory(ctx, cfg, m, opts...)
 	if err != nil {
