@@ -833,19 +833,6 @@ func agentsLog(cfg Config, args []string, stdout io.Writer) error {
 	return nil
 }
 
-// agentToolDefs is the tools/list catalog a profile sees: only its tools, in
-// the canonical order.
-func agentToolDefs(p agentProfile) []mcppkg.ToolDefinition {
-	all := mcppkg.ToolCatalog()
-	out := make([]mcppkg.ToolDefinition, 0, len(p.Tools))
-	for _, def := range all {
-		if p.allowsTool(def.Name) {
-			out = append(out, def)
-		}
-	}
-	return out
-}
-
 func agentNow() string { return time.Now().UTC().Format(time.RFC3339) }
 
 // agentQueryOf records what the agent asked for, bounded. It is the agent's
