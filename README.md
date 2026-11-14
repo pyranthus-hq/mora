@@ -4,10 +4,13 @@
 
 # Mora
 
-**Mora makes the AI agents you use follow the corrections, decisions, and handoffs you have already given them.**
+**Your messages, meetings, and project knowledge. One memory for you and your AI agents.**
 
-Local, project-scoped rules, decisions, and session handoffs across Claude Code, Codex, and Antigravity — backed by plain Markdown files on your computer, transparent delivery logs (`mora given`), and "save now, review later" governance (`mora review`).
+Mora brings iMessage, Gmail, calendars, files, and project decisions into a searchable local vault. Find the context you need, prepare for meetings, and carry what matters between agent sessions—all backed by plain Markdown you control.
 
+Named after [Hermaeus Mora](https://www.elderscrollsonline.com/en-us/returning), the Daedric Prince of Knowledge in *The Elder Scrolls*. His tentacles inspire the idea: different agents and machines reaching into a shared source of knowledge you control.
+
+[![Status](https://img.shields.io/badge/status-beta-2fbf9a)](https://github.com/pyranthus-hq/mora/issues)
 [![CI](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml/badge.svg)](https://github.com/pyranthus-hq/mora/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/pyranthus-hq/mora?color=2fbf9a)](https://github.com/pyranthus-hq/mora/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
@@ -16,15 +19,23 @@ Local, project-scoped rules, decisions, and session handoffs across Claude Code,
 
 </div>
 
-> [!WARNING]
-> Mora is beta software. We use it every day, and its main paths have tests.
-> It has not been tested on many other people's real data. Read the cited source
-> before you act on a result. A failed or old sync can make the local copy stale.
+**Now in [beta](#search-and-proof).** We use Mora every day. Try it on your projects and [tell us what works and what needs work](https://github.com/pyranthus-hq/mora/issues).
 
-**Jump to:** [Install](#install) · [60-second quickstart](#60-second-project-quickstart) ·
+**Jump to:** [What you can do](#what-you-can-do-with-mora) · [Install](#install) · [60-second quickstart](#60-second-project-quickstart) ·
 [The two-sided contract](#the-two-sided-contract) · [Agent write policy](#agent-write-policy) ·
 [Personal sources](#personal-sources-and-cross-device-sync) · [Update](#keep-mora-up-to-date) ·
 [Privacy](#privacy-boundary)
+
+## What you can do with Mora
+
+- **Search your messages without a cloud inbox.** The iMessage connector reads your Mac's local Messages database in read-only mode, with no network calls. Find a conversation or retrieve the specific message behind a search result.
+- **Bring mail, meetings, and files together.** Read-only Gmail and calendar connectors put correspondence and events alongside your notes and documents. WhatsApp, Apple Calendar, and GitHub Issues are supported too.
+- **Explore context around a person.** A local people graph links people to messages and meetings. Your agent can retrieve evidence about a person and inspect connections through shared conversations and events.
+- **Walk into meetings with context.** Get a daily brief or prepare for a calendar event with cited prior conversations, open items, and source freshness.
+- **Give your agents continuity.** Carry project rules, decisions, corrections, and handoffs across Claude Code, Codex, and other MCP clients. Review what agents save and see exactly which memories Mora handed them.
+- **Keep control of your knowledge.** Readable Markdown, local search, no LLM calls inside Mora, and optional encrypted sharing between machines. You choose which sources and agents to connect; an agent that reads your data uses its own provider's data policy.
+
+Start with [personal sources](#personal-sources-and-cross-device-sync) to search your mail and messages, or the [project quickstart](#60-second-project-quickstart) to give a coding agent memory.
 
 ## Install
 
@@ -162,7 +173,7 @@ A `handoff` is a vault memory (`type: handoff`) that carries direction, why, key
 What Mora does **not** do:
 
 - It does not call an AI model when it saves or searches. An optional local Ollama model on loopback can add vector search.
-- It does not record full conversations into your vault. Only explicit writes and bounded session handoffs are stored.
+- It does not record full AI-agent conversations into your vault. Agent sessions contribute explicit writes and bounded handoffs; connected mail and messaging sources are imported separately.
 - It does not train, own, or fine-tune a model, or "learn you" over time. We are testing a small local model that checks agent actions against your own rules; it is not built yet.
 
 ## Agent write policy
@@ -309,6 +320,8 @@ Run `mora config` to see active paths. `MORA_VAULT` selects another absolute vau
 
 ## Search and proof
 
+Mora's main paths have tests; coverage across other people's real data is still growing during beta. Read the cited source before you act on a result. A failed or old sync can make the local copy stale; `mora doctor` reports source and index health.
+
 With the default static embedder, Mora searches parent memories and bounded Gmail/iMessage message segments with stemmed SQLite FTS5 (`porter unicode61`; title and tag hits rank ahead of body hits) and metadata reranking so confirmed project corrections and decisions rank above long source files. The query ORs its content words (common words are dropped) and ranks the best matches first. An index built by an older version gets stemming after `mora index rebuild --if-needed`. With an active loopback Ollama embedder, it joins full-text, vector, person-graph, and message-segment lists using Reciprocal Rank Fusion (RRF).
 
 Mora's frozen evaluation corpora start from a written answer key, pin every byte, run the real brief, search, and meeting code, and verify citations and commitment fields. The fixtures and scores live in [`internal/mora/eval/`](internal/mora/eval/) and [evaluation and testing](docs/architecture/09-eval-and-testing.md).
@@ -320,9 +333,3 @@ Mora's frozen evaluation corpora start from a written answer key, pin every byte
 - [Architecture](docs/architecture/00-overview.md): current design and code map.
 - [Contributing](CONTRIBUTING.md): build and review rules.
 - [Security](SECURITY.md): how to report a security issue. Never paste vault data or credentials into a public issue.
-
----
-
-<div align="center">
-<sub>Named for <strong>Hermaeus Mora</strong>, keeper of knowledge and memory.</sub>
-</div>
