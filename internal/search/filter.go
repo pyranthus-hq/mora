@@ -84,7 +84,7 @@ func (f Filter) ScopeAllowed(scope string) bool {
 	return len(f.Scopes) == 0 || slices.Contains(f.Scopes, scope)
 }
 func (f Filter) Active() bool {
-	return f.Source != "" || f.SinceHours > 0 || f.EventSinceHours > 0 || len(f.ExcludeDispositions) > 0 || f.AuthoredOnly
+	return f.Source != "" || f.SinceHours > 0 || f.EventSinceHours > 0 || len(f.ExcludeDispositions) > 0 || len(f.Scopes) > 0 || f.NoProjectScopes || f.AuthoredOnly
 }
 func (f Filter) Receipt() map[string]any {
 	if !f.Active() {

@@ -221,7 +221,33 @@ func mcpProjectAllowsMemory(ctx context.Context, m Memory) bool {
 		return true
 	}
 	// Connector rows are raw source material, never project-session context.
-	return mcpProjectAllowsScope(p, m.Scope) && m.Provider == ""
+	if !mcpProjectAllowsScope(p, m.Scope) || m.Provider != "" {
+		return false
+	}
+	profile, profiled := agentProfileFrom(ctx)
+	return !profiled || profile.allowsScope(m.Scope)
+}
+
+// mcpProjectAllowsCall validates an explicit write target before a mutation
+// policy can stage or persist it. The bound project and an agent profile are
+// both restrictive: neither grants a foreign project merely because the
+// other permits it.
+func mcpProjectAllowsCall(ctx context.Context, name string, args map[string]any) error {
+	p, ok := mcpProjectFrom(ctx)
+	if !ok || !mcpWorkspaceManaged(ctx) || name != "write_memory" {
+		return nil
+	}
+	scope, ok := args["scope"].(string)
+	if !ok || scope == "" {
+		return nil // downstream argument shaping supplies its usual default.
+	}
+	if !mcpProjectAllowsScope(p, scope) {
+		return errMCPWorkspaceUnavailable
+	}
+	if profile, profiled := agentProfileFrom(ctx); profiled && !profile.allowsScope(scope) {
+		return errMCPWorkspaceUnavailable
+	}
+	return nil
 }
 
 var mcpProjectSafeTools = map[string]bool{

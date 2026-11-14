@@ -59,6 +59,10 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 	}
 	inv.loggable = true
 	args = withProjectScope(ctx, name, args)
+	if err := mcpProjectAllowsCall(ctx, name, args); err != nil {
+		inv.err = err
+		return inv
+	}
 	traced := context.WithValue(ctx, mcpUsageTraceKey{}, trace)
 	// Agent profiles (#539): the transport bound this call to a profile, so the
 	// profile, not the caller, decides the tool, the scope, raw-source
@@ -77,6 +81,10 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 			return inv
 		}
 		args = shaped
+		if err := mcpProjectAllowsCall(ctx, name, args); err != nil {
+			inv.err = err
+			return inv
+		}
 		policy = profile.Write
 	}
 	policyHandled := false

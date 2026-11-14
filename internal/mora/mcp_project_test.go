@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 )
@@ -375,6 +377,91 @@ func TestMCPProjectResultScrubsForeignMetadata(t *testing.T) {
 	health := out["health"].(compactHealth)
 	if health.PerSource != nil || health.SourcesOmitted != 0 || health.Banner != "" {
 		t.Fatalf("managed result exposed raw health metadata: %+v", health)
+	}
+}
+
+func TestMCPProjectManagedOpenLoopsFilterForeignCommitmentsBeforeAssembly(t *testing.T) {
+	mcpProjectSetup(t)
+	cfg := mustConfig(t)
+	now := time.Now().UTC()
+	for _, m := range []Memory{
+		{ID: "allowed-task", Scope: "project:allowed", Type: "task", Title: "Allowed report", Text: "I told Alex I'd send the ALLOWED-CEDAR report by Friday.", Source: "manual", CreatedAt: now.Add(-2 * time.Minute).Format(time.RFC3339)},
+		{ID: "foreign-task", Scope: "project:foreign", Type: "task", Title: "Foreign report", Text: "I told Blake I'd send the FOREIGN-QUARTZ report by Friday.", Source: "manual", CreatedAt: now.Add(-time.Minute).Format(time.RFC3339)},
+		{ID: "global-task", Scope: "global", Type: "task", Title: "Global report", Text: "I told Casey I'd send the GLOBAL-MAPLE report by Friday.", Source: "manual", CreatedAt: now.Add(-3 * time.Minute).Format(time.RFC3339)},
+	} {
+		if err := writeMemory(cfg, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	ctx := withMCPWorkspace(testCtx(t))
+	ctx = context.WithValue(ctx, mcpProjectKey{}, mcpProject{scope: "project:allowed", root: t.TempDir()})
+	got, err := callMCPTool(ctx, "context_memory", map[string]any{"query": "What's still open?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(got)
+	text := string(body)
+	if !strings.Contains(text, "ALLOWED-CEDAR") || !strings.Contains(text, "GLOBAL-MAPLE") || strings.Contains(text, "FOREIGN-QUARTZ") || strings.Contains(text, "foreign-task") {
+		t.Fatalf("open-loop boundary did not filter before assembly: %s", text)
+	}
+}
+
+func TestMCPProjectScopeFilterIsActiveWithoutSourceFiltering(t *testing.T) {
+	filter := searchFilters{Scopes: []string{"project:allowed"}}
+	if !filter.Active() {
+		t.Fatal("scope-only project filter must be active for aggregate callers")
+	}
+	if !searchFilterPasses(filter, Memory{Scope: "project:allowed"}) {
+		t.Fatal("scope filter excluded its allowed project")
+	}
+	if searchFilterPasses(filter, Memory{Scope: "project:foreign"}) {
+		t.Fatal("scope filter admitted a foreign project")
+	}
+}
+
+func TestMCPProjectManagedProfileIntersectionPrecedesRankingAndWrite(t *testing.T) {
+	mcpProjectSetup(t)
+	cfg := mustConfig(t)
+	now := time.Now().UTC()
+	for _, m := range []Memory{
+		{ID: "hidden-project", Scope: "project:allowed", Type: "fact", Title: "Hidden", Text: "INTERSECTION-NEEDLE INTERSECTION-NEEDLE project row", Source: "manual", CreatedAt: now.Add(-time.Minute).Format(time.RFC3339)},
+		{ID: "visible-global", Scope: "global", Type: "fact", Title: "Visible", Text: "INTERSECTION-NEEDLE global row", Source: "manual", CreatedAt: now.Add(-2 * time.Minute).Format(time.RFC3339)},
+	} {
+		if err := writeMemory(cfg, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	base := withMCPWorkspace(testCtx(t))
+	base = context.WithValue(base, mcpProjectKey{}, mcpProject{scope: "project:allowed", root: t.TempDir()})
+	ctx := withAgentProfile(base, agentProfile{Name: "global-only", ReadScopes: []string{"global", "project:foreign"}, Write: mcpWritePolicyOpen, Tools: append([]string(nil), agentDefaultTools...)})
+	got, err := callMCPTool(ctx, "search_memory", map[string]any{"query": "INTERSECTION-NEEDLE", "limit": float64(1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(got)
+	if !strings.Contains(string(body), "global row") || strings.Contains(string(body), "project row") {
+		t.Fatalf("profile/project intersection did not precede ranking: %s", body)
+	}
+	for _, policy := range []string{mcpWritePolicyOpen, mcpWritePolicyPropose, mcpWritePolicyReadonly} {
+		ctx := withAgentProfile(base, agentProfile{Name: "foreign-writer", ReadScopes: []string{"project:foreign"}, Write: policy, Tools: append([]string(nil), agentDefaultTools...)})
+		_, err = callMCPTool(ctx, "write_memory", map[string]any{"scope": "project:foreign", "type": "fact", "title": "Foreign write", "text": "FOREIGN-WRITE-CONTENT"})
+		if !errors.Is(err, errMCPWorkspaceUnavailable) {
+			t.Fatalf("%s foreign write error = %v, want managed deny", policy, err)
+		}
+		foreign, listErr := listMemories(cfg, "project:foreign", 0)
+		if listErr != nil || len(foreign) != 0 {
+			t.Fatalf("%s foreign write escaped admission: memories=%+v err=%v", policy, foreign, listErr)
+		}
+		proposals, listErr := listMCPWriteProposals(cfg)
+		if listErr != nil || len(proposals) != 0 {
+			t.Fatalf("%s foreign write staged a proposal: proposals=%+v err=%v", policy, proposals, listErr)
+		}
 	}
 }
 
