@@ -661,7 +661,16 @@ reject each one in a single pass:
 ```bash
 mora review --list [--json]    # one row per note: id, saved|held, scope, type, title
 mora review                    # walk the notes: [k]eep [r]eject [s]kip [q]uit
+mora review --show saved ID --json  # read-only bounded desktop preview
+mora review --show held ID --json   # read-only bounded desktop preview
 ```
+
+`mora review --show` is a read-only inspection seam for a native desktop shell.
+It requires `--json` and returns the bounded, redacted preview plus
+`canonical_revision` and `display_digest`. Both digests identify what was read;
+neither authorizes a Keep or Discard decision. The command accepts only pending
+`saved` and `held` IDs, does not prompt, and makes no vault, state, index, or
+proposal-queue changes.
 
 `mora review` needs your own terminal. It refuses when stdin is not a terminal
 or an agent session variable is set. Keep and reject do what `mora confirm` or

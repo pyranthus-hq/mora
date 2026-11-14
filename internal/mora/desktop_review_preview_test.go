@@ -286,6 +286,92 @@ func TestDesktopReviewPreviewBoundsFileReadsAndKeepsIDLookup(t *testing.T) {
 	}
 }
 
+func TestReviewShowPrintsReadOnlyDesktopPreview(t *testing.T) {
+	cfg := reviewSetup(t)
+	saved := reviewSaved(t, "Saved CLI preview")
+	held := reviewHeld(t, "Held CLI preview")
+	before := proposalInspectionSnapshot(t, cfg)
+
+	for _, tc := range []struct {
+		kind, id string
+	}{
+		{reviewKindSaved, saved},
+		{reviewKindHeld, held},
+	} {
+		var receipt struct {
+			Schema  string               `json:"schema"`
+			Preview desktopReviewPreview `json:"preview"`
+		}
+		if err := json.Unmarshal([]byte(run(t, "review", "--show", tc.kind, tc.id, "--json")), &receipt); err != nil {
+			t.Fatal(err)
+		}
+		if receipt.Schema != "mora.review.preview" || receipt.Preview.Kind != tc.kind || receipt.Preview.ID != tc.id ||
+			receipt.Preview.CanonicalRevision == "" || receipt.Preview.DisplayDigest == "" || !receipt.Preview.Complete {
+			t.Fatalf("preview receipt = %+v", receipt)
+		}
+	}
+	if after := proposalInspectionSnapshot(t, cfg); !bytes.Equal(mustDesktopPreviewJSON(t, before), mustDesktopPreviewJSON(t, after)) {
+		t.Fatal("review --show changed config, state, data, vault, or proposal queue")
+	}
+}
+
+func TestReviewShowRejectsInvalidCombinations(t *testing.T) {
+	for _, args := range [][]string{
+		{"review", "--show", reviewKindSaved},
+		{"review", "--show", reviewKindSaved, "mem_missing"},
+		{"review", "--show", "unknown", "mem_missing", "--json"},
+		{"review", "--list", "--show", reviewKindSaved, "mem_missing", "--json"},
+		{"review", "--show", reviewKindSaved, "mem_missing", "extra", "--json"},
+	} {
+		var out bytes.Buffer
+		if err := Run(testCtx(t), args, &out, &out, strings.NewReader("")); err == nil || !strings.Contains(err.Error(), reviewUsage) {
+			t.Fatalf("Run(%q) = %v, %q; want usage error", args, err, out.String())
+		}
+	}
+}
+
+func TestReviewShowMarksIncompleteContent(t *testing.T) {
+	cfg := reviewSetup(t)
+	id := reviewSaved(t, "Incomplete CLI preview")
+	m, err := findMemory(cfg, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Text = "Bearer fixture-hidden-value"
+	m.Truncated = true
+	if err := writeMemory(cfg, m); err != nil {
+		t.Fatal(err)
+	}
+	var receipt struct {
+		Preview desktopReviewPreview `json:"preview"`
+	}
+	if err := json.Unmarshal([]byte(run(t, "review", "--show", reviewKindSaved, id, "--json")), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Preview.Complete || !receipt.Preview.Redacted || !receipt.Preview.Truncated || strings.Contains(receipt.Preview.Text, "fixture-hidden-value") {
+		t.Fatalf("incomplete preview = %+v", receipt.Preview)
+	}
+}
+
+func TestReviewShowFailsClosedForUnavailableItems(t *testing.T) {
+	reviewSetup(t)
+	saved := reviewSaved(t, "Confirmed preview")
+	held := reviewHeld(t, "Rejected preview")
+	run(t, "confirm", saved)
+	run(t, "mcp", "proposals", "reject", held)
+	for _, tc := range []struct{ kind, id string }{
+		{reviewKindSaved, saved},
+		{reviewKindHeld, held},
+		{reviewKindSaved, "mem_missing"},
+		{reviewKindHeld, "p_missing"},
+	} {
+		_, err := runErr(t, "review", "--show", tc.kind, tc.id, "--json")
+		if err != errDesktopReviewUnavailable {
+			t.Fatalf("unavailable %s/%s error = %v", tc.kind, tc.id, err)
+		}
+	}
+}
+
 func mustDesktopPreviewJSON(t *testing.T, value any) []byte {
 	t.Helper()
 	b, err := json.Marshal(value)
