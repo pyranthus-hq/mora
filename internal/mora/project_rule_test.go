@@ -88,6 +88,24 @@ func TestProjectRuleActivationRequiresCurrentConfirmedSource(t *testing.T) {
 	}
 }
 
+func TestProjectRuleDesktopFramesListAndShowExactRevision(t *testing.T) {
+	cfg, binding := projectRuleTestBinding(t)
+	if err := saveProjectBindings(cfg, []projectBinding{binding}); err != nil {
+		t.Fatal(err)
+	}
+	rule := projectRuleTestMemory(t, cfg, binding, "mem_frame_rule", "Show this complete project rule.")
+	verifier := newNativeOwnerVerifierForPeer(cfg, nativeOwnerTestPeer{value: "test-app", trusted: true})
+	authority := newDesktopReviewAuthority(cfg, verifier)
+	list := handleDesktopReviewFrame(testCtx(t), cfg, authority, verifier, desktopReviewFrame{Op: "project_rule.list", Client: "codex", ProjectDir: binding.Dir})
+	if list.Error != nil || len(list.Projects) != 1 || len(list.Rules) != 1 || list.Rules[0].ID != rule.RuleID {
+		t.Fatalf("list = %#v", list)
+	}
+	show := handleDesktopReviewFrame(testCtx(t), cfg, authority, verifier, desktopReviewFrame{Op: "project_rule.show", Client: "codex", ProjectDir: binding.Dir, ID: rule.RuleID})
+	if show.Error != nil || show.Preview == nil || show.Preview.Text != rule.Text || show.Preview.CanonicalRevision != rule.RevisionSHA256 || show.Preview.DisplayDigest != projectRuleDisplayDigest(rule) || len(show.Preview.Details) != 3 || show.Preview.Details[1].Value != "AGENTS.md" || show.Preview.Details[2].Value != "0" {
+		t.Fatalf("show = %#v", show)
+	}
+}
+
 func TestProjectRuleDecisionLastValidLocalRowWins(t *testing.T) {
 	cfg, binding := projectRuleTestBinding(t)
 	r := projectRuleTestMemory(t, cfg, binding, "mem_decision", "Use the exact local action.")

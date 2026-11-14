@@ -127,6 +127,40 @@ func loadProjectRuleState(cfg Config, binding projectBinding, installationID, cl
 	return state, nil
 }
 
+// latestProjectRuleDecision is deliberately narrower than state loading: brief
+// fallback needs to honor an exact local retirement without treating a newer
+// source revision as approved or retired.
+func latestProjectRuleDecision(cfg Config, binding projectBinding, installationID, client, id string) (projectRuleDecision, bool, error) {
+	if id == "" {
+		return projectRuleDecision{}, false, errors.New("invalid project rule id")
+	}
+	f, err := os.Open(projectRuleDecisionPath(cfg))
+	if errors.Is(err, os.ErrNotExist) {
+		return projectRuleDecision{}, false, nil
+	}
+	if err != nil {
+		return projectRuleDecision{}, false, err
+	}
+	defer f.Close()
+	var latest projectRuleDecision
+	found := false
+	s := bufio.NewScanner(f)
+	s.Buffer(make([]byte, 1024), 1<<20)
+	for s.Scan() {
+		var d projectRuleDecision
+		if json.Unmarshal(s.Bytes(), &d) != nil || !validProjectRuleDecision(d) {
+			return projectRuleDecision{}, false, errors.New("project rule decision log contains an invalid row")
+		}
+		if d.RuleID == id && d.InstallationID == installationID && d.Client == client && d.ProjectRoot == binding.Dir && d.Scope == binding.Scope {
+			latest, found = d, true
+		}
+	}
+	if err := s.Err(); err != nil {
+		return projectRuleDecision{}, false, fmt.Errorf("read project rule decisions: %w", err)
+	}
+	return latest, found, nil
+}
+
 // activeProjectRuleRevisions refuses stale, retired, changed, or unconfirmed
 // source records even when an old local activation row remains on disk.
 func activeProjectRuleRevisions(cfg Config, binding projectBinding, installationID, client string) ([]projectRuleRevision, error) {

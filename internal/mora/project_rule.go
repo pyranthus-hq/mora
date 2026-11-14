@@ -29,7 +29,8 @@ func loadProjectRuleRevision(cfg Config, binding projectBinding, id string) (pro
 	if err != nil {
 		return projectRuleRevision{}, err
 	}
-	if m.ID != id || m.Scope != binding.Scope || m.DeletedAt != "" || (m.Type != memory.TypeDecision && m.Type != memory.TypeCorrection) || memory.DeriveProvenance(m) != memory.ProvenanceAuthored || !memory.IsOwnerConfirmed(m) || strings.Contains(m.Text, projectRuleBegin) || strings.Contains(m.Text, projectRuleEnd) {
+	governance, err := loadGovernance(cfg)
+	if err != nil || m.ID != id || m.Scope != binding.Scope || m.DeletedAt != "" || !governance.memoryVisible(m.ID) || (m.Type != memory.TypeDecision && m.Type != memory.TypeCorrection) || memory.DeriveProvenance(m) != memory.ProvenanceAuthored || !memory.IsOwnerConfirmed(m) || strings.Contains(m.Text, projectRuleBegin) || strings.Contains(m.Text, projectRuleEnd) {
 		return projectRuleRevision{}, fmt.Errorf("project rule is not a current confirmed local authored record")
 	}
 	return projectRuleRevision{RuleID: id, SourceMemoryID: id, Scope: m.Scope, Applicability: projectRuleApplicability, Text: m.Text, RevisionSHA256: projectRuleRevisionSHA256(m, projectRuleApplicability), Provenance: memory.DeriveProvenance(m)}, nil
@@ -40,5 +41,15 @@ func projectRuleRevisionSHA256(m Memory, applicability string) string {
 	h.Write([]byte("mora-project-rule-revision-v1\x00"))
 	h.Write([]byte(memory.OwnerConfirmedDigest(m)))
 	h.Write([]byte("\x00" + applicability))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func projectRuleDisplayDigest(r projectRuleRevision) string {
+	h := sha256.New()
+	h.Write([]byte("mora-project-rule-display-v1\x00"))
+	for _, value := range []string{r.RuleID, r.Scope, r.RevisionSHA256, r.Text} {
+		h.Write([]byte(value))
+		h.Write([]byte{0})
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }

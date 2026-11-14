@@ -102,6 +102,68 @@ func (a *desktopReviewAuthority) begin(action desktopReviewAction, kind, id, rev
 	return c, nil
 }
 
+// beginProjectRule is intentionally separate from generic review. It resolves
+// only an existing binding and signs the exact loader/root/client tuple.
+func (a *desktopReviewAuthority) beginProjectRule(action desktopReviewAction, projectDir, id, revision, digest, client string) (desktopReviewChallenge, error) {
+	installationID, keyID, trusted := a.verifier.TrustedIdentity()
+	if !trusted || installationID == "" || keyID == "" {
+		return desktopReviewChallenge{}, errDesktopReviewProofUnavailable
+	}
+	if (action != desktopReviewActivate && action != desktopReviewRetire) || client != "codex" {
+		return desktopReviewChallenge{}, errDesktopReviewUnavailable
+	}
+	binding, found, err := lookupProjectBinding(a.cfg, projectDir)
+	if err != nil || !found {
+		return desktopReviewChallenge{}, errDesktopReviewUnavailable
+	}
+	_, loader, _, err := selectCodexProjectInstructions(binding)
+	if err != nil {
+		return desktopReviewChallenge{}, errDesktopReviewUnavailable
+	}
+	sourceID, materialization := id, ""
+	if action == desktopReviewActivate {
+		r, loadErr := loadProjectRuleRevision(a.cfg, binding, id)
+		if loadErr != nil || r.RevisionSHA256 != revision || projectRuleDisplayDigest(r) != digest {
+			return desktopReviewChallenge{}, errDesktopReviewUnavailable
+		}
+	} else {
+		d, active, stateErr := latestProjectRuleDecision(a.cfg, binding, installationID, client, id)
+		if stateErr != nil || !active || d.Action != "activate" || d.RevisionSHA256 != revision || d.DisplayDigest != digest || d.LoaderRelPath != loader {
+			return desktopReviewChallenge{}, errDesktopReviewUnavailable
+		}
+		sourceID = d.SourceMemoryID
+		materialization, err = projectRuleMaterializationDigest(a.cfg, binding, installationID, client)
+		if err != nil {
+			return desktopReviewChallenge{}, errDesktopReviewUnavailable
+		}
+	}
+	var random [32]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return desktopReviewChallenge{}, err
+	}
+	c := desktopReviewChallenge{
+		Schema: "mora.review.desktop", SchemaVersion: desktopReviewProtocolVersion,
+		Nonce: hex.EncodeToString(random[:]), ExpiresAt: a.now().Add(desktopReviewChallengeLifetime).Unix(),
+		InstallationID: installationID, KeyID: keyID, Action: action, Kind: desktopReviewProjectRule, ID: id, Scope: binding.Scope,
+		CanonicalRevision: revision, DisplayDigest: digest, Client: client, ProjectRoot: binding.Dir, LoaderRelPath: loader,
+		SourceMemoryID: sourceID, MaterializationDigest: materialization, State: "issued",
+	}
+	signed, err := c.bytes()
+	if err != nil {
+		return desktopReviewChallenge{}, err
+	}
+	sum := sha256.Sum256(signed)
+	c.IssuedDigest = hex.EncodeToString(sum[:])
+	path := desktopReviewChallengePath(a.cfg, c.Nonce)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return desktopReviewChallenge{}, err
+	}
+	if err := a.writeChallenge(path, c); err != nil {
+		return desktopReviewChallenge{}, err
+	}
+	return c, nil
+}
+
 func (a *desktopReviewAuthority) complete(ctx context.Context, nonce string, proof []byte, cancelled bool) (out desktopReviewOutcome, err error) {
 	if len(nonce) != 64 {
 		return out, errDesktopReviewUnavailable
@@ -148,8 +210,42 @@ func (a *desktopReviewAuthority) complete(ctx context.Context, nonce string, pro
 			itemGuard = func(fn func() error) error {
 				return leasefile.WithGuard(desktopReviewItemLockPath(a.cfg, c.Kind, c.ID), fn)
 			}
+		} else if c.Kind == desktopReviewProjectRule {
+			itemGuard = func(fn func() error) error {
+				return withMemoryMutationGuard(a.cfg, c.SourceMemoryID, func() error {
+					binding := projectBinding{Dir: c.ProjectRoot, Scope: c.Scope}
+					return leasefile.WithGuard(projectRuleMaterializationLockPath(a.cfg, binding), fn)
+				})
+			}
 		}
 		return itemGuard(func() error {
+			if c.Kind == desktopReviewProjectRule {
+				// "applying" is durable before every project-rule mutation, so a
+				// replay cannot append another decision after a crash.
+				c.Consumed, c.State = true, "applying"
+				if writeErr := a.writeChallenge(path, c); writeErr != nil {
+					return writeErr
+				}
+				out, err = applyProjectRuleDecision(ctx, a.cfg, c)
+				if err != nil {
+					if desktopReviewIsStale(err) {
+						c.State = "stale"
+						if writeErr := a.writeChallenge(path, c); writeErr != nil {
+							out = desktopReviewIndeterminateOutcome()
+							return nil
+						}
+						out = desktopReviewStaleOutcome()
+						return nil
+					}
+					out = desktopReviewIndeterminateOutcome()
+					return nil
+				}
+				c.Applied, c.State = true, "applied"
+				if writeErr := a.writeChallenge(path, c); writeErr != nil {
+					out = desktopReviewIndeterminateOutcome()
+				}
+				return nil
+			}
 			preview, previewErr := loadDesktopReviewPreview(a.cfg, c.Kind, c.ID)
 			if previewErr != nil || preview.Scope != c.Scope || preview.CanonicalRevision != c.CanonicalRevision || preview.DisplayDigest != c.DisplayDigest ||
 				(c.Action == desktopReviewKeep && !preview.Complete) {
@@ -227,6 +323,53 @@ func (a *desktopReviewAuthority) complete(ctx context.Context, nonce string, pro
 		})
 	})
 	return out, err
+}
+
+func applyProjectRuleDecision(_ context.Context, cfg Config, c desktopReviewChallenge) (desktopReviewOutcome, error) {
+	binding, found, err := lookupProjectBinding(cfg, c.ProjectRoot)
+	if err != nil || !found || binding.Dir != c.ProjectRoot || binding.Scope != c.Scope || c.Client != "codex" {
+		return desktopReviewStaleOutcome(), errDesktopReviewUnavailable
+	}
+	_, loader, _, err := selectCodexProjectInstructions(binding)
+	if err != nil || loader != c.LoaderRelPath {
+		return desktopReviewStaleOutcome(), errDesktopReviewUnavailable
+	}
+	if c.Action == desktopReviewActivate {
+		r, loadErr := loadProjectRuleRevision(cfg, binding, c.SourceMemoryID)
+		if loadErr != nil || r.RuleID != c.ID || r.RevisionSHA256 != c.CanonicalRevision || projectRuleDisplayDigest(r) != c.DisplayDigest {
+			return desktopReviewStaleOutcome(), errDesktopReviewUnavailable
+		}
+		if err := preflightProjectRuleActivation(cfg, binding, c.InstallationID, c.Client, r); err != nil {
+			return desktopReviewStaleOutcome(), err
+		}
+		if err := appendProjectRuleDecision(cfg, projectRuleDecision{Schema: projectRuleDecisionSchema, Action: "activate", RuleID: r.RuleID, SourceMemoryID: r.SourceMemoryID, Scope: r.Scope, RevisionSHA256: r.RevisionSHA256, InstallationID: c.InstallationID, KeyID: c.KeyID, Client: c.Client, ProjectRoot: binding.Dir, LoaderRelPath: loader, ChallengeNonce: c.Nonce, DisplayDigest: c.DisplayDigest, VerifiedAt: time.Now().UTC().Format(time.RFC3339)}); err != nil {
+			return desktopReviewIndeterminateOutcome(), err
+		}
+		if err := reconcileProjectRuleMaterializationLocked(cfg, binding, c.InstallationID, c.Client); err != nil {
+			return desktopReviewIndeterminateOutcome(), err
+		}
+		return desktopReviewOutcome{Status: "applied", Applied: desktopReviewBool(true), IndexVisibility: "not_checked"}, nil
+	}
+	if c.Action != desktopReviewRetire {
+		return desktopReviewStaleOutcome(), errDesktopReviewUnavailable
+	}
+	d, active, stateErr := latestProjectRuleDecision(cfg, binding, c.InstallationID, c.Client, c.ID)
+	if stateErr != nil || !active || d.Action != "activate" || d.SourceMemoryID != c.SourceMemoryID || d.RevisionSHA256 != c.CanonicalRevision || d.DisplayDigest != c.DisplayDigest || d.LoaderRelPath != loader {
+		return desktopReviewStaleOutcome(), errDesktopReviewUnavailable
+	}
+	materialization, materializationErr := projectRuleMaterializationDigest(cfg, binding, c.InstallationID, c.Client)
+	if materializationErr != nil || materialization != c.MaterializationDigest {
+		return desktopReviewStaleOutcome(), errDesktopReviewUnavailable
+	}
+	retire := d
+	retire.Action, retire.ChallengeNonce, retire.KeyID, retire.VerifiedAt = "retire", c.Nonce, c.KeyID, time.Now().UTC().Format(time.RFC3339)
+	if err := appendProjectRuleDecision(cfg, retire); err != nil {
+		return desktopReviewIndeterminateOutcome(), err
+	}
+	if err := reconcileProjectRuleMaterializationLocked(cfg, binding, c.InstallationID, c.Client); err != nil {
+		return desktopReviewOutcome{Status: "retired_loader_conflict", Applied: desktopReviewBool(true), IndexVisibility: "not_checked"}, nil
+	}
+	return desktopReviewOutcome{Status: "retired", Applied: desktopReviewBool(true), IndexVisibility: "not_checked"}, nil
 }
 
 func desktopReviewItemLockPath(cfg Config, kind, id string) string {

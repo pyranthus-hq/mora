@@ -210,6 +210,13 @@ func appendTeachAndRebuild(ctx context.Context, cfg Config, entry govEntry) (gov
 		_ = unmarkIndexDirty(cfg, op.OpID)
 		return govEntry{}, err
 	}
+	if entry.Kind == govKindTeachMemory {
+		if source, findErr := findMemoryRaw(cfg, entry.TargetID); findErr == nil {
+			if reconcileErr := reconcileProjectRuleScope(cfg, source.Scope); reconcileErr != nil {
+				return stored, fmt.Errorf("teach decision recorded, but project rule reconciliation failed: %w", reconcileErr)
+			}
+		}
+	}
 	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
 		return stored, err
 	}
@@ -366,6 +373,9 @@ func teachMemory(ctx context.Context, args []string, stdout io.Writer) error {
 	}()
 	if err != nil {
 		return err
+	}
+	if err := reconcileProjectRuleScope(cfg, original.Scope); err != nil {
+		return fmt.Errorf("teach decision recorded, but project rule reconciliation failed: %w", err)
 	}
 	// Rebuilding can take much longer than a ledger transaction. Release the
 	// governance lease first; currentness and publication have already committed.

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"runtime"
 	"strings"
@@ -23,6 +24,8 @@ type desktopReviewFrame struct {
 	Action             desktopReviewAction `json:"action,omitempty"`
 	CanonicalRevision  string              `json:"canonical_revision,omitempty"`
 	DisplayDigest      string              `json:"display_digest,omitempty"`
+	ProjectDir         string              `json:"project_dir,omitempty"`
+	Client             string              `json:"client,omitempty"`
 	Nonce              string              `json:"nonce,omitempty"`
 	PublicKeyP256      string              `json:"public_key_p256_b64,omitempty"`
 	CredentialID       string              `json:"credential_id,omitempty"`
@@ -40,6 +43,8 @@ type desktopReviewFrameResponse struct {
 	Schema            string                   `json:"schema"`
 	SchemaVersion     int                      `json:"schema_version"`
 	Notes             []reviewRow              `json:"notes,omitempty"`
+	Rules             []reviewRow              `json:"rules,omitempty"`
+	Projects          []desktopReviewProject   `json:"projects,omitempty"`
 	Preview           *desktopReviewPreview    `json:"preview,omitempty"`
 	Enrolled          *bool                    `json:"enrolled,omitempty"`
 	ReadOnly          *bool                    `json:"read_only,omitempty"`
@@ -50,6 +55,11 @@ type desktopReviewFrameResponse struct {
 	KeyID             string                   `json:"key_id,omitempty"`
 	Outcome           *desktopReviewOutcome    `json:"outcome,omitempty"`
 	Error             *desktopReviewFrameError `json:"error,omitempty"`
+}
+
+type desktopReviewProject struct {
+	Root  string `json:"root"`
+	Scope string `json:"scope"`
 }
 
 func readDesktopReviewFrame(r io.Reader) (desktopReviewFrame, error) {
@@ -147,6 +157,77 @@ func handleDesktopReviewFrame(ctx context.Context, cfg Config, authority *deskto
 		return nativeOwnerWebAuthnProof{CredentialID: credential, ClientDataJSON: client, AuthenticatorData: auth, SignatureDER: signature}, true
 	}
 	switch request.Op {
+	case "project_rule.list":
+		if request.Client != "codex" {
+			return desktopReviewFrameFailure("ERR_INVALID_REQUEST", "invalid project rule client")
+		}
+		bindings, err := loadProjectBindings(cfg)
+		if err != nil {
+			return desktopReviewFrameFailure("ERR_REVIEW_UNAVAILABLE", "project rule bindings are unavailable")
+		}
+		if request.ProjectDir != "" {
+			binding, found, lookupErr := lookupProjectBinding(cfg, request.ProjectDir)
+			if lookupErr != nil || !found {
+				return desktopReviewFrameFailure("ERR_REVIEW_UNAVAILABLE", "project rule binding is unavailable")
+			}
+			bindings = []projectBinding{binding}
+		}
+		rules := make([]reviewRow, 0)
+		projects := make([]desktopReviewProject, 0, len(bindings))
+		for _, binding := range bindings {
+			projects = append(projects, desktopReviewProject{Root: binding.Dir, Scope: binding.Scope})
+			mems, listErr := listMemories(cfg, binding.Scope, 0)
+			if listErr != nil {
+				return desktopReviewFrameFailure("ERR_REVIEW_UNAVAILABLE", "project rules are unavailable")
+			}
+			for _, m := range mems {
+				if _, err := loadProjectRuleRevision(cfg, binding, m.ID); err == nil {
+					rules = append(rules, reviewRow{ID: m.ID, Kind: desktopReviewProjectRule, Scope: m.Scope, Type: m.Type, Title: m.Title})
+				}
+			}
+		}
+		return desktopReviewFrameResponse{Projects: projects, Rules: rules}
+	case "project_rule.show":
+		if request.Client != "codex" {
+			return desktopReviewFrameFailure("ERR_INVALID_REQUEST", "invalid project rule client")
+		}
+		binding, found, err := lookupProjectBinding(cfg, request.ProjectDir)
+		if err != nil || !found {
+			return desktopReviewFrameFailure("ERR_REVIEW_UNAVAILABLE", "project rule binding is unavailable")
+		}
+		rule, err := loadProjectRuleRevision(cfg, binding, request.ID)
+		if err != nil {
+			return desktopReviewFrameFailure("ERR_REVIEW_UNAVAILABLE", "project rule is unavailable")
+		}
+		m, err := findMemory(cfg, rule.SourceMemoryID)
+		if err != nil {
+			return desktopReviewFrameFailure("ERR_REVIEW_UNAVAILABLE", "project rule is unavailable")
+		}
+		_, loader, _, err := selectCodexProjectInstructions(binding)
+		if err != nil {
+			return desktopReviewFrameFailure("ERR_REVIEW_UNAVAILABLE", "project rule loader is unavailable")
+		}
+		installationID, hasInstallation, err := existingNativeOwnerInstallationID(cfg)
+		if err != nil {
+			return desktopReviewFrameFailure("ERR_REVIEW_UNAVAILABLE", "project rule state is unavailable")
+		}
+		active := []projectRuleRevision(nil)
+		if hasInstallation {
+			active, err = activeProjectRuleRevisions(cfg, binding, installationID, "codex")
+			if err != nil {
+				return desktopReviewFrameFailure("ERR_REVIEW_UNAVAILABLE", "project rule state is unavailable")
+			}
+		}
+		seen := false
+		for _, current := range active {
+			seen = seen || (current.RuleID == rule.RuleID && current.RevisionSHA256 == rule.RevisionSHA256)
+		}
+		if !seen {
+			active = append(active, rule)
+		}
+		_, _, omitted := renderProjectRuleRegion(active)
+		preview := desktopReviewPreview{desktopReviewDisplay: desktopReviewDisplay{ID: rule.RuleID, Kind: desktopReviewProjectRule, Title: m.Title, Text: rule.Text, Scope: rule.Scope, Type: m.Type, Source: m.Source, Provenance: rule.Provenance, State: "owner_confirmed", Details: []desktopReviewField{{Label: "project root", Value: binding.Dir}, {Label: "loader", Value: loader}, {Label: "omitted rules", Value: fmt.Sprintf("%d", omitted)}}, Complete: true}, CanonicalRevision: rule.RevisionSHA256, DisplayDigest: projectRuleDisplayDigest(rule)}
+		return desktopReviewFrameResponse{Preview: &preview}
 	case "list":
 		notes, err := listReviewNotes(cfg, io.Discard)
 		if err != nil {
@@ -222,7 +303,13 @@ func handleDesktopReviewFrame(ctx context.Context, cfg Config, authority *deskto
 		enrolled, readOnly := true, false
 		return desktopReviewFrameResponse{Enrolled: &enrolled, ReadOnly: &readOnly}
 	case "decision.begin":
-		challenge, err := authority.begin(request.Action, request.Kind, request.ID, request.CanonicalRevision, request.DisplayDigest)
+		var challenge desktopReviewChallenge
+		var err error
+		if request.Kind == desktopReviewProjectRule {
+			challenge, err = authority.beginProjectRule(request.Action, request.ProjectDir, request.ID, request.CanonicalRevision, request.DisplayDigest, request.Client)
+		} else {
+			challenge, err = authority.begin(request.Action, request.Kind, request.ID, request.CanonicalRevision, request.DisplayDigest)
+		}
 		if err != nil {
 			return desktopReviewFrameFailure(desktopReviewErrorCode(err), "desktop decision is unavailable")
 		}

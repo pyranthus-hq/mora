@@ -583,6 +583,9 @@ func deleteMemoryFileLocked(ctx context.Context, cfg Config, m Memory) (reconcil
 		// and the retry is harmless. Do not soften this into a receipt.
 		return false, fmt.Errorf("memory %s deleted, but the search index could not be updated: %w — run `mora index rebuild`", m.ID, err)
 	}
+	if err := reconcileProjectRuleScope(cfg, m.Scope); err != nil {
+		return reconcile, fmt.Errorf("memory %s deleted, but project rule reconciliation failed: %w", m.ID, err)
+	}
 	return reconcile, nil
 }
 

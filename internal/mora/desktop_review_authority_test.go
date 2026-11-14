@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -10,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -131,6 +133,116 @@ func TestDesktopReviewAuthorityAppliesSavedAndHeldActions(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDesktopReviewAuthorityProjectRuleActivationAndRetirement(t *testing.T) {
+	cfg, binding := projectRuleTestBinding(t)
+	if err := saveProjectBindings(cfg, []projectBinding{binding}); err != nil {
+		t.Fatal(err)
+	}
+	rule := projectRuleTestMemory(t, cfg, binding, "mem_native_rule", "Use the exact approved formatter.")
+	a, verifier := desktopAuthority(t, cfg)
+	activate, err := a.beginProjectRule(desktopReviewActivate, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRuleDisplayDigest(rule), "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activate.ProjectRoot != binding.Dir || activate.LoaderRelPath != "AGENTS.md" || activate.SourceMemoryID != rule.RuleID {
+		t.Fatalf("activation challenge = %#v", activate)
+	}
+	out, err := a.complete(testCtx(t), activate.Nonce, verifier.proof(t, activate), false)
+	if err != nil || !desktopReviewApplied(out) || out.Status != "applied" {
+		t.Fatalf("activate = %+v, %v", out, err)
+	}
+	if replay, replayErr := a.complete(testCtx(t), activate.Nonce, verifier.proof(t, activate), false); replayErr != nil || replay.Status != "applied" {
+		t.Fatalf("activation replay = %+v, %v", replay, replayErr)
+	}
+	if rows, readErr := os.ReadFile(projectRuleDecisionPath(cfg)); readErr != nil || bytes.Count(rows, []byte{'\n'}) != 1 {
+		t.Fatalf("activation replay changed decision history: %q, %v", rows, readErr)
+	}
+	loader, err := os.ReadFile(filepath.Join(binding.Dir, "AGENTS.md"))
+	if err != nil || !bytes.Contains(loader, []byte(rule.Text)) {
+		t.Fatalf("loader = %q, %v", loader, err)
+	}
+	if _, err := a.beginProjectRule(desktopReviewRetire, filepath.Dir(binding.Dir), rule.RuleID, rule.RevisionSHA256, projectRuleDisplayDigest(rule), "codex"); !errors.Is(err, errDesktopReviewUnavailable) {
+		t.Fatalf("wrong-root retirement err = %v", err)
+	}
+	if _, err := a.beginProjectRule(desktopReviewRetire, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRuleDisplayDigest(rule), "other"); !errors.Is(err, errDesktopReviewUnavailable) {
+		t.Fatalf("wrong-client retirement err = %v", err)
+	}
+	cancel, err := a.beginProjectRule(desktopReviewRetire, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRuleDisplayDigest(rule), "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled, cancelErr := a.complete(testCtx(t), cancel.Nonce, nil, true); cancelErr != nil || cancelled.Status != "cancelled" {
+		t.Fatalf("retire cancellation = %+v, %v", cancelled, cancelErr)
+	}
+	retire, err := a.beginProjectRule(desktopReviewRetire, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRuleDisplayDigest(rule), "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err = a.complete(testCtx(t), retire.Nonce, verifier.proof(t, retire), false)
+	if err != nil || !desktopReviewApplied(out) || out.Status != "retired" {
+		t.Fatalf("retire = %+v, %v", out, err)
+	}
+	if _, err := os.Stat(filepath.Join(binding.Dir, "AGENTS.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retired rule loader = %v, want removed", err)
+	}
+}
+
+func TestDesktopReviewAuthorityProjectRuleConcurrentActivationsAppendOnce(t *testing.T) {
+	cfg, binding := projectRuleTestBinding(t)
+	if err := saveProjectBindings(cfg, []projectBinding{binding}); err != nil {
+		t.Fatal(err)
+	}
+	rule := projectRuleTestMemory(t, cfg, binding, "mem_concurrent_rule", "Serialize exact native activation.")
+	a, verifier := desktopAuthority(t, cfg)
+	first, err := a.beginProjectRule(desktopReviewActivate, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRuleDisplayDigest(rule), "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := a.beginProjectRule(desktopReviewActivate, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRuleDisplayDigest(rule), "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for _, challenge := range []desktopReviewChallenge{first, second} {
+		wg.Add(1)
+		go func(c desktopReviewChallenge) {
+			defer wg.Done()
+			_, _ = a.complete(testCtx(t), c.Nonce, verifier.proof(t, c), false)
+		}(challenge)
+	}
+	wg.Wait()
+	rows, err := os.ReadFile(projectRuleDecisionPath(cfg))
+	if err != nil || bytes.Count(rows, []byte{'\n'}) != 1 {
+		t.Fatalf("concurrent activation history = %q, %v", rows, err)
+	}
+}
+
+func TestDesktopReviewAuthorityProjectRuleRefusesUnboundOrChangedSource(t *testing.T) {
+	cfg, binding := projectRuleTestBinding(t)
+	rule := projectRuleTestMemory(t, cfg, binding, "mem_unbound_rule", "Never use a public activation route.")
+	a, _ := desktopAuthority(t, cfg)
+	if _, err := a.beginProjectRule(desktopReviewActivate, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRuleDisplayDigest(rule), "codex"); !errors.Is(err, errDesktopReviewUnavailable) {
+		t.Fatalf("unbound activation err = %v", err)
+	}
+	if err := saveProjectBindings(cfg, []projectBinding{binding}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := findMemory(cfg, rule.RuleID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Text = "Changed after confirmation."
+	if err := writeMemory(cfg, m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.beginProjectRule(desktopReviewActivate, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRuleDisplayDigest(rule), "codex"); !errors.Is(err, errDesktopReviewUnavailable) {
+		t.Fatalf("changed activation err = %v", err)
+	}
+	if _, err := os.Stat(projectRuleDecisionPath(cfg)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("direct denial created decision state: %v", err)
 	}
 }
 
