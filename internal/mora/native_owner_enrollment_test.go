@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -425,7 +426,7 @@ func TestDesktopReviewFrameRejectsChangedEnrollmentFields(t *testing.T) {
 	}
 }
 
-func TestDesktopReviewStdioEnrollsThenCancelsDecision(t *testing.T) {
+func TestDesktopReviewStdioEnrollmentAndDecision(t *testing.T) {
 	cfg := reviewSetup(t)
 	id := reviewSaved(t, "stdio cancel")
 	peer := nativeOwnerTestPeer{value: "test-app", trusted: true}
@@ -439,29 +440,75 @@ func TestDesktopReviewStdioEnrollsThenCancelsDecision(t *testing.T) {
 	if status.Enrolled == nil || *status.Enrolled || status.InstallationID == "" {
 		t.Fatalf("unenrolled status = %#v", status)
 	}
-	key, public := nativeOwnerTestKey(t)
-	writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "enroll.begin", PublicKeyP256: base64.StdEncoding.EncodeToString(public)})
-	begin := readStdioResponse(t, outputReader)
-	challenge, err := base64.StdEncoding.DecodeString(begin.ChallengeBytesB64)
-	if err != nil || begin.Nonce == "" {
-		t.Fatalf("enrollment begin = %#v, %v", begin, err)
-	}
-	writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "enroll.complete", Nonce: begin.Nonce, SignatureDER: base64.StdEncoding.EncodeToString(nativeOwnerTestProof(t, key, challenge))})
-	if complete := readStdioResponse(t, outputReader); complete.Enrolled == nil || !*complete.Enrolled {
-		t.Fatalf("enrollment complete = %#v", complete)
-	}
-	preview, err := loadDesktopReviewPreview(cfg, reviewKindSaved, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "decision.begin", Action: desktopReviewDiscard, Kind: reviewKindSaved, ID: id, CanonicalRevision: preview.CanonicalRevision, DisplayDigest: preview.DisplayDigest})
-	decision := readStdioResponse(t, outputReader)
-	if decision.Nonce == "" || decision.ChallengeBytesB64 == "" {
-		t.Fatalf("decision begin = %#v", decision)
-	}
-	writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "cancel", Nonce: decision.Nonce})
-	if cancelled := readStdioResponse(t, outputReader); cancelled.Outcome == nil || cancelled.Outcome.Status != "cancelled" {
-		t.Fatalf("cancel = %#v", cancelled)
+	if runtime.GOOS == "windows" {
+		writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "enroll.begin"})
+		derBegin := readStdioResponse(t, outputReader)
+		if derBegin.Nonce == "" {
+			t.Fatalf("DER denial enrollment begin = %#v", derBegin)
+		}
+		writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "enroll.complete", Nonce: derBegin.Nonce, SignatureDER: base64.StdEncoding.EncodeToString([]byte("mac-der-must-not-work"))})
+		if denied := readStdioResponse(t, outputReader); denied.Error == nil {
+			t.Fatal("accepted generic DER enrollment on Windows")
+		}
+		writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "status"})
+		if afterDER := readStdioResponse(t, outputReader); afterDER.Enrolled == nil || *afterDER.Enrolled {
+			t.Fatalf("DER denial changed enrollment = %#v", afterDER)
+		}
+		writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "enroll.begin"})
+		begin := readStdioResponse(t, outputReader)
+		challenge, err := base64.StdEncoding.DecodeString(begin.ChallengeBytesB64)
+		if err != nil || begin.Nonce == "" {
+			t.Fatalf("webauthn enrollment begin = %#v, %v", begin, err)
+		}
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		credential := []byte("stdio-windows-credential")
+		writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "enroll.complete", Nonce: begin.Nonce, CredentialID: base64.StdEncoding.EncodeToString(credential), ClientDataJSON: base64.StdEncoding.EncodeToString(nativeOwnerWebAuthnClientData("webauthn.create", challenge)), AuthenticatorData: base64.StdEncoding.EncodeToString(nativeOwnerWebAuthnTestAuthenticatorData(key, credential, true))})
+		if complete := readStdioResponse(t, outputReader); complete.Enrolled == nil || !*complete.Enrolled || complete.CredentialIDB64 != base64.StdEncoding.EncodeToString(credential) {
+			t.Fatalf("webauthn enrollment complete = %#v", complete)
+		}
+		preview, err := loadDesktopReviewPreview(cfg, reviewKindSaved, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "decision.begin", Action: desktopReviewDiscard, Kind: reviewKindSaved, ID: id, CanonicalRevision: preview.CanonicalRevision, DisplayDigest: preview.DisplayDigest})
+		decision := readStdioResponse(t, outputReader)
+		decisionBytes, err := base64.StdEncoding.DecodeString(decision.ChallengeBytesB64)
+		if err != nil || decision.Nonce == "" {
+			t.Fatalf("webauthn decision begin = %#v, %v", decision, err)
+		}
+		assertion := nativeOwnerWebAuthnTestAssertion(t, key, credential, decisionBytes)
+		writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "decision.complete", Nonce: decision.Nonce, CredentialID: base64.StdEncoding.EncodeToString(assertion.CredentialID), ClientDataJSON: base64.StdEncoding.EncodeToString(assertion.ClientDataJSON), AuthenticatorData: base64.StdEncoding.EncodeToString(assertion.AuthenticatorData), AssertionSignature: base64.StdEncoding.EncodeToString(assertion.SignatureDER)})
+		if applied := readStdioResponse(t, outputReader); applied.Outcome == nil || applied.Outcome.Status != "applied" {
+			t.Fatalf("webauthn decision complete = %#v", applied)
+		}
+	} else {
+		key, public := nativeOwnerTestKey(t)
+		writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "enroll.begin", PublicKeyP256: base64.StdEncoding.EncodeToString(public)})
+		begin := readStdioResponse(t, outputReader)
+		challenge, err := base64.StdEncoding.DecodeString(begin.ChallengeBytesB64)
+		if err != nil || begin.Nonce == "" {
+			t.Fatalf("enrollment begin = %#v, %v", begin, err)
+		}
+		writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "enroll.complete", Nonce: begin.Nonce, SignatureDER: base64.StdEncoding.EncodeToString(nativeOwnerTestProof(t, key, challenge))})
+		if complete := readStdioResponse(t, outputReader); complete.Enrolled == nil || !*complete.Enrolled {
+			t.Fatalf("enrollment complete = %#v", complete)
+		}
+		preview, err := loadDesktopReviewPreview(cfg, reviewKindSaved, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "decision.begin", Action: desktopReviewDiscard, Kind: reviewKindSaved, ID: id, CanonicalRevision: preview.CanonicalRevision, DisplayDigest: preview.DisplayDigest})
+		decision := readStdioResponse(t, outputReader)
+		if decision.Nonce == "" || decision.ChallengeBytesB64 == "" {
+			t.Fatalf("decision begin = %#v", decision)
+		}
+		writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "cancel", Nonce: decision.Nonce})
+		if cancelled := readStdioResponse(t, outputReader); cancelled.Outcome == nil || cancelled.Outcome.Status != "cancelled" {
+			t.Fatalf("cancel = %#v", cancelled)
+		}
 	}
 	if err := inputWriter.Close(); err != nil {
 		t.Fatal(err)
