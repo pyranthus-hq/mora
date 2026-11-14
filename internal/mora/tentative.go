@@ -232,64 +232,70 @@ func confirmMemory(ctx context.Context, cfg Config, id, expectSHA, ownerDigest s
 	if ownerDigest != "" && expectSHA == "" {
 		return Memory{}, false, errors.New("owner confirmation needs the content hash of the shown note")
 	}
-	found, err := findMemory(cfg, id)
-	if err != nil {
-		return Memory{}, false, err
-	}
-	// Reparse the file: a read result can carry derived fields.
-	m, err := parseMemory(found.Path)
-	if err != nil {
-		return Memory{}, false, err
-	}
-	if ownerDigest == "" && !memory.IsTentative(m) {
-		return Memory{}, false, fmt.Errorf("memory %s is not tentative", m.ID)
-	}
-	raw, err := os.ReadFile(m.Path)
-	if err != nil {
-		return Memory{}, false, err
-	}
-	if expectSHA != "" && indexstore.ContentSHA256(raw) != expectSHA {
-		return Memory{}, false, fmt.Errorf("memory %s changed after it was shown; nothing was done", m.ID)
-	}
-	action, swap := "confirm", ""
-	if ownerDigest != "" {
-		action, swap = "owner-confirm", memory.OwnerConfirmedTagPrefix+ownerDigest
-	}
-	body, err := withoutTentativeTag(raw, swap)
-	if err != nil {
-		return Memory{}, false, fmt.Errorf("memory %s: %w", m.ID, err)
-	}
-	if m, err = parseMemoryBytes(m.Path, body); err != nil {
-		return Memory{}, false, err
-	}
-	if ownerDigest != "" && (memory.OwnerConfirmedDigest(m) != ownerDigest || !memory.IsOwnerConfirmed(m)) {
-		return Memory{}, false, fmt.Errorf("memory %s cannot be owner-confirmed as shown; nothing was done", m.ID)
-	}
-	op, err := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindWrite, Path: m.Path, ContentSHA256: indexstore.ContentSHA256(body)})
-	if err != nil {
-		return Memory{}, false, err
-	}
-	if err := atomicio.Write(m.Path, body, 0o644); err != nil {
-		_ = unmarkIndexDirty(cfg, op.OpID)
-		return Memory{}, false, err
-	}
-	logged := true
-	if lerr := appendAgentWriteLog(cfg, time.Now(), action, m, "cli"); lerr != nil {
-		logged = false
-		fmt.Fprintf(stderr, "warning: memory %s confirmed, but %s could not be appended: %v\n", m.ID, agentWriteLogName, lerr)
-	}
-	// The op stays on failure, so the index reads dirty until a rebuild covers it.
-	if err := indexUpsert(ctx, cfg, m); err != nil {
-		fmt.Fprintf(stderr, "warning: memory %s confirmed, but the search index could not be updated: %v; run `mora index rebuild`\n", m.ID, err)
-	} else if authoredWriteProjectionPending(cfg, op) {
-		if merr := markFTSCommitted(cfg, op); merr != nil {
-			fmt.Fprintf(stderr, "warning: memory confirmed, but its index marker could not be updated: %v\n", merr)
+	var confirmed Memory
+	logged := false
+	err := withMemoryMutationGuard(cfg, id, func() error {
+		found, err := findMemory(cfg, id)
+		if err != nil {
+			return err
 		}
-		if rerr := reconcileAuthoredWrites(ctx, cfg); rerr != nil {
-			fmt.Fprintf(stderr, "warning: memory confirmed, but full index reconciliation is pending: %v\n", rerr)
+		// Reparse the file: a read result can carry derived fields.
+		m, err := parseMemory(found.Path)
+		if err != nil {
+			return err
 		}
-	}
-	return m, logged, nil
+		if ownerDigest == "" && !memory.IsTentative(m) {
+			return fmt.Errorf("memory %s is not tentative", m.ID)
+		}
+		raw, err := os.ReadFile(m.Path)
+		if err != nil {
+			return err
+		}
+		if expectSHA != "" && indexstore.ContentSHA256(raw) != expectSHA {
+			return fmt.Errorf("memory %s changed after it was shown; nothing was done", m.ID)
+		}
+		action, swap := "confirm", ""
+		if ownerDigest != "" {
+			action, swap = "owner-confirm", memory.OwnerConfirmedTagPrefix+ownerDigest
+		}
+		body, err := withoutTentativeTag(raw, swap)
+		if err != nil {
+			return fmt.Errorf("memory %s: %w", m.ID, err)
+		}
+		if m, err = parseMemoryBytes(m.Path, body); err != nil {
+			return err
+		}
+		if ownerDigest != "" && (memory.OwnerConfirmedDigest(m) != ownerDigest || !memory.IsOwnerConfirmed(m)) {
+			return fmt.Errorf("memory %s cannot be owner-confirmed as shown; nothing was done", m.ID)
+		}
+		op, err := markIndexDirty(ctx, cfg, pendingOp{Kind: opKindWrite, Path: m.Path, ContentSHA256: indexstore.ContentSHA256(body)})
+		if err != nil {
+			return err
+		}
+		if err := atomicio.Write(m.Path, body, 0o644); err != nil {
+			_ = unmarkIndexDirty(cfg, op.OpID)
+			return err
+		}
+		logged = true
+		if lerr := appendAgentWriteLog(cfg, time.Now(), action, m, "cli"); lerr != nil {
+			logged = false
+			fmt.Fprintf(stderr, "warning: memory %s confirmed, but %s could not be appended: %v\n", m.ID, agentWriteLogName, lerr)
+		}
+		// The op stays on failure, so the index reads dirty until a rebuild covers it.
+		if err := indexUpsert(ctx, cfg, m); err != nil {
+			fmt.Fprintf(stderr, "warning: memory %s confirmed, but the search index could not be updated: %v; run `mora index rebuild`\n", m.ID, err)
+		} else if authoredWriteProjectionPending(cfg, op) {
+			if merr := markFTSCommitted(cfg, op); merr != nil {
+				fmt.Fprintf(stderr, "warning: memory confirmed, but its index marker could not be updated: %v\n", merr)
+			}
+			if rerr := reconcileAuthoredWrites(ctx, cfg); rerr != nil {
+				fmt.Fprintf(stderr, "warning: memory confirmed, but full index reconciliation is pending: %v\n", rerr)
+			}
+		}
+		confirmed = m
+		return nil
+	})
+	return confirmed, logged, err
 }
 
 // withoutTentativeTag edits only the frontmatter tags line, because a render

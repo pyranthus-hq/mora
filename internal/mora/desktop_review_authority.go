@@ -19,7 +19,7 @@ import (
 
 const desktopReviewChallengeLifetime = 90 * time.Second
 
-var errDesktopReviewProofUnavailable = errors.New("desktop review verification is unavailable; use mora review in your own terminal")
+var errDesktopReviewProofUnavailable = errors.New("ERR_OWNER_VERIFICATION_UNAVAILABLE: no trusted native owner verifier is available")
 
 // desktopReviewVerifier is intentionally package-private: production has no
 // trusted native adapter yet, while tests can exercise the full state machine.
@@ -143,7 +143,13 @@ func (a *desktopReviewAuthority) complete(ctx context.Context, nonce string, pro
 		if !a.verifier.Verify(c.InstallationID, c.KeyID, bytes, proof) {
 			return errDesktopReviewProofUnavailable
 		}
-		return leasefile.WithGuard(desktopReviewItemLockPath(a.cfg, c.Kind, c.ID), func() error {
+		itemGuard := func(fn func() error) error { return fn() }
+		if c.Kind == reviewKindHeld {
+			itemGuard = func(fn func() error) error {
+				return leasefile.WithGuard(desktopReviewItemLockPath(a.cfg, c.Kind, c.ID), fn)
+			}
+		}
+		return itemGuard(func() error {
 			preview, previewErr := loadDesktopReviewPreview(a.cfg, c.Kind, c.ID)
 			if previewErr != nil || preview.Scope != c.Scope || preview.CanonicalRevision != c.CanonicalRevision || preview.DisplayDigest != c.DisplayDigest ||
 				(c.Action == desktopReviewKeep && !preview.Complete) {
@@ -176,7 +182,11 @@ func (a *desktopReviewAuthority) complete(ctx context.Context, nonce string, pro
 				if c.Action == desktopReviewDiscard {
 					verb = "reject"
 				}
-				_, err = decideMCPWriteProposalVia(ctx, a.cfg, c.ID, verb, "", c.CanonicalRevision)
+				opts := []createOption(nil)
+				if c.Action == desktopReviewKeep {
+					opts = []createOption{withOwnerConfirmed()}
+				}
+				_, err = decideMCPWriteProposalVia(ctx, a.cfg, c.ID, verb, "", c.CanonicalRevision, opts...)
 			default:
 				return errDesktopReviewUnavailable
 			}

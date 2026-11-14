@@ -1,12 +1,14 @@
 package mora
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -105,8 +107,9 @@ func TestDesktopReviewAuthorityAppliesSavedAndHeldActions(t *testing.T) {
 			}
 			switch tc.kind + "/" + string(tc.action) {
 			case "saved/keep":
-				if reviewTentative(t, cfg, id) {
-					t.Fatal("kept saved note is still tentative")
+				m, err := findMemory(cfg, id)
+				if err != nil || memory.IsTentative(m) || !memory.IsOwnerConfirmed(m) || !strings.Contains(strings.Join(m.Tags, ","), memory.OwnerConfirmedTagPrefix+memory.OwnerConfirmedDigest(m)) {
+					t.Fatalf("kept saved owner confirmation = %+v, %v", m, err)
 				}
 			case "saved/discard":
 				if _, err := findMemory(cfg, id); err == nil {
@@ -118,7 +121,7 @@ func TestDesktopReviewAuthorityAppliesSavedAndHeldActions(t *testing.T) {
 					t.Fatalf("decision = %+v, %v", d, err)
 				}
 				m, err := findMemory(cfg, d.MemoryID)
-				if err != nil || memory.IsOwnerConfirmed(m) || m.Source != "mcp" {
+				if err != nil || !memory.IsOwnerConfirmed(m) || m.Source != "mcp" || !strings.Contains(strings.Join(m.Tags, ","), memory.OwnerConfirmedTagPrefix+memory.OwnerConfirmedDigest(m)) {
 					t.Fatalf("approved held provenance = %+v, %v", m, err)
 				}
 			case "held/discard":
@@ -394,9 +397,79 @@ func TestDesktopReviewAuthorityConcurrentKeepDiscardHasOneWinner(t *testing.T) {
 			}
 			if d.Status == "approved" {
 				m, err := findMemory(cfg, d.MemoryID)
-				if err != nil || m.Source != "mcp" || memory.IsOwnerConfirmed(m) {
+				if err != nil || m.Source != "mcp" || !memory.IsOwnerConfirmed(m) {
 					t.Fatalf("held approval provenance = %+v, %v", m, err)
 				}
+			}
+		})
+	}
+}
+
+func TestDesktopReviewAuthoritySerializesWithPublicMemoryMutations(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(context.Context, Config, string) error
+	}{
+		{
+			name: "confirm",
+			mutate: func(ctx context.Context, cfg Config, id string) error {
+				_, _, err := confirmMemory(ctx, cfg, id, "", "", io.Discard)
+				return err
+			},
+		},
+		{
+			name: "delete",
+			mutate: func(ctx context.Context, cfg Config, id string) error {
+				m, err := findMemory(cfg, id)
+				if err != nil {
+					return err
+				}
+				_, err = deleteMemoryFile(ctx, cfg, m)
+				return err
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := reviewSetup(t)
+			id := reviewSaved(t, "Desktop versus public "+tc.name)
+			a, verifier := desktopAuthority(t, cfg)
+			challenge := desktopChallenge(t, a, desktopReviewKeep, reviewKindSaved, id)
+			start := make(chan struct{})
+			var desktop desktopReviewOutcome
+			var desktopErr, publicErr error
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				<-start
+				desktop, desktopErr = a.complete(testCtx(t), challenge.Nonce, verifier.proof(t, challenge), false)
+			}()
+			go func() {
+				defer wg.Done()
+				<-start
+				publicErr = tc.mutate(testCtx(t), cfg, id)
+			}()
+			close(start)
+			wg.Wait()
+
+			if desktopErr != nil {
+				t.Fatalf("desktop completion = %v", desktopErr)
+			}
+			if tc.name == "confirm" && publicErr == nil && desktopReviewApplied(desktop) {
+				t.Fatal("both desktop and public confirmation applied")
+			}
+			m, err := findMemory(cfg, id)
+			if tc.name == "delete" && publicErr == nil && err != nil {
+				return // deletion won, and the desktop action cannot resurrect it.
+			}
+			if err != nil {
+				t.Fatalf("final memory = %v (public mutation = %v)", err, publicErr)
+			}
+			if memory.IsTentative(m) {
+				t.Fatalf("stale mutation resurrected a tentative memory: %+v", m)
+			}
+			if desktopReviewApplied(desktop) && !memory.IsOwnerConfirmed(m) {
+				t.Fatalf("desktop approval lost its exact owner-confirmed state: %+v", m)
 			}
 		})
 	}

@@ -523,6 +523,17 @@ func refuseConnectorDelete(m Memory) error {
 // shared core of `mora delete` and `mora undo`; reconcile reports whether the
 // caller should run reconcileAuthoredWrites after emitting its receipt.
 func deleteMemoryFile(ctx context.Context, cfg Config, m Memory) (reconcile bool, err error) {
+	err = withMemoryMutationGuard(cfg, m.ID, func() error {
+		var deleteErr error
+		reconcile, deleteErr = deleteMemoryFileLocked(ctx, cfg, m)
+		return deleteErr
+	})
+	return reconcile, err
+}
+
+// deleteMemoryFileLocked runs while withMemoryMutationGuard holds the memory's
+// lock. undoMemory shares this primitive so it does not recursively lock itself.
+func deleteMemoryFileLocked(ctx context.Context, cfg Config, m Memory) (reconcile bool, err error) {
 	// Mark the delete BEFORE removing the file (A5 row 4): a rebuild that fails
 	// after the file is gone would otherwise keep SERVING the deleted content
 	// (Finding 4 — a data-safety P0). While the op is pending its memory_id is
