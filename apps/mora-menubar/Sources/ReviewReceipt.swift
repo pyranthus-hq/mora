@@ -119,6 +119,13 @@ struct ReviewPreview: Decodable, Identifiable {
         case displayDigest = "display_digest"
     }
 
+    init(id: String, kind: String, title: String, text: String, scope: String, type: String, source: String, provenance: String, state: String, details: [Detail], complete: Bool, redacted: Bool, truncated: Bool, escaped: Bool, omittedArguments: Bool, canonicalRevision: String, displayDigest: String) {
+        self.id = id; self.kind = kind; self.title = title; self.text = text; self.scope = scope; self.type = type
+        self.source = source; self.provenance = provenance; self.state = state; self.details = details
+        self.complete = complete; self.redacted = redacted; self.truncated = truncated; self.escaped = escaped; self.omittedArguments = omittedArguments
+        self.canonicalRevision = canonicalRevision; self.displayDigest = displayDigest
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id); kind = try c.decode(String.self, forKey: .kind)
@@ -137,6 +144,42 @@ struct ReviewPreview: Decodable, Identifiable {
         var result = [redacted ? "redacted values" : nil, truncated ? "cut text" : nil, escaped ? "escaped control characters" : nil, omittedArguments ? "omitted arguments" : nil].compactMap { $0 }
         if !complete && result.isEmpty { result.append("Mora marked this preview incomplete") }
         return result
+    }
+}
+
+enum ProjectRuleFixture {
+    static let project = ProjectRuleProject(root: "/tmp/Mora Fixture Project", scope: "project:fixture")
+    static let rules = [
+        ProjectRuleRow(id: "mem_fixture_long", kind: "project_rule", scope: project.scope, type: "decision", title: "Synthetic long project rule"),
+        ProjectRuleRow(id: "mem_fixture_deleted", kind: "project_rule", scope: project.scope, type: "decision", title: "Synthetic deleted-source retirement"),
+        ProjectRuleRow(id: "mem_fixture_manifest", kind: "project_rule", scope: project.scope, type: "decision", title: "Synthetic missing-manifest fallback"),
+        ProjectRuleRow(id: "mem_fixture_overflow", kind: "project_rule", scope: project.scope, type: "decision", title: "Synthetic overflow omission"),
+        ProjectRuleRow(id: "mem_fixture_conflict", kind: "project_rule", scope: project.scope, type: "decision", title: "Synthetic retired-loader conflict")
+    ]
+
+    static func preview(for row: ProjectRuleRow, action: String) throws -> ReviewPreview {
+        guard rules.contains(row), action == "activate" || action == "retire" else { throw ReviewReceiptError.invalidProjectRule }
+        let scenario: (text: String, state: String, details: [ReviewPreview.Detail])
+        switch row.id {
+        case "mem_fixture_long":
+            scenario = ("This intentionally long, read-only synthetic rule is for checking text wrapping and scrolling in the native review window. It contains enough repeated plain text to require the bounded preview area to scroll without representing any live project instruction or activation.", "owner_confirmed", [])
+        case "mem_fixture_deleted":
+            scenario = ("The previously approved source is unavailable in this synthetic fixture. A retirement preview remains reviewable for the exact prior activation; it does not approve a replacement source.", "active", [ReviewPreview.Detail(label: "source state", value: "deleted")])
+        case "mem_fixture_manifest":
+            scenario = ("This synthetic fixture models a missing materialization manifest. Brief fallback remains active; the displayed state is not proof of a live project change.", "active", [ReviewPreview.Detail(label: "manifest", value: "missing — brief fallback remains active")])
+        case "mem_fixture_overflow":
+            scenario = ("This synthetic fixture models a bounded managed region that omitted lower-priority rules. It is read-only and does not report a real materialization.", "active", [ReviewPreview.Detail(label: "omitted rules", value: "3")])
+        case "mem_fixture_conflict":
+            scenario = ("This synthetic fixture models a completed retirement whose local loader still needs attention. It is a visual state only; no project file has changed.", "retired", [ReviewPreview.Detail(label: "loader state", value: "retired-loader-conflict")])
+        default:
+            throw ReviewReceiptError.invalidProjectRule
+        }
+        return ReviewPreview(id: row.id, kind: row.kind, title: row.title, text: scenario.text, scope: row.scope, type: row.type ?? "decision", source: "fixture", provenance: "authored", state: scenario.state, details: [
+            ReviewPreview.Detail(label: "project root", value: project.root),
+            ReviewPreview.Detail(label: "loader", value: "AGENTS.md"),
+            ReviewPreview.Detail(label: "fixture", value: "synthetic read-only"),
+            ReviewPreview.Detail(label: "action", value: action)
+        ] + scenario.details, complete: true, redacted: false, truncated: false, escaped: false, omittedArguments: false, canonicalRevision: "fixture-revision-\(row.id)", displayDigest: "fixture-digest-\(action)-\(row.id)")
     }
 }
 
@@ -186,6 +229,10 @@ struct ProjectRuleSelectionState {
     mutating func accept(_ rows: [ProjectRuleRow], root: String?, generation: Int) -> Bool {
         guard generation == self.generation, root == self.root else { return false }
         self.rows = rows; return true
+    }
+    func acceptsProjects(generation: Int) -> Bool { generation == self.generation && root == nil }
+    func selectedProject(from projects: [ProjectRuleProject], keeping selected: ProjectRuleProject?) -> ProjectRuleProject? {
+        selected.flatMap { projects.contains($0) ? $0 : nil } ?? projects.first
     }
     mutating func beginPreview(_ row: ProjectRuleRow, root: String, action: String) -> (queue: Int, selection: Int)? {
         guard self.root == root, rows.contains(row), action == "activate" || action == "retire" else { return nil }

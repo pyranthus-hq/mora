@@ -57,12 +57,13 @@ Open the bundle to run it as a menu-bar utility. The collector is stopped after
 
 ## Preview and checks
 
-`--preview` loads only that bundled fixture; it does not invoke Mora, the
-collector, or a vault.
+`--preview --review` opens the bundled read-only fixture window; it does not
+invoke Mora, the collector, or a vault. Its Project rules section contains
+distinct synthetic long-rule, deleted-source retirement, missing-manifest,
+overflow, and retired-loader-conflict scenarios for visual review only.
 
 ```sh
-"apps/mora-menubar/build/Mora Status.app/Contents/MacOS/Mora Status" --preview
-"apps/mora-menubar/build/Mora Status.app/Contents/MacOS/Mora Status" --review
+"apps/mora-menubar/build/Mora Status.app/Contents/MacOS/Mora Status" --preview --review
 ./apps/mora-menubar/test.sh
 ```
 
