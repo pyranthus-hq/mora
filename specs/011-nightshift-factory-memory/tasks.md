@@ -9,19 +9,25 @@ results. Live factory acceptance remains open.
   Check scoped recall, same-name collisions, mismatched briefs, unconfirmed
   terminal writes, missing/wrong checksum degradation, and independent
   vault write protection. See [results](qualification.md).
-- [ ] T002 [Joint] Validate connector startup refusal, owner-confirmed rule
-  and advisory-note labels, and the real pinned pair on the intended
-  factory host. Confirm the server-controlled factory/repository mapping
-  and approved corpus. Depends on T001.
+- [x] T002 [Joint] Qualify the pinned adapter pair on devbox with synthetic
+  project and unreviewed records. Exercise connector startup refusal with a
+  fake connector response. See the [devbox receipt](qualification.md#adapter-fix-on-devbox).
 
 ## Pull integration after qualification
 
-- [ ] T003 [NightShift/deployment] Select the bounded pilot, supported OS, factory-to-scope mapping, approved corpus and read-only worker access. Verify provider/deployment isolation including shell access. Prove that the shipped terminal writes cannot persist in the read-only pilot. Depends on T002.
-- [ ] T004 [NightShift] Implement the stable repository/factory binding,
+- [ ] T003 [NightShift/deployment] Select the bounded live pilot, supported OS,
+  factory-to-scope mapping, approved corpus and read-only worker access. Verify
+  provider/deployment isolation including shell access and verify the real
+  connector configuration on that host.
+  The devbox fixture proved direct CLI write refusal under a read-only mount.
+  Depends on T002.
+- [ ] T004 [NightShift] Review and land the
+  [adapter candidate](https://github.com/abhikarode/nightshift/pull/73).
+  Implemented and fixture-tested on devbox: stable repository/factory binding,
   collision refusal, brief scope/root validation, and read-only mode that
-  skips terminal writes. Retest same-name repos and a wrongly bound or
-  unbound checkout with the real binary. Verify approved-only admission,
-  unchanged execution approval, and zero terminal write calls. Depends on T003.
+  admits only owner-confirmed search rows and skips terminal writes.
+  The simulated run reached the human spec gate before rejection. Landing the
+  adapter can proceed alongside T003.
 - [ ] T005 [NightShift] Confirm actual context limits/deadlines; record supplied context and visible advisory/required-context behavior through supported interfaces. Keep retries, snapshots and run recovery consumer-owned. Depends on T004.
 - [ ] T006 [Independent tester] Run relevant FM-A/FM-B read cases, FM-D1 and FM-E on pinned builds. Publish commands and receipts; stop on isolation/authority failures. No write-back gate is required for pull-only acceptance. Depends on T005.
 

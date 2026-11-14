@@ -16,11 +16,12 @@ Reuse [002 governance](../002-governance-baseline/spec.md), [001 review](../001-
 
 ## Next checkpoint
 
-The [macOS qualification](qualification.md) tested NightShift v0.4.0 and
-the real Mora 0.17.0 pin. Fix the [demonstrated adapter gaps](spec.md#released-adapter-changes)
-in scope binding, brief validation, and read-only write suppression.
-Retest against the real binary on the intended factory host. Enforce
-vault write protection and verify connector refusal and trust labels.
+The [released macOS baseline](qualification.md#released-v040-baseline)
+identified the binding and write-back gaps. The
+[adapter candidate](https://github.com/abhikarode/nightshift/pull/73) passed
+[devbox qualification](qualification.md#adapter-fix-on-devbox) with the
+real Mora 0.17.0 binary and a Bubblewrap-protected test vault. Review the
+candidate and select the bounded live pilot and its worker access boundary.
 
 ## Pull integration after qualification
 
@@ -33,4 +34,4 @@ vault write protection and verify connector refusal and trust labels.
 
 FM03 write-back/outbox/idempotency, factory checkpoint persistence, FM-C and FM-D2 capture/restore acceptance, multi-origin sync and wider rollout require a later scope decision. The earlier detailed factory section is a design checklist subject to the controlling architecture clarification, not a mandate to add factory concepts to Mora. If write-back is later selected, preserve provider-side integrity and governed writes; adapter-only deduplication cannot be presented as a crash-safe guarantee.
 
-No production implementation is delivered by this planning update. The fixture results define the required NightShift adapter changes.
+The NightShift adapter candidate remains in review. The devbox fixture qualifies its scoped pull and write suppression before live pilot acceptance.

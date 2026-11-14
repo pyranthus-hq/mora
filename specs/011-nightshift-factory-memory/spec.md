@@ -74,14 +74,22 @@ For the pull-only pilot, prove the deployment blocks persistence of the shipped 
 
 ### Released adapter changes
 
+The [NightShift adapter candidate](https://github.com/abhikarode/nightshift/pull/73)
+passed the [devbox qualification](qualification.md#adapter-fix-on-devbox) with
+the real Mora 0.17.0 pin and simulated workers. The candidate is awaiting
+review. The fixture does not authorize a live deployment.
+
 - Resolve scope from a stable, server-controlled factory and full repository
   identity. Refuse a collision before binding or recall. Preserve an existing
   unambiguous scope only through an explicit mapping. Verify that a missing,
   stale, or mismatched checkout binding returns a visible degraded result
   with no memory text. Validate the brief's scope and canonical root against
-  that binding as well as each search result's scope.
+  that binding as well as each search result's scope. The candidate persists
+  its factory ID in the NightShift home and supports explicit operator mappings
+  for existing checkout scopes.
 - Give NightShift's Mora adapter an explicit read-only mode. Skip terminal
-  note and handoff commands in that mode and make the disabled write-back
+  note and handoff commands in that mode. Use the brief to validate the checkout
+  and admit only owner-confirmed search rows to prompts. Make disabled write-back
   visible without reporting an outage or a successful write. Provision the
   binding before entering read-only mode. Keep the approved factory vault
   protected by an independent filesystem or service boundary. Mora's
