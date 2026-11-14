@@ -178,6 +178,7 @@ func TestCLIRegistryMatchesProductionDispatch(t *testing.T) {
 		{"serve", "cmdServe", []string{"args[0]"}},
 		{"hook", "cmdHook", []string{"args[0]"}},
 		{"rules", "cmdRules", []string{"args[0]"}},
+		{"review", "cmdReview", []string{"args[0]"}},
 		{"loop", "cmdLoop", []string{"sub"}},
 		{"remote", "cmdRemote", []string{"args[0]"}},
 		{"handoff", "cmdHandoffIO", []string{"sub"}},

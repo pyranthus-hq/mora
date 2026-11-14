@@ -1,27 +1,71 @@
 package mora
 
 import (
-	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	cryptorand "crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
-type desktopReviewTestVerifier struct{ proof []byte }
-
-func (v desktopReviewTestVerifier) Verify(_ []byte, proof []byte) bool {
-	return bytes.Equal(v.proof, proof)
+type desktopReviewTestVerifier struct {
+	private        *ecdsa.PrivateKey
+	installationID string
+	keyID          string
 }
 
-func desktopAuthority(t *testing.T, cfg Config) (*desktopReviewAuthority, []byte) {
+func newDesktopReviewTestVerifier(t *testing.T) *desktopReviewTestVerifier {
 	t.Helper()
-	proof := []byte("test-only-verified-proof")
-	return newDesktopReviewAuthority(cfg, desktopReviewTestVerifier{proof: proof}), proof
+	private, err := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &desktopReviewTestVerifier{private: private, installationID: "test-installation", keyID: "test-p256-key"}
+}
+
+func (v *desktopReviewTestVerifier) TrustedIdentity() (string, string, bool) {
+	return v.installationID, v.keyID, true
+}
+
+func (v *desktopReviewTestVerifier) Verify(installationID, keyID string, signed, proof []byte) bool {
+	if installationID != v.installationID || keyID != v.keyID {
+		return false
+	}
+	sum := sha256.Sum256(signed)
+	return ecdsa.VerifyASN1(&v.private.PublicKey, sum[:], proof)
+}
+
+func (v *desktopReviewTestVerifier) proof(t *testing.T, c desktopReviewChallenge) []byte {
+	t.Helper()
+	signed, err := c.bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(signed)
+	proof, err := ecdsa.SignASN1(cryptorand.Reader, v.private, sum[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return proof
+}
+
+func desktopAuthority(t *testing.T, cfg Config) (*desktopReviewAuthority, *desktopReviewTestVerifier) {
+	t.Helper()
+	v := newDesktopReviewTestVerifier(t)
+	return newDesktopReviewAuthority(cfg, v), v
+}
+
+func desktopReviewApplied(out desktopReviewOutcome) bool { return out.Applied != nil && *out.Applied }
+func desktopReviewNotApplied(out desktopReviewOutcome) bool {
+	return out.Applied != nil && !*out.Applied
 }
 
 func desktopChallenge(t *testing.T, a *desktopReviewAuthority, action desktopReviewAction, kind, id string) desktopReviewChallenge {
@@ -53,9 +97,10 @@ func TestDesktopReviewAuthorityAppliesSavedAndHeldActions(t *testing.T) {
 			if tc.kind == reviewKindHeld {
 				id = reviewHeld(t, tc.name)
 			}
-			a, proof := desktopAuthority(t, cfg)
-			out, err := a.complete(testCtx(t), desktopChallenge(t, a, tc.action, tc.kind, id).Nonce, proof, false)
-			if err != nil || !out.Applied || out.Status != "applied" || out.IndexVisibility != "not_checked" {
+			a, verifier := desktopAuthority(t, cfg)
+			c := desktopChallenge(t, a, tc.action, tc.kind, id)
+			out, err := a.complete(testCtx(t), c.Nonce, verifier.proof(t, c), false)
+			if err != nil || !desktopReviewApplied(out) || out.Status != "applied" || out.IndexVisibility != "not_checked" {
 				t.Fatalf("complete = %+v, %v", out, err)
 			}
 			switch tc.kind + "/" + string(tc.action) {
@@ -103,8 +148,8 @@ func TestDesktopReviewAuthorityRefusesWithoutTrustedVerifier(t *testing.T) {
 
 func TestDesktopReviewAuthorityRefusesInvalidNonce(t *testing.T) {
 	cfg := reviewSetup(t)
-	a, proof := desktopAuthority(t, cfg)
-	if _, err := a.complete(testCtx(t), "../not-a-challenge", proof, false); !errors.Is(err, errDesktopReviewUnavailable) {
+	a, _ := desktopAuthority(t, cfg)
+	if _, err := a.complete(testCtx(t), "../not-a-challenge", nil, false); !errors.Is(err, errDesktopReviewUnavailable) {
 		t.Fatalf("invalid nonce = %v", err)
 	}
 }
@@ -112,7 +157,7 @@ func TestDesktopReviewAuthorityRefusesInvalidNonce(t *testing.T) {
 func TestDesktopReviewAuthorityRefusesWrongActionAndCompetingDecision(t *testing.T) {
 	cfg := reviewSetup(t)
 	id := reviewSaved(t, "Competing desktop preview")
-	a, proof := desktopAuthority(t, cfg)
+	a, verifier := desktopAuthority(t, cfg)
 	p, err := loadDesktopReviewPreview(cfg, reviewKindSaved, id)
 	if err != nil {
 		t.Fatal(err)
@@ -122,11 +167,11 @@ func TestDesktopReviewAuthorityRefusesWrongActionAndCompetingDecision(t *testing
 	}
 	first := desktopChallenge(t, a, desktopReviewKeep, reviewKindSaved, id)
 	second := desktopChallenge(t, a, desktopReviewDiscard, reviewKindSaved, id)
-	if _, err := a.complete(testCtx(t), first.Nonce, proof, false); err != nil {
+	if _, err := a.complete(testCtx(t), first.Nonce, verifier.proof(t, first), false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.complete(testCtx(t), second.Nonce, proof, false); !errors.Is(err, errDesktopReviewUnavailable) {
-		t.Fatalf("competing decision = %v", err)
+	if out, err := a.complete(testCtx(t), second.Nonce, verifier.proof(t, second), false); err != nil || out.Status != "stale" || !desktopReviewNotApplied(out) {
+		t.Fatalf("competing decision = %+v, %v", out, err)
 	}
 	if reviewTentative(t, cfg, id) {
 		t.Fatal("first decision did not apply")
@@ -136,7 +181,7 @@ func TestDesktopReviewAuthorityRefusesWrongActionAndCompetingDecision(t *testing
 func TestDesktopReviewAuthorityRefusesChangedAndIncompletePreviews(t *testing.T) {
 	cfg := reviewSetup(t)
 	id := reviewSaved(t, "Stale desktop preview")
-	a, proof := desktopAuthority(t, cfg)
+	a, verifier := desktopAuthority(t, cfg)
 	c := desktopChallenge(t, a, desktopReviewKeep, reviewKindSaved, id)
 	m, err := findMemory(cfg, id)
 	if err != nil {
@@ -150,8 +195,8 @@ func TestDesktopReviewAuthorityRefusesChangedAndIncompletePreviews(t *testing.T)
 	if err := os.WriteFile(m.Path, raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.complete(testCtx(t), c.Nonce, proof, false); !errors.Is(err, errDesktopReviewUnavailable) {
-		t.Fatalf("stale completion = %v", err)
+	if out, err := a.complete(testCtx(t), c.Nonce, verifier.proof(t, c), false); err != nil || out.Status != "stale" || !desktopReviewNotApplied(out) {
+		t.Fatalf("stale completion = %+v, %v", out, err)
 	}
 	if !reviewTentative(t, cfg, id) {
 		t.Fatal("stale completion changed note")
@@ -181,12 +226,12 @@ func TestDesktopReviewAuthorityRefusesChangedAndIncompletePreviews(t *testing.T)
 func TestDesktopReviewAuthorityConsumesCancelAndReplay(t *testing.T) {
 	cfg := reviewSetup(t)
 	id := reviewSaved(t, "Replay desktop preview")
-	a, proof := desktopAuthority(t, cfg)
+	a, verifier := desktopAuthority(t, cfg)
 	c := desktopChallenge(t, a, desktopReviewDiscard, reviewKindSaved, id)
-	if out, err := a.complete(testCtx(t), c.Nonce, proof, true); err != nil || out.Status != "cancelled" || out.Applied {
+	if out, err := a.complete(testCtx(t), c.Nonce, verifier.proof(t, c), true); err != nil || out.Status != "cancelled" || !desktopReviewNotApplied(out) {
 		t.Fatalf("cancel = %+v, %v", out, err)
 	}
-	if out, err := newDesktopReviewAuthority(cfg, desktopReviewTestVerifier{proof: proof}).complete(testCtx(t), c.Nonce, proof, false); err != nil || out.Status != "consumed" || out.Applied {
+	if out, err := newDesktopReviewAuthority(cfg, verifier).complete(testCtx(t), c.Nonce, verifier.proof(t, c), false); err != nil || out.Status != "cancelled" || !desktopReviewNotApplied(out) {
 		t.Fatalf("replay after restart = %+v, %v", out, err)
 	}
 	if !reviewTentative(t, cfg, id) {
@@ -197,7 +242,7 @@ func TestDesktopReviewAuthorityConsumesCancelAndReplay(t *testing.T) {
 func TestDesktopReviewAuthorityRefusesWrongProofAndExpiry(t *testing.T) {
 	cfg := reviewSetup(t)
 	id := reviewHeld(t, "Expired desktop preview")
-	a, proof := desktopAuthority(t, cfg)
+	a, verifier := desktopAuthority(t, cfg)
 	now := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
 	a.now = func() time.Time { return now }
 	c := desktopChallenge(t, a, desktopReviewDiscard, reviewKindHeld, id)
@@ -205,11 +250,155 @@ func TestDesktopReviewAuthorityRefusesWrongProofAndExpiry(t *testing.T) {
 		t.Fatalf("wrong proof = %v", err)
 	}
 	a.now = func() time.Time { return now.Add(desktopReviewChallengeLifetime) }
-	if _, err := a.complete(testCtx(t), c.Nonce, proof, false); err == nil || !strings.Contains(err.Error(), "expired") {
+	if _, err := a.complete(testCtx(t), c.Nonce, verifier.proof(t, c), false); err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("expired proof = %v", err)
 	}
 	if d, _ := readMCPProposalDecision(cfg, id); d != nil {
 		t.Fatalf("refused held proposal gained decision: %+v", d)
+	}
+}
+
+func TestDesktopReviewAuthorityBindsEverySignedFieldAndIssuedDigest(t *testing.T) {
+	cfg := reviewSetup(t)
+	id := reviewSaved(t, "Bound desktop preview")
+	a, verifier := desktopAuthority(t, cfg)
+	c := desktopChallenge(t, a, desktopReviewKeep, reviewKindSaved, id)
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*desktopReviewChallenge)
+	}{
+		{"nonce", func(c *desktopReviewChallenge) { c.Nonce = strings.Repeat("a", 64) }},
+		{"installation", func(c *desktopReviewChallenge) { c.InstallationID = "other-installation" }},
+		{"key", func(c *desktopReviewChallenge) { c.KeyID = "other-key" }},
+		{"action", func(c *desktopReviewChallenge) { c.Action = desktopReviewDiscard }},
+		{"kind", func(c *desktopReviewChallenge) { c.Kind = reviewKindHeld }},
+		{"item", func(c *desktopReviewChallenge) { c.ID = "mem_other" }},
+		{"scope", func(c *desktopReviewChallenge) { c.Scope = "project:other" }},
+		{"revision", func(c *desktopReviewChallenge) { c.CanonicalRevision = strings.Repeat("b", 64) }},
+		{"display", func(c *desktopReviewChallenge) { c.DisplayDigest = strings.Repeat("c", 64) }},
+		{"expiry", func(c *desktopReviewChallenge) { c.ExpiresAt++ }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			altered := c
+			tc.mutate(&altered)
+			if _, err := a.complete(testCtx(t), c.Nonce, verifier.proof(t, altered), false); !errors.Is(err, errDesktopReviewProofUnavailable) {
+				t.Fatalf("mutated %s proof = %v", tc.name, err)
+			}
+		})
+	}
+	other := newDesktopReviewTestVerifier(t)
+	other.installationID, other.keyID = verifier.installationID, verifier.keyID
+	if _, err := a.complete(testCtx(t), c.Nonce, other.proof(t, c), false); !errors.Is(err, errDesktopReviewProofUnavailable) {
+		t.Fatalf("wrong key proof = %v", err)
+	}
+
+	path := desktopReviewChallengePath(cfg, c.Nonce)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted desktopReviewChallenge
+	if err := json.Unmarshal(raw, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	persisted.KeyID = "changed-on-disk"
+	raw, err = json.Marshal(persisted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.complete(testCtx(t), c.Nonce, verifier.proof(t, c), false); !errors.Is(err, errDesktopReviewProofUnavailable) {
+		t.Fatalf("changed issued digest = %v", err)
+	}
+}
+
+func TestDesktopReviewAuthorityFinalReceiptFailureIsIndeterminateAndNeverReapplied(t *testing.T) {
+	cfg := reviewSetup(t)
+	id := reviewSaved(t, "Receipt failure desktop preview")
+	a, verifier := desktopAuthority(t, cfg)
+	c := desktopChallenge(t, a, desktopReviewKeep, reviewKindSaved, id)
+	writeChallenge := a.writeChallenge
+	a.writeChallenge = func(path string, state desktopReviewChallenge) error {
+		if state.State == "applied" {
+			return errors.New("injected final receipt failure")
+		}
+		return writeChallenge(path, state)
+	}
+	if out, err := a.complete(testCtx(t), c.Nonce, verifier.proof(t, c), false); err != nil || out.Status != "indeterminate" || out.Applied != nil {
+		t.Fatalf("receipt failure = %+v, %v", out, err)
+	}
+	if reviewTentative(t, cfg, id) {
+		t.Fatal("vault change did not precede final receipt failure")
+	}
+	if out, err := newDesktopReviewAuthority(cfg, verifier).complete(testCtx(t), c.Nonce, verifier.proof(t, c), false); err != nil || out.Status != "indeterminate" || out.Applied != nil {
+		t.Fatalf("indeterminate replay = %+v, %v", out, err)
+	}
+}
+
+func TestDesktopReviewAuthorityConcurrentKeepDiscardHasOneWinner(t *testing.T) {
+	for _, tc := range []struct{ name, kind string }{{"saved", reviewKindSaved}, {"held", reviewKindHeld}} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := reviewSetup(t)
+			id := reviewSaved(t, "Concurrent saved desktop preview")
+			if tc.kind == reviewKindHeld {
+				id = reviewHeld(t, "Concurrent held desktop preview")
+			}
+			a, verifier := desktopAuthority(t, cfg)
+			keep := desktopChallenge(t, a, desktopReviewKeep, tc.kind, id)
+			discard := desktopChallenge(t, a, desktopReviewDiscard, tc.kind, id)
+			start := make(chan struct{})
+			results := make(chan desktopReviewOutcome, 2)
+			errs := make(chan error, 2)
+			var wg sync.WaitGroup
+			for _, challenge := range []desktopReviewChallenge{keep, discard} {
+				challenge := challenge
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					<-start
+					out, err := a.complete(testCtx(t), challenge.Nonce, verifier.proof(t, challenge), false)
+					results <- out
+					errs <- err
+				}()
+			}
+			close(start)
+			wg.Wait()
+			close(results)
+			close(errs)
+			applied := 0
+			for err := range errs {
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			for out := range results {
+				if desktopReviewApplied(out) {
+					applied++
+				}
+			}
+			if applied != 1 {
+				t.Fatalf("concurrent actions applied %d times", applied)
+			}
+			if tc.kind == reviewKindSaved {
+				if m, err := findMemory(cfg, id); err == nil && memory.IsTentative(m) {
+					t.Fatal("saved winner left the note tentative")
+				}
+				return
+			}
+			d, err := readMCPProposalDecision(cfg, id)
+			if err != nil || d == nil || (d.Status != "approved" && d.Status != "rejected") {
+				t.Fatalf("held decision = %+v, %v", d, err)
+			}
+			if d.Status == "approved" {
+				m, err := findMemory(cfg, d.MemoryID)
+				if err != nil || m.Source != "mcp" || memory.IsOwnerConfirmed(m) {
+					t.Fatalf("held approval provenance = %+v, %v", m, err)
+				}
+			}
+		})
 	}
 }
 
@@ -223,5 +412,8 @@ func TestReviewDesktopStatusIsReadOnly(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(out), &receipt); err != nil || receipt.Schema != "mora.review.desktop" || receipt.Status != "unavailable" {
 		t.Fatalf("desktop status = %q, %+v, %v", out, receipt, err)
+	}
+	if _, err := runErr(t, "review", "desktop"); err == nil || !strings.Contains(err.Error(), "usage: mora review desktop --json") {
+		t.Fatalf("desktop status refusal = %v", err)
 	}
 }

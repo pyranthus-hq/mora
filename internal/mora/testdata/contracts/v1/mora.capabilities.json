@@ -827,6 +827,14 @@
     {
       "json_contract": "receipt",
       "kind": "subcommand",
+      "path": "review desktop",
+      "payload": "mora.review.desktop",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
       "path": "schedule run",
       "payload": "mora.schedule.run",
       "platform": "all",
@@ -2189,6 +2197,10 @@
     },
     {
       "name": "mora.review",
+      "version": 1
+    },
+    {
+      "name": "mora.review.desktop",
       "version": 1
     },
     {

@@ -120,6 +120,13 @@
       "payload": "mora.review"
     },
     {
+      "path": "review desktop",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.review.desktop"
+    },
+    {
       "path": "forget",
       "kind": "verb",
       "platform": "all",
