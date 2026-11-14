@@ -284,13 +284,17 @@ func hookSessionStart(ctx context.Context, args []string, stdout io.Writer, stdi
 			if banner != "" {
 				maxBytes -= len(banner) + 1 // Include the newline above the brief.
 			}
+			var warning string
+			if reconcileProjectRuleScope(cfg, scope) != nil {
+				warning = fmt.Sprintf(`Mora: project rule reconciliation for %s needs attention. Run "mora doctor".`, clipProjectScope(scope))
+				maxBytes -= len(warning) + 1
+			}
 			var perr error
-			if perr = reconcileProjectRuleScope(cfg, scope); perr != nil {
-				text = fmt.Sprintf(`Mora: project rule reconciliation for %s needs attention. Run "mora doctor".`, clipProjectScope(scope))
-			} else if text, emitted, perr = buildProjectBriefWithin(cfg, scope, root, hookNow(), maxBytes); perr != nil {
+			if text, emitted, perr = buildProjectBriefWithin(cfg, scope, root, hookNow(), maxBytes); perr != nil {
 				text = fmt.Sprintf(`Mora: the brief for %s could not be built. Run "mora doctor".`, clipProjectScope(scope))
 				emitted = nil
 			}
+			text = prependBannerLine(warning, text)
 		}
 		if text != "" {
 			fullText := prependBannerLine(banner, text)

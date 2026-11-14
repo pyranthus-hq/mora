@@ -142,8 +142,8 @@ func TestDesktopReviewAuthorityProjectRuleActivationAndRetirement(t *testing.T) 
 		t.Fatal(err)
 	}
 	rule := projectRuleTestMemory(t, cfg, binding, "mem_native_rule", "Use the exact approved formatter.")
-	a, verifier := desktopAuthority(t, cfg)
-	activate, err := a.beginProjectRule(desktopReviewActivate, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRuleDisplayDigest(rule), "codex")
+	a, verifier := projectRuleNativeAuthority(t, cfg)
+	activate, err := a.beginProjectRule(desktopReviewActivate, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRulePreviewDigest(t, cfg, binding, rule.RuleID, desktopReviewActivate), "codex")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,20 +164,20 @@ func TestDesktopReviewAuthorityProjectRuleActivationAndRetirement(t *testing.T) 
 	if err != nil || !bytes.Contains(loader, []byte(rule.Text)) {
 		t.Fatalf("loader = %q, %v", loader, err)
 	}
-	if _, err := a.beginProjectRule(desktopReviewRetire, filepath.Dir(binding.Dir), rule.RuleID, rule.RevisionSHA256, projectRuleDisplayDigest(rule), "codex"); !errors.Is(err, errDesktopReviewUnavailable) {
+	if _, err := a.beginProjectRule(desktopReviewRetire, filepath.Dir(binding.Dir), rule.RuleID, rule.RevisionSHA256, projectRulePreviewDigest(t, cfg, binding, rule.RuleID, desktopReviewRetire), "codex"); !errors.Is(err, errDesktopReviewUnavailable) {
 		t.Fatalf("wrong-root retirement err = %v", err)
 	}
-	if _, err := a.beginProjectRule(desktopReviewRetire, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRuleDisplayDigest(rule), "other"); !errors.Is(err, errDesktopReviewUnavailable) {
+	if _, err := a.beginProjectRule(desktopReviewRetire, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRulePreviewDigest(t, cfg, binding, rule.RuleID, desktopReviewRetire), "other"); !errors.Is(err, errDesktopReviewUnavailable) {
 		t.Fatalf("wrong-client retirement err = %v", err)
 	}
-	cancel, err := a.beginProjectRule(desktopReviewRetire, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRuleDisplayDigest(rule), "codex")
+	cancel, err := a.beginProjectRule(desktopReviewRetire, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRulePreviewDigest(t, cfg, binding, rule.RuleID, desktopReviewRetire), "codex")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cancelled, cancelErr := a.complete(testCtx(t), cancel.Nonce, nil, true); cancelErr != nil || cancelled.Status != "cancelled" {
 		t.Fatalf("retire cancellation = %+v, %v", cancelled, cancelErr)
 	}
-	retire, err := a.beginProjectRule(desktopReviewRetire, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRuleDisplayDigest(rule), "codex")
+	retire, err := a.beginProjectRule(desktopReviewRetire, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRulePreviewDigest(t, cfg, binding, rule.RuleID, desktopReviewRetire), "codex")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,12 +196,12 @@ func TestDesktopReviewAuthorityProjectRuleConcurrentActivationsAppendOnce(t *tes
 		t.Fatal(err)
 	}
 	rule := projectRuleTestMemory(t, cfg, binding, "mem_concurrent_rule", "Serialize exact native activation.")
-	a, verifier := desktopAuthority(t, cfg)
-	first, err := a.beginProjectRule(desktopReviewActivate, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRuleDisplayDigest(rule), "codex")
+	a, verifier := projectRuleNativeAuthority(t, cfg)
+	first, err := a.beginProjectRule(desktopReviewActivate, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRulePreviewDigest(t, cfg, binding, rule.RuleID, desktopReviewActivate), "codex")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := a.beginProjectRule(desktopReviewActivate, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRuleDisplayDigest(rule), "codex")
+	second, err := a.beginProjectRule(desktopReviewActivate, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRulePreviewDigest(t, cfg, binding, rule.RuleID, desktopReviewActivate), "codex")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,7 @@ func TestDesktopReviewAuthorityProjectRuleRefusesUnboundOrChangedSource(t *testi
 	cfg, binding := projectRuleTestBinding(t)
 	rule := projectRuleTestMemory(t, cfg, binding, "mem_unbound_rule", "Never use a public activation route.")
 	a, _ := desktopAuthority(t, cfg)
-	if _, err := a.beginProjectRule(desktopReviewActivate, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRuleDisplayDigest(rule), "codex"); !errors.Is(err, errDesktopReviewUnavailable) {
+	if _, err := a.beginProjectRule(desktopReviewActivate, binding.Dir, rule.RuleID, rule.RevisionSHA256, rule.RevisionSHA256, "codex"); !errors.Is(err, errDesktopReviewUnavailable) {
 		t.Fatalf("unbound activation err = %v", err)
 	}
 	if err := saveProjectBindings(cfg, []projectBinding{binding}); err != nil {
@@ -238,7 +238,7 @@ func TestDesktopReviewAuthorityProjectRuleRefusesUnboundOrChangedSource(t *testi
 	if err := writeMemory(cfg, m); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.beginProjectRule(desktopReviewActivate, binding.Dir, rule.RuleID, rule.RevisionSHA256, projectRuleDisplayDigest(rule), "codex"); !errors.Is(err, errDesktopReviewUnavailable) {
+	if _, err := a.beginProjectRule(desktopReviewActivate, binding.Dir, rule.RuleID, rule.RevisionSHA256, rule.RevisionSHA256, "codex"); !errors.Is(err, errDesktopReviewUnavailable) {
 		t.Fatalf("changed activation err = %v", err)
 	}
 	if _, err := os.Stat(projectRuleDecisionPath(cfg)); !errors.Is(err, os.ErrNotExist) {

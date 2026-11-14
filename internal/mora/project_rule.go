@@ -43,13 +43,3 @@ func projectRuleRevisionSHA256(m Memory, applicability string) string {
 	h.Write([]byte("\x00" + applicability))
 	return hex.EncodeToString(h.Sum(nil))
 }
-
-func projectRuleDisplayDigest(r projectRuleRevision) string {
-	h := sha256.New()
-	h.Write([]byte("mora-project-rule-display-v1\x00"))
-	for _, value := range []string{r.RuleID, r.Scope, r.RevisionSHA256, r.Text} {
-		h.Write([]byte(value))
-		h.Write([]byte{0})
-	}
-	return hex.EncodeToString(h.Sum(nil))
-}

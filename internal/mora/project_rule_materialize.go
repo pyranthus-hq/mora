@@ -148,18 +148,19 @@ func readProjectRuleManifest(path string) (projectRuleManifest, bool, error) {
 }
 
 func projectRuleMaterializationDigest(cfg Config, binding projectBinding, installationID, client string) (string, error) {
-	m, found, err := readProjectRuleManifest(projectRuleManifestPath(cfg, binding.Dir))
-	if err != nil || !found {
-		if err != nil {
-			return "", err
-		}
+	path := projectRuleManifestPath(cfg, binding.Dir)
+	regular, err := projectRuleRegularFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return projectRuleSHA256([]byte("absent")), nil
+	}
+	if err != nil || !regular {
 		return "", errProjectRuleConflict
 	}
-	_, rel, _, err := selectCodexProjectInstructions(binding)
-	if err != nil || !validProjectRuleManifest(m, binding, installationID, client, rel) {
-		return "", errProjectRuleConflict
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
 	}
-	return projectRuleSHA256([]byte(m.FileSHA256 + "\x00" + m.ManagedRegionSHA256)), nil
+	return projectRuleSHA256(append([]byte("observed-manifest\x00"), raw...)), nil
 }
 
 func validProjectRuleManifest(m projectRuleManifest, binding projectBinding, installationID, client, rel string) bool {
@@ -292,6 +293,9 @@ func planProjectRuleMaterialization(cfg Config, binding projectBinding, installa
 // before its activation row exists. Rendering is bounded and deterministic, so
 // this catches loader/manifest conflicts without publishing a dead decision.
 func preflightProjectRuleActivation(cfg Config, binding projectBinding, installationID, client string, rule projectRuleRevision) error {
+	if err := recoverProjectRuleMaterialization(cfg, binding); err != nil {
+		return err
+	}
 	if _, err := planProjectRuleMaterialization(cfg, binding, installationID, client); err != nil {
 		return err
 	}
@@ -304,7 +308,6 @@ func preflightProjectRuleActivation(cfg Config, binding projectBinding, installa
 			return errProjectRuleConflict
 		}
 	}
-	_, _, _ = renderProjectRuleRegion(append(active, rule))
 	return nil
 }
 

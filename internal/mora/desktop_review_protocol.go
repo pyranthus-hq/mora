@@ -37,6 +37,7 @@ type desktopReviewChallenge struct {
 	LoaderRelPath         string              `json:"loader_rel_path,omitempty"`
 	SourceMemoryID        string              `json:"source_memory_id,omitempty"`
 	MaterializationDigest string              `json:"materialization_digest,omitempty"`
+	PriorDecisionNonce    string              `json:"prior_decision_nonce,omitempty"`
 	IssuedDigest          string              `json:"issued_digest"`
 	State                 string              `json:"state"`
 	Consumed              bool                `json:"consumed"`
@@ -50,6 +51,9 @@ func (c desktopReviewChallenge) bytes() ([]byte, error) {
 	}
 	projectRule := c.Kind == desktopReviewProjectRule
 	if projectRule {
+		if c.Action == desktopReviewRetire && c.PriorDecisionNonce == "" {
+			return nil, errors.New("retirement requires prior decision identity")
+		}
 		if (c.Action != desktopReviewActivate && c.Action != desktopReviewRetire) || c.Client != "codex" || c.ProjectRoot == "" || c.LoaderRelPath == "" || c.SourceMemoryID == "" {
 			return nil, errors.New("invalid project rule desktop review challenge")
 		}
@@ -61,7 +65,7 @@ func (c desktopReviewChallenge) bytes() ([]byte, error) {
 	values := []string{c.Nonce, c.InstallationID, c.KeyID, string(c.Action), c.Kind, c.ID, c.Scope, c.CanonicalRevision, c.DisplayDigest}
 	if projectRule {
 		domain = "mora-project-rule-decision-v1\x00"
-		values = append(values, c.Client, c.ProjectRoot, c.LoaderRelPath, c.SourceMemoryID, c.MaterializationDigest)
+		values = append(values, c.Client, c.ProjectRoot, c.LoaderRelPath, c.SourceMemoryID, c.MaterializationDigest, c.PriorDecisionNonce)
 	}
 	out.WriteString(domain)
 	for _, value := range values {

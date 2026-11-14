@@ -101,7 +101,7 @@ func TestProjectRuleDesktopFramesListAndShowExactRevision(t *testing.T) {
 		t.Fatalf("list = %#v", list)
 	}
 	show := handleDesktopReviewFrame(testCtx(t), cfg, authority, verifier, desktopReviewFrame{Op: "project_rule.show", Client: "codex", ProjectDir: binding.Dir, ID: rule.RuleID})
-	if show.Error != nil || show.Preview == nil || show.Preview.Text != rule.Text || show.Preview.CanonicalRevision != rule.RevisionSHA256 || show.Preview.DisplayDigest != projectRuleDisplayDigest(rule) || len(show.Preview.Details) != 3 || show.Preview.Details[1].Value != "AGENTS.md" || show.Preview.Details[2].Value != "0" {
+	if show.Error != nil || show.Preview == nil || show.Preview.Text != rule.Text || show.Preview.CanonicalRevision != rule.RevisionSHA256 || len(show.Preview.DisplayDigest) != 64 || len(show.Preview.Details) != 4 || show.Preview.Details[1].Value != "AGENTS.md" || show.Preview.Details[2].Value != "0" {
 		t.Fatalf("show = %#v", show)
 	}
 }

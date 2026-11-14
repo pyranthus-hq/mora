@@ -88,36 +88,41 @@ func validateProjectRuleDecisionLog(path string) error {
 	return s.Err()
 }
 
-func loadProjectRuleState(cfg Config, binding projectBinding, installationID, client string) (projectRuleState, error) {
-	state := projectRuleState{Active: make(map[string]projectRuleDecision)}
+func latestProjectRuleDecisions(cfg Config, binding projectBinding, installationID, client string) (map[string]projectRuleDecision, error) {
+	last := make(map[string]projectRuleDecision)
 	if binding.Dir == "" || binding.Scope == "" || installationID == "" || client != "codex" {
-		return state, errors.New("invalid project rule state identity")
+		return nil, errors.New("invalid project rule state identity")
 	}
 	f, err := os.Open(projectRuleDecisionPath(cfg))
 	if errors.Is(err, os.ErrNotExist) {
-		return state, nil
+		return last, nil
 	}
 	if err != nil {
-		return state, err
+		return nil, err
 	}
 	defer f.Close()
-	s := bufio.NewScanner(f)
-	// A single decision is deliberately small. Any malformed row is a refusal,
-	// not an invitation to resurrect an earlier activation.
-	s.Buffer(make([]byte, 1024), 1<<20)
-	last := make(map[string]projectRuleDecision)
-	for s.Scan() {
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024), 1<<20)
+	for scanner.Scan() {
 		var d projectRuleDecision
-		if json.Unmarshal(s.Bytes(), &d) != nil || !validProjectRuleDecision(d) {
-			return state, errors.New("project rule decision log contains an invalid row")
+		if json.Unmarshal(scanner.Bytes(), &d) != nil || !validProjectRuleDecision(d) {
+			return nil, errors.New("project rule decision log contains an invalid row")
 		}
-		if d.InstallationID != installationID || d.Client != client || d.ProjectRoot != binding.Dir || d.Scope != binding.Scope {
-			continue
+		if d.InstallationID == installationID && d.Client == client && d.ProjectRoot == binding.Dir && d.Scope == binding.Scope {
+			last[d.RuleID] = d
 		}
-		last[d.RuleID] = d
 	}
-	if err := s.Err(); err != nil {
-		return state, fmt.Errorf("read project rule decisions: %w", err)
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read project rule decisions: %w", err)
+	}
+	return last, nil
+}
+
+func loadProjectRuleState(cfg Config, binding projectBinding, installationID, client string) (projectRuleState, error) {
+	state := projectRuleState{Active: make(map[string]projectRuleDecision)}
+	last, err := latestProjectRuleDecisions(cfg, binding, installationID, client)
+	if err != nil {
+		return state, err
 	}
 	for id, d := range last {
 		if d.Action == "activate" {
@@ -127,38 +132,13 @@ func loadProjectRuleState(cfg Config, binding projectBinding, installationID, cl
 	return state, nil
 }
 
-// latestProjectRuleDecision is deliberately narrower than state loading: brief
-// fallback needs to honor an exact local retirement without treating a newer
-// source revision as approved or retired.
 func latestProjectRuleDecision(cfg Config, binding projectBinding, installationID, client, id string) (projectRuleDecision, bool, error) {
 	if id == "" {
 		return projectRuleDecision{}, false, errors.New("invalid project rule id")
 	}
-	f, err := os.Open(projectRuleDecisionPath(cfg))
-	if errors.Is(err, os.ErrNotExist) {
-		return projectRuleDecision{}, false, nil
-	}
-	if err != nil {
-		return projectRuleDecision{}, false, err
-	}
-	defer f.Close()
-	var latest projectRuleDecision
-	found := false
-	s := bufio.NewScanner(f)
-	s.Buffer(make([]byte, 1024), 1<<20)
-	for s.Scan() {
-		var d projectRuleDecision
-		if json.Unmarshal(s.Bytes(), &d) != nil || !validProjectRuleDecision(d) {
-			return projectRuleDecision{}, false, errors.New("project rule decision log contains an invalid row")
-		}
-		if d.RuleID == id && d.InstallationID == installationID && d.Client == client && d.ProjectRoot == binding.Dir && d.Scope == binding.Scope {
-			latest, found = d, true
-		}
-	}
-	if err := s.Err(); err != nil {
-		return projectRuleDecision{}, false, fmt.Errorf("read project rule decisions: %w", err)
-	}
-	return latest, found, nil
+	last, err := latestProjectRuleDecisions(cfg, binding, installationID, client)
+	d, found := last[id]
+	return d, found, err
 }
 
 // activeProjectRuleRevisions refuses stale, retired, changed, or unconfirmed

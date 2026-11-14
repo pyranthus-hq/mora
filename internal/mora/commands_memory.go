@@ -575,18 +575,19 @@ func deleteMemoryFileLocked(ctx context.Context, cfg Config, m Memory) (reconcil
 		return false, err
 	}
 	markDeleteUnlinked(cfg, op)
+	cleanupErr := reconcileProjectRuleScope(cfg, m.Scope)
+	if cleanupErr != nil {
+		cleanupErr = fmt.Errorf("memory %s deleted, but project rule reconciliation failed: %w", m.ID, cleanupErr)
+	}
 	reconcile, err = reflectDeleteInIndex(ctx, cfg, m.ID)
 	if err != nil {
 		// The op REMAINS -> the index reads dirty AND B4 suppresses the deleted id.
 		// A partial delete stays a LOUD error with no receipt, mirroring the MCP
 		// delete_memory asymmetry: serving deleted content warrants the error,
 		// and the retry is harmless. Do not soften this into a receipt.
-		return false, fmt.Errorf("memory %s deleted, but the search index could not be updated: %w — run `mora index rebuild`", m.ID, err)
+		return false, errors.Join(fmt.Errorf("memory %s deleted, but the search index could not be updated: %w — run `mora index rebuild`", m.ID, err), cleanupErr)
 	}
-	if err := reconcileProjectRuleScope(cfg, m.Scope); err != nil {
-		return reconcile, fmt.Errorf("memory %s deleted, but project rule reconciliation failed: %w", m.ID, err)
-	}
-	return reconcile, nil
+	return reconcile, cleanupErr
 }
 
 type deleteReceipt struct {

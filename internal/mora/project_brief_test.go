@@ -659,7 +659,7 @@ func TestProjectBriefSuppressesOnlyVerifiedNativeRuleDeliveryAndExactRetire(t *t
 		t.Fatal(err)
 	}
 	d := projectRuleTestDecision(rule, binding, "activate")
-	d.InstallationID, d.DisplayDigest = installation, projectRuleDisplayDigest(rule)
+	d.InstallationID, d.DisplayDigest = installation, rule.RevisionSHA256
 	if err := appendProjectRuleDecision(cfg, d); err != nil {
 		t.Fatal(err)
 	}
@@ -705,7 +705,7 @@ func TestProjectBriefVerifiedDecisionDoesNotFallThroughAsAgentNote(t *testing.T)
 		t.Fatal(err)
 	}
 	d := projectRuleTestDecision(rule, binding, "activate")
-	d.InstallationID, d.DisplayDigest = installation, projectRuleDisplayDigest(rule)
+	d.InstallationID, d.DisplayDigest = installation, rule.RevisionSHA256
 	if err := appendProjectRuleDecision(cfg, d); err != nil {
 		t.Fatal(err)
 	}

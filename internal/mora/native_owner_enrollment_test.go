@@ -524,7 +524,7 @@ func TestDesktopReviewStdioEnrollmentAndDecision(t *testing.T) {
 		}
 		writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "project_rule.show", Client: "codex", ProjectDir: root, ID: rule.RuleID})
 		shown := readStdioResponse(t, outputReader)
-		if shown.Error != nil || shown.Preview == nil || shown.Preview.Text != rule.Text || shown.Preview.CanonicalRevision != rule.RevisionSHA256 || len(shown.Preview.Details) != 3 {
+		if shown.Error != nil || shown.Preview == nil || shown.Preview.Text != rule.Text || shown.Preview.CanonicalRevision != rule.RevisionSHA256 || len(shown.Preview.Details) != 4 {
 			t.Fatalf("project rule show = %#v", shown)
 		}
 		writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "decision.begin", Action: desktopReviewActivate, Kind: desktopReviewProjectRule, ProjectDir: root, Client: "codex", ID: rule.RuleID, CanonicalRevision: shown.Preview.CanonicalRevision, DisplayDigest: shown.Preview.DisplayDigest})
