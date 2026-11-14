@@ -629,6 +629,12 @@ mora config mcp-write-policy readonly
   add them to the vault before approval. It refuses deletes.
 - `readonly` refuses writes and deletes.
 
+On a successful MCP `write_memory`, `memory.path` is a vault-relative,
+slash-delimited receipt path (for example, `memories/global/mem_x.md`), never an
+absolute machine path. It cannot escape the vault. Use `memory.id` with
+`read_memory` to retrieve the record; do not treat the receipt path as an
+arbitrary filesystem path.
+
 An explicit policy is never changed. v0.15.3 resolved an unset policy to
 `propose`. v0.15.2 and earlier resolved it to `open`. Writes still queued from
 v0.15.3 stay queued: `mora doctor` prints how many are pending, and

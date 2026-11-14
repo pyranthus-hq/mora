@@ -307,8 +307,8 @@ func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, 
 // mcpWriteDisplayMemory keeps the persisted absolute path private and makes
 // the bounded MCP response independent of the caller's vault-root length.
 func mcpWriteDisplayMemory(cfg Config, m Memory) Memory {
-	if rel, err := filepath.Rel(cfg.VaultDir, m.Path); err == nil && rel != "" && rel != "." && rel[0] != '.' {
-		m.Path = rel
+	if rel, err := filepath.Rel(cfg.VaultDir, m.Path); err == nil && filepath.IsLocal(rel) {
+		m.Path = filepath.ToSlash(rel)
 	}
 	return m
 }
