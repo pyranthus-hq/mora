@@ -1,6 +1,6 @@
 # Contributing to Mora
 
-Thanks for taking a look. Mora is experimental local-first memory for AI agents: one pure-Go
+Thanks for taking a look. Mora is local-first memory for AI agents, now in beta: one pure-Go
 binary that pulls your Gmail, calendars, iMessage, and files into a Markdown
 vault and serves it over MCP. It's open source under Apache-2.0, and I build it
 in the open.
