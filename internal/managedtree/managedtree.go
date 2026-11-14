@@ -105,8 +105,8 @@ func InstallTree(source Revision, destination string, prior *Manifest) (Manifest
 	preserveTransaction := false
 	defer func() {
 		if !preserveTransaction {
-			_ = parentRoot.RemoveAll(stage)
-			if markerOwned {
+			_ = makeTreeWritable(parentRoot, stage)
+			if parentRoot.RemoveAll(stage) == nil && markerOwned {
 				_ = parentRoot.Remove(marker)
 			}
 		}

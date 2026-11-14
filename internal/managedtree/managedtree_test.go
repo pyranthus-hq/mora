@@ -242,6 +242,49 @@ func TestSyncFailurePreservesPriorDestination(t *testing.T) {
 	}
 }
 
+func TestFinalRootMetadataSyncFailureCleansReadOnlyStage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows permission modes are not portable")
+	}
+	root := t.TempDir()
+	oldSource, newSource, destination := filepath.Join(root, "old"), filepath.Join(root, "new"), filepath.Join(root, "destination")
+	writeTree(t, oldSource, map[string]string{"nested/managed": "old"})
+	writeTree(t, newSource, map[string]string{"nested/managed": "new"})
+	oldRevision, _ := DigestTree(oldSource)
+	manifest, err := InstallTree(oldRevision, destination, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(destination, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(destination, "nested"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(destination, 0o700); _ = os.Chmod(filepath.Join(destination, "nested"), 0o700) })
+	newRevision, _ := DigestTree(newSource)
+	originalSync := syncDir
+	stageRootCalls := 0
+	syncDir = func(path string) error {
+		if strings.HasPrefix(filepath.Base(path), ".destination.managedtree-stage-") {
+			stageRootCalls++
+			if stageRootCalls == 2 {
+				return errors.New("final stage metadata sync failure")
+			}
+		}
+		return originalSync(path)
+	}
+	if _, err := InstallTree(newRevision, destination, &manifest); err == nil {
+		t.Fatal("install succeeded despite final stage metadata sync failure")
+	}
+	syncDir = originalSync
+	assertFile(t, filepath.Join(destination, "nested", "managed"), "old")
+	assertNoTransactionArtifacts(t, root, "destination")
+	if _, err := InstallTree(newRevision, destination, &manifest); err != nil {
+		t.Fatalf("retry after readonly cleanup: %v", err)
+	}
+}
+
 func TestPostParkSyncFailurePreservesTransactionPaths(t *testing.T) {
 	root := t.TempDir()
 	oldSource, newSource := filepath.Join(root, "old"), filepath.Join(root, "new")
