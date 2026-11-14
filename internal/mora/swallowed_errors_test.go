@@ -67,9 +67,11 @@ func TestMCPWriteMemoryDegradesOnRebuildFailure(t *testing.T) {
 	if !strings.Contains(warning, "mora index rebuild") {
 		t.Fatalf("warning must name the recovery step (`mora index rebuild`), got %q", warning)
 	}
-	if _, ok := degraded["memory"].(Memory); !ok {
+	written, ok := degraded["memory"].(Memory)
+	if !ok {
 		t.Fatalf("degraded result must carry the saved memory (with its ID) so the client never re-writes, got %+v", degraded)
 	}
+	assertMCPWriteReceiptPath(t, cfg, written.ID, written.Path)
 	// The memory itself must be on disk — the vault write succeeded and the
 	// index is a disposable derived cache.
 	files, ferr := allMemoryFiles(cfg)

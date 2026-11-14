@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -722,7 +723,7 @@ func TestMCPBudgetCeilingsUnhealthyMaxCap(t *testing.T) {
 		tt := tt
 		subRun(t, tt.name, func(t *testing.T) {
 			pinMCPWriteBudgetClock(t, fixedNow)
-			_, ch, perSourceBytes := seedMaxCapUnhealthyBudgetFixture(t, fixedNow, tt.prodName)
+			cfg, ch, perSourceBytes := seedMaxCapUnhealthyBudgetFixture(t, fixedNow, tt.prodName)
 			if ch.Sources != healthFresh {
 				t.Fatalf("ch.Sources = %q, want fresh for sound sources fixture", ch.Sources)
 			}
@@ -774,6 +775,13 @@ func TestMCPBudgetCeilingsUnhealthyMaxCap(t *testing.T) {
 			if len(actualPerSourceJSON) != compactSourceBytesCap {
 				t.Fatalf("actual write_memory per_source = %d bytes, want %d: %s", len(actualPerSourceJSON), compactSourceBytesCap, actualPerSourceJSON)
 			}
+			written, ok := sc["memory"].(map[string]any)
+			if !ok {
+				t.Fatalf("write_memory memory = %T, want object", sc["memory"])
+			}
+			path, _ := written["path"].(string)
+			id, _ := written["id"].(string)
+			assertMCPWriteReceiptPath(t, cfg, id, path)
 			t.Logf("%s/write_memory: %d bytes, %d tokens; banner=%d bytes; per_source=%d bytes",
 				tt.name, writeBytes, writeTokens, len(ch.Banner), len(actualPerSourceJSON))
 
@@ -782,6 +790,60 @@ func TestMCPBudgetCeilingsUnhealthyMaxCap(t *testing.T) {
 			deleteTokens := (deleteBytes + charsPerToken - 1) / charsPerToken
 			assertBudget(t, deleteCase, deleteTokens, deleteBytes)
 		})
+	}
+}
+
+func TestMCPWriteDisplayMemoryUsesPortableLocalPath(t *testing.T) {
+	cfg := Config{VaultDir: t.TempDir()}
+	stored := Memory{ID: "mem_dot", Path: filepath.Join(cfg.VaultDir, ".archive", "mem_dot.md")}
+	display := mcpWriteDisplayMemory(cfg, stored)
+	if display.Path != ".archive/mem_dot.md" || !filepath.IsLocal(filepath.FromSlash(display.Path)) || strings.Contains(display.Path, `\`) {
+		t.Fatalf("display path = %q, want portable local vault-relative path", display.Path)
+	}
+	if resolved := filepath.Join(cfg.VaultDir, filepath.FromSlash(display.Path)); resolved != stored.Path {
+		t.Fatalf("display path resolves to %q, want %q", resolved, stored.Path)
+	}
+
+	escaping := Memory{ID: "mem_escape", Path: filepath.Join(t.TempDir(), "mem_escape.md")}
+	if got := mcpWriteDisplayMemory(cfg, escaping).Path; got != escaping.Path {
+		t.Fatalf("escaping path = %q, want unchanged %q", got, escaping.Path)
+	}
+}
+
+func TestMCPWriteMemoryAlreadyPublishedReceiptPath(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	args := map[string]any{"title": "Published", "text": "already published receipt", "type": "fact"}
+	if _, err := mcpWriteMemoryWith(testCtx(t), cfg, args, withExplicitMemoryID("mem_published")); err != nil {
+		t.Fatal(err)
+	}
+	result, err := mcpWriteMemoryWith(testCtx(t), cfg, args, withExplicitMemoryID("mem_published"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := result.(map[string]any)
+	if !ok || row["already_published"] != true {
+		t.Fatalf("already-published result = %#v", result)
+	}
+	written, ok := row["memory"].(Memory)
+	if !ok {
+		t.Fatalf("already-published memory = %T", row["memory"])
+	}
+	assertMCPWriteReceiptPath(t, cfg, written.ID, written.Path)
+}
+
+func assertMCPWriteReceiptPath(t *testing.T, cfg Config, id, path string) {
+	t.Helper()
+	if path == "" || !filepath.IsLocal(filepath.FromSlash(path)) || strings.Contains(path, `\`) {
+		t.Fatalf("write_memory display path = %q, want a local slash-delimited vault-relative path", path)
+	}
+	persisted, err := findMemory(cfg, id)
+	if err != nil || !filepath.IsAbs(persisted.Path) {
+		t.Fatalf("persisted memory path = %q, err=%v; want canonical absolute path", persisted.Path, err)
+	}
+	if resolved := filepath.Join(cfg.VaultDir, filepath.FromSlash(path)); resolved != persisted.Path {
+		t.Fatalf("write_memory display path resolves to %q, want persisted %q", resolved, persisted.Path)
 	}
 }
 

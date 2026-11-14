@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"time"
@@ -303,6 +304,15 @@ func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, 
 	return mcpWriteMemoryWith(ctx, cfg, args)
 }
 
+// mcpWriteDisplayMemory keeps the persisted absolute path private and makes
+// the bounded MCP response independent of the caller's vault-root length.
+func mcpWriteDisplayMemory(cfg Config, m Memory) Memory {
+	if rel, err := filepath.Rel(cfg.VaultDir, m.Path); err == nil && filepath.IsLocal(rel) {
+		m.Path = filepath.ToSlash(rel)
+	}
+	return m
+}
+
 // mcpWriteMemoryWith is mcpWriteMemory with the governed create's options.
 //
 // The split exists because the MCP tool table pins the handler signature, so the
@@ -334,7 +344,7 @@ func mcpWriteMemoryWith(ctx context.Context, cfg Config, args map[string]any, op
 		if errors.Is(err, errMemoryAlreadyExists) {
 			// The pinned id was already published. The caller asked for the
 			// memory to exist, and it does; saying so is the successful answer.
-			return map[string]any{"memory": m, "already_published": true, "health": compactHealthOf(cfg, now)}, nil
+			return map[string]any{"memory": mcpWriteDisplayMemory(cfg, m), "already_published": true, "health": compactHealthOf(cfg, now)}, nil
 		}
 		return nil, err
 	}
@@ -373,7 +383,7 @@ func mcpWriteMemoryWith(ctx context.Context, cfg Config, args map[string]any, op
 		// reconcile still runs, so the write is covered without a manual rebuild.
 		scheduleAuthoredReconciliation(cfg)
 		return notice(map[string]any{
-			"memory":      m,
+			"memory":      mcpWriteDisplayMemory(cfg, m),
 			"index_stale": true,
 			"warning":     fmt.Sprintf("memory %s saved, but the search index could not be updated: %v — run `mora index rebuild` (do NOT retry the write; it is saved)", m.ID, rerr),
 			"health":      compactHealthOf(cfg, now),
@@ -394,11 +404,11 @@ func mcpWriteMemoryWith(ctx context.Context, cfg Config, args map[string]any, op
 		// Every byte here rides the tightest MCP ceiling (write_memory 1500 tok
 		// with a max-cap banner), so the response carries no second flag that
 		// restates what health.index already says.
-		return notice(map[string]any{"memory": m, "searchable": true, "health": compactHealthOf(cfg, now)}), nil
+		return notice(map[string]any{"memory": mcpWriteDisplayMemory(cfg, m), "searchable": true, "health": compactHealthOf(cfg, now)}), nil
 	}
 	// A covering rebuild (the cold-start delegate, or a concurrent rebuild that
 	// parsed this file) already retired the marker: searchable and fully indexed.
-	return notice(map[string]any{"memory": m, "searchable": true, "health": compactHealthOf(cfg, now)}), nil
+	return notice(map[string]any{"memory": mcpWriteDisplayMemory(cfg, m), "searchable": true, "health": compactHealthOf(cfg, now)}), nil
 }
 
 // mcpMemoryFromArgs validates and shapes a write_memory request without
