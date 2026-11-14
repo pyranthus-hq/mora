@@ -56,14 +56,23 @@ func ReadProposal(cfg config.Config, id string) (Proposal, string, error) {
 		}
 		return Proposal{}, "", err
 	}
-	var proposal Proposal
-	if err := json.Unmarshal(b, &proposal); err != nil {
-		return Proposal{}, "", fmt.Errorf("parse MCP proposal %q: %w", id, err)
-	}
-	if proposal.ID != id {
-		return Proposal{}, "", fmt.Errorf("MCP proposal id mismatch: file %q contains %q", id, proposal.ID)
+	proposal, err := ParseProposal(id, b)
+	if err != nil {
+		return Proposal{}, "", err
 	}
 	return proposal, path, nil
+}
+
+// ParseProposal decodes a snapshot from a caller's own file reader.
+func ParseProposal(id string, b []byte) (Proposal, error) {
+	var proposal Proposal
+	if err := json.Unmarshal(b, &proposal); err != nil {
+		return Proposal{}, fmt.Errorf("parse MCP proposal %q: %w", id, err)
+	}
+	if proposal.ID != id {
+		return Proposal{}, fmt.Errorf("MCP proposal id mismatch: file %q contains %q", id, proposal.ID)
+	}
+	return proposal, nil
 }
 func ListProposals(cfg config.Config) ([]Proposal, error) {
 	entries, err := os.ReadDir(ProposalDir(cfg))
