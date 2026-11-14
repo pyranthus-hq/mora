@@ -270,14 +270,16 @@ func writeDesktopReviewChallenge(path string, c desktopReviewChallenge) error {
 	return atomicio.WriteDurable(path, raw, 0o600)
 }
 
-func cmdReviewDesktop(ctx context.Context, args []string, stdout io.Writer) error {
-	if len(args) != 1 || args[0] != "--json" {
+func cmdReviewDesktop(ctx context.Context, args []string, stdout io.Writer, stdin io.Reader) error {
+	if len(args) != 1 || (args[0] != "--json" && args[0] != "--stdio") {
 		return errors.New("usage: mora review desktop --json")
 	}
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
 	}
-	_ = cfg
+	if args[0] == "--stdio" {
+		return serveDesktopReviewStdio(ctx, cfg, newNativeOwnerVerifier(cfg), stdin, stdout)
+	}
 	return emitReceipt(stdout, "mora.review.desktop", 1, desktopReviewOutcome{Status: "unavailable", IndexVisibility: "not_checked"})
 }
