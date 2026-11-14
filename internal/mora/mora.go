@@ -146,6 +146,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdContext(ctx, args[1:], stdout, stderr)
 	case "index":
 		return cmdIndex(ctx, args[1:], stdout, stderr, stdin)
+	case "watch":
+		return cmdWatch(ctx, args[1:], stdout, stderr)
 	case "tasks":
 		return cmdTasks(ctx, args[1:], stdout, stderr)
 	case "pulse":
@@ -301,6 +303,11 @@ SAVE, FIND AND READ NOTES:
   mora index rebuild
   mora tasks sync --write
   mora tasks add "Reply to Sam about the launch" --pri P0   # capture an open loop (name first, then flags)
+  mora watch chats [--query name] [--json]                   # find imported iMessage chats
+  mora watch add <chat-id> [--json]                          # watch without changing imports
+  mora watch list [--json]                                   # list watched chats
+  mora watch check [chat-id] [--ack] [--limit 20] [--json]     # preview or acknowledge changes
+  mora watch remove <chat-id> [--json]                       # stop watching; keep messages
   mora tasks list --json                                    # the current live tasks
   mora tasks done "Set up Mora"    # mark a live task complete so it stops resurfacing as stale
   mora pulse --write --digest

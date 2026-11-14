@@ -222,8 +222,14 @@ func (o briefOpts) filtered() bool {
 // (M-6) — the catalog descriptor in connectors.go OWNS the rank/label data, so an
 // Nth connector gets a real rank/label instead of default-rank-3 / a title-cased
 // raw provider. Kept as named helpers so the sort/label call sites read clearly.
-func sourceDigestRank(src string) int     { r, _ := connectorDisplay(src); return r }
-func digestSourceLabel(src string) string { _, l := connectorDisplay(src); return l }
+func sourceDigestRank(src string) int { r, _ := connectorDisplay(src); return r }
+func digestSourceLabel(src string) string {
+	if src == "imessage:watched" {
+		return "Watched iMessage chats"
+	}
+	_, l := connectorDisplay(src)
+	return l
+}
 
 // buildDigest assembles the brief.
 //
@@ -264,6 +270,9 @@ func buildDigest(cfg Config, now time.Time, opts briefOpts) (Digest, error) {
 		return Digest{}, err
 	}
 	attachDigestCommitments(&d, commitmentsByMemory)
+	if err := appendChatWatchDigest(cfg, now, &d, byInstance, !opts.filtered()); err != nil {
+		return Digest{}, err
+	}
 	d.emptyEvidence = emptyEvidence
 	d.EmptyExplanation = deriveEmptyExplanation(d, opts, false)
 	return d, nil
@@ -940,6 +949,9 @@ func advanceBrief(cfg Config, now time.Time, opts briefOpts, budgetChars int, br
 		return Digest{}, "", err
 	}
 	attachDigestCommitments(&d, commitmentsByMemory)
+	if err := appendChatWatchDigest(cfg, now, &d, byInstance, !opts.filtered()); err != nil {
+		return Digest{}, "", err
+	}
 
 	budgeted, survived := budgetDigestForMarkdown(d, budgetChars)
 
@@ -1618,8 +1630,22 @@ func renderDigest(d Digest, budgetChars int) string {
 // was suppressed, not absent. Deterministic + byte-stable: section order is
 // preserved and each cut is a pure prefix of a section's items.
 func budgetDigestForMarkdown(d Digest, budget int) (Digest, map[string]bool) {
-	projected, survived := digestpkg.Budget(digestRenderModel(d), budget, defaultContextTokens*charsPerToken, budgetSourceFloor)
-	return digestFromBudgetModel(d, projected), survived
+	projected, _ := digestpkg.Budget(digestRenderModel(d), budget, defaultContextTokens*charsPerToken, budgetSourceFloor)
+	out := digestFromBudgetModel(d, projected)
+	// Watch previews never acknowledge a source delta that was elided by the budget.
+	survived := map[string]bool{}
+	for _, it := range out.Urgent {
+		survived[it.ID] = true
+	}
+	for _, section := range out.Sections {
+		if section.Source == "imessage:watched" {
+			continue
+		}
+		for _, it := range section.Items {
+			survived[it.ID] = true
+		}
+	}
+	return out, survived
 }
 
 // deriveEmptyExplanation returns a human-readable explanation when a brief has
@@ -1708,7 +1734,7 @@ func emptySourceUncertainty(d Digest, sourceFilter string) (uncertain, total int
 		if _, ok := bySource[s.Source]; !ok {
 			bySource[s.Source] = false
 		}
-		if s.State == stateStale || s.State == stateUnavailable {
+		if s.State == stateStale || s.State == stateUnavailable || s.State == watchStateUnavailable {
 			bySource[s.Source] = true
 		}
 	}
@@ -1760,7 +1786,7 @@ func mcpStateLabel(state string) string {
 		return "no_change"
 	case stateStale:
 		return "stale"
-	case stateUnavailable:
+	case stateUnavailable, watchStateUnavailable:
 		return "unavailable"
 	default: // stateDelta, stateColdStart (baseline), or plain-window
 		return "new"
@@ -1786,7 +1812,11 @@ func buildSourceStates(cfg Config, d Digest) []sourceState {
 			State:    mcpStateLabel(s.State),
 			Count:    len(s.Items) + s.MoreCount,
 		}
-		if st := loadConnectorSyncStatus(cfg, s.Source); st != nil {
+		statusKey := s.Source
+		if statusKey == "imessage:watched" {
+			statusKey = "imessage"
+		}
+		if st := loadConnectorSyncStatus(cfg, statusKey); st != nil {
 			ss.LastSynced = st.LastSynced
 			ss.LastSuccessAt = st.LastSuccessAt
 			ss.LastAttemptAt = st.LastAttemptAt

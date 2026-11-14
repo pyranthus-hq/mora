@@ -1,0 +1,6 @@
+{
+  "id": "imessage_chat/absent",
+  "removed": false,
+  "schema": "mora.watch.remove",
+  "schema_version": 1
+}
