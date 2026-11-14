@@ -23,6 +23,14 @@ const (
 	maxPathBytes  = 240
 )
 
+// ValidateCandidate performs the complete no-write intake preflight used by
+// proposal staging. It deliberately verifies local folder bounds before any
+// copy or queue write, so held proposals cannot bypass resource safeguards.
+func ValidateCandidate(c Candidate) error {
+	_, _, _, _, err := prepareCandidate(c)
+	return err
+}
+
 func prepareCandidate(c Candidate) (Candidate, string, bool, managedtree.Revision, error) {
 	if !validKind(c.Kind) || len(c.CanonicalSource) > 1024 || len(c.Attribution) > 1024 || len(c.Purpose) > 1024 || len(c.EffectiveScope) > 256 || len(c.UntrustedScopeSuggestion) > 256 {
 		return Candidate{}, "", false, managedtree.Revision{}, fmt.Errorf("%w: invalid kind or metadata bounds", ErrInvalidCandidate)

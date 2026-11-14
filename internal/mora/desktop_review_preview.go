@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	indexstore "github.com/pyranthus-hq/mora/internal/index"
+	"github.com/pyranthus-hq/mora/internal/managedtree"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
@@ -52,6 +53,9 @@ type desktopReviewPreview struct {
 	desktopReviewDisplay
 	CanonicalRevision string `json:"canonical_revision"`
 	DisplayDigest     string `json:"display_digest"`
+	// Files is used only by immutable resource previews. It deliberately lives
+	// in the signed preview rather than a separate unbound response field.
+	Files []managedtree.File `json:"files,omitempty"`
 }
 
 var errDesktopReviewUnavailable = errors.New("review item is unavailable or no longer pending")

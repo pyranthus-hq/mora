@@ -249,7 +249,7 @@ func TestMCPProjectSessionRootsSnapshotPreventsCrossProjectReads(t *testing.T) {
 	if c.rootRequests() != 1 {
 		t.Fatalf("tools/list roots requests = %d, want 1 after initialize", c.rootRequests())
 	}
-	for _, name := range []string{"search_memory", "read_memory", "list_memory", "context_memory", "write_memory", "brief"} {
+	for _, name := range []string{"search_memory", "read_memory", "context_memory", "write_memory", "brief", "discover_resources", "submit_resource"} {
 		if !strings.Contains(listed, name) {
 			t.Fatalf("managed catalog omitted safe tool %q: %s", name, listed)
 		}
@@ -278,7 +278,7 @@ func TestMCPProjectSessionRootsSnapshotPreventsCrossProjectReads(t *testing.T) {
 		t.Fatalf("unbound request fell back to broad reads: %s", got)
 	}
 	c.setRoots([]mcppkg.Root{{URI: mcpProjectTestURI(a)}})
-	result = c.call(7, "list_memory", map[string]any{})
+	result = c.call(7, "search_memory", map[string]any{"query": "needle"})
 	if got := string(result["result"]); !strings.Contains(got, "A title") || !strings.Contains(got, "Global title") || strings.Contains(got, "B title") || strings.Contains(got, "Personal title") {
 		t.Fatalf("A rebind leaked or omitted scope: %s", got)
 	}
@@ -333,7 +333,6 @@ func TestMCPProjectManagedFilesystemSourceNeverLeaks(t *testing.T) {
 		args map[string]any
 	}{
 		{"search_memory", map[string]any{"query": "isolationneedle", "limit": 1}},
-		{"list_memory", map[string]any{"limit": 1}},
 		{"context_memory", map[string]any{"query": "isolationneedle"}},
 		{"brief", map[string]any{}},
 	} {

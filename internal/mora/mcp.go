@@ -231,6 +231,11 @@ func mcpSessionToolCatalog(ctx context.Context) []mcppkg.ToolDefinition {
 		}
 		out = append(out, tool)
 	}
+	if _, project := mcpProjectFrom(ctx); project && mcpWorkspaceManaged(ctx) {
+		// Project sessions deliberately present a bounded, governed subset.
+		order := map[string]int{"search_memory": 0, "read_memory": 1, "context_memory": 2, "write_memory": 3, "brief": 4, "discover_resources": 5, "submit_resource": 6}
+		sort.SliceStable(out, func(i, j int) bool { return order[out[i].Name] < order[out[j].Name] })
+	}
 	return out
 }
 
@@ -261,19 +266,21 @@ type mcpToolDef struct {
 // preserved in tools/list for readability; callMCPTool derives its dispatch map
 // from this slice (mcpToolIndex), so a tool added here needs no second edit.
 var mcpToolHandlers = map[string]func(context.Context, Config, map[string]any) (any, error){
-	"write_memory":    mcpWriteMemory,
-	"read_memory":     mcpReadMemory,
-	"search_memory":   mcpSearchMemory,
-	"calendar_events": mcpCalendarEvents,
-	"list_memory":     mcpListMemory,
-	"delete_memory":   mcpDeleteMemory,
-	"context_memory":  mcpContextMemory,
-	"think":           mcpThink,
-	"list_entities":   mcpListEntities,
-	"get_entity":      mcpGetEntity,
-	"digest":          mcpDigest,
-	"brief":           mcpBrief,
-	"meeting_prep":    mcpMeetingPrep,
+	"write_memory":       mcpWriteMemory,
+	"read_memory":        mcpReadMemory,
+	"search_memory":      mcpSearchMemory,
+	"calendar_events":    mcpCalendarEvents,
+	"list_memory":        mcpListMemory,
+	"delete_memory":      mcpDeleteMemory,
+	"context_memory":     mcpContextMemory,
+	"think":              mcpThink,
+	"list_entities":      mcpListEntities,
+	"get_entity":         mcpGetEntity,
+	"digest":             mcpDigest,
+	"brief":              mcpBrief,
+	"meeting_prep":       mcpMeetingPrep,
+	"discover_resources": mcpDiscoverResources,
+	"submit_resource":    mcpSubmitResource,
 }
 
 // mcpToolRegistry binds package-owned public metadata to Mora-owned handlers.
