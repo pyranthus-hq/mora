@@ -27,9 +27,16 @@ unavailable binary, command failure, and incomplete preview. Index visibility
 is not part of this read-only receipt, so it does not claim that a note is
 already searchable.
 
-Keep and Discard are disabled. This unsigned app has no released, enrolled
-trusted-verifier decision protocol. A redacted, truncated, escaped, or omitted-argument preview
-also omits Keep. No UI or fixture path invokes `review-act` or writes the vault.
+An ad-hoc build remains read-only: Go verifies the running immediate parent with
+the pinned Developer ID requirement and rejects unsigned or wrong-identity apps.
+In a future released, signed `com.pyranthus.mora-status` bundle, **Enable desktop
+approvals** creates a permanent Secure Enclave P-256 key protected with fresh
+user presence. Keep and Discard send only the Go-issued opaque challenge to that
+key after the window has rendered the canonical preview. The Go core independently
+checks the resulting DER proof, expiry, replay ledger, and a fresh preview before
+using its existing mutation kernel. A redacted, truncated, escaped, or
+omitted-argument preview still omits Keep. No UI or fixture path invokes
+`review-act`, opens a listener, or accepts an imported signing key.
 
 ## Build
 
@@ -59,6 +66,7 @@ collector, or a vault.
 ./apps/mora-menubar/test.sh
 ```
 
-The automated checks cover the status model and the versioned queue/preview
-receipt decoders. Actual installed-app screenshots and OS-owner gestures remain
+The automated checks cover the status model, versioned queue/preview receipt
+decoders, and source-level Secure Enclave/protocol invariants. Actual installed
+app screenshots, production signing validation, and OS-owner gestures remain
 separate human acceptance work.

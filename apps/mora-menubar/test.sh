@@ -9,4 +9,7 @@ swiftc Sources/MenuBarIcon.swift Tests/MenuBarIconTests.swift -o "$TMPDIR/mora-m
 "$TMPDIR/mora-menubar-icon-tests"
 grep -Fq '@State private var expandedSources = false' Sources/MoraStatusApp.swift
 grep -Fq '.frame(width: 320)' Sources/MoraStatusApp.swift
+grep -Fq '["review", "desktop", "--stdio"]' Sources/OwnerProof.swift
+grep -Fq 'touchIDAuthenticationAllowableReuseDuration = 0' Sources/OwnerProof.swift
+grep -Fq 'kSecAttrTokenIDSecureEnclave' Sources/OwnerProof.swift
 echo "Compact collapsed panel checks passed"

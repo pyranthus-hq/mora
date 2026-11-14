@@ -1,8 +1,6 @@
 import AppKit
 import SwiftUI
 
-/// The review window is intentionally read-only until the core exposes an
-/// enrolled-verifier decision receipt. It only renders the canonical CLI data.
 @MainActor
 final class ReviewWindowController {
     static let shared = ReviewWindowController()
@@ -53,6 +51,9 @@ final class ReviewModel: ObservableObject {
     @Published var previewError: ReviewLoadError?
     @Published var loadingQueue = false
     @Published var loadingPreview = false
+    @Published var approvalStatus = "Desktop approvals are unavailable in this build."
+    @Published var ownerStatus: OwnerProofStatus?
+    @Published var applying = false
 
     private let mora: URL
     private let previewMode: Bool
@@ -94,6 +95,43 @@ final class ReviewModel: ObservableObject {
         } catch {
             if generation == state.generation { notes = []; selected = nil; queueError = .failed(Self.short(error.localizedDescription)) }
         }
+        await refreshApprovalStatus()
+    }
+
+    func refreshApprovalStatus() async {
+        guard !previewMode else { approvalStatus = "Preview fixture mode is read-only."; ownerStatus = nil; return }
+        do {
+            let client = NativeReviewClient(mora: mora)
+            let status = try await Task.detached(priority: .utility) { try client.status() }.value
+            ownerStatus = status
+            approvalStatus = status.enrolled && !status.readOnly ? "Desktop approvals are enabled for this installed app." : "Enable desktop approvals in a production-signed Mora Status app."
+        } catch {
+            ownerStatus = nil
+            approvalStatus = "Desktop approvals are unavailable in this build."
+        }
+    }
+
+    func enableApprovals() async {
+        guard !previewMode, !applying else { return }
+        applying = true; defer { applying = false }
+        do {
+            let client = NativeReviewClient(mora: mora)
+            let status = try await Task.detached(priority: .utility) { try client.status() }.value
+            try await Task.detached(priority: .userInitiated) { try client.enroll(status: status) }.value
+            await refreshApprovalStatus()
+        } catch { approvalStatus = error.localizedDescription }
+    }
+
+    func decide(_ action: String, preview: ReviewPreview) async {
+        guard !previewMode, !applying, let status = ownerStatus, status.enrolled, !status.readOnly else { return }
+        if action == "keep" && !preview.isKeepEligible { return }
+        applying = true; defer { applying = false }
+        do {
+            let client = NativeReviewClient(mora: mora)
+            let outcome = try await Task.detached(priority: .userInitiated) { try client.decide(action, preview: preview, status: status) }.value
+            approvalStatus = "Decision \(outcome.status). Vault mutation and index visibility are reported separately by Mora."
+            await load()
+        } catch { approvalStatus = error.localizedDescription }
     }
 
     func show(_ row: ReviewRow) async {
@@ -155,7 +193,7 @@ struct ReviewView: View {
                     .disabled(model.loadingQueue || model.loadingPreview)
                     .accessibilityLabel("Refresh review queue")
             }
-            Text("This window reads Mora’s saved and held queues. Desktop approvals are unavailable in this build, so no action can change a note.")
+            Text("This window renders Mora’s bounded canonical receipts. Keep and Discard require a fresh native owner proof bound to the preview shown here.")
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if let error = model.queueError {
                 Text(verbatim: error.localizedDescription).font(.system(size: 12)).foregroundStyle(.orange)
@@ -219,16 +257,24 @@ struct ReviewView: View {
                 Text("Index visibility is not reported by this read-only preview. Search may lag; this window does not claim the note is indexed.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
-                    if preview.isKeepEligible { Button("Keep (unavailable)") {}.disabled(true) }
-                    Button("Discard (unavailable)") {}.disabled(true)
+                    if preview.isKeepEligible { Button("Keep") { Task { await model.decide("keep", preview: preview) } }.disabled(!model.canDecide) }
+                    Button("Discard") { Task { await model.decide("discard", preview: preview) } }.disabled(!model.canDecide)
                 }
-                Text("Desktop approvals are unavailable because this app has no enrolled trusted-verifier decision path.")
+                if model.ownerStatus?.enrolled != true {
+                    Button("Enable desktop approvals") { Task { await model.enableApprovals() } }.disabled(model.applying || model.isPreviewMode)
+                }
+                Text(verbatim: model.approvalStatus)
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             .padding(10)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
         }
     }
+}
+
+extension ReviewModel {
+    var canDecide: Bool { ownerStatus?.enrolled == true && ownerStatus?.readOnly == false && !applying && !previewMode }
+    var isPreviewMode: Bool { previewMode }
 }
 
 /// The note text at its own height, up to 180 points; longer text scrolls inside.
