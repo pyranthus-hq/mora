@@ -53,11 +53,11 @@ func appendProjectRuleDecision(cfg Config, d projectRuleDecision) error {
 	})
 }
 
-// appendProjectRuleDecisionDurable is append-only under the caller's lease.
-// Retire relies on this barrier: a crash after it returns must not resurrect a
-// rule through a brief merely because loader cleanup has not run yet.
-func appendProjectRuleDecisionDurable(path string, line []byte) (err error) {
-	if existing, readErr := os.ReadFile(path); readErr == nil && len(existing) > 0 && existing[len(existing)-1] != '\n' {
+// Publish the logically appended history atomically so an interrupted write
+// cannot leave a torn row that blocks every project's future decisions.
+func appendProjectRuleDecisionDurable(path string, line []byte) error {
+	existing, readErr := os.ReadFile(path)
+	if readErr == nil && len(existing) > 0 && existing[len(existing)-1] != '\n' {
 		return errors.New("project rule decision log has a torn final row")
 	} else if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		return readErr
@@ -65,21 +65,7 @@ func appendProjectRuleDecisionDurable(path string, line []byte) (err error) {
 	if err := validateProjectRuleDecisionLog(path); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return err
-	}
-	defer func() { err = errors.Join(err, f.Close()) }()
-	if _, err := f.Write(line); err != nil {
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		return err
-	}
-	return atomicio.SyncDir(filepath.Dir(path))
+	return atomicio.WriteDurable(path, append(existing, line...), 0o600)
 }
 
 func validateProjectRuleDecisionLog(path string) error {

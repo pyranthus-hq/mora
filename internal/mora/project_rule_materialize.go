@@ -326,7 +326,7 @@ func recoverProjectRuleMaterialization(cfg Config, binding projectBinding) error
 	}
 	manifestBefore := manifestExists == intent.ManifestBeforeExists && (!manifestExists || bytes.Equal(manifest, intent.ManifestBefore))
 	manifestAfter := manifestExists == intent.ManifestAfterExists && (!manifestExists || bytes.Equal(manifest, intent.ManifestAfter))
-	if before {
+	if before && !after {
 		if !manifestBefore {
 			return fmt.Errorf("%w: manifest differs from recovery intent", errProjectRuleConflict)
 		}

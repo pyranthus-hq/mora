@@ -415,6 +415,74 @@ func TestProjectRuleMaterializationPreservesExistingMode(t *testing.T) {
 	}
 }
 
+func TestProjectRuleRecoveryWithUnchangedLoaderAndUpdatedManifest(t *testing.T) {
+	cfg, binding := projectRuleTestBinding(t)
+	r := projectRuleTestMemory(t, cfg, binding, "mem_same_bytes", "Keep the approved rule.")
+	activateProjectRule(t, cfg, binding, r)
+	if err := reconcileProjectRuleMaterialization(cfg, binding, projectRuleTestInstallation, projectRuleTestClient); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(binding.Dir, "AGENTS.md")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = append([]byte("Owner heading\n"), body...)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := planProjectRuleMaterialization(cfg, binding, projectRuleTestInstallation, projectRuleTestClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(plan.before, plan.after) || bytes.Equal(plan.manifestBefore, plan.manifestAfter) {
+		t.Fatal("fixture must change only the manifest")
+	}
+	if err := writeProjectRuleIntent(plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicio.WriteDurable(plan.manifestPath, plan.manifestAfter, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileProjectRuleMaterialization(cfg, binding, projectRuleTestInstallation, projectRuleTestClient); err != nil {
+		t.Fatalf("recover after manifest publication: %v", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("foreign bytes changed: %q, %v", got, err)
+	}
+	if got := verifiedProjectRuleDelivery(cfg, binding, projectRuleTestInstallation, projectRuleTestClient); len(got) != 1 {
+		t.Fatalf("delivery = %#v", got)
+	}
+}
+
+func TestProjectRuleAppendFailureLeavesCompleteDecisionHistory(t *testing.T) {
+	cfg, binding := projectRuleTestBinding(t)
+	r := projectRuleTestMemory(t, cfg, binding, "mem_atomic_log", "Retain complete history.")
+	activateProjectRule(t, cfg, binding, r)
+	path := projectRuleDecisionPath(cfg)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalSync := atomicio.MarkerSyncFn
+	t.Cleanup(func() { atomicio.MarkerSyncFn = originalSync })
+	atomicio.MarkerSyncFn = func(*os.File) error { return errors.New("injected pre-publication sync failure") }
+	if err := appendProjectRuleDecision(cfg, projectRuleTestDecision(r, binding, "retire")); err == nil {
+		t.Fatal("sync failure was not returned")
+	}
+	atomicio.MarkerSyncFn = originalSync
+	if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, before) {
+		t.Fatalf("failed append changed complete history: %q, %v", got, err)
+	}
+	if err := appendProjectRuleDecision(cfg, projectRuleTestDecision(r, binding, "retire")); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	state, err := loadProjectRuleState(cfg, binding, projectRuleTestInstallation, projectRuleTestClient)
+	if err != nil || len(state.Active) != 0 {
+		t.Fatalf("retirement state = %#v, %v", state, err)
+	}
+}
+
 func TestProjectRuleReconciliationRemovesChangedSourceProjection(t *testing.T) {
 	cfg, binding := projectRuleTestBinding(t)
 	r := projectRuleTestMemory(t, cfg, binding, "mem_drift", "Use stable source content.")
