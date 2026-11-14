@@ -53,6 +53,20 @@ func cliTaskMutationAllowed(cfg Config) error {
 	return nil
 }
 
+// cliDestructiveMutationAllowed keeps irreversible raw CLI operations inside
+// the same explicit policy boundary as capture. --force changes undo's target
+// eligibility only; it never grants mutation authority.
+func cliDestructiveMutationAllowed(cfg Config, operation string) error {
+	action, err := cliCaptureAction(cfg)
+	if err != nil {
+		return err
+	}
+	if action != mcppkg.ActionExecute {
+		return fmt.Errorf("%s refused: mcp_write_policy=%s does not authorize destructive CLI mutations", operation, configMCPWritePolicy(cfg))
+	}
+	return nil
+}
+
 // stageCLICapture reuses the normal proposal queue, preserving the authored
 // memory fields instead of creating a second raw-CLI staging format.
 func stageCLICapture(cfg Config, m Memory, heldBecause []string) (any, error) {

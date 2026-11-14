@@ -90,6 +90,9 @@ func cmdForget(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if !*yes {
 		return fmt.Errorf("refusing to forget without --yes (removes %d %s; use --dry-run to preview)", len(matches), memWord(len(matches)))
 	}
+	if err := requireVerifiedOwnerAction(ownerAction{Kind: "governance.forget", TargetID: label}); err != nil {
+		return err
+	}
 
 	// Gap A (#115): take the SAME governance lease every connector write uses,
 	// rescan while holding it, mark every matched id fail-closed, then append the

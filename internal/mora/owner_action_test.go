@@ -71,6 +71,58 @@ func TestPublicOwnerActionsFailClosedWithoutVerifier(t *testing.T) {
 	if err := Run(testCtx(t), []string{"rules", "approve", "compound-cd", "--mode", "warn"}, ioDiscard{}, ioDiscard{}, strings.NewReader("compound-cd\n")); !errors.Is(err, errOwnerVerificationUnavailable) {
 		t.Fatalf("marker-cleared rule approval = %v", err)
 	}
+	if err := cmdForget(testCtx(t), []string{"--chat", "owner-proof-probe", "--yes"}, ioDiscard{}, ioDiscard{}); !errors.Is(err, errOwnerVerificationUnavailable) {
+		t.Fatalf("marker-cleared forget = %v", err)
+	}
+}
+
+func TestCLIDestructivePolicyRefusesBeforeMutationAndOpenExecutes(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	cfg.MCPWritePolicy = mcppkg.WritePolicyTentative
+	if err := writeConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	seed := func(title string) Memory {
+		t.Helper()
+		m, _, err := createMemory(testCtx(t), cfg, Memory{Scope: "project:demo", Type: "fact", Title: title, Text: "body", Source: "manual"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	for _, operation := range []struct {
+		name string
+		run  func(Memory) error
+	}{
+		{"delete", func(m Memory) error { return cmdDelete(testCtx(t), []string{"--yes", m.ID}, ioDiscard{}, ioDiscard{}) }},
+		{"undo-force", func(m Memory) error { return cmdUndo(testCtx(t), []string{"--force", m.ID}, ioDiscard{}, ioDiscard{}) }},
+	} {
+		t.Run(operation.name, func(t *testing.T) {
+			m := seed("policy " + operation.name)
+			if err := operation.run(m); err == nil || !strings.Contains(err.Error(), "does not authorize destructive") {
+				t.Fatalf("tentative %s = %v", operation.name, err)
+			}
+			if _, err := findMemory(cfg, m.ID); err != nil {
+				t.Fatalf("refused %s changed memory: %v", operation.name, err)
+			}
+			cfg.MCPWritePolicy = mcpWritePolicyOpen
+			if err := writeConfig(cfg); err != nil {
+				t.Fatal(err)
+			}
+			if err := operation.run(m); err != nil {
+				t.Fatalf("open %s = %v", operation.name, err)
+			}
+			if _, err := findMemory(cfg, m.ID); err == nil {
+				t.Fatalf("open %s did not delete memory", operation.name)
+			}
+			cfg.MCPWritePolicy = mcppkg.WritePolicyTentative
+			if err := writeConfig(cfg); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }
 
 func TestCLICaptureAndTaskPolicyMatrix(t *testing.T) {

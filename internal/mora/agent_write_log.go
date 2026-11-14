@@ -175,6 +175,9 @@ func cmdUndo(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if err != nil {
 		return err
 	}
+	if err := cliDestructiveMutationAllowed(cfg, "undo"); err != nil {
+		return err
+	}
 	m, err := findMemory(cfg, fs.Arg(0))
 	if err != nil {
 		return err
