@@ -12,32 +12,29 @@ import (
 	"github.com/pyranthus-hq/mora/internal/leasefile"
 )
 
-// AdvanceAlert records at most one notification-worthy episode per distinct
-// current failure. Callers own notification delivery; health-only reads do not call this.
+// AdvanceAlert claims an episode, but returns it for delivery again until an
+// explicit delivery receipt is recorded with RecordAlertDelivery.
 func AdvanceAlert(stateDir string, health Health, now time.Time) (Alert, bool, error) {
-	if !safeComponent(health.JobID) {
-		return Alert{}, false, errors.New("invalid backup alert job id")
+	if !validJobID(health.JobID) || !safeToken(health.PolicyDigest, maxDigest) || (health.TargetID != "" && !safeToken(health.TargetID, maxID)) {
+		return Alert{}, false, errors.New("invalid backup alert identity")
 	}
-	path, err := checkedPath(stateDir, alertPath(stateDir, health.JobID))
+	path, err := preparePath(stateDir, alertPath(stateDir, health.JobID))
 	if err != nil {
 		return Alert{}, false, err
 	}
 	var out Alert
 	var notify bool
 	err = leasefile.WithGuard(path, func() error {
-		prior, found, err := loadAlert(path)
+		prior, found, err := loadAlert(path, health.JobID)
 		if err != nil {
 			return err
 		}
 		if health.State == "healthy" {
 			if found && prior.RecoveredAt == "" && sameAlertScope(prior, health) && successAfter(health.LastSuccessAt, prior.FailureAttemptAt, now) {
-				prior.RecoveredAt = now.UTC().Format(time.RFC3339Nano)
-				prior.LastSeenAt = prior.RecoveredAt
+				prior.RecoveredAt, prior.LastSeenAt = now.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano)
 				if err := writeDurableJSON(path, prior); err != nil {
 					return err
 				}
-				out = prior
-				return nil
 			}
 			out = prior
 			return nil
@@ -52,7 +49,7 @@ func AdvanceAlert(stateDir string, health Health, now time.Time) (Alert, bool, e
 			if err := writeDurableJSON(path, prior); err != nil {
 				return err
 			}
-			out = prior
+			out, notify = prior, prior.DeliveryState != "delivered"
 			return nil
 		}
 		sequence := 1
@@ -60,10 +57,13 @@ func AdvanceAlert(stateDir string, health Health, now time.Time) (Alert, bool, e
 			sequence = prior.Sequence + 1
 		}
 		stamp := now.UTC().Format(time.RFC3339Nano)
-		out = Alert{JobID: health.JobID, TargetID: health.TargetID, Fingerprint: fingerprint, PolicyDigest: health.PolicyDigest, FailureAttemptAt: health.LastAttemptAt, FirstSeenAt: stamp, LastSeenAt: stamp, Sequence: sequence}
+		attempt := health.LastAttemptAt
+		if attempt == "" {
+			attempt = stamp
+		}
+		out = Alert{JobID: health.JobID, TargetID: health.TargetID, Fingerprint: fingerprint, PolicyDigest: health.PolicyDigest, FailureAttemptAt: attempt, FirstSeenAt: stamp, LastSeenAt: stamp, State: health.State, FailureCode: safeFailureCode(health.FailureCode), Sequence: sequence, DeliveryState: "unknown"}
 		out.EpisodeID = fmt.Sprintf("backup-%s-%d", fingerprint[:16], sequence)
 		out.NotificationID = out.EpisodeID
-		out.DeliveryState = "unknown"
 		if err := writeDurableJSON(path, out); err != nil {
 			return err
 		}
@@ -73,7 +73,53 @@ func AdvanceAlert(stateDir string, health Health, now time.Time) (Alert, bool, e
 	return out, notify, err
 }
 
-func loadAlert(path string) (Alert, bool, error) {
+// RecordAlertDelivery is a compare-and-set acknowledgement; a stale platform
+// ack cannot mark a newer episode delivered.
+func RecordAlertDelivery(stateDir, jobID, episodeID string, now time.Time) error {
+	if !validJobID(jobID) || episodeID == "" {
+		return errors.New("invalid backup alert delivery receipt")
+	}
+	path, err := checkedPath(stateDir, alertPath(stateDir, jobID))
+	if err != nil {
+		return err
+	}
+	return leasefile.WithGuard(path, func() error {
+		alert, found, err := loadAlert(path, jobID)
+		if err != nil {
+			return err
+		}
+		if !found || alert.EpisodeID != episodeID || alert.RecoveredAt != "" {
+			return ErrOwnershipLost
+		}
+		alert.DeliveryState, alert.LastSeenAt = "delivered", now.UTC().Format(time.RFC3339Nano)
+		return writeDurableJSON(path, alert)
+	})
+}
+
+// RecoverAlert quarantines a corrupt owned alert only when the caller presents
+// the digest of the observed bytes. It never silently resets notification state.
+func RecoverAlert(stateDir, jobID, observedDigest string) error {
+	if !validJobID(jobID) || !safeToken(observedDigest, maxDigest) {
+		return errors.New("invalid backup alert recovery evidence")
+	}
+	path, err := checkedPath(stateDir, alertPath(stateDir, jobID))
+	if err != nil {
+		return err
+	}
+	_, _, loadErr := loadAlert(path, jobID)
+	if !errors.Is(loadErr, ErrAlertUnreadable) {
+		if loadErr == nil {
+			return errors.New("backup alert is not corrupt")
+		}
+		return loadErr
+	}
+	if digest := unreadableDigest(loadErr); digest != observedDigest {
+		return errors.New("backup alert recovery evidence does not match")
+	}
+	return quarantine(path, observedDigest)
+}
+
+func loadAlert(path, expectedJobID string) (Alert, bool, error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Alert{}, false, nil
@@ -82,31 +128,37 @@ func loadAlert(path string) (Alert, bool, error) {
 		return Alert{}, false, fmt.Errorf("read backup alert: %w", err)
 	}
 	var alert Alert
-	if err := json.Unmarshal(b, &alert); err != nil || !safeComponent(alert.JobID) || !safeComponent(alert.TargetID) || alert.EpisodeID == "" || alert.Fingerprint == "" || !safeComponent(alert.PolicyDigest) || alert.Sequence < 1 {
-		return Alert{}, false, errors.New("backup alert is unreadable")
+	if json.Unmarshal(b, &alert) != nil || !validAlert(alert, expectedJobID, time.Now()) {
+		return Alert{}, false, &unreadableError{kind: "backup alert", digest: digestBytes(b)}
 	}
 	return alert, true, nil
 }
-
-func alertable(h Health) bool {
-	switch h.State {
-	case "offline", "failed", "diverged", "stale":
-		return h.TargetID != ""
-	default:
+func validAlert(a Alert, jobID string, now time.Time) bool {
+	if a.JobID != jobID || !validJobID(a.JobID) || (a.TargetID != "" && !safeToken(a.TargetID, maxID)) || !safeToken(a.PolicyDigest, maxDigest) || !alertable(Health{JobID: a.JobID, TargetID: a.TargetID, State: a.State, FailureCode: a.FailureCode, PolicyDigest: a.PolicyDigest}) || safeFailureCode(a.FailureCode) != a.FailureCode || a.Fingerprint != fingerprintFor(Health{JobID: a.JobID, TargetID: a.TargetID, State: a.State, FailureCode: a.FailureCode, PolicyDigest: a.PolicyDigest}) || a.EpisodeID == "" || a.NotificationID != a.EpisodeID || len(a.Fingerprint) != 64 || a.Sequence < 1 || (a.DeliveryState != "unknown" && a.DeliveryState != "delivered") || !validTimestamp(a.FirstSeenAt, now) || !validTimestamp(a.LastSeenAt, now) || !validTimestamp(a.FailureAttemptAt, now) {
 		return false
 	}
+	if a.RecoveredAt != "" && !validTimestamp(a.RecoveredAt, now) {
+		return false
+	}
+	return true
 }
-
+func alertable(h Health) bool {
+	if h.JobID == "" {
+		return false
+	}
+	switch h.State {
+	case "offline", "failed", "diverged", "stale", "unconfigured":
+		return true
+	}
+	return false
+}
 func fingerprintFor(h Health) string {
-	s := h.JobID + "\x00" + h.TargetID + "\x00" + h.State + "\x00" + safeFailureCode(h.FailureCode) + "\x00" + h.PolicyDigest
-	digest := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(digest[:])
+	sum := sha256.Sum256([]byte(h.JobID + "\x00" + h.TargetID + "\x00" + h.State + "\x00" + safeFailureCode(h.FailureCode) + "\x00" + h.PolicyDigest))
+	return hex.EncodeToString(sum[:])
 }
-
 func sameAlertScope(a Alert, h Health) bool {
 	return a.JobID == h.JobID && a.TargetID == h.TargetID && a.PolicyDigest == h.PolicyDigest
 }
-
 func successAfter(success, attempted string, now time.Time) bool {
 	if !validTimestamp(success, now) || !validTimestamp(attempted, now) {
 		return false

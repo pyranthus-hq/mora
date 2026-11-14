@@ -6,86 +6,74 @@ import (
 	"github.com/pyranthus-hq/mora/internal/health"
 )
 
-// Classify projects local durable evidence only. It never probes a provider,
-// performs a retry, or advances producer or alert state.
-func Classify(target *Target, receipt *Receipt, producer *health.Producer, expected bool, leaseLive bool, now time.Time) Health {
-	if target == nil && (receipt == nil || targetRequired(*receipt)) {
-		return classified("", "unconfigured", "", "", "", "", expected, false, "No private backup target is selected.", "Select a private backup target.")
+// Classify is side-effect-free. Running liveness comes from Begin's OS lease.
+func Classify(stateDir string, expected JobSpec, target *Target, receipt *Receipt, producer *health.Producer, now time.Time) Health {
+	if err := validateExpected(expected); err != nil {
+		return healthFor(expected, "failed", "receipt_unreadable", false, "Backup job configuration cannot be trusted.", "Review the registered backup job.")
 	}
-	if target != nil && validateTarget(*target, now) != nil {
-		return classified("", "failed", "", "", "destination_mismatch", "", false, false, safeMessage("destination_mismatch"), "Review the selected backup target.")
+	if targetRequired(expected) && target == nil {
+		return healthFor(expected, "unconfigured", "", false, "No private backup target is selected.", "Select a private backup target.")
+	}
+	if targetRequired(expected) && target != nil && (validateTarget(*target, now) != nil || target.ID != expected.TargetID) {
+		return healthFor(expected, "failed", "destination_mismatch", false, safeMessage("destination_mismatch"), "Review the selected backup target.")
 	}
 	if receipt == nil {
-		if !expected {
-			return classified("", "healthy", target.ID, "", "", "", false, false, "", "")
-		}
-		return classified("", "stale", target.ID, "", "", "", true, true, "No confirmed backup success is recorded.", "Retry the registered backup job.")
+		return healthFor(expected, "stale", "", true, "No confirmed backup success is recorded.", "Retry the registered backup job.")
 	}
-	targetID := receipt.TargetID
-	if target != nil {
-		targetID = target.ID
+	if validateReceipt(*receipt, now) != nil || receipt.JobID != expected.JobID || receipt.TargetID != expected.TargetID || receipt.PolicyDigest != expected.PolicyDigest || receipt.Operation != expected.Operation {
+		h := healthFor(expected, "failed", "destination_mismatch", false, safeMessage("destination_mismatch"), "Review the backup receipt and target.")
+		h.LastAttemptAt, h.LastSuccessAt = receipt.StartedAt, receipt.LastSuccessAt
+		return h
 	}
-	if validateReceiptIdentity(*receipt) != nil || !validReceiptTimes(*receipt, now) {
-		return receiptProjection(classified(receipt.JobID, "failed", targetID, "", "receipt_unreadable", receipt.PolicyDigest, false, false, safeMessage("receipt_unreadable"), "Review the backup receipt."), *receipt)
-	}
-	if target != nil && receipt.TargetID != target.ID {
-		return receiptProjection(classified(receipt.JobID, "failed", targetID, receipt.StartedAt, "destination_mismatch", receipt.PolicyDigest, false, false, safeMessage("destination_mismatch"), "Review the selected backup target."), *receipt)
-	}
+	h := healthFor(expected, "", "", false, "", "")
+	h.LastAttemptAt, h.LastSuccessAt = receipt.StartedAt, receipt.LastSuccessAt
 	switch receipt.State {
 	case "running":
-		if leaseLive {
-			return receiptProjection(classified(receipt.JobID, "running", targetID, receipt.StartedAt, "", receipt.PolicyDigest, false, false, "Backup is currently running.", "Wait for the active backup run."), *receipt)
+		live, err := LeaseLive(stateDir, expected.JobID)
+		if err != nil {
+			h.State, h.FailureCode, h.SafeReason, h.NextAction = "failed", "receipt_unreadable", safeMessage("receipt_unreadable"), "Review the backup receipt."
+			return h
 		}
-		return receiptProjection(classified(receipt.JobID, "failed", targetID, receipt.StartedAt, "interrupted", receipt.PolicyDigest, true, true, safeMessage("interrupted"), "Recover the interrupted backup run with matching evidence."), *receipt)
+		if live {
+			h.State, h.SafeReason, h.NextAction = "running", "Backup is currently running.", "Wait for the active backup run."
+			return h
+		}
+		h.State, h.FailureCode, h.SafeReason, h.NextAction, h.RetryEligible = "failed", "interrupted", safeMessage("interrupted"), "Recover the interrupted backup run with matching evidence.", true
+		return h
 	case "failed":
 		code := safeFailureCode(receipt.FailureCode)
+		h.FailureCode, h.RetryEligible, h.SafeReason = code, retryable(code), safeMessage(code)
 		if code == "offline" || code == "timeout" {
-			return receiptProjection(classified(receipt.JobID, "offline", targetID, receipt.StartedAt, code, receipt.PolicyDigest, true, retryable(code), safeMessage(code), "Retry the registered backup job when connectivity returns."), *receipt)
+			h.State, h.NextAction = "offline", "Retry the registered backup job when connectivity returns."
+		} else {
+			h.State, h.NextAction = "failed", "Review the backup failure."
 		}
-		return receiptProjection(classified(receipt.JobID, "failed", targetID, receipt.StartedAt, code, receipt.PolicyDigest, true, retryable(code), safeMessage(code), "Review the backup failure."), *receipt)
+		return h
 	case "diverged":
-		return receiptProjection(classified(receipt.JobID, "diverged", targetID, receipt.StartedAt, "diverged", receipt.PolicyDigest, false, false, safeMessage("diverged"), "Reconcile preserved backup histories."), *receipt)
+		h.State, h.FailureCode, h.SafeReason, h.NextAction = "diverged", "diverged", safeMessage("diverged"), "Reconcile preserved backup histories."
+		return h
 	case "succeeded":
-		if receipt.LastSuccessAt == "" {
-			return receiptProjection(classified(receipt.JobID, "failed", targetID, receipt.StartedAt, "receipt_unreadable", receipt.PolicyDigest, false, false, safeMessage("receipt_unreadable"), "Review the backup receipt."), *receipt)
+		if staleSuccess(receipt.LastSuccessAt, producer, now) {
+			h.State, h.RetryEligible, h.SafeReason, h.NextAction = "stale", true, "Backup success is older than its configured cadence.", "Retry the registered backup job."
+			return h
 		}
-		if staleSuccess(receipt.LastSuccessAt, producer, expected, now) {
-			return receiptProjection(classified(receipt.JobID, "stale", targetID, receipt.StartedAt, "", receipt.PolicyDigest, true, true, "Backup success is older than its configured cadence.", "Retry the registered backup job."), *receipt)
-		}
-		return receiptProjection(classified(receipt.JobID, "healthy", targetID, receipt.StartedAt, "", receipt.PolicyDigest, false, false, "", ""), *receipt)
+		h.State = "healthy"
+		return h
 	default:
-		return receiptProjection(classified(receipt.JobID, "failed", targetID, receipt.StartedAt, "receipt_unreadable", receipt.PolicyDigest, false, false, safeMessage("receipt_unreadable"), "Review the backup receipt."), *receipt)
+		h.State, h.FailureCode, h.SafeReason, h.NextAction = "failed", "receipt_unreadable", safeMessage("receipt_unreadable"), "Review the backup receipt."
+		return h
 	}
 }
 
-func targetRequired(r Receipt) bool { return r.Operation == "push" || r.Operation == "isolated_pull" }
-
-func classified(jobID, state, targetID, attempt, code, policy string, hasAttempt, retry bool, reason, action string) Health {
-	h := Health{JobID: jobID, TargetID: targetID, State: state, FailureCode: code, PolicyDigest: policy, RetryEligible: retry, SafeReason: reason, NextAction: action}
-	if hasAttempt {
-		h.LastAttemptAt = attempt
-	}
-	return h
+func targetRequired(spec JobSpec) bool {
+	return spec.Operation == "push" || spec.Operation == "isolated_pull"
 }
-
-func receiptProjection(h Health, r Receipt) Health {
-	h.LastSuccessAt = r.LastSuccessAt
-	return h
+func healthFor(spec JobSpec, state, code string, retry bool, reason, action string) Health {
+	return Health{JobID: spec.JobID, TargetID: spec.TargetID, State: state, FailureCode: code, PolicyDigest: spec.PolicyDigest, RetryEligible: retry, SafeReason: reason, NextAction: action}
 }
-
-func validReceiptTimes(r Receipt, now time.Time) bool {
-	if !validTimestamp(r.StartedAt, now) {
-		return false
-	}
-	if r.FinishedAt != "" && !validTimestamp(r.FinishedAt, now) {
-		return false
-	}
-	return r.LastSuccessAt == "" || validTimestamp(r.LastSuccessAt, now)
-}
-
-func staleSuccess(success string, producer *health.Producer, expected bool, now time.Time) bool {
-	if !expected || producer == nil || producer.IntervalSeconds <= 0 {
-		return false
+func staleSuccess(success string, producer *health.Producer, now time.Time) bool {
+	if producer == nil || producer.IntervalSeconds <= 0 {
+		return true
 	}
 	when, err := time.Parse(time.RFC3339, success)
 	if err != nil || when.After(now.UTC()) {

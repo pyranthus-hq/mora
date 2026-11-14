@@ -1,18 +1,36 @@
 package backupjob
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"github.com/pyranthus-hq/mora/internal/leasefile"
 )
 
-// LoadTarget reads the selected target without discovering or contacting a provider.
+func targetPath(configDir string) string { return filepath.Join(configDir, "backup-target.json") }
+func jobFilename(jobID string) string {
+	digest := sha256.Sum256([]byte(jobID))
+	return "job-" + hex.EncodeToString(digest[:16]) + ".json"
+}
+func receiptPath(stateDir, jobID string) string {
+	return filepath.Join(stateDir, "backup", "jobs", jobFilename(jobID))
+}
+func alertPath(stateDir, jobID string) string {
+	return filepath.Join(stateDir, "backup", "alerts", jobFilename(jobID))
+}
+func runLockPath(stateDir, jobID string) string {
+	return filepath.Join(stateDir, "backup", "jobs", jobFilename(jobID)+".runlock")
+}
+
 func LoadTarget(configDir string) (Target, bool, error) {
 	path, err := checkedPath(configDir, targetPath(configDir))
 	if err != nil {
@@ -26,19 +44,19 @@ func LoadTarget(configDir string) (Target, bool, error) {
 		return Target{}, false, fmt.Errorf("read backup target: %w", err)
 	}
 	var target Target
-	if err := json.Unmarshal(b, &target); err != nil || validateTarget(target, time.Now()) != nil {
+	if json.Unmarshal(b, &target) != nil || validateTarget(target, time.Now()) != nil {
 		return Target{}, false, errors.New("backup target is unreadable")
 	}
-	return target, true, nil
+	return canonicalTarget(target), true, nil
 }
 
-// SaveSelectedTarget persists the initially selected target. A changed target
-// requires the higher-level signed cutover path and is refused here.
+// SaveSelectedTarget only refreshes verification for the same target identity.
 func SaveSelectedTarget(configDir string, target Target) error {
+	target = canonicalTarget(target)
 	if err := validateTarget(target, time.Now()); err != nil {
 		return err
 	}
-	path, err := checkedPath(configDir, targetPath(configDir))
+	path, err := preparePath(configDir, targetPath(configDir))
 	if err != nil {
 		return err
 	}
@@ -48,93 +66,116 @@ func SaveSelectedTarget(configDir string, target Target) error {
 			return err
 		}
 		if found {
-			if sameTarget(current, target) {
-				return nil
+			if !sameTarget(current, target) {
+				return errors.New("backup target change requires cutover")
 			}
-			return errors.New("backup target change requires cutover")
+			target.SelectedAt = current.SelectedAt
 		}
 		return writeDurableJSON(path, target)
 	})
 }
 
-// LoadReceipt returns no receipt when the job has never been started.
 func LoadReceipt(stateDir, jobID string) (Receipt, bool, error) {
-	if !safeComponent(jobID) {
+	if !validJobID(jobID) {
 		return Receipt{}, false, errors.New("invalid backup job id")
 	}
 	path, err := checkedPath(stateDir, receiptPath(stateDir, jobID))
 	if err != nil {
 		return Receipt{}, false, err
 	}
-	return loadReceipt(path)
+	return loadReceipt(path, jobID)
 }
 
-// Begin durably records a running receipt before any caller may perform work.
-// It refuses a live record even if a short file lock has expired; recovery must
-// carry the exact observed run and start time as explicit stale evidence.
-func Begin(stateDir string, spec JobSpec, now time.Time) (Receipt, error) {
+// Begin holds the actual OS lease through Finish or Close, rather than treating
+// a short receipt guard as evidence that external work is still live.
+func Begin(stateDir string, spec JobSpec, now time.Time) (_ *Run, retErr error) {
 	if spec.RunID == "" {
 		var err error
 		spec.RunID, err = newRunID()
 		if err != nil {
-			return Receipt{}, err
+			return nil, err
 		}
 	}
-	if err := validateSpec(spec); err != nil {
-		return Receipt{}, err
+	if err := validateExpected(spec); err != nil {
+		return nil, err
 	}
-	path, err := checkedPath(stateDir, receiptPath(stateDir, spec.JobID))
+	path, err := preparePath(stateDir, receiptPath(stateDir, spec.JobID))
 	if err != nil {
-		return Receipt{}, err
+		return nil, err
 	}
-	var next Receipt
-	err = leasefile.WithGuard(path, func() error {
-		previous, found, err := loadReceipt(path)
-		if err != nil {
-			return err
+	lockPath, err := preparePath(stateDir, runLockPath(stateDir, spec.JobID))
+	if err != nil {
+		return nil, err
+	}
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockRun(lock); err != nil {
+		_ = lock.Close()
+		return nil, ErrRunning
+	}
+	run := &Run{stateDir: stateDir, lock: lock}
+	defer func() {
+		if retErr != nil {
+			_ = run.Close()
 		}
-		if found && previous.State == "running" && (spec.RecoverRunID != previous.RunID || spec.RecoverStartedAt != previous.StartedAt) {
+	}()
+	if err := leasefile.WithGuard(path, func() error {
+		previous, found, err := loadReceipt(path, spec.JobID)
+		if err != nil {
+			if digest := unreadableDigest(err); digest != "" && spec.RecoverReceiptDigest == digest {
+				if err := quarantine(path, digest); err != nil {
+					return err
+				}
+				found = false
+			} else {
+				return err
+			}
+		}
+		if found && previous.State == "running" && (spec.RecoverRunID != previous.RunID || spec.RecoverStartedAt != previous.StartedAt || !validTimestamp(spec.RecoverStartedAt, now)) {
 			return ErrRunning
 		}
-		if found && previous.State == "running" && !validTimestamp(spec.RecoverStartedAt, now) {
-			return errors.New("invalid interrupted-run recovery evidence")
-		}
-		next = Receipt{Schema: schema, JobID: spec.JobID, TargetID: spec.TargetID, PolicyDigest: spec.PolicyDigest, RunID: spec.RunID, Operation: spec.Operation, State: "running", StartedAt: now.UTC().Format(time.RFC3339Nano)}
-		if found && previous.TargetID == spec.TargetID && previous.PolicyDigest == spec.PolicyDigest {
+		next := Receipt{Schema: schema, JobID: spec.JobID, TargetID: spec.TargetID, PolicyDigest: spec.PolicyDigest, RunID: spec.RunID, Operation: spec.Operation, State: "running", StartedAt: now.UTC().Format(time.RFC3339Nano)}
+		if found && previous.JobID == spec.JobID && previous.TargetID == spec.TargetID && previous.PolicyDigest == spec.PolicyDigest && previous.Operation == spec.Operation {
 			next.LastSuccessAt = previous.LastSuccessAt
 		}
-		return writeDurableJSON(path, next)
-	})
-	return next, err
+		if err := writeDurableJSON(path, next); err != nil {
+			return err
+		}
+		run.Receipt = next
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return run, nil
 }
 
-// Finish owner-compares the active receipt. A late completer never overwrites a successor.
-func Finish(stateDir string, running Receipt, result Result, now time.Time) (Receipt, error) {
-	if err := validateReceiptIdentity(running); err != nil || running.State != "running" {
+// Finish cannot accept a copied Receipt: it consumes the Run which still holds
+// the OS lease established by Begin.
+func Finish(run *Run, result Result, now time.Time) (Receipt, error) {
+	if run == nil || run.lock == nil || run.Receipt.State != "running" || validateReceipt(run.Receipt, now) != nil {
 		return Receipt{}, ErrOwnershipLost
 	}
-	switch result.State {
-	case "succeeded", "failed", "diverged":
-	default:
-		return Receipt{}, errors.New("invalid backup result state")
+	defer run.Close()
+	if (result.State != "succeeded" && result.State != "failed" && result.State != "diverged") || (result.LocalOID != "" && !safeToken(result.LocalOID, maxDigest)) || (result.RemoteOID != "" && !safeToken(result.RemoteOID, maxDigest)) {
+		return Receipt{}, errors.New("invalid backup result")
 	}
-	path, err := checkedPath(stateDir, receiptPath(stateDir, running.JobID))
+	path, err := checkedPath(run.stateDir, receiptPath(run.stateDir, run.Receipt.JobID))
 	if err != nil {
 		return Receipt{}, err
 	}
 	var next Receipt
 	err = leasefile.WithGuard(path, func() error {
-		current, found, err := loadReceipt(path)
-		if err != nil || !found || current.State != "running" || current.RunID != running.RunID || current.JobID != running.JobID || current.TargetID != running.TargetID || current.PolicyDigest != running.PolicyDigest || current.Operation != running.Operation {
+		current, found, err := loadReceipt(path, run.Receipt.JobID)
+		if err != nil || !found || current.State != "running" || current.RunID != run.Receipt.RunID || current.TargetID != run.Receipt.TargetID || current.PolicyDigest != run.Receipt.PolicyDigest || current.Operation != run.Receipt.Operation {
 			return ErrOwnershipLost
 		}
 		next = current
-		next.State = result.State
-		next.FinishedAt = now.UTC().Format(time.RFC3339Nano)
+		next.State, next.FinishedAt = result.State, now.UTC().Format(time.RFC3339Nano)
 		next.LocalOID, next.RemoteOID = result.LocalOID, result.RemoteOID
 		if result.State == "succeeded" {
-			next.LastSuccessAt = next.FinishedAt
-			next.FailureCode, next.SafeDetail = "", ""
+			next.LastSuccessAt, next.FailureCode, next.SafeDetail = next.FinishedAt, "", ""
 		} else {
 			next.FailureCode = safeFailureCode(result.FailureCode)
 			if result.State == "diverged" {
@@ -147,7 +188,33 @@ func Finish(stateDir string, running Receipt, result Result, now time.Time) (Rec
 	return next, err
 }
 
-func loadReceipt(path string) (Receipt, bool, error) {
+// LeaseLive probes the exact held OS lock used by Begin; it never creates one.
+func LeaseLive(stateDir, jobID string) (bool, error) {
+	if !validJobID(jobID) {
+		return false, errors.New("invalid backup job id")
+	}
+	path, err := checkedPath(stateDir, runLockPath(stateDir, jobID))
+	if err != nil {
+		return false, err
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0o600)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	if err := lockRun(f); err != nil {
+		return true, nil
+	}
+	if err := unlockRun(f); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+func loadReceipt(path, expectedJobID string) (Receipt, bool, error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Receipt{}, false, nil
@@ -156,22 +223,20 @@ func loadReceipt(path string) (Receipt, bool, error) {
 		return Receipt{}, false, fmt.Errorf("read backup receipt: %w", err)
 	}
 	var receipt Receipt
-	if err := json.Unmarshal(b, &receipt); err != nil || validateReceiptIdentity(receipt) != nil {
-		return Receipt{}, false, errors.New("backup receipt is unreadable")
+	if json.Unmarshal(b, &receipt) != nil || receipt.JobID != expectedJobID || validateReceipt(receipt, time.Now()) != nil {
+		return Receipt{}, false, &unreadableError{kind: "backup receipt", digest: digestBytes(b)}
 	}
 	return receipt, true, nil
 }
 
-func validateReceiptIdentity(r Receipt) error {
-	if r.Schema != schema || !safeComponent(r.JobID) || !safeComponent(r.TargetID) || !safeComponent(r.PolicyDigest) || !safeComponent(r.RunID) || !safeComponent(r.Operation) {
-		return errors.New("invalid backup receipt identity")
-	}
-	return nil
+func canonicalTarget(target Target) Target {
+	target.AuthorizedReaderIDs = append([]string(nil), target.AuthorizedReaderIDs...)
+	sort.Strings(target.AuthorizedReaderIDs)
+	return target
 }
-
 func sameTarget(a, b Target) bool {
-	a.SelectedAt, b.SelectedAt = "", ""
-	if a.Schema != b.Schema || a.ID != b.ID || a.Provider != b.Provider || a.Repository != b.Repository || a.RemoteDigest != b.RemoteDigest || a.Visibility != b.Visibility || a.PrivateVerifiedAt != b.PrivateVerifiedAt || len(a.AuthorizedReaderIDs) != len(b.AuthorizedReaderIDs) {
+	a, b = canonicalTarget(a), canonicalTarget(b)
+	if a.Schema != b.Schema || a.ID != b.ID || a.Provider != b.Provider || a.Repository != b.Repository || a.RemoteDigest != b.RemoteDigest || a.Visibility != b.Visibility || len(a.AuthorizedReaderIDs) != len(b.AuthorizedReaderIDs) {
 		return false
 	}
 	for i := range a.AuthorizedReaderIDs {
@@ -181,7 +246,19 @@ func sameTarget(a, b Target) bool {
 	}
 	return true
 }
-
+func digestBytes(b []byte) string { sum := sha256.Sum256(b); return hex.EncodeToString(sum[:]) }
+func quarantine(path, digest string) error {
+	dest := path + ".corrupt-" + digest[:16]
+	if _, err := os.Lstat(dest); err == nil {
+		return errors.New("backup corrupt receipt quarantine already exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(path, dest); err != nil {
+		return err
+	}
+	return atomicio.SyncDir(filepath.Dir(path))
+}
 func writeDurableJSON(path string, value any) error {
 	b, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
@@ -190,37 +267,72 @@ func writeDurableJSON(path string, value any) error {
 	return atomicio.WriteDurable(path, append(b, '\n'), 0o600)
 }
 
-// checkedPath rejects a linked output root or an existing linked child before a
-// durable write; job and target IDs are validated before paths are constructed.
+func preparePath(root, path string) (string, error) {
+	checked, err := checkedPath(root, path)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(checked), 0o700); err != nil {
+		return "", err
+	}
+	return checkedPath(root, checked)
+}
+
+// checkedPath resolves aliases above root once (notably macOS /var) while
+// rejecting a linked root, descendants, reparse points, FIFOs, and devices.
 func checkedPath(root, path string) (string, error) {
 	if root == "" {
 		return "", errors.New("missing backup state directory")
 	}
-	root = filepath.Clean(root)
-	path = filepath.Clean(path)
+	root, err := filepath.Abs(filepath.Clean(root))
+	if err != nil {
+		return "", err
+	}
+	path, err = filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", err
+	}
 	rel, err := filepath.Rel(root, path)
-	if err != nil || rel == ".." || len(rel) > 2 && rel[:3] == ".."+string(filepath.Separator) {
+	if err != nil {
+		return "", err
+	}
+	if info, err := os.Lstat(root); err == nil {
+		unsafe, reparseErr := unsafeReparse(root, info)
+		if !info.IsDir() || unsafeMode(info.Mode()) || reparseErr != nil || unsafe {
+			return "", errors.New("backup output root is linked or unsafe")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if canonical, err := filepath.EvalSymlinks(root); err == nil {
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			rel, err = filepath.Rel(canonical, path)
+		}
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", errors.New("backup output path escapes state directory")
+		}
+		root, path = canonical, filepath.Join(canonical, rel)
+	} else if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", errors.New("backup output path escapes state directory")
 	}
-	for current := root; ; current = filepath.Dir(current) {
-		info, err := os.Lstat(current)
-		if err == nil && info.Mode()&os.ModeSymlink != 0 {
-			return "", errors.New("backup output path is linked")
-		}
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
+	current := root
+	for {
+		if info, err := os.Lstat(current); err == nil {
+			unsafe, reparseErr := unsafeReparse(current, info)
+			if unsafeMode(info.Mode()) || reparseErr != nil || unsafe || (current != path && !info.IsDir()) || (current == path && !info.Mode().IsRegular()) {
+				return "", errors.New("backup output path is linked or unsafe")
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return "", err
 		}
-		if current == filepath.Dir(current) {
+		if current == path {
 			break
 		}
-	}
-	for current := filepath.Dir(path); current != root && current != filepath.Dir(current); current = filepath.Dir(current) {
-		if info, err := os.Lstat(current); err == nil && info.Mode()&os.ModeSymlink != 0 {
-			return "", errors.New("backup output path is linked")
+		rest, _ := filepath.Rel(current, path)
+		if rest == "." || rest == "" {
+			break
 		}
-	}
-	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return "", errors.New("backup output path is linked")
+		current = filepath.Join(current, strings.Split(rest, string(filepath.Separator))[0])
 	}
 	return path, nil
 }
