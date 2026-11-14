@@ -39,6 +39,7 @@ const (
 type statusReport struct {
 	Folder      statusFolder    `json:"folder"`
 	Vault       statusVault     `json:"vault"`
+	MCP         statusMCP       `json:"mcp"`
 	Review      statusReview    `json:"review"`
 	LastGiven   *statusGiven    `json:"last_given,omitempty"`
 	RecentGiven []statusGiven   `json:"recent_given,omitempty"`
@@ -122,8 +123,9 @@ func statusClip(s string, n int) string { return hookspkg.ClipRunes(flatProjectB
 // be read leaves its zero value and never hides the others. recent is how many
 // given lines to include (the terminal shows one); withProject adds the bound
 // project's notes and the review notes' text previews for the web page.
-func buildStatus(cfg Config, cwd string, now time.Time, recent int, rich bool) statusReport {
+func buildStatus(ctx context.Context, cfg Config, cwd string, now time.Time, recent int, rich bool) statusReport {
 	r := statusReport{Folder: statusFolder{Cwd: cwd}}
+	r.MCP = statusMCPReport(ctx, cwd)
 	r.Vault.Dir = cfg.VaultDir
 	r.Vault.Sources = []statusSource{}
 	fail := func(part string, err error) {
@@ -231,7 +233,7 @@ func cmdStatus(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if *web {
 		return serveStatusWeb(ctx, cfg, cwd, *port, stdout, stderr)
 	}
-	report := buildStatus(cfg, cwd, hookNow(), 1, false)
+	report := buildStatus(ctx, cfg, cwd, hookNow(), 1, false)
 	if *jsonOut {
 		return emitReceipt(stdout, "mora.status", 1, report)
 	}
@@ -267,6 +269,8 @@ func printStatus(w io.Writer, r statusReport) {
 		index += fmt.Sprintf(", %d write(s) waiting to be indexed", r.Vault.PendingOps)
 	}
 	fmt.Fprintf(w, "Health:  %s; %s\n", r.Vault.Health, index)
+	fmt.Fprintf(w, "MCP:     %s: %d tools; instructions %s, catalog %s, combined %s\n", r.MCP.Surface, r.MCP.ToolCount, r.MCP.Instructions.text(), r.MCP.Catalog.text(), r.MCP.Combined.text())
+	fmt.Fprintf(w, "         %s\n", r.MCP.Caveat)
 	if r.Vault.Banner != "" {
 		fmt.Fprintf(w, "         %s\n", rulesShow(r.Vault.Banner))
 	}
@@ -320,7 +324,7 @@ func statusHostOK(host string) bool {
 // newStatusHandler serves the report as one HTML page and as JSON. It has no
 // write endpoint: keeping or rejecting an agent note stays in `mora review`,
 // in the owner's own terminal.
-func newStatusHandler(cfg Config, cwd string, now func() time.Time, token string) http.Handler {
+func newStatusHandler(ctx context.Context, cfg Config, cwd string, now func() time.Time, token string) http.Handler {
 	mux := http.NewServeMux()
 	serve := func(w http.ResponseWriter, r *http.Request, render func(statusReport) error, contentType string) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -332,7 +336,7 @@ func newStatusHandler(cfg Config, cwd string, now func() time.Time, token string
 		if r.Method == http.MethodHead {
 			return
 		}
-		if err := render(buildStatus(cfg, cwd, now(), statusRecentGiven, true)); err != nil {
+		if err := render(buildStatus(ctx, cfg, cwd, now(), statusRecentGiven, true)); err != nil {
 			http.Error(w, "status unavailable", http.StatusInternalServerError)
 		}
 	}
@@ -390,7 +394,7 @@ func serveStatusWeb(ctx context.Context, cfg Config, cwd string, port int, stdou
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{Handler: newStatusHandler(cfg, cwd, hookNow, token), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 30 * time.Second}
+	srv := &http.Server{Handler: newStatusHandler(ctx, cfg, cwd, hookNow, token), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 30 * time.Second}
 	u := url.URL{Scheme: "http", Host: ln.Addr().String(), Path: "/" + token + "/"}
 	fmt.Fprintf(stdout, "Mora status page (read-only, this machine only): %s\nPress Ctrl+C to stop.\n", u.String())
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)

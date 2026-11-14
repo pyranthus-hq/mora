@@ -7,10 +7,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
@@ -61,6 +63,111 @@ func TestStatusShowsBindingReviewQueueAndLastGiven(t *testing.T) {
 	}
 }
 
+func TestStatusMCPBudgetMatchesStdioEntrypoints(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	run(t, "config", "mcp-write-policy", mcpWritePolicyReadonly)
+
+	for _, tc := range []struct {
+		name  string
+		bound bool
+	}{
+		{name: "unbound"},
+		{name: "bound unicode project", bound: true},
+	} {
+		subRun(t, tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			args := []string{"mcp", "serve"}
+			if tc.bound {
+				run(t, "project", "bind", "--scope", "project:東京", dir)
+				args = append(args, "--project-dir", dir)
+			}
+			var before []byte
+			if tc.bound {
+				var err error
+				before, err = os.ReadFile(projectBindingsPath(mustConfig(t)))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Chdir(dir)
+			var got struct {
+				MCP statusMCP `json:"mcp"`
+			}
+			if err := json.Unmarshal([]byte(run(t, "status", "--json")), &got); err != nil {
+				t.Fatal(err)
+			}
+			if tc.bound {
+				after, err := os.ReadFile(projectBindingsPath(mustConfig(t)))
+				if err != nil || !bytes.Equal(before, after) {
+					t.Fatalf("status changed project bindings: before=%q after=%q err=%v", before, after, err)
+				}
+			}
+
+			instructions, catalog := statusMCPStdio(t, args...)
+			encoded, err := json.Marshal(catalog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			toolList, _ := catalog["tools"].([]any)
+			if got.MCP.ToolCount != len(toolList) || got.MCP.Instructions != statusMCPTestCost(instructions) || got.MCP.Catalog != statusMCPTestCost(string(encoded)) || got.MCP.Combined != statusMCPTestCost(instructions+string(encoded)) {
+				t.Fatalf("status MCP budget = %+v; stdio instructions=%q catalog=%d", got.MCP, instructions, len(toolList))
+			}
+			if !strings.Contains(instructions, "read-only") || !strings.Contains(got.MCP.Caveat, "Hooks, rules, and recall") {
+				t.Fatalf("configured policy/caveat missing: instructions=%q mcp=%+v", instructions, got.MCP)
+			}
+			if tc.bound && got.MCP.Catalog.Bytes <= got.MCP.Catalog.Characters {
+				t.Fatalf("serialized catalog must distinguish UTF-8 bytes from characters: %+v", got.MCP.Catalog)
+			}
+		})
+	}
+}
+
+// statusMCPStdio deliberately uses the real protocol loop instead of the
+// status helper, so the diagnostic is pinned to independent entrypoint output.
+func statusMCPStdio(t *testing.T, args ...string) (string, map[string]any) {
+	t.Helper()
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
+	}, "\n") + "\n"
+	var out bytes.Buffer
+	if err := Run(testCtx(t), args, &out, &out, strings.NewReader(input)); err != nil {
+		t.Fatal(err)
+	}
+	var replies []struct {
+		Result json.RawMessage `json:"result"`
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		var reply struct {
+			Result json.RawMessage `json:"result"`
+		}
+		if err := json.Unmarshal([]byte(line), &reply); err != nil {
+			t.Fatalf("stdio reply %q: %v", line, err)
+		}
+		replies = append(replies, reply)
+	}
+	if len(replies) != 2 {
+		t.Fatalf("stdio replies = %q", out.String())
+	}
+	var initialize struct {
+		Instructions string `json:"instructions"`
+	}
+	var tools map[string]any
+	if err := json.Unmarshal(replies[0].Result, &initialize); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(replies[1].Result, &tools); err != nil {
+		t.Fatal(err)
+	}
+	return initialize.Instructions, tools
+}
+
+func statusMCPTestCost(s string) statusCost {
+	chars := utf8.RuneCountInString(s)
+	return statusCost{Characters: chars, Bytes: len(s), EstimatedTokens: (chars + 3) / 4}
+}
+
 func TestStatusFlagValidation(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
@@ -76,7 +183,7 @@ func TestStatusHandlerIsReadOnlyEscapedAndLoopbackOnly(t *testing.T) {
 	dir := pbBind(t)
 	statusSeedTentative(t, cfg, "mem_x", pbScope, `<script>alert("x")</script>`)
 	const tok = "0123456789abcdef"
-	srv := httptest.NewServer(newStatusHandler(cfg, dir, time.Now, tok))
+	srv := httptest.NewServer(newStatusHandler(testCtx(t), cfg, dir, time.Now, tok))
 	defer srv.Close()
 
 	get := func(path, host string) (int, string, http.Header) {
