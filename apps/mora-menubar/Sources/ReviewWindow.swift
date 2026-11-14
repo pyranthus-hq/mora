@@ -9,6 +9,8 @@ final class ReviewWindowController {
     private var window: NSWindow?
     private var model: ReviewModel?
 
+    func close() { window?.close() }
+
     func show(mora: URL, preview: Bool) {
         if let window, let model {
             window.makeKeyAndOrderFront(nil)
@@ -170,6 +172,7 @@ struct ReviewView: View {
         }
         .padding(14)
         .frame(minWidth: 400, minHeight: 360)
+        .onExitCommand { ReviewWindowController.shared.close() }
     }
 
     @ViewBuilder private var previewArea: some View {

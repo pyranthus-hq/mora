@@ -97,6 +97,8 @@ internal static class Program
         var preview = ParsePreview("{\"schema\":\"mora.review.preview\",\"schema_version\":1,\"preview\":{\"id\":\"mem_1\",\"kind\":\"saved\",\"title\":\"Fixture\",\"text\":\"one\\ntwo Ω\",\"scope\":\"global\",\"type\":\"fact\",\"source\":\"mcp\",\"provenance\":\"authored\",\"state\":\"tentative\",\"complete\":true,\"redacted\":true,\"truncated\":false,\"escaped\":false,\"omitted_arguments\":false,\"canonical_revision\":\"r\",\"display_digest\":\"d\"}}", rows[0]);
         Check("optional details", !preview.ContainsKey("details")); Check("flag blocks keep", !KeepEligible(preview));
         Check("native line endings", ReviewForm.NativeLines((string)preview["text"]) == "one\r\ntwo Ω");
+        preview["title"] = "Title\nsecond line";
+        Check("all preview fields use native lines", !ReviewForm.Render(preview).Replace("\r\n", "").Contains("\n"));
         Check("quote plain", ReviewTransport.QuoteArgument("plain") == "\"plain\"");
         Check("quote trailing slash", ReviewTransport.QuoteArgument("C:\\path\\") == "\"C:\\path\\\\\"");
         Check("quote quote", ReviewTransport.QuoteArgument("a\"b") == "\"a\\\"b\"");
@@ -136,11 +138,11 @@ internal static class ReviewTransport
         {
             var stdout = ReadLimitedAsync(process.StandardOutput.BaseStream, limit, cancel.Token);
             var stderr = ReadLimitedAsync(process.StandardError.BaseStream, limit, cancel.Token);
-            stdout.ContinueWith(delegate(Task<byte[]> ignored) { TryKill(process); }, TaskContinuationOptions.OnlyOnFaulted);
-            stderr.ContinueWith(delegate(Task<byte[]> ignored) { TryKill(process); }, TaskContinuationOptions.OnlyOnFaulted);
+            var stdoutWatch = stdout.ContinueWith(delegate(Task<byte[]> result) { if (result.IsFaulted) TryKill(process); });
+            var stderrWatch = stderr.ContinueWith(delegate(Task<byte[]> result) { if (result.IsFaulted) TryKill(process); });
             var streams = Task.WhenAll(stdout, stderr);
             var exited = Task.Run(delegate { process.WaitForExit(); });
-            var completed = Task.WhenAll(streams, exited);
+            var completed = Task.WhenAll(streams, exited, stdoutWatch, stderrWatch);
             var timer = Task.Delay(timeoutMs, cancellation);
             if (await Task.WhenAny(completed, timer) != completed)
             {
@@ -236,7 +238,7 @@ internal sealed class ReviewForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); layout.RowStyles.Add(new RowStyle(SizeType.Percent, 30)); layout.RowStyles.Add(new RowStyle(SizeType.Percent, 70)); layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         queue.Dock = DockStyle.Fill; preview.Dock = DockStyle.Fill; preview.Multiline = true; preview.ReadOnly = true; preview.ScrollBars = ScrollBars.Vertical;
         layout.Controls.Add(top, 0, 0); layout.Controls.Add(queue, 0, 1); layout.Controls.Add(preview, 0, 2); layout.Controls.Add(actions, 0, 3); Controls.Add(layout);
-        AcceptButton = refresh; CancelButton = close; refresh.TabIndex = 0; queue.TabIndex = 1; preview.TabIndex = 2; close.TabIndex = 3;
+        CancelButton = close; refresh.TabIndex = 0; queue.TabIndex = 1; preview.TabIndex = 2; close.TabIndex = 3;
         Shown += async delegate { await LoadQueueAsync(); };
     }
 
@@ -246,13 +248,13 @@ internal sealed class ReviewForm : Form
         try {
             if (fixture == null) rows = Program.ParseList(await RunMoraAsync(new[] { "review", "--list", "--json" }));
             else { string raw = await ReadFixtureAsync(); rows = new List<ReviewRow> { Program.FixtureRow(raw) }; }
-            if (!flow.IsQueueCurrent(generation)) return;
+            if (IsDisposed || lifetime.IsCancellationRequested || !flow.IsQueueCurrent(generation)) return;
             queue.DataSource = rows; binding = false;
             if (rows.Count == 0) { status.Text = "No agent notes wait for review."; return; }
             queue.SelectedIndex = 0; await ShowSelectedAsync(rows[0]);
         }
-        catch (Exception error) { if (flow.IsQueueCurrent(generation)) { rows = new List<ReviewRow>(); queue.DataSource = null; preview.Text = ""; keep.Visible = false; status.Text = "Review unavailable: " + error.Message; } }
-        finally { if (flow.IsQueueCurrent(generation)) { binding = false; refresh.Enabled = true; } }
+        catch (Exception error) { if (!IsDisposed && !lifetime.IsCancellationRequested && flow.IsQueueCurrent(generation)) { rows = new List<ReviewRow>(); queue.DataSource = null; preview.Text = NativeLines(error.Message); keep.Visible = false; status.Text = "Review unavailable. See details below."; } }
+        finally { if (!IsDisposed && !lifetime.IsCancellationRequested && flow.IsQueueCurrent(generation)) { binding = false; refresh.Enabled = true; } }
     }
 
     private async Task ShowSelectedAsync(ReviewRow row)
@@ -261,10 +263,10 @@ internal sealed class ReviewForm : Form
         ReviewToken token = flow.BeginPreview(); preview.Text = ""; keep.Visible = false; status.Text = "Loading full bounded preview…";
         try {
             Dictionary<string, object> shown = fixture == null ? Program.ParsePreview(await RunMoraAsync(new[] { "review", "--show", row.kind, row.id, "--json" }), row) : Program.ParsePreview(await ReadFixtureAsync(), row);
-            if (!flow.IsCurrent(token)) return;
-            keep.Visible = Program.KeepEligible(shown); preview.Text = Render(shown); status.Text = "Read-only preview. Desktop approvals are unavailable because no trusted verifier is enrolled.";
+            if (IsDisposed || lifetime.IsCancellationRequested || !flow.IsCurrent(token)) return;
+            keep.Visible = Program.KeepEligible(shown); preview.Text = Render(shown); status.Text = "Read-only preview. Approvals unavailable.";
         }
-        catch (Exception error) { if (flow.IsCurrent(token)) { keep.Visible = false; preview.Text = ""; status.Text = "Preview failed: " + error.Message; } }
+        catch (Exception error) { if (!IsDisposed && !lifetime.IsCancellationRequested && flow.IsCurrent(token)) { keep.Visible = false; preview.Text = NativeLines(error.Message); status.Text = "Preview failed. See details below."; } }
     }
 
     private async Task<string> RunMoraAsync(string[] arguments)
@@ -275,7 +277,7 @@ internal sealed class ReviewForm : Form
     }
     private async Task<string> ReadFixtureAsync() { return await Task.Run(delegate { return File.ReadAllText(fixture, Encoding.UTF8); }); }
     internal static string NativeLines(string value) { return value.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n"); }
-    private static string Render(Dictionary<string, object> item)
+    internal static string Render(Dictionary<string, object> item)
     {
         var text = new StringBuilder();
         foreach (string key in new[] { "title", "kind", "state", "scope", "type", "source", "provenance", "canonical_revision", "display_digest" }) text.Append(key.Replace('_', ' ')).Append(": ").Append(item[key]).AppendLine().AppendLine();
@@ -283,6 +285,6 @@ internal sealed class ReviewForm : Form
         object rawDetails; if (item.TryGetValue("details", out rawDetails) && rawDetails != null) foreach (object entry in (IEnumerable)rawDetails) { var detail = (Dictionary<string, object>)entry; text.Append(detail["label"]).Append(": ").Append(detail["value"]).AppendLine(); }
         var incomplete = new List<string>(); foreach (string key in new[] { "redacted", "truncated", "escaped", "omitted_arguments" }) if ((bool)item[key]) incomplete.Add(key.Replace('_', ' '));
         if (!Program.KeepEligible(item)) { if (incomplete.Count == 0) incomplete.Add("Mora marked this preview incomplete"); text.AppendLine().Append("INCOMPLETE PREVIEW: ").Append(string.Join(", ", incomplete.ToArray())).AppendLine(". Keep is unavailable."); }
-        text.AppendLine().Append("Index visibility is not reported by this read-only preview. Search may lag; this app does not claim the note is indexed."); return text.ToString();
+        text.AppendLine().Append("Index visibility is not reported by this read-only preview. Search may lag; this app does not claim the note is indexed."); return NativeLines(text.ToString());
     }
 }
