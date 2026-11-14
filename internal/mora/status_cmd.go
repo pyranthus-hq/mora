@@ -269,8 +269,6 @@ func printStatus(w io.Writer, r statusReport) {
 		index += fmt.Sprintf(", %d write(s) waiting to be indexed", r.Vault.PendingOps)
 	}
 	fmt.Fprintf(w, "Health:  %s; %s\n", r.Vault.Health, index)
-	fmt.Fprintf(w, "MCP:     %s: %d tools; instructions %s, catalog %s, combined %s\n", r.MCP.Surface, r.MCP.ToolCount, r.MCP.Instructions.text(), r.MCP.Catalog.text(), r.MCP.Combined.text())
-	fmt.Fprintf(w, "         %s\n", r.MCP.Caveat)
 	if r.Vault.Banner != "" {
 		fmt.Fprintf(w, "         %s\n", rulesShow(r.Vault.Banner))
 	}
@@ -281,6 +279,8 @@ func printStatus(w io.Writer, r statusReport) {
 		}
 		fmt.Fprintf(w, "Source:  %s: %s, %s\n", rulesShow(s.Key), s.State, last)
 	}
+	fmt.Fprintf(w, "MCP:     %s: %d tools; instructions %s, catalog %s, combined %s\n", r.MCP.Surface, r.MCP.ToolCount, r.MCP.Instructions.text(), r.MCP.Catalog.text(), r.MCP.Combined.text())
+	fmt.Fprintf(w, "         %s\n", r.MCP.Caveat)
 	for _, e := range r.Errors {
 		fmt.Fprintf(w, "Error:   could not read %s: %s\n", rulesShow(e.Part), rulesShow(e.Error))
 	}

@@ -104,19 +104,18 @@ func TestStatusMCPBudgetMatchesStdioEntrypoints(t *testing.T) {
 				}
 			}
 
-			instructions, catalog := statusMCPStdio(t, args...)
-			encoded, err := json.Marshal(catalog)
-			if err != nil {
-				t.Fatal(err)
-			}
-			toolList, _ := catalog["tools"].([]any)
-			if got.MCP.ToolCount != len(toolList) || got.MCP.Instructions != statusMCPTestCost(instructions) || got.MCP.Catalog != statusMCPTestCost(string(encoded)) || got.MCP.Combined != statusMCPTestCost(instructions+string(encoded)) {
-				t.Fatalf("status MCP budget = %+v; stdio instructions=%q catalog=%d", got.MCP, instructions, len(toolList))
+			instructions, catalog, toolCount := statusMCPStdio(t, args...)
+			if got.MCP.ToolCount != toolCount || got.MCP.Instructions != statusMCPTestCost(instructions) || got.MCP.Catalog != statusMCPTestCost(string(catalog)) || got.MCP.Combined != statusMCPTestCost(instructions+string(catalog)) {
+				t.Fatalf("status MCP budget = %+v; stdio instructions=%q catalog=%d", got.MCP, instructions, toolCount)
 			}
 			if !strings.Contains(instructions, "read-only") || !strings.Contains(got.MCP.Caveat, "Hooks, rules, and recall") {
 				t.Fatalf("configured policy/caveat missing: instructions=%q mcp=%+v", instructions, got.MCP)
 			}
-			if tc.bound && got.MCP.Catalog.Bytes <= got.MCP.Catalog.Characters {
+			const fallback = "This server was started for one bound project folder."
+			if tc.bound != strings.Contains(instructions, fallback) {
+				t.Fatalf("bound fallback sentence = %t, want %t: %q", strings.Contains(instructions, fallback), tc.bound, instructions)
+			}
+			if got.MCP.Catalog.Bytes <= got.MCP.Catalog.Characters {
 				t.Fatalf("serialized catalog must distinguish UTF-8 bytes from characters: %+v", got.MCP.Catalog)
 			}
 		})
@@ -125,7 +124,7 @@ func TestStatusMCPBudgetMatchesStdioEntrypoints(t *testing.T) {
 
 // statusMCPStdio deliberately uses the real protocol loop instead of the
 // status helper, so the diagnostic is pinned to independent entrypoint output.
-func statusMCPStdio(t *testing.T, args ...string) (string, map[string]any) {
+func statusMCPStdio(t *testing.T, args ...string) (string, json.RawMessage, int) {
 	t.Helper()
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`,
@@ -153,14 +152,16 @@ func statusMCPStdio(t *testing.T, args ...string) (string, map[string]any) {
 	var initialize struct {
 		Instructions string `json:"instructions"`
 	}
-	var tools map[string]any
+	var tools struct {
+		Tools []any `json:"tools"`
+	}
 	if err := json.Unmarshal(replies[0].Result, &initialize); err != nil {
 		t.Fatal(err)
 	}
 	if err := json.Unmarshal(replies[1].Result, &tools); err != nil {
 		t.Fatal(err)
 	}
-	return initialize.Instructions, tools
+	return initialize.Instructions, replies[1].Result, len(tools.Tools)
 }
 
 func statusMCPTestCost(s string) statusCost {
