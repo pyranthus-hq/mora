@@ -298,6 +298,9 @@ func reviewWarnings(w io.Writer, buf *bytes.Buffer) {
 }
 
 func cmdReview(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
+	if len(args) > 0 && args[0] == "desktop" {
+		return cmdReviewDesktop(ctx, args[1:], stdout)
+	}
 	fs := flag.NewFlagSet("review", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	list := fs.Bool("list", false, "list agent notes that wait for review")
