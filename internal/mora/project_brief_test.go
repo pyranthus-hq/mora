@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 var projectBriefNow = time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
@@ -641,5 +643,77 @@ func TestProjectBriefStripsControlCharacters(t *testing.T) {
 		if strings.ContainsRune(text, r) {
 			t.Fatalf("control %U in text:\n%q", r, text)
 		}
+	}
+}
+
+func TestProjectBriefSuppressesOnlyVerifiedNativeRuleDeliveryAndExactRetire(t *testing.T) {
+	cfg := projectBriefSetup(t)
+	dir := pbBind(t)
+	binding, found, err := lookupProjectBinding(cfg, dir)
+	if err != nil || !found {
+		t.Fatalf("binding = %#v, %v", binding, err)
+	}
+	rule := projectRuleTestMemory(t, cfg, binding, "mem_native_delivery", "Use the native delivered rule.")
+	installation, err := nativeOwnerInstallationID(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := projectRuleTestDecision(rule, binding, "activate")
+	d.InstallationID, d.DisplayDigest = installation, rule.RevisionSHA256
+	if err := appendProjectRuleDecision(cfg, d); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileProjectRuleMaterialization(cfg, binding, installation, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	text, ids, err := buildProjectBriefWithin(cfg, pbScope, dir, "codex", projectBriefNow, projectBriefMaxChars)
+	if err != nil || strings.Contains(text, rule.Text) || strings.Contains(strings.Join(ids, ","), rule.RuleID) {
+		t.Fatalf("verified delivery remained in brief: %q %v %v", text, ids, err)
+	}
+	retire := d
+	retire.Action, retire.ChallengeNonce = "retire", "native-retire"
+	if err := appendProjectRuleDecision(cfg, retire); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileRetiredProjectRuleMaterialization(cfg, binding, installation, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	text, ids, err = buildProjectBriefWithin(cfg, pbScope, dir, "codex", projectBriefNow, projectBriefMaxChars)
+	if err != nil || strings.Contains(text, rule.Text) || strings.Contains(strings.Join(ids, ","), rule.RuleID) {
+		t.Fatalf("exact retired rule returned to brief: %q %v %v", text, ids, err)
+	}
+}
+
+func TestProjectBriefVerifiedDecisionDoesNotFallThroughAsAgentNote(t *testing.T) {
+	cfg := projectBriefSetup(t)
+	dir := pbBind(t)
+	binding, found, err := lookupProjectBinding(cfg, dir)
+	if err != nil || !found {
+		t.Fatalf("binding = %#v, %v", binding, err)
+	}
+	m := Memory{ID: "mem_native_decision", Scope: binding.Scope, Type: "decision", Title: "Native decision", Text: "Use the delivered decision.", Source: "agent", CreatedAt: projectBriefNow.Format(time.RFC3339), Decision: &DecisionValidity{AsOf: projectBriefNow.Format(time.RFC3339), Durability: decisionStanding}}
+	m.Tags = []string{memory.OwnerConfirmedTagPrefix + memory.OwnerConfirmedDigest(m)}
+	if err := writeMemory(cfg, m); err != nil {
+		t.Fatal(err)
+	}
+	rule, err := loadProjectRuleRevision(cfg, binding, m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation, err := nativeOwnerInstallationID(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := projectRuleTestDecision(rule, binding, "activate")
+	d.InstallationID, d.DisplayDigest = installation, rule.RevisionSHA256
+	if err := appendProjectRuleDecision(cfg, d); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileProjectRuleMaterialization(cfg, binding, installation, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	text, ids, err := buildProjectBriefWithin(cfg, pbScope, dir, "codex", projectBriefNow, projectBriefMaxChars)
+	if err != nil || strings.Contains(text, m.Text) || strings.Contains(strings.Join(ids, ","), m.ID) {
+		t.Fatalf("delivered decision fell through as a note: %q %v %v", text, ids, err)
 	}
 }

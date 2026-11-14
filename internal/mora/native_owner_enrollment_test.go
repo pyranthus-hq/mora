@@ -509,6 +509,34 @@ func TestDesktopReviewStdioEnrollmentAndDecision(t *testing.T) {
 		if cancelled := readStdioResponse(t, outputReader); cancelled.Outcome == nil || cancelled.Outcome.Status != "cancelled" {
 			t.Fatalf("cancel = %#v", cancelled)
 		}
+		root, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		binding := projectBinding{Dir: root, Scope: "project:stdio-rule"}
+		if err := saveProjectBindings(cfg, []projectBinding{binding}); err != nil {
+			t.Fatal(err)
+		}
+		rule := projectRuleTestMemory(t, cfg, binding, "mem_stdio_rule", "Activate this framed native rule.")
+		writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "project_rule.list", Client: "codex", ProjectDir: root})
+		if listed := readStdioResponse(t, outputReader); listed.Error != nil || len(listed.Projects) != 1 || len(listed.Rules) != 1 {
+			t.Fatalf("project rule list = %#v", listed)
+		}
+		writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "project_rule.show", Client: "codex", ProjectDir: root, ID: rule.RuleID})
+		shown := readStdioResponse(t, outputReader)
+		if shown.Error != nil || shown.Preview == nil || shown.Preview.Text != rule.Text || shown.Preview.CanonicalRevision != rule.RevisionSHA256 || len(shown.Preview.Details) != 4 {
+			t.Fatalf("project rule show = %#v", shown)
+		}
+		writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "decision.begin", Action: desktopReviewActivate, Kind: desktopReviewProjectRule, ProjectDir: root, Client: "codex", ID: rule.RuleID, CanonicalRevision: shown.Preview.CanonicalRevision, DisplayDigest: shown.Preview.DisplayDigest})
+		ruleDecision := readStdioResponse(t, outputReader)
+		ruleBytes, err := base64.StdEncoding.DecodeString(ruleDecision.ChallengeBytesB64)
+		if err != nil || ruleDecision.Nonce == "" {
+			t.Fatalf("project rule begin = %#v, %v", ruleDecision, err)
+		}
+		writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "decision.complete", Nonce: ruleDecision.Nonce, SignatureDER: base64.StdEncoding.EncodeToString(nativeOwnerTestProof(t, key, ruleBytes))})
+		if applied := readStdioResponse(t, outputReader); applied.Outcome == nil || applied.Outcome.Status != "applied" {
+			t.Fatalf("project rule complete = %#v", applied)
+		}
 	}
 	if err := inputWriter.Close(); err != nil {
 		t.Fatal(err)

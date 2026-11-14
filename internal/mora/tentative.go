@@ -279,6 +279,9 @@ func confirmMemory(ctx context.Context, cfg Config, id, expectSHA, ownerDigest s
 			}
 		}
 		confirmed = m
+		if err := reconcileProjectRuleScope(cfg, m.Scope); err != nil {
+			return fmt.Errorf("memory %s confirmed, but project rule reconciliation failed: %w", m.ID, err)
+		}
 		return nil
 	})
 	return confirmed, logged, err

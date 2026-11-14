@@ -86,6 +86,10 @@ func projectRuleIntentPath(cfg Config, root string) string {
 	return filepath.Join(filepath.Dir(projectRuleManifestPath(cfg, root)), "codex.intent.json")
 }
 
+func projectRuleMaterializationLockPath(cfg Config, binding projectBinding) string {
+	return projectRuleManifestPath(cfg, binding.Dir) + ".lock"
+}
+
 func projectRuleManifestBytes(m projectRuleManifest) ([]byte, error) {
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
@@ -141,6 +145,22 @@ func readProjectRuleManifest(path string) (projectRuleManifest, bool, error) {
 		return projectRuleManifest{}, false, err
 	}
 	return m, true, nil
+}
+
+func projectRuleMaterializationDigest(cfg Config, binding projectBinding, installationID, client string) (string, error) {
+	path := projectRuleManifestPath(cfg, binding.Dir)
+	regular, err := projectRuleRegularFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return projectRuleSHA256([]byte("absent")), nil
+	}
+	if err != nil || !regular {
+		return "", errProjectRuleConflict
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return projectRuleSHA256(append([]byte("observed-manifest\x00"), raw...)), nil
 }
 
 func validProjectRuleManifest(m projectRuleManifest, binding projectBinding, installationID, client, rel string) bool {
@@ -267,6 +287,28 @@ func planProjectRuleMaterialization(cfg Config, binding projectBinding, installa
 		return projectRuleMaterializationPlan{}, err
 	}
 	return plan, nil
+}
+
+// preflightProjectRuleActivation validates the exact prospective projection
+// before its activation row exists. Rendering is bounded and deterministic, so
+// this catches loader/manifest conflicts without publishing a dead decision.
+func preflightProjectRuleActivation(cfg Config, binding projectBinding, installationID, client string, rule projectRuleRevision) error {
+	if err := recoverProjectRuleMaterialization(cfg, binding); err != nil {
+		return err
+	}
+	if _, err := planProjectRuleMaterialization(cfg, binding, installationID, client); err != nil {
+		return err
+	}
+	active, err := activeProjectRuleRevisions(cfg, binding, installationID, client)
+	if err != nil {
+		return err
+	}
+	for _, current := range active {
+		if current.RuleID == rule.RuleID && current.RevisionSHA256 == rule.RevisionSHA256 {
+			return errProjectRuleConflict
+		}
+	}
+	return nil
 }
 
 func writeProjectRuleIntent(plan projectRuleMaterializationPlan) error {
@@ -397,16 +439,22 @@ func commitProjectRuleMaterialization(plan projectRuleMaterializationPlan) error
 // narrow filesystem reconciliation seam; authority and decision ordering stay
 // with the native-proof integrator.
 func reconcileProjectRuleMaterialization(cfg Config, binding projectBinding, installationID, client string) error {
-	return leasefile.WithGuard(projectRuleManifestPath(cfg, binding.Dir)+".lock", func() error {
-		if err := recoverProjectRuleMaterialization(cfg, binding); err != nil {
-			return err
-		}
-		plan, err := planProjectRuleMaterialization(cfg, binding, installationID, client)
-		if err != nil {
-			return err
-		}
-		return commitProjectRuleMaterialization(plan)
+	return leasefile.WithGuard(projectRuleMaterializationLockPath(cfg, binding), func() error {
+		return reconcileProjectRuleMaterializationLocked(cfg, binding, installationID, client)
 	})
+}
+
+// reconcileProjectRuleMaterializationLocked is for the native authority after
+// it has taken the same source-then-root lock order as source mutation paths.
+func reconcileProjectRuleMaterializationLocked(cfg Config, binding projectBinding, installationID, client string) error {
+	if err := recoverProjectRuleMaterialization(cfg, binding); err != nil {
+		return err
+	}
+	plan, err := planProjectRuleMaterialization(cfg, binding, installationID, client)
+	if err != nil {
+		return err
+	}
+	return commitProjectRuleMaterialization(plan)
 }
 
 // reconcileRetiredProjectRuleMaterialization is called only after the trusted
@@ -415,6 +463,40 @@ func reconcileProjectRuleMaterialization(cfg Config, binding projectBinding, ins
 func reconcileRetiredProjectRuleMaterialization(cfg Config, binding projectBinding, installationID, client string) error {
 	if err := reconcileProjectRuleMaterialization(cfg, binding, installationID, client); err != nil {
 		return fmt.Errorf("%w: %v", errProjectRuleRetiredWithLoaderConflict, err)
+	}
+	return nil
+}
+
+// reconcileProjectRuleScope is the owning-source mutation seam. It removes
+// only already-managed stale text; it never creates an activation from a
+// changed, deleted, or unconfirmed source.
+func reconcileProjectRuleScope(cfg Config, scope string) error {
+	bindings, err := loadProjectBindings(cfg)
+	if err != nil {
+		return err
+	}
+	installationID, found, err := existingNativeOwnerInstallationID(cfg)
+	if err != nil {
+		return err
+	}
+	if !found {
+		for _, binding := range bindings {
+			if binding.Scope != scope {
+				continue
+			}
+			if _, statErr := os.Stat(projectRuleManifestPath(cfg, binding.Dir)); statErr == nil {
+				return fmt.Errorf("%w: project rule installation identity is missing", errProjectRuleConflict)
+			}
+		}
+		return nil
+	}
+	for _, binding := range bindings {
+		if binding.Scope != scope {
+			continue
+		}
+		if err := reconcileProjectRuleMaterialization(cfg, binding, installationID, "codex"); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -261,6 +261,25 @@ func nativeOwnerInstallationID(cfg Config) (string, error) {
 	return installationID, err
 }
 
+// existingNativeOwnerInstallationID is the read-only counterpart used by
+// briefing. A session-start brief must never create local owner state.
+func existingNativeOwnerInstallationID(cfg Config) (string, bool, error) {
+	raw, err := os.ReadFile(nativeOwnerInstallationPath(cfg))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if len(raw) != 64 {
+		return "", false, errors.New("existing installation ID is invalid")
+	}
+	if _, err := hex.DecodeString(string(raw)); err != nil {
+		return "", false, errors.New("existing installation ID is invalid")
+	}
+	return string(raw), true, nil
+}
+
 func nativeOwnerP256(value []byte) (*ecdsa.PublicKey, error) {
 	if len(value) != 65 || value[0] != 4 {
 		return nil, errors.New("invalid p256 public key")

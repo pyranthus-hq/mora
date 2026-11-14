@@ -29,7 +29,8 @@ func loadProjectRuleRevision(cfg Config, binding projectBinding, id string) (pro
 	if err != nil {
 		return projectRuleRevision{}, err
 	}
-	if m.ID != id || m.Scope != binding.Scope || m.DeletedAt != "" || (m.Type != memory.TypeDecision && m.Type != memory.TypeCorrection) || memory.DeriveProvenance(m) != memory.ProvenanceAuthored || !memory.IsOwnerConfirmed(m) || strings.Contains(m.Text, projectRuleBegin) || strings.Contains(m.Text, projectRuleEnd) {
+	governance, err := loadGovernance(cfg)
+	if err != nil || m.ID != id || m.Scope != binding.Scope || m.DeletedAt != "" || !governance.memoryVisible(m.ID) || (m.Type != memory.TypeDecision && m.Type != memory.TypeCorrection) || memory.DeriveProvenance(m) != memory.ProvenanceAuthored || !memory.IsOwnerConfirmed(m) || strings.Contains(m.Text, projectRuleBegin) || strings.Contains(m.Text, projectRuleEnd) {
 		return projectRuleRevision{}, fmt.Errorf("project rule is not a current confirmed local authored record")
 	}
 	return projectRuleRevision{RuleID: id, SourceMemoryID: id, Scope: m.Scope, Applicability: projectRuleApplicability, Text: m.Text, RevisionSHA256: projectRuleRevisionSHA256(m, projectRuleApplicability), Provenance: memory.DeriveProvenance(m)}, nil

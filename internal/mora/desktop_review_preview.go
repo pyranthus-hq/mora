@@ -113,6 +113,10 @@ func loadDesktopReviewPreview(cfg Config, kind, id string) (desktopReviewPreview
 	}
 	display.Complete = !display.Redacted && !display.Truncated && !display.Escaped && !display.OmittedArguments
 
+	return newDesktopReviewPreview(display, revision)
+}
+
+func newDesktopReviewPreview(display desktopReviewDisplay, revision string) (desktopReviewPreview, error) {
 	raw, err := json.Marshal(display)
 	if err != nil {
 		return desktopReviewPreview{}, err

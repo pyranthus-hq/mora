@@ -23,6 +23,8 @@ type desktopReviewFrame struct {
 	Action             desktopReviewAction `json:"action,omitempty"`
 	CanonicalRevision  string              `json:"canonical_revision,omitempty"`
 	DisplayDigest      string              `json:"display_digest,omitempty"`
+	ProjectDir         string              `json:"project_dir,omitempty"`
+	Client             string              `json:"client,omitempty"`
 	Nonce              string              `json:"nonce,omitempty"`
 	PublicKeyP256      string              `json:"public_key_p256_b64,omitempty"`
 	CredentialID       string              `json:"credential_id,omitempty"`
@@ -40,6 +42,8 @@ type desktopReviewFrameResponse struct {
 	Schema            string                   `json:"schema"`
 	SchemaVersion     int                      `json:"schema_version"`
 	Notes             []reviewRow              `json:"notes,omitempty"`
+	Rules             []reviewRow              `json:"rules,omitempty"`
+	Projects          []desktopReviewProject   `json:"projects,omitempty"`
 	Preview           *desktopReviewPreview    `json:"preview,omitempty"`
 	Enrolled          *bool                    `json:"enrolled,omitempty"`
 	ReadOnly          *bool                    `json:"read_only,omitempty"`
@@ -50,6 +54,11 @@ type desktopReviewFrameResponse struct {
 	KeyID             string                   `json:"key_id,omitempty"`
 	Outcome           *desktopReviewOutcome    `json:"outcome,omitempty"`
 	Error             *desktopReviewFrameError `json:"error,omitempty"`
+}
+
+type desktopReviewProject struct {
+	Root  string `json:"root"`
+	Scope string `json:"scope"`
 }
 
 func readDesktopReviewFrame(r io.Reader) (desktopReviewFrame, error) {
@@ -147,6 +156,10 @@ func handleDesktopReviewFrame(ctx context.Context, cfg Config, authority *deskto
 		return nativeOwnerWebAuthnProof{CredentialID: credential, ClientDataJSON: client, AuthenticatorData: auth, SignatureDER: signature}, true
 	}
 	switch request.Op {
+	case "project_rule.list":
+		return listDesktopProjectRules(cfg, request)
+	case "project_rule.show":
+		return showDesktopProjectRule(cfg, request)
 	case "list":
 		notes, err := listReviewNotes(cfg, io.Discard)
 		if err != nil {
@@ -222,7 +235,13 @@ func handleDesktopReviewFrame(ctx context.Context, cfg Config, authority *deskto
 		enrolled, readOnly := true, false
 		return desktopReviewFrameResponse{Enrolled: &enrolled, ReadOnly: &readOnly}
 	case "decision.begin":
-		challenge, err := authority.begin(request.Action, request.Kind, request.ID, request.CanonicalRevision, request.DisplayDigest)
+		var challenge desktopReviewChallenge
+		var err error
+		if request.Kind == desktopReviewProjectRule {
+			challenge, err = authority.beginProjectRule(request.Action, request.ProjectDir, request.ID, request.CanonicalRevision, request.DisplayDigest, request.Client)
+		} else {
+			challenge, err = authority.begin(request.Action, request.Kind, request.ID, request.CanonicalRevision, request.DisplayDigest)
+		}
 		if err != nil {
 			return desktopReviewFrameFailure(desktopReviewErrorCode(err), "desktop decision is unavailable")
 		}

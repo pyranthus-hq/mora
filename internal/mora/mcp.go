@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/activity"
@@ -991,7 +992,7 @@ func mcpBrief(ctx context.Context, cfg Config, args map[string]any) (any, error)
 		if mcpWorkspaceManaged(ctx) {
 			return nil, errMCPWorkspaceUnavailable
 		}
-		return projectBriefForDir(cfg, dir, briefClock())
+		return projectBriefForDir(cfg, dir, strings.TrimPrefix(agentCallerFrom(ctx), "mcp-stdio/"), briefClock())
 	}
 	// Managed project sessions never fall through to a vault-wide daily digest.
 	// A legacy explicit --project-dir server retains its administrator behavior.
@@ -1006,10 +1007,10 @@ func mcpBrief(ctx context.Context, cfg Config, args map[string]any) (any, error)
 			if ferr != nil {
 				return nil, ferr
 			}
-			text, ids, err := buildProjectBriefFiltered(cfg, p.scope, p.root, briefClock(), filter)
+			text, ids, err := buildProjectBriefFiltered(cfg, p.scope, p.root, strings.TrimPrefix(agentCallerFrom(ctx), "mcp-stdio/"), briefClock(), filter)
 			return projectBriefResult{Scope: p.scope, Root: p.root, Text: text, IDs: ids}, err
 		}
-		text, ids, err := buildProjectBrief(cfg, p.scope, p.root, briefClock())
+		text, ids, err := buildProjectBriefWithin(cfg, p.scope, p.root, strings.TrimPrefix(agentCallerFrom(ctx), "mcp-stdio/"), briefClock(), projectBriefMaxChars)
 		return projectBriefResult{Scope: p.scope, Root: p.root, Text: text, IDs: ids}, err
 	}
 	start := time.Now()
