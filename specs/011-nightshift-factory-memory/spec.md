@@ -1,0 +1,100 @@
+# Feature Specification: NightShift factory memory
+
+**Feature**: `011-nightshift-factory-memory`
+
+**Status**: Mora 0.19 integration. NightShift v0.4.0 ships the adapter.
+The macOS real-binary fixture run found scope and write-policy gaps.
+Live factory acceptance remains open. See the [qualification receipt](qualification.md).
+
+**Acceptance**: Relevant FM-A/FM-B read cases, FM-D1 and FM-E for the pull integration. FM-C/FM-D2 and capture-specific requirements are deferred options, not read-only or Mora 0.18 gates. E2 remains the separate startup-budget prerequisite.
+
+## User Scenarios and Testing
+
+### User Story 1 — Start a run with the right factory knowledge (Priority: P1)
+
+As a factory operator, I can give a run reviewed, cited knowledge from its own factory, keep its execution approvals intact, and see unavailable or conflicting context before it matters.
+
+### Deferred User Story 2 — Recover a learning or handoff after interruption
+
+As a factory operator, I can recover acknowledged captures and the last verified checkpoint without duplicates, lost updates, or invented progress.
+
+## NightShift factory memory — integration workstream
+
+This workstream starts with one isolated NightShift factory and one repository. Qualify recall and writes in fixtures before deciding on a live read-only deployment. Select and record the supported factory host OS before implementation; the Mac/Windows client checks do not establish Linux factory support. It specifies the integration and its acceptance; it does not claim implementation or make wider factory rollout a 0.18 release gate. NightShift remains authoritative for tasks, runs, specs, approvals, budgets and execution. Mora provides cited knowledge and continuity across runs.
+
+Reuse the existing governance and exact-revision review requirements (F/G1), project isolation tests (E1), context budgets (E2), session handoff pilot (D1), and governed friction/recovery pilot (DR1). These are prerequisites and reusable tests, not new parallel systems. Keep the broader skill library, personal cross-project recall, 15-minute sync and multi-owner sharing outside this factory pilot. A project tool catalog is not an access grant; adding brief or skills to a catalog must not widen a factory's permissions.
+
+### Factory requirements
+
+FM01 — Identity and access. Provision a stable factory ID and a server-controlled mapping to authorized repositories, Mora scopes and an agent profile. Requests cannot choose or widen that identity through text, a scope argument or a working directory. Refuse unknown, unbound, mismatched or revoked identities. Two factories using the same repository remain isolated. Start with a dedicated vault, state and configuration per factory behind a service or sandbox boundary workers cannot modify. Exclude personal/global records, connectors, global rule files and unrelated skills by default. Any common knowledge requires an explicit grant. Apply the boundary to returned text, direct IDs, evidence references, counts, diagnostics and writes; a scoped filter alone is insufficient when workers can read the vault from the shell.
+
+FM02 — Provider and trust mapping. Implement Mora through NightShift's existing memory-provider contract with pinned capability/schema versions. Compose bounded context from authorized operations; do not enable unrestricted access to obtain brief. A staged proposal maps to held. A persisted tentative note remains unapproved and does not enter execution prompts. Map an exact owner-reviewed record to approved only after scope, revision, applicability and source checks. A verified state requires an explicitly defined verifier and evidence rule; a successful save or passing run is not verification. Unknown states fail closed. Before worker access, the owner seeds and reviews a small synthetic corpus through the existing governed write/review path. Read-only describes the worker profile: mutation and proposal tools are absent, and attempted writes refuse. Copies/imports do not carry approval automatically; review the exact destination scope/revision through the configured owner path and preserve original authorship and source provenance. The confirmer must use a proven G1 owner host or the existing verified terminal path, outside worker control; a headless factory endpoint is not human proof. Preserve agent authorship, keep approval separate from policy activation, and never let memory approve a run.
+
+FM03 — Crash-safe capture. NightShift persists an outbox event before sending it, keyed by factory, origin and stable event ID. Mora must bind that key and payload hash to the canonical record in the same crash-safe publication and recover the original result on replay; adapter-only deduplication leaves a crash window. Define origin as a stable producer installation ID, preserved across retries/restarts, and freeze payload canonicalization before hashing. Recheck current authorization on replay: revoked access refuses without revealing or resurrecting an old record. For an authorized replay, same key/same payload returns the original ID and outcome; changed payload conflicts. Distinguish queued, proposal-held, persisted, indexed/searchable and admitted-for-recall. Preserve IDs and acknowledgements across restarts. A saved but unindexed event retries indexing, not creation. Apply deduplication to held proposals and their later decisions as well as direct writes. Retain unacknowledged events and enough dedupe/control state for restore to preserve these guarantees.
+
+FM04 — Run context and handoffs. Each admitted record carries factory/repository identity, author, event time, revision/hash, trust state, source evidence and applicable commit/version; capture records additionally identify their task/run/session and origin event. Verify immutable source identity and content, not merely a nonempty URL. Keep tests-passed, merged and deployed outcomes distinct. Freeze the exact authorized context supplied to a run with memory IDs/revisions, source references, base/spec/config hashes, index health and prompt hash. Store prompt bytes as access-controlled run evidence under an explicit retention/deletion policy. Reuse the bundle across stages; a deliberate refresh creates a new recorded bundle, and a changed spec returns to NightShift's approval gate. Revalidate revocation, expiry and explicit supersession before dispatch/resume; pause if authority is unavailable or invalid. Memory conflicts never silently override the approved spec or security policy. Extend D1 handoffs with session/run keys, verified progress, blockers, evidence and next step so parallel sessions cannot overwrite each other. On abrupt termination, authoritative resume state and verified progress come from the NightShift ledger and its evidence; recover the last persisted checkpoint and mark the unrecorded interval. An agent-written handoff does not verify its own claims. Unreviewed handoffs may appear in an operator recovery view but remain outside approved execution context.
+
+FM05 — Failure behavior and rollout. Ordinary retrieved knowledge is advisory: a bounded failure is visible and a run may continue from its complete approved spec. A task depending on required facts or policy declares the required IDs/classes and maximum age before approval; unavailable, stale, corrupt or unauthorized required context blocks dispatch. Never fall back to another factory, personal/global scope or guessed cached authority. Set a five-second total pilot adapter deadline covering recall, status and source checks, and cancel outstanding work. Initially cap factory context at 10 items, 2,048 UTF-8 bytes per item and 8,192 bytes aggregate item text, matching the inspected provider limits; report fence/metadata overhead separately and pin the exact counting rule for comparisons. Measure cold/warm latency, context bytes, index lag and degraded outcomes separately from Mora's startup budgets. Back up and restore canonical records plus outbox, dedupe and governance state; an index rebuild alone is not recovery. Revocation blocks reuse immediately; retained prompt snapshots follow the factory retention/deletion policy, with backup exceptions stated. Begin with one writable origin. Multi-origin/offline replication needs a separate conflict, transport, revocation and restore gate; D1 alone does not prove it.
+
+### Factory acceptance and staged delivery
+
+Use disposable synthetic factories and redacted evidence. The A/B/personal fixtures test isolation; they are not additional production factories. Record the exact Mora/NightShift revisions, OS, client, profile, scope and index state. These are acceptance targets, not passed results.
+
+FM-A — Isolation. Extend E1 with factories A and B using the same repository and a personal sentinel. Require zero unauthorized markers through search, direct reads, evidence references, diagnostics, writes, installed rules/skills and filesystem/CLI routes. Repeat during refresh, stale-index handling, restart, restore and credential revocation. Unbound identity refuses instead of falling back. In the read-only profile, every mutation attempt refuses.
+
+FM-B — Trust and replay. Extend F/G1 through every exposed write and review path. Held, tentative, rejected, expired, superseded and unknown states stay out of execution prompts. Exact approved in-scope records enter with evidence. Unapproved imports and copies edited after approval remain excluded. In the read-only gate, all mutation/proposal tools are absent and direct mutation attempts refuse; later capture tests exercise the configured governed write path. Workers cannot self-approve; editing content invalidates admission. An admitted note containing approval-bypass or scope-expansion text cannot change permissions or authorized tool use. Recorded bundles reproduce the context; revoked authority blocks reuse and changed specs require the existing approval gate.
+
+FM-C — Capture recovery. Four workers submit 100 uniquely keyed events with duplicate delivery and injected failures before commit, after commit/before response and before indexing. After restart/rebuild, require 100 logical captures across the applicable persisted/held outcomes, zero duplicate events, zero lost acknowledged captures and explicit changed-payload conflicts. Replaying held proposals or their approval must not create a second record. Restore and retry the pending outbox with the same guarantees.
+
+FM-D1 — Read-only outages. Advisory failure is visible within the total deadline, including status/source checks, and outstanding work is cancelled. Unavailable required context blocks. A read-only service restart preserves factory identity and never widens access.
+
+FM-D2 — Handoff and restore recovery. Kill a worker/service at each persisted checkpoint, then start a fresh session without a handoff ID hint. Recover the right run, verified progress and blockers from ledger-backed evidence; claim no unwritten progress and reuse no approval beyond NightShift's existing checks. Tentative/poisoned handoffs stay in the operator recovery view and cannot alter permissions, scope, approved context or tool use. Restore into an isolated instance, rebuild and rerun FM-A/FM-B.
+
+FM-E — Usefulness. Freeze 20 representative factory tasks with expected evidence and negative controls. Compare Mora, curated DECISIONS.md plus handoff files, and memory off using the same model and prompt budget. Require zero harmful or unauthorized carry-over, at least the curated-file baseline's correct-context count, and a material benefit target chosen before scoring, such as fewer repeated mistakes or less operator handoff time. Record latency/token cost. This is a directional pilot, not statistical proof; parity alone does not justify making Mora the default.
+
+Read-only pilot: FM01, the read/admission portion of FM02, source/context controls in FM04, and FM05 failure/access/retention controls; run FM-A/FM-B read cases, FM-D1 and FM-E. Write-capture pilot: add FM03, capture metadata and checkpoint handoffs; complete FM-A through FM-E before defaulting to Mora for the tested deployment. Wider rollout requires new isolation/load evidence and the separate replication gate where applicable. NightShift owns factory binding, provider adapter, outbox, context snapshots and runtime policy. Mora owns scoped record/receipt/governance APIs and crash-safe idempotent publication. Conformance is joint; no product implementation is completed by this planning update.
+
+### Architecture direction — Mora stays abstract
+
+This clarification supersedes the implementation ownership and rollout commitments in the preceding factory section. Mora remains a general-purpose, agent-agnostic memory service. NightShift is a consumer that pulls from Mora through supported scoped interfaces. Mora does not acquire factory, task, run, pipeline, scheduling or execution-approval concepts for this integration. This also overrides earlier requirement verbs: factory identity mapping and adapter implementation belong to NightShift/deployment; FM03's proposed Mora publication changes are deferred generic capability candidates, not current requirements or a transfer of integrity guarantees to adapter-only deduplication. A writable production host is a deferred capture topology. The initial live pilot is read-only on a supported host.
+
+NightShift owns the adapter, factory-to-scope mapping, retrieval timing, admission to prompts, context snapshots, budgets, retries and run recovery. Mora owns generic authorization, scope enforcement, memory records, provenance, revision/trust metadata and honest retrieval/index status. A namespace may be opaque to Mora; the meaning of a factory ID belongs to NightShift. Consumer-side filtering never substitutes for the provider/deployment access boundary. Existing governed writes and review semantics remain intact.
+
+NightShift v0.4.0 uses a checksum-pinned Mora 0.17.0 CLI and already
+attempts unconfirmed writes at the end of runs. Reuse this adapter. The
+fixture run used the real released pair in an isolated synthetic vault.
+The release derives `project:<repo>` from the normalized short repository
+name. The required adapter changes below follow from the observed results.
+
+For the initial pull integration, retain the relevant FM-A/FM-B read cases, FM-D1 outage behavior and FM-E usefulness comparison as consumer acceptance targets. Scope isolation, trustworthy provenance, exclusion of unapproved context and unchanged execution approvals remain required. FM-A restore repetition applies if the tested deployment restores from backup; FM-D2 capture restore remains deferred. Its installed rules/skills routes apply only if that deployment installs them, in which case the existing 003/005 contracts apply. Measure aggregate recall latency and bytes. The CLI implementation has a 15-second default timeout per command and the brief is capped at 1,999 characters. The earlier five-second aggregate target needs separate qualification.
+
+Write-back, the outbox and canonical idempotency proposal in FM03, persisted factory checkpoints, FM-C and FM-D2 capture/restore tests are deferred design options. They are not prerequisites for the pull integration, default read-only use, or Mora 0.18. Default read-only use requires its read gates and an explicit deployment decision. If later work needs a missing Mora capability, propose a generic memory capability separately, with evidence that the consumer cannot meet the need through existing interfaces. Do not replace provider-side integrity with adapter-only deduplication or weaken access/trust checks to keep the boundary abstract.
+
+For the pull-only pilot, prove the deployment blocks persistence of the shipped terminal writes while still allowing scoped recall. Verify connector refusal and keep the personal vault outside the factory boundary.
+
+### Released adapter changes
+
+The [NightShift adapter candidate](https://github.com/abhikarode/nightshift/pull/73)
+passed the [devbox qualification](qualification.md#adapter-fix-on-devbox) with
+the real Mora 0.17.0 pin and simulated workers. The candidate is awaiting
+review. The fixture does not authorize a live deployment.
+
+- Resolve scope from a stable, server-controlled factory and full repository
+  identity. Refuse a collision before binding or recall. Preserve an existing
+  unambiguous scope only through an explicit mapping. Verify that a missing,
+  stale, or mismatched checkout binding returns a visible degraded result
+  with no memory text. Validate the brief's scope and canonical root against
+  that binding as well as each search result's scope. The candidate persists
+  its factory ID in the NightShift home and supports explicit operator mappings
+  for existing checkout scopes.
+- Give NightShift's Mora adapter an explicit read-only mode. Skip terminal
+  note and handoff commands in that mode. Use the brief to validate the checkout
+  and admit only owner-confirmed search rows to prompts. Make disabled write-back
+  visible without reporting an outage or a successful write. Provision the
+  binding before entering read-only mode. Keep the approved factory vault
+  protected by an independent filesystem or service boundary. Mora's
+  `mcp_write_policy=readonly` applies to MCP calls. The shipped adapter calls
+  the CLI, which the fixture showed can still persist records under that setting.
+- Qualify these changes with the shipped Mora 0.17.0 pin before testing a
+  newer version. Any new pin must pass the same compatibility and isolation
+  cases. Keep factory policy in NightShift and deployment.
