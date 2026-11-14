@@ -110,6 +110,7 @@ func TestRulesAddRejectsPythonOnlySyntax(t *testing.T) {
 }
 
 func TestRulesApproveRefusesNonInteractive(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	clearAgentEnv(t)
 	run(t, "rules", "add", "--template", "compound-cd")

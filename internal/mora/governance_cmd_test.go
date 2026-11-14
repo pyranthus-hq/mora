@@ -15,6 +15,7 @@ func destFor(cfg Config, mm memory.MappedMemory) string {
 }
 
 func TestForget_ChatRemovesAndSuppressesResync(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	mm := imsgMM("solo", "+14155550123")
 	dest := destFor(cfg, mm)
@@ -41,6 +42,7 @@ func TestForget_ChatRemovesAndSuppressesResync(t *testing.T) {
 }
 
 func TestForget_HandleRemovesSoleKeepsGroup(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	solo := imsgMM("solo", "+14155550123")
 	group := imsgMM("grp", "+14155550123", "+14155550999")
@@ -62,6 +64,7 @@ func TestForget_HandleRemovesSoleKeepsGroup(t *testing.T) {
 }
 
 func TestForget_EmailSoleAddressKeepsMulti(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	solo := gmailMM("solo", []string{"sam@example.com"}, nil)
 	multi := gmailMM("multi", []string{"sam@example.com"}, []string{"me@x.com"})
@@ -116,6 +119,7 @@ func TestForget_RefusesWithoutYes(t *testing.T) {
 }
 
 func TestUnforget_RevokesSuppression(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	mm := imsgMM("solo", "+14155550123")
 	if err := writeMappedMemory(cfg, mm); err != nil {
@@ -140,6 +144,7 @@ func TestUnforget_RevokesSuppression(t *testing.T) {
 }
 
 func TestForget_ListShowsActiveEntries(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	if err := writeMappedMemory(cfg, imsgMM("solo", "+14155550123")); err != nil {
 		t.Fatal(err)

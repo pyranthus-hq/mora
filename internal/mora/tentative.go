@@ -114,6 +114,9 @@ func cmdConfirm(ctx context.Context, args []string, stdout, stderr io.Writer, st
 		return err
 	}
 	if *mine {
+		if err := requireMineTerminal(stdin, "confirm"); err != nil {
+			return err
+		}
 		return confirmMine(ctx, cfg, fs.Arg(0), *jsonOut, stdout, stderr, stdin)
 	}
 	m, logged, err := confirmMemory(ctx, cfg, fs.Arg(0), "", "", stderr)

@@ -149,6 +149,7 @@ func TestMergeConfirmUnifiesEmailPhone(t *testing.T) {
 // TestMergeRejectKeepsSeparate proves a rejected pair stays UNMERGED and is never
 // re-proposed — refuse-to-gap, made durable.
 func TestMergeRejectKeepsSeparate(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	if err := writeMappedMemory(cfg, imsgNamedMM("solo", "+14155550123", "Riya Sharma")); err != nil {
 		t.Fatal(err)
@@ -169,6 +170,7 @@ func TestMergeRejectKeepsSeparate(t *testing.T) {
 
 // TestMergeUndoRestoresQueue proves undo revokes a decision so the candidate returns.
 func TestMergeUndoRestoresQueue(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	if err := writeMappedMemory(cfg, imsgNamedMM("solo", "+14155550123", "Riya Sharma")); err != nil {
 		t.Fatal(err)

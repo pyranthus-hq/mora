@@ -3,6 +3,7 @@ package mora
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -114,7 +115,7 @@ func TestWriteMineIsStillRefusedInAnAgentSession(t *testing.T) {
 	reviewTerminal(t)
 	t.Setenv("CLAUDECODE", "1")
 	_, _, err := mineRun(t, strings.NewReader(mineYes), mineArgs("write", "--mine")...)
-	if err == nil || !strings.Contains(err.Error(), "CLAUDECODE") || !strings.Contains(err.Error(), "--mine") {
+	if !errors.Is(err, errOwnerVerificationUnavailable) {
 		t.Fatalf("--mine in an agent session: %v", err)
 	}
 	if rows, err := listTentativeMemories(cfg); err != nil || len(rows) != 0 {

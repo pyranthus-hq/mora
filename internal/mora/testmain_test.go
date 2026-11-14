@@ -69,10 +69,11 @@ func TestMain(m *testing.M) {
 	runScheduleCommand = func(name string, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("%s: no external command runs in package tests", name)
 	}
-	// Keep the production mcp_write_policy default for every test. Tests that
-	// need open-mode mutation must set it in their own sandbox; a package-wide
-	// override would exercise authority that production does not grant.
+	// Production resolves an unset mcp_write_policy to tentative. Keep the
+	// pre-existing open fixture for legacy mutation tests; default-policy tests
+	// call useShippedWritePolicyDefault to restore the shipped resolver locally.
 	shippedUnsetMCPWritePolicy = unsetMCPWritePolicy
+	unsetMCPWritePolicy = mcpWritePolicyOpen
 	// The PreToolUse hook prints nothing once its 1.5 s budget runs out. A
 	// stalled race runner must not turn that into a flaky golden test, so the
 	// budget is a minute here. TestHk_PreToolBudgetSlowLoad sets its own.

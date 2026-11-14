@@ -29,6 +29,7 @@ func saveApproveProposals(t *testing.T, cfg Config, n int) []string {
 // blockedApprove runs `approve ids...` with a reconciler parked until release.
 func blockedApprove(t *testing.T, ids func(Config) []string, limit time.Duration) (done chan error, release func(), stderr *bytes.Buffer, cfg Config) {
 	t.Helper()
+	withTestVerifiedOwnerAction(t)
 	cfg = coreBIngestInitCfg(t)
 	started := make(chan struct{}, 8)
 	gate := make(chan struct{})
@@ -100,6 +101,7 @@ func TestApproveWarnsOnDrainTimeout(t *testing.T) {
 }
 
 func TestApproveBatchFailureKeepsReceiptAndRetries(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	ids := saveApproveProposals(t, cfg, 2) // p_approve0, p_approve1
 	var out, errOut bytes.Buffer

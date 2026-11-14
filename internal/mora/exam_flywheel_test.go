@@ -89,6 +89,7 @@ func seedRenderedExamLedger(t *testing.T, ledger exam.Ledger) (examEventFixture,
 // surfaces over the same corpus. The only state change is the durable governance
 // entry written by `mora merge confirm`, which rebuilds the graph itself.
 func TestExamCorrectionFlywheel(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	_, event, at := seedExamHome(t)
 	pinExamSurfaceClocks(t, at)
 	ledger := loadExamLedger(t)
@@ -163,6 +164,7 @@ func TestExamCorrectionFlywheel(t *testing.T) {
 // scenario as a permanent regression contract: every turn is classified under
 // its own speaker even when a later acknowledgement ends the conversation.
 func TestExamConversationCommitmentNotLastIsKnownRed(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	const (
 		wantRED = false
 		issue   = "https://github.com/pyranthus-hq/mora/issues/156"

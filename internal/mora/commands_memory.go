@@ -44,6 +44,9 @@ func cmdWrite(ctx context.Context, args []string, stdout, stderr io.Writer, stdi
 		if err := requireVerifiedOwnerAction(ownerAction{Kind: "memory.write"}); err != nil {
 			return err
 		}
+		if err := requireMineTerminal(stdin, "write"); err != nil {
+			return err
+		}
 	}
 	if *text == "" && fs.NArg() > 0 {
 		*text = strings.Join(fs.Args(), " ")

@@ -195,6 +195,9 @@ func rulesImport(ctx context.Context, args []string, stdout io.Writer, stdin io.
 		return err
 	}
 	if !trusted {
+		if err := rulesRequireTerminal(stdin); err != nil {
+			return err
+		}
 		if err := requireVerifiedOwnerAction(ownerAction{Kind: "rule.import", TargetID: g.Rule.ID, Revision: g.Rule.Hash}); err != nil {
 			return err
 		}

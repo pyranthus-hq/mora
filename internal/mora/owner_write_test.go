@@ -473,6 +473,7 @@ func mineDecisionContext(t *testing.T) string {
 
 func TestOwnerDecisionWithoutValidityReadsCurrent(t *testing.T) {
 	reviewSetup(t)
+	legacyOpenPolicy(t)
 	reviewTerminal(t)
 
 	// Not the owner's: unchanged, needs review.

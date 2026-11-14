@@ -14,6 +14,7 @@ import (
 )
 
 func TestMCPProposalConcurrentApprovalsPublishOnce(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)

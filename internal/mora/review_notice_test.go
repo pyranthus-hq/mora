@@ -87,6 +87,7 @@ func noticeSurfaces(t *testing.T, cfg Config) map[string]string {
 }
 
 func TestReviewNoticeLifecycle(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	useShippedWritePolicyDefault(t)
 	withTempHome(t)
 	run(t, "init")
@@ -222,6 +223,7 @@ func TestReviewNoticeTagMatch(t *testing.T) {
 		subRun(t, c.tags, func(t *testing.T) {
 			withTempHome(t)
 			run(t, "init")
+			legacyOpenPolicy(t)
 			cfg := mustConfig(t)
 			run(t, "write", "--title", "T", "--text", "body", "--scope", "project:demo", "--tags", c.tags)
 			saved, held, err := unreviewedAgentNoteCounts(testCtx(t), cfg)

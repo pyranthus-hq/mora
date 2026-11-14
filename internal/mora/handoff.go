@@ -625,6 +625,9 @@ func cmdHandoffWrite(ctx context.Context, cfg Config, args []string, stdin io.Re
 		return err
 	}
 	if *mine {
+		if err := requireMineTerminal(stdin, "handoff write"); err != nil {
+			return err
+		}
 		if err := requireVerifiedOwnerAction(ownerAction{Kind: "handoff.write"}); err != nil {
 			return err
 		}

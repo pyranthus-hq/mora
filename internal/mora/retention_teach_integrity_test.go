@@ -12,6 +12,7 @@ func TestRetentionIntegrityUsesCurrentTeachProjection(t *testing.T) {
 	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	run(t, "init")
+	legacyOpenPolicy(t)
 	cfg := mustConfig(t)
 	var original writeReceipt
 	if err := json.Unmarshal([]byte(run(t, "write", "--scope", "project:integrity", "--type", "note", "--title", "Original", "--text", "Use npm", "--json")), &original); err != nil {
@@ -50,8 +51,10 @@ func TestRetentionIntegrityUsesCurrentTeachProjection(t *testing.T) {
 }
 
 func TestRetentionIntegrityStillDetectsUnreadableHistory(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	run(t, "init")
+	legacyOpenPolicy(t)
 	cfg := mustConfig(t)
 	var original writeReceipt
 	if err := json.Unmarshal([]byte(run(t, "write", "--scope", "project:integrity", "--type", "note", "--title", "Original", "--text", "Use npm", "--json")), &original); err != nil {
