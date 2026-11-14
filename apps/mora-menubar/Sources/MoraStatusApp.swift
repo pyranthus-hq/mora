@@ -65,11 +65,13 @@ final class StatusModel: ObservableObject {
 
     private var timer: Timer?
     let collector: URL
+    let reviewBinary: URL
     private let preview: Bool
 
     init(preview: Bool = false) {
         self.preview = preview
         collector = Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("mora-tentacles")
+        reviewBinary = Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("mora")
         if preview {
             snapshot = try? StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"id":"mac","name":"This Mac","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked.","last_success":"2026-11-08T07:45:00Z"},{"name":"Personal archive","state":"stale","detail":"Fixture data — displayed to demonstrate a stale channel.","last_success":"2026-11-07T07:45:00Z"}]},{"id":"devbox","name":"Devbox","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked."}]},{"id":"windows","name":"Windows (WSL)","connection":"connected","channels":[{"name":"Windows → Mac","state":"unknown","detail":"Fixture data — return path not configured."}]}],"review":{"saved":3,"held":1},"given":{"at":"2026-11-08T07:30:00Z","surface":"hook-session-start","count":3},"sources":[{"key":"gmail:work","state":"fresh","last_success_at":"2026-11-08T07:45:00Z","detail":"Fixture data — no source content was read."},{"key":"calendar","state":"stale","last_success_at":"2026-11-07T07:45:00Z","detail":"Fixture data — stale connector example."},{"key":"imessage","state":"provider-paused","detail":"Fixture data — unknown state example."}]}"#.utf8))
             lastUpdated = Date()
@@ -172,7 +174,7 @@ struct StatusPanel: View {
 
             if let text = model.snapshot?.review?.rowText {
                 Button {
-                    ReviewWindowController.shared.show(collector: model.collector, preview: isPreview) { Task { await model.refresh() } }
+                    ReviewWindowController.shared.show(mora: model.reviewBinary, preview: isPreview)
                 } label: {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(text).font(.system(size: 12))
