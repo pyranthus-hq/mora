@@ -133,4 +133,20 @@ check(!selection.acceptsPreview(preview.preview, row: reviewList.notes[0], queue
 check(selection.acceptQueue(reviewList.notes, generation: queueTwo), "fresh queue is accepted")
 let secondSelection = selection.beginSelection(reviewList.notes[1])!
 check(!selection.acceptsPreview(preview.preview, row: reviewList.notes[0], queue: secondSelection.queue, selection: secondSelection.selection), "different current selection rejects old preview")
+
+let rulesJSON = #"{"schema":"mora.review.desktop","schema_version":1,"projects":[{"root":"/tmp/project-a","scope":"project:a"},{"root":"/tmp/project-b","scope":"project:b"}],"rules":[{"id":"mem_rule","kind":"project_rule","scope":"project:a","type":"decision","title":"Rule"}]}"#
+let rules = try JSONDecoder().decode(ProjectRuleListReceipt.self, from: Data(rulesJSON.utf8)).validated()
+check(rules.projects.count == 2 && rules.rules.count == 1, "project rule list decoded")
+var projectSelection = ProjectRuleSelectionState()
+let projectQueue = projectSelection.beginRefresh(root: rules.projects[0].root)
+check(projectSelection.accept(rules.rules, root: rules.projects[0].root, generation: projectQueue), "current project rule list accepted")
+let projectPreviewSelection = projectSelection.beginPreview(rules.rules[0], root: rules.projects[0].root, action: "retire")!
+let projectPreviewJSON = #"{"schema":"mora.review.preview","schema_version":1,"preview":{"id":"mem_rule","kind":"project_rule","title":"Rule","text":"retire exact prior rule","scope":"project:a","type":"decision","source":"fixture","provenance":"authored","state":"active","details":[{"label":"action","value":"retire"}],"complete":true,"redacted":false,"truncated":false,"escaped":false,"omitted_arguments":false,"canonical_revision":"revision","display_digest":"digest"}}"#
+let projectPreview = try JSONDecoder().decode(ReviewPreviewReceipt.self, from: Data(projectPreviewJSON.utf8)).preview
+check(projectPreview.projectRuleEligible && projectPreview.projectRuleAction == "retire", "project action comes from the server preview")
+check(projectSelection.accepts(projectPreview, row: rules.rules[0], root: rules.projects[0].root, action: "retire", queue: projectPreviewSelection.queue, selection: projectPreviewSelection.selection), "current project preview accepted")
+let changedProjectQueue = projectSelection.beginRefresh(root: rules.projects[1].root)
+check(!projectSelection.accepts(projectPreview, row: rules.rules[0], root: rules.projects[0].root, action: "retire", queue: projectPreviewSelection.queue, selection: projectPreviewSelection.selection), "late project preview cannot replace a new project")
+check(!projectSelection.accept(rules.rules, root: rules.projects[0].root, generation: projectQueue), "late project list cannot replace a new project")
+check(changedProjectQueue == projectSelection.generation, "new project generation retained")
 print("Review receipt checks passed")

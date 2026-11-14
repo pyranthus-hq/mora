@@ -25,16 +25,19 @@ private struct OwnerProofRequest: Encodable {
     var action: String? = nil
     var canonicalRevision: String? = nil
     var displayDigest: String? = nil
+    var projectDir: String? = nil
+    var client: String? = nil
     var nonce: String? = nil
     var publicKeyP256: String? = nil
     var credentialID: String? = nil
     var signatureDER: String? = nil
 
     enum CodingKeys: String, CodingKey {
-        case schema, op, kind, id, action, nonce
+        case schema, op, kind, id, action, nonce, client
         case schemaVersion = "schema_version"
         case canonicalRevision = "canonical_revision"
         case displayDigest = "display_digest"
+        case projectDir = "project_dir"
         case publicKeyP256 = "public_key_p256_b64"
         case credentialID = "credential_id"
         case signatureDER = "signature_der_b64"
@@ -53,12 +56,15 @@ struct OwnerProofResponse: Decodable {
 	let nonce: String?
     let outcome: Outcome?
     let error: Failure?
+    let projects: [ProjectRuleProject]?
+    let rules: [ProjectRuleRow]?
+    let preview: ReviewPreview?
 
     struct Outcome: Decodable { let status: String; let applied: Bool?; let indexVisibility: String
         enum CodingKeys: String, CodingKey { case status, applied; case indexVisibility = "index_visibility" }
     }
     enum CodingKeys: String, CodingKey {
-        case schema, enrolled, error, outcome, nonce
+        case schema, enrolled, error, outcome, nonce, projects, rules, preview
         case schemaVersion = "schema_version"
         case readOnly = "read_only"
         case installationID = "installation_id"
@@ -117,6 +123,34 @@ struct NativeReviewClient {
         // The nonce is returned inside the opaque Go challenge, never reconstructed by Swift.
         guard complete.error == nil, let outcome = complete.outcome else { throw OwnerProofError.unavailable(complete.error?.message ?? "Mora did not accept the desktop decision.") }
         return outcome
+    }
+
+    func projectRules(root: String? = nil) throws -> ProjectRuleListReceipt {
+        let response = try call(OwnerProofRequest(op: "project_rule.list", projectDir: root, client: "codex"))
+        let receipt = ProjectRuleListReceipt(schema: response.schema, schemaVersion: response.schemaVersion, projects: response.projects ?? [], rules: response.rules ?? [])
+        return try receipt.validated()
+    }
+
+    func projectRulePreview(row: ProjectRuleRow, root: String, action: String) throws -> ReviewPreview {
+        let response = try call(OwnerProofRequest(op: "project_rule.show", kind: row.kind, id: row.id, action: action, projectDir: root, client: "codex"))
+        guard let preview = response.preview, preview.id == row.id, preview.kind == "project_rule", preview.projectRuleAction == action else { throw OwnerProofError.invalidResponse }
+        return preview
+    }
+
+    func decideProjectRule(_ action: String, preview: ReviewPreview, root: String, status: OwnerProofStatus) throws -> OwnerProofResponse.Outcome {
+        guard preview.projectRuleEligible, preview.projectRuleAction == action else { throw OwnerProofError.invalidResponse }
+        let begin = try call(OwnerProofRequest(op: "decision.begin", kind: "project_rule", id: preview.id, action: action, canonicalRevision: preview.canonicalRevision, displayDigest: preview.displayDigest, projectDir: root, client: "codex"))
+        guard let encoded = begin.challengeBytesB64, let bytes = Data(base64Encoded: encoded), let nonce = begin.nonce else { throw OwnerProofError.invalidResponse }
+        do {
+            let label = action == "activate" ? "Activate this project rule" : "Retire this project rule"
+            let proof = try OwnerProof.sign(bytes, installationID: status.installationID, reason: "\(label) after checking the displayed project preview")
+            let complete = try call(OwnerProofRequest(op: "decision.complete", nonce: nonce, signatureDER: proof.base64EncodedString()))
+            guard complete.error == nil, let outcome = complete.outcome else { throw OwnerProofError.unavailable(complete.error?.message ?? "Mora did not accept the project rule decision.") }
+            return outcome
+        } catch {
+            guard let outcome = try? call(OwnerProofRequest(op: "cancel", nonce: nonce)).outcome else { throw OwnerProofError.unavailable("Outcome unknown. Refresh before retrying.") }
+            return outcome
+        }
     }
 
     private func call(_ request: OwnerProofRequest) throws -> OwnerProofResponse {

@@ -56,10 +56,18 @@ final class ReviewModel: ObservableObject {
     @Published var applying = false
     @Published var decisionResult = ""
     @Published var indexVisibilityResult = ""
+    @Published var projects: [ProjectRuleProject] = []
+    @Published var projectRules: [ProjectRuleRow] = []
+    @Published var selectedProject: ProjectRuleProject?
+    @Published var projectRuleError: ReviewLoadError?
+    @Published var loadingProjectRules = false
 
     private let mora: URL
     private let previewMode: Bool
     private var state = ReviewSelectionState()
+    private var projectState = ProjectRuleSelectionState()
+    private var selectedProjectRoot: String?
+    private var selectedProjectAction: String?
 
     init(mora: URL, preview: Bool) {
         self.mora = mora
@@ -97,7 +105,50 @@ final class ReviewModel: ObservableObject {
         } catch {
             if generation == state.generation { notes = []; selected = nil; queueError = .failed(Self.short(error.localizedDescription)) }
         }
+        await loadProjectRules()
         await refreshApprovalStatus()
+    }
+
+    func selectProject(_ project: ProjectRuleProject) async {
+        selectedProject = project; projectRules = []; selected = nil; selectedProjectRoot = nil; selectedProjectAction = nil
+        await loadProjectRules(project.root)
+    }
+
+    func loadProjectRules(_ root: String? = nil) async {
+        loadingProjectRules = true; projectRuleError = nil
+        let generation = projectState.beginRefresh(root: root)
+        defer { if generation == projectState.generation { loadingProjectRules = false } }
+        do {
+            if previewMode {
+                let fixture = try Self.projectFixture()
+                if root == nil {
+                    projects = fixture.projects; selectedProject = fixture.projects.first
+                    if let project = selectedProject {
+                        loadingProjectRules = false
+                        await loadProjectRules(project.root)
+                    }
+                    return
+                }
+                guard projectState.accept(fixture.rules, root: root, generation: generation) else { return }
+                projectRules = fixture.rules
+                return
+            }
+            let client = NativeReviewClient(mora: mora)
+            let receipt = try await Task.detached(priority: .utility) { try client.projectRules(root: root) }.value
+            if root == nil {
+                projects = receipt.projects
+                selectedProject = receipt.projects.first
+                if let project = selectedProject {
+                    loadingProjectRules = false
+                    await loadProjectRules(project.root)
+                }
+                return
+            }
+            guard projectState.accept(receipt.rules, root: root, generation: generation) else { return }
+            projectRules = receipt.rules
+        } catch {
+            if generation == projectState.generation { projectRules = []; projectRuleError = .failed(Self.short(error.localizedDescription)) }
+        }
     }
 
     func refreshApprovalStatus() async {
@@ -132,10 +183,16 @@ final class ReviewModel: ObservableObject {
         applying = true; defer { applying = false }
         do {
             let client = NativeReviewClient(mora: mora)
-            let outcome = try await Task.detached(priority: .userInitiated) { try client.decide(action, preview: preview, status: status) }.value
+            let outcome: OwnerProofResponse.Outcome
+            if preview.kind == "project_rule", let root = selectedProjectRoot, selectedProjectAction == action {
+                outcome = try await Task.detached(priority: .userInitiated) { try client.decideProjectRule(action, preview: preview, root: root, status: status) }.value
+            } else {
+                outcome = try await Task.detached(priority: .userInitiated) { try client.decide(action, preview: preview, status: status) }.value
+            }
             indexVisibilityResult = "Index visibility: \(outcome.indexVisibility.replacingOccurrences(of: "_", with: " "))."
             switch outcome.status {
             case "cancelled": decisionResult = "Cancelled. Note unchanged."
+            case "retired_loader_conflict": decisionResult = "Retired, but local instructions need attention."; await loadProjectRules(selectedProject?.root)
             case "applied": decisionResult = "Applied."; await load()
             case "stale": decisionResult = "Changed since shown. Not applied."
             default: decisionResult = "Outcome unknown. Refresh before retrying."
@@ -174,6 +231,24 @@ final class ReviewModel: ObservableObject {
         }
     }
 
+    func showProjectRule(_ row: ProjectRuleRow, action: String) async {
+        guard !applying, let project = selectedProject, let token = projectState.beginPreview(row, root: project.root, action: action) else { return }
+        loadingPreview = true; previewError = nil; selected = nil; selectedProjectRoot = nil; selectedProjectAction = nil
+        defer { if token.queue == projectState.generation && token.selection == projectState.selectionGeneration { loadingPreview = false } }
+        do {
+            let preview: ReviewPreview
+            if previewMode { preview = try Self.projectFixture(action: action).preview }
+            else {
+                let client = NativeReviewClient(mora: mora)
+                preview = try await Task.detached(priority: .utility) { try client.projectRulePreview(row: row, root: project.root, action: action) }.value
+            }
+            guard projectState.accepts(preview, row: row, root: project.root, action: action, queue: token.queue, selection: token.selection) else { return }
+            selected = preview; selectedProjectRoot = project.root; selectedProjectAction = action
+        } catch {
+            if token.queue == projectState.generation && token.selection == projectState.selectionGeneration { previewError = .failed(Self.short(error.localizedDescription)) }
+        }
+    }
+
     private static func commandMessage(_ result: (output: String, error: String, status: Int32)) -> String {
         short(result.error.isEmpty ? "Mora exited with status \(result.status)." : result.error)
     }
@@ -187,6 +262,15 @@ final class ReviewModel: ObservableObject {
         let receipt = try JSONDecoder().decode(ReviewPreviewReceipt.self, from: Data(contentsOf: url))
         guard receipt.schema == "mora.review.preview", receipt.schemaVersion == 1 else { throw ReviewLoadError.failed("The bundled review fixture is invalid.") }
         return receipt
+    }
+
+    private static func projectFixture(action: String = "retire") throws -> (projects: [ProjectRuleProject], rules: [ProjectRuleRow], preview: ReviewPreview) {
+        guard action == "activate" || action == "retire" else { throw ReviewLoadError.failed("Invalid synthetic project action.") }
+        let json = """
+        {"schema":"mora.review.preview","schema_version":1,"preview":{"id":"mem_fixture_rule","kind":"project_rule","title":"Synthetic long project rule","text":"This is a visibly read-only synthetic preview for screenshots. It represents a long rule, a deleted source retirement path, a missing manifest warning, an overflow omission, and a retired-loader conflict without claiming a live project state.","scope":"project:fixture","type":"decision","source":"fixture","provenance":"authored","state":"active","details":[{"label":"project root","value":"/tmp/Mora Fixture Project"},{"label":"loader","value":"AGENTS.md"},{"label":"omitted rules","value":"3"},{"label":"activation state","value":"activate"},{"label":"action","value":"\(action)"}],"complete":true,"redacted":false,"truncated":false,"escaped":false,"omitted_arguments":false,"canonical_revision":"fixture-revision","display_digest":"fixture-digest"}}
+        """
+        let preview = try JSONDecoder().decode(ReviewPreviewReceipt.self, from: Data(json.utf8)).preview
+        return ([ProjectRuleProject(root: "/tmp/Mora Fixture Project", scope: "project:fixture")], [ProjectRuleRow(id: "mem_fixture_rule", kind: "project_rule", scope: "project:fixture", type: "decision", title: "Synthetic long project rule")], preview)
     }
 }
 
@@ -219,6 +303,7 @@ struct ReviewView: View {
                     ForEach(model.notes) { row in queueRow(row) }
                 }
             }.frame(maxHeight: 155)
+            projectRulesArea
             Divider()
             previewArea
         }
@@ -226,7 +311,7 @@ struct ReviewView: View {
         .frame(minWidth: 400, minHeight: 360)
         .onExitCommand { ReviewWindowController.shared.close() }
         .confirmationDialog("Confirm review decision", isPresented: Binding(get: { confirmationAction != nil }, set: { if !$0 { confirmationAction = nil; confirmationPreview = nil } })) {
-            Button(confirmationAction == "keep" ? "Keep" : "Discard", role: confirmationAction == "discard" ? .destructive : nil) {
+            Button(confirmationAction == "keep" ? "Keep" : confirmationAction == "activate" ? "Activate in project" : confirmationAction == "retire" ? "Retire from project" : "Discard", role: confirmationAction == "discard" || confirmationAction == "retire" ? .destructive : nil) {
                 if let action = confirmationAction, let preview = confirmationPreview { Task { await model.decide(action, preview: preview) } }
                 confirmationAction = nil; confirmationPreview = nil
             }
@@ -260,6 +345,43 @@ struct ReviewView: View {
         .accessibilityLabel("Show preview for \(row.title)")
     }
 
+    @ViewBuilder private var projectRulesArea: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Project rules").font(.system(size: 13, weight: .semibold))
+                Spacer()
+                if model.loadingProjectRules { ProgressView().controlSize(.small) }
+            }
+            Text("Activate or retire an exact Codex project rule only after reviewing the server-provided preview.")
+                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if !model.projects.isEmpty {
+                Picker("Bound project", selection: Binding(get: { model.selectedProject?.id ?? "" }, set: { id in
+                    if let project = model.projects.first(where: { $0.id == id }) { Task { await model.selectProject(project) } }
+                })) {
+                    ForEach(model.projects) { project in Text(verbatim: project.root).tag(project.id) }
+                }.labelsHidden().disabled(model.applying || model.loadingProjectRules)
+            }
+            if let error = model.projectRuleError {
+                Text(verbatim: error.localizedDescription).font(.system(size: 11)).foregroundStyle(.orange)
+            } else if model.selectedProject != nil && model.projectRules.isEmpty && !model.loadingProjectRules {
+                Text("No eligible project rules were returned for this bound project.").font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            ForEach(model.projectRules) { rule in
+                HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(verbatim: rule.title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                        Text(verbatim: rule.scope).font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Activate") { Task { await model.showProjectRule(rule, action: "activate") } }
+                        .disabled(model.applying || model.loadingPreview)
+                    Button("Retire") { Task { await model.showProjectRule(rule, action: "retire") } }
+                        .disabled(model.applying || model.loadingPreview)
+                }.padding(7).background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.06)))
+            }
+        }
+    }
+
     private func previewCard(_ preview: ReviewPreview) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 7) {
@@ -278,9 +400,17 @@ struct ReviewView: View {
                 }
                 Text("Index visibility is not reported by this read-only preview. Search may lag; this window does not claim the note is indexed.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                HStack {
-                    if preview.isKeepEligible { Button("Keep") { confirmationAction = "keep"; confirmationPreview = preview }.disabled(!model.canDecide) }
-                    Button("Discard") { confirmationAction = "discard"; confirmationPreview = preview }.disabled(!model.canDecide)
+                if preview.kind == "project_rule" {
+                    let action = preview.projectRuleAction
+                    Text(verbatim: action == "retire" ? "Retire this exact prior activation" : "Activate this exact rule in the selected project")
+                        .font(.system(size: 11, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                    Button(action == "retire" ? "Retire from project" : "Activate in project") { confirmationAction = action; confirmationPreview = preview }
+                        .disabled(!preview.projectRuleEligible || !model.canDecide)
+                } else {
+                    HStack {
+                        if preview.isKeepEligible { Button("Keep") { confirmationAction = "keep"; confirmationPreview = preview }.disabled(!model.canDecide) }
+                        Button("Discard") { confirmationAction = "discard"; confirmationPreview = preview }.disabled(!model.canDecide)
+                    }
                 }
                 if model.ownerStatus?.enrolled != true {
                     Button("Enable desktop approvals") { Task { await model.enableApprovals() } }.disabled(model.applying || model.isPreviewMode)
