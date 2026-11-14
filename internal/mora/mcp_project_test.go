@@ -302,7 +302,7 @@ func TestMCPProjectManagedFilesystemSourceNeverLeaks(t *testing.T) {
 	// can otherwise read raw sources outside a managed workspace.
 	t.Setenv("MORA_EMBEDDER", "")
 	cfg := mcpProjectSetup(t)
-	dir, _ := mcpProjectBind(t, "project:allowed")
+	_, dir := mcpProjectBind(t, "project:allowed")
 	profile := agentProfile{Name: "raw-capable", ReadScopes: []string{agentScopesAll}, RawSources: true, Write: mcpWritePolicyOpen, Tools: []string{"search_memory", "read_memory", "list_memory", "context_memory", "brief"}}
 	if err := saveAgentsStore(cfg, agentsStore{Profiles: []agentProfile{profile}}); err != nil {
 		t.Fatal(err)
@@ -380,7 +380,7 @@ func TestMCPProjectSessionWorkspaceFailsClosedAndProjectDirWins(t *testing.T) {
 
 func TestMCPProjectSessionProfileOnlyNarrowsTheManagedScope(t *testing.T) {
 	cfg := mcpProjectSetup(t)
-	dir := t.TempDir()
+	dir := mcpProjectRootsTempDir(t)
 	if _, _, err := bindProjectDir(testCtx(t), dir, "project:narrow"); err != nil {
 		t.Fatal(err)
 	}
