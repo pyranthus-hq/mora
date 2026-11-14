@@ -113,14 +113,25 @@ internal static class Program
         using (var output = new MemoryStream())
         using (var channel = new DesktopChannel(input, output))
         {
-            Check("desktop frame", Bool(channel.Request(channel.Frame("status")), "enrolled") && output.Length > 4);
+            Check("desktop frame", ReviewForm.Bool(channel.Request(channel.Frame("status")), "enrolled") && output.Length > 4);
         }
         ExpectInvalid("desktop frame error", delegate {
             using (var input = DesktopResponse("{\"schema\":\"mora.review.desktop\",\"schema_version\":1,\"error\":{\"code\":\"ERR_REVIEW_UNAVAILABLE\"}}"))
             using (var output = new MemoryStream())
             using (var channel = new DesktopChannel(input, output)) channel.Request(channel.Frame("status"));
         });
-        Check("action status", ReviewForm.Outcome(new Dictionary<string, object> { { "outcome", new Dictionary<string, object> { { "status", "stale" }, { "index_visibility", "not_checked" } } } }).Contains("stale"));
+        using (var input = DesktopResponses(8, "{\"schema\":\"mora.review.desktop\",\"schema_version\":1,\"enrolled\":true}"))
+        using (var output = new MemoryStream())
+        using (var channel = new DesktopChannel(input, output))
+        {
+            var calls = new Task[8];
+            for (int i = 0; i < calls.Length; i++) calls[i] = Task.Factory.StartNew(delegate { channel.Request(channel.Frame("status")); });
+            Task.WaitAll(calls);
+            Check("serialized desktop channel", DesktopFrameCount(output.ToArray()) == calls.Length);
+        }
+        Check("recorded stale", ReviewForm.Outcome(OutcomeReceipt("stale")).Contains("stale"));
+        Check("recorded cancel", ReviewForm.Outcome(OutcomeReceipt("cancelled")).Contains("cancelled"));
+        Check("lost completion reply", ReviewForm.Outcome(OutcomeReceipt("indeterminate")).Contains("unknown"));
         var flow = new ReviewFlow(); flow.BeginQueue(); var firstPreview = flow.BeginPreview();
         Check("single item preview is current", flow.IsCurrent(firstPreview));
         flow.BeginQueue(); Check("refresh drops a late preview", !flow.IsCurrent(firstPreview));
@@ -143,7 +154,10 @@ internal static class Program
 
     private static void Check(string label, bool condition) { if (!condition) throw new InvalidOperationException("FAIL: " + label); }
     private static void ExpectInvalid(string label, Action action) { try { action(); throw new InvalidOperationException("FAIL: " + label); } catch (InvalidDataException) { } }
-    private static MemoryStream DesktopResponse(string body) { byte[] raw = new UTF8Encoding(false).GetBytes(body); var stream = new MemoryStream(); stream.WriteByte((byte)(raw.Length >> 24)); stream.WriteByte((byte)(raw.Length >> 16)); stream.WriteByte((byte)(raw.Length >> 8)); stream.WriteByte((byte)raw.Length); stream.Write(raw, 0, raw.Length); stream.Position = 0; return stream; }
+    private static MemoryStream DesktopResponse(string body) { return DesktopResponses(1, body); }
+    private static MemoryStream DesktopResponses(int count, string body) { var stream = new MemoryStream(); byte[] raw = new UTF8Encoding(false).GetBytes(body); for (int i = 0; i < count; i++) { stream.WriteByte((byte)(raw.Length >> 24)); stream.WriteByte((byte)(raw.Length >> 16)); stream.WriteByte((byte)(raw.Length >> 8)); stream.WriteByte((byte)raw.Length); stream.Write(raw, 0, raw.Length); } stream.Position = 0; return stream; }
+    private static int DesktopFrameCount(byte[] raw) { int count = 0, at = 0; while (at + 4 <= raw.Length) { int size = (raw[at] << 24) | (raw[at + 1] << 16) | (raw[at + 2] << 8) | raw[at + 3]; if (size <= 0 || at + 4 + size > raw.Length) return -1; at += 4 + size; count++; } return at == raw.Length ? count : -1; }
+    private static Dictionary<string, object> OutcomeReceipt(string status) { return new Dictionary<string, object> { { "outcome", new Dictionary<string, object> { { "status", status }, { "index_visibility", "not_checked" } } } }; }
 }
 
 internal static class ReviewTransport
@@ -235,7 +249,6 @@ internal sealed class ReviewForm : Form
     private readonly Button enroll = new Button { Text = "Enroll Windows Hello", AutoSize = true, Enabled = false };
     private readonly Button keep = new Button { Text = "Keep", Enabled = false, Visible = false };
     private readonly Button discard = new Button { Text = "Discard", Enabled = false, Visible = false };
-    private readonly Button cancel = new Button { Text = "Cancel", Enabled = false, Visible = false };
     private readonly Button close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
     private readonly string fixture;
     private readonly CancellationTokenSource lifetime = new CancellationTokenSource();
@@ -244,6 +257,7 @@ internal sealed class ReviewForm : Form
     private bool binding;
     private bool enrolled, busy;
     private string pendingNonce;
+    private byte[] enrolledCredentialID;
     private Dictionary<string, object> current;
 
     private readonly DesktopChannel channel;
@@ -258,15 +272,14 @@ internal sealed class ReviewForm : Form
         FormClosing += delegate { lifetime.Cancel(); };
         status.AutoSize = false; status.Dock = DockStyle.Fill; status.TextAlign = System.Drawing.ContentAlignment.MiddleLeft; status.AccessibleName = "Review status";
         refresh.AccessibleName = "Refresh review queue"; queue.AccessibleName = "Agent notes waiting for review"; preview.AccessibleName = "Full bounded review preview";
-        enroll.AccessibleName = "Enroll Windows Hello"; keep.AccessibleName = "Keep reviewed note"; discard.AccessibleName = "Discard reviewed note"; cancel.AccessibleName = "Cancel pending review decision"; close.AccessibleName = "Close review window";
+        enroll.AccessibleName = "Enroll Windows Hello"; keep.AccessibleName = "Keep reviewed note"; discard.AccessibleName = "Discard reviewed note"; close.AccessibleName = "Close review window";
         refresh.Click += async delegate { await LoadQueueAsync(); }; queue.SelectedIndexChanged += async delegate { if (!binding) await ShowSelectedAsync(queue.SelectedItem as ReviewRow); };
         enroll.Click += async delegate { await EnrollAsync(); };
         keep.Click += async delegate { await DecideAsync("keep"); };
         discard.Click += async delegate { await DecideAsync("discard"); };
-        cancel.Click += async delegate { await CancelAsync("Decision cancelled. Nothing changed."); };
         var top = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true };
         top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); top.Controls.Add(status, 0, 0); top.Controls.Add(refresh, 1, 0);
-        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.LeftToRight }; actions.Controls.AddRange(new Control[] { enroll, keep, discard, cancel, close });
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.LeftToRight }; actions.Controls.AddRange(new Control[] { enroll, keep, discard, close });
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12), RowCount = 4, ColumnCount = 1 };
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); layout.RowStyles.Add(new RowStyle(SizeType.Percent, 30)); layout.RowStyles.Add(new RowStyle(SizeType.Percent, 70)); layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         queue.Dock = DockStyle.Fill; preview.Dock = DockStyle.Fill; preview.Multiline = true; preview.ReadOnly = true; preview.ScrollBars = ScrollBars.Vertical;
@@ -308,6 +321,7 @@ internal sealed class ReviewForm : Form
         try {
             var response = await ChannelAsync(channel.Frame("status"));
             enrolled = Bool(response, "enrolled");
+            enrolledCredentialID = enrolled ? Decode(RequiredString(response, "credential_id_b64")) : null;
             if (!WindowsHello.Available()) status.Text = "Read-only. Windows Hello platform verification is unavailable.";
             else status.Text = enrolled ? "Windows Hello enrolled. Loading review queue…" : "Read-only until Windows Hello enrollment completes.";
             SetActions();
@@ -319,6 +333,7 @@ internal sealed class ReviewForm : Form
         if (channel == null || busy || !WindowsHello.Available()) return;
         SetBusy(true, "Requesting a one-time enrollment challenge…");
         string nonce = null;
+        Exception failure = null;
         try {
             var begin = await ChannelAsync(channel.Frame("enroll.begin"));
             nonce = RequiredString(begin, "nonce");
@@ -327,9 +342,11 @@ internal sealed class ReviewForm : Form
             var result = await ChannelAsync(complete);
             enrolled = Bool(result, "enrolled");
             if (!enrolled) throw new InvalidDataException("Windows Hello enrollment was not accepted.");
+            enrolledCredentialID = Decode(RequiredString(result, "credential_id_b64"));
             status.Text = "Windows Hello enrolled. Review the canonical preview before applying a decision.";
-        } catch (Exception error) { await CancelIfPendingAsync(nonce); status.Text = "Read-only. Enrollment was not completed. " + error.Message; }
-        finally { SetBusy(false, null); }
+        } catch (Exception error) { failure = error; }
+        if (failure != null) { await CancelEnrollmentAsync(nonce); status.Text = "Read-only. Enrollment was not completed. " + failure.Message; }
+        SetBusy(false, null);
     }
 
     private async Task DecideAsync(string action)
@@ -337,27 +354,34 @@ internal sealed class ReviewForm : Form
         if (channel == null || !enrolled || busy || current == null) return;
         if (action == "discard" && MessageBox.Show(this, "Discard this note? This cannot be undone.", "Confirm discard", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK) return;
         SetBusy(true, "Binding the displayed preview to a fresh Windows Hello prompt…");
+        Exception failure = null;
+        string outcome = null;
         try {
             var begin = channel.Frame("decision.begin"); begin["action"] = action; begin["kind"] = current["kind"]; begin["id"] = current["id"]; begin["canonical_revision"] = current["canonical_revision"]; begin["display_digest"] = current["display_digest"];
             var started = await ChannelAsync(begin); pendingNonce = RequiredString(started, "nonce");
-            var assertion = WindowsHello.Assert(Handle, Decode(RequiredString(started, "challenge_bytes_b64")));
+            if (enrolledCredentialID == null || enrolledCredentialID.Length == 0) throw new InvalidDataException("Mora did not provide the enrolled credential.");
+            var assertion = WindowsHello.Assert(Handle, Decode(RequiredString(started, "challenge_bytes_b64")), enrolledCredentialID);
             var complete = channel.Frame("decision.complete"); complete["nonce"] = pendingNonce; AddProof(complete, assertion);
             var response = await ChannelAsync(complete); pendingNonce = null;
-            status.Text = Outcome(response); await LoadQueueAsync();
-        } catch (Exception error) { await CancelIfPendingAsync(pendingNonce); status.Text = "No decision was applied. " + error.Message; }
-        finally { SetBusy(false, null); }
+            outcome = Outcome(response);
+        } catch (Exception error) { failure = error; }
+        if (failure != null) {
+            var recorded = await CancelIfPendingAsync(pendingNonce);
+            status.Text = recorded == null ? "Decision status unknown. Refresh before retrying. " + failure.Message : Outcome(recorded);
+        } else { status.Text = outcome; await LoadQueueAsync(); }
+        SetBusy(false, null);
     }
 
-    private async Task CancelAsync(string message) { if (busy || pendingNonce == null) return; await CancelIfPendingAsync(pendingNonce); status.Text = message; SetActions(); }
-    private async Task CancelIfPendingAsync(string nonce) { if (channel == null || String.IsNullOrEmpty(nonce)) return; try { var request = channel.Frame("cancel"); request["nonce"] = nonce; await ChannelAsync(request); } catch (Exception) { } finally { if (pendingNonce == nonce) pendingNonce = null; } }
+    private async Task<Dictionary<string, object>> CancelIfPendingAsync(string nonce) { if (channel == null || String.IsNullOrEmpty(nonce)) return null; try { var request = channel.Frame("cancel"); request["nonce"] = nonce; return await ChannelAsync(request); } catch (Exception) { return null; } finally { if (pendingNonce == nonce) pendingNonce = null; } }
+    private async Task CancelEnrollmentAsync(string nonce) { if (channel == null || String.IsNullOrEmpty(nonce)) return; try { var request = channel.Frame("enroll.cancel"); request["nonce"] = nonce; await ChannelAsync(request); } catch (Exception) { } }
     private Task<Dictionary<string, object>> ChannelAsync(Dictionary<string, object> request) { return Task.Run(delegate { return channel.Request(request); }); }
     private static string RequiredString(Dictionary<string, object> data, string key) { object value; if (!data.TryGetValue(key, out value) || !(value is string) || String.IsNullOrEmpty((string)value)) throw new InvalidDataException("Mora returned an incomplete desktop response."); return (string)value; }
-    private static bool Bool(Dictionary<string, object> data, string key) { object value; return data.TryGetValue(key, out value) && value is bool && (bool)value; }
+    internal static bool Bool(Dictionary<string, object> data, string key) { object value; return data.TryGetValue(key, out value) && value is bool && (bool)value; }
     private static byte[] Decode(string value) { try { return Convert.FromBase64String(value); } catch (FormatException) { throw new InvalidDataException("Mora returned invalid desktop proof bytes."); } }
     private static void AddProof(Dictionary<string, object> target, WindowsHello.Proof proof) { target["credential_id"] = Convert.ToBase64String(proof.CredentialID); target["client_data_json_b64"] = Convert.ToBase64String(proof.ClientDataJSON); target["authenticator_data_b64"] = Convert.ToBase64String(proof.AuthenticatorData); target["assertion_signature_der_b64"] = Convert.ToBase64String(proof.SignatureDER); }
     internal static string Outcome(Dictionary<string, object> response) { object raw; if (!response.TryGetValue("outcome", out raw)) throw new InvalidDataException("Mora returned no decision outcome."); var outcome = raw as Dictionary<string, object>; if (outcome == null) throw new InvalidDataException("Mora returned an invalid decision outcome."); object status; object lag; if (!outcome.TryGetValue("status", out status) || !(status is string) || !outcome.TryGetValue("index_visibility", out lag) || !(lag is string)) throw new InvalidDataException("Mora returned an incomplete decision outcome."); string state = (string)status; if (state != "applied" && state != "cancelled" && state != "stale") state = "unknown"; return "Decision " + state + ". Index visibility: " + lag + ". Refreshing queue…"; }
     private void SetBusy(bool value, string text) { busy = value; refresh.Enabled = !value; queue.Enabled = !value; if (text != null) status.Text = text; SetActions(); }
-    private void SetActions() { bool trusted = channel != null && !busy; enroll.Visible = channel != null; enroll.Enabled = trusted && !enrolled; bool shown = trusted && enrolled && current != null; keep.Visible = shown && Program.KeepEligible(current); keep.Enabled = keep.Visible; discard.Visible = shown; discard.Enabled = shown; cancel.Visible = channel != null && pendingNonce != null; cancel.Enabled = cancel.Visible && !busy; }
+    private void SetActions() { bool trusted = channel != null && !busy; enroll.Visible = channel != null; enroll.Enabled = trusted && !enrolled; bool shown = trusted && enrolled && current != null; keep.Visible = shown && Program.KeepEligible(current); keep.Enabled = keep.Visible; discard.Visible = shown; discard.Enabled = shown; }
 
     private async Task<string> RunMoraAsync(string[] arguments)
     {

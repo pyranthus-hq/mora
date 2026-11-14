@@ -185,6 +185,127 @@ func TestNativeOwnerWebAuthnEnrollmentDerivesAttestedCredential(t *testing.T) {
 	}
 }
 
+func TestNativeOwnerWebAuthnEnrollmentDecisionRoundTrip(t *testing.T) {
+	cfg := reviewSetup(t)
+	id := reviewSaved(t, "webauthn decision")
+	peer := nativeOwnerTestPeer{value: "test-app", trusted: true}
+	verifier := newNativeOwnerVerifierForPeer(cfg, &peer)
+	key, credential := nativeOwnerWebAuthnTestEnrollment(t, verifier)
+	preview, err := loadDesktopReviewPreview(cfg, reviewKindSaved, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := newDesktopReviewAuthority(cfg, verifier)
+	decision, err := authority.begin(desktopReviewKeep, reviewKindSaved, id, preview.CanonicalRevision, preview.DisplayDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := decision.bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof := nativeOwnerWebAuthnTestAssertion(t, key, credential, signed)
+	session := nativeOwnerWebAuthnSessionVerifier{base: verifier, proof: proof}
+	if out, err := newDesktopReviewAuthority(cfg, session).complete(testCtx(t), decision.Nonce, nil, false); err != nil || out.Status != "applied" {
+		t.Fatalf("decision completion = %#v, %v", out, err)
+	}
+	peer.value = "other-app"
+	if session.Verify(decision.InstallationID, decision.KeyID, signed, nil) {
+		t.Fatal("accepted assertion from changed peer")
+	}
+	peer.value = "test-app"
+	changed := proof
+	changed.CredentialID = []byte("other-credential")
+	if (nativeOwnerWebAuthnSessionVerifier{base: verifier, proof: changed}).Verify(decision.InstallationID, decision.KeyID, signed, nil) {
+		t.Fatal("accepted replayed assertion with another credential")
+	}
+	record, err := verifier.enrollment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Host = "other"
+	raw, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(nativeOwnerEnrollmentPath(cfg), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if session.Verify(decision.InstallationID, decision.KeyID, signed, nil) {
+		t.Fatal("accepted assertion from changed host")
+	}
+}
+
+func nativeOwnerWebAuthnTestEnrollment(t *testing.T, verifier *nativeOwnerVerifier) (*ecdsa.PrivateKey, []byte) {
+	t.Helper()
+	challenge, signed, err := verifier.beginEnrollmentWebAuthn(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential := []byte("credential-id")
+	auth := nativeOwnerWebAuthnTestAuthenticatorData(key, credential, true)
+	proof := nativeOwnerWebAuthnProof{CredentialID: credential, ClientDataJSON: nativeOwnerWebAuthnClientData("webauthn.create", signed), AuthenticatorData: auth}
+	if err := verifier.completeEnrollmentWebAuthn(challenge.Nonce, proof, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	return key, credential
+}
+
+func nativeOwnerWebAuthnTestAssertion(t *testing.T, key *ecdsa.PrivateKey, credential, challenge []byte) nativeOwnerWebAuthnProof {
+	t.Helper()
+	client := nativeOwnerWebAuthnClientData("webauthn.get", challenge)
+	auth := nativeOwnerWebAuthnTestAuthenticatorData(key, credential, false)
+	clientHash := sha256.Sum256(client)
+	signed := append(append([]byte(nil), auth...), clientHash[:]...)
+	sum := sha256.Sum256(signed)
+	signature, err := ecdsa.SignASN1(rand.Reader, key, sum[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return nativeOwnerWebAuthnProof{CredentialID: credential, ClientDataJSON: client, AuthenticatorData: auth, SignatureDER: signature}
+}
+
+func nativeOwnerWebAuthnTestAuthenticatorData(key *ecdsa.PrivateKey, credential []byte, attested bool) []byte {
+	auth := make([]byte, 37)
+	copy(auth, nativeOwnerWindowsRPHash())
+	auth[32] = nativeOwnerWebAuthnUP | nativeOwnerWebAuthnUV
+	if !attested {
+		return auth
+	}
+	auth[32] |= nativeOwnerWebAuthnAT
+	auth = append(auth, make([]byte, 16)...)
+	var width [2]byte
+	binary.BigEndian.PutUint16(width[:], uint16(len(credential)))
+	auth = append(auth, width[:]...)
+	auth = append(auth, credential...)
+	cose := []byte{0xa5, 0x01, 0x02, 0x03, 0x26, 0x20, 0x01, 0x21, 0x58, 0x20}
+	cose = append(cose, key.X.FillBytes(make([]byte, 32))...)
+	cose = append(cose, 0x22, 0x58, 0x20)
+	cose = append(cose, key.Y.FillBytes(make([]byte, 32))...)
+	return append(auth, cose...)
+}
+
+func TestNativeOwnerWindowsIdentityUpgradeRejectsUntrustedHashes(t *testing.T) {
+	good := "sha256:" + strings.Repeat("a", 64)
+	if !nativeOwnerCanUpgradeWindowsIdentity("windows", good, nativeOwnerWindowsAppIdentity) {
+		t.Fatal("expected legacy pinned identity to require fresh enrollment")
+	}
+	for _, tc := range []struct{ host, previous, next string }{
+		{"windows", "sha256:short", nativeOwnerWindowsAppIdentity},
+		{"windows", "sha256:" + strings.Repeat("z", 64), nativeOwnerWindowsAppIdentity},
+		{"darwin", good, nativeOwnerWindowsAppIdentity},
+		{"windows", good, "sha256:" + strings.Repeat("b", 64)},
+	} {
+		if nativeOwnerCanUpgradeWindowsIdentity(tc.host, tc.previous, tc.next) {
+			t.Fatalf("accepted untrusted upgrade %#v", tc)
+		}
+	}
+}
+
 func TestNativeOwnerHelperDigestRejectsEmptyWrongAndRebuiltBytes(t *testing.T) {
 	good := sha256.Sum256([]byte("review helper"))
 	for _, tc := range []struct {

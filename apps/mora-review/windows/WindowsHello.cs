@@ -65,13 +65,15 @@ internal static class WindowsHello
         }
     }
 
-    internal static Proof Assert(IntPtr window, byte[] challenge)
+    internal static Proof Assert(IntPtr window, byte[] challenge, byte[] credentialID)
     {
+        if (credentialID == null || credentialID.Length == 0 || credentialID.Length > 1024) throw new InvalidDataException("Invalid enrolled credential.");
         using (var memory = new NativeMemory())
         {
             byte[] clientData = ClientData("webauthn.get", challenge);
             var client = CreateClient(clientData, memory);
-            var options = new GetOptions { Version = 1, Timeout = 60000, Attachment = Platform, Verification = VerificationRequired };
+            var credential = new Credential { Version = 1, IdLength = (uint)credentialID.Length, Id = memory.Pin(credentialID), Type = PublicKey };
+            var options = new GetOptions { Version = 1, Timeout = 60000, Allowed = memory.List(credential), Attachment = Platform, Verification = VerificationRequired };
             IntPtr result;
             int hr = WebAuthNAuthenticatorGetAssertion(window, RpID, ref client, ref options, out result);
             try

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -40,22 +41,37 @@ func serveNativeDesktopReview(ctx context.Context, cfg Config, _ io.Reader, _ io
 	if err != nil {
 		return errDesktopReviewProofUnavailable
 	}
-	defer process.Close()
-	defer stdin.Close()
-	defer stdout.Close()
-	defer stderr.Close()
-	go func() { _, _ = io.Copy(io.Discard, io.LimitReader(stderr, desktopReviewFrameLimit)) }()
+	stderrDone := make(chan struct{})
+	go func() { _, _ = io.Copy(io.Discard, stderr); close(stderrDone) }()
+	defer func() {
+		_ = stdin.Close()
+		nativeOwnerStopWindowsHelper(process)
+		_ = stdout.Close()
+		_ = stderr.Close()
+		select {
+		case <-stderrDone:
+		case <-time.After(2 * time.Second):
+		}
+		_ = process.Close()
+	}()
 	verifier := newNativeOwnerVerifierForPeer(cfg, windowsNativeOwnerPeer{id: identity})
 	done := make(chan error, 1)
 	go func() { done <- serveDesktopReviewStdio(ctx, cfg, verifier, stdout, stdin) }()
 	select {
 	case err := <-done:
-		_ = windows.TerminateProcess(windows.Handle(process.Fd()), 1)
 		return err
 	case <-ctx.Done():
-		_ = windows.TerminateProcess(windows.Handle(process.Fd()), 1)
 		return ctx.Err()
 	}
+}
+
+func nativeOwnerStopWindowsHelper(process *os.File) {
+	if process == nil {
+		return
+	}
+	h := windows.Handle(process.Fd())
+	_ = windows.TerminateProcess(h, 1)
+	_, _ = windows.WaitForSingleObject(h, 2000)
 }
 
 func nativeOwnerOpenPinnedWindowsHelper() (string, *os.File, string, error) {
@@ -80,7 +96,7 @@ func nativeOwnerOpenPinnedWindowsHelper() (string, *os.File, string, error) {
 		f.Close()
 		return "", nil, "", err
 	}
-	return path, f, "sha256:" + nativeOwnerWindowsHelperSHA256, nil
+	return path, f, nativeOwnerWindowsAppIdentity, nil
 }
 
 // nativeOwnerStartWindowsHelper uses a handle list rather than inheriting the

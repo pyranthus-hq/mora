@@ -6,7 +6,6 @@ package mora
 import (
 	"bytes"
 	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -18,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
@@ -47,17 +47,19 @@ func (v *nativeOwnerVerifier) completeEnrollmentWebAuthn(nonce string, proof nat
 		return errDesktopReviewProofUnavailable
 	}
 	return leasefile.WithGuard(nativeOwnerEnrollmentLockPath(v.cfg), func() error {
-		if _, err := v.enrollment(); err == nil {
-			return errDesktopReviewProofUnavailable
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return errDesktopReviewUnavailable
-		}
 		raw, err := os.ReadFile(nativeOwnerEnrollmentChallengePath(v.cfg))
 		if err != nil {
 			return errDesktopReviewUnavailable
 		}
 		var c nativeOwnerEnrollmentChallenge
 		if json.Unmarshal(raw, &c) != nil || c.Nonce != nonce || c.ExpiresAt <= now.Unix() || c.AppIdentity != identity {
+			return errDesktopReviewUnavailable
+		}
+		if existing, err := v.enrollment(); err == nil {
+			if !c.ReplaceLegacy || !nativeOwnerCanUpgradeWindowsIdentity(existing.Host, existing.AppIdentity, identity) {
+				return errDesktopReviewProofUnavailable
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return errDesktopReviewUnavailable
 		}
 		signed, err := c.webAuthnBytes()
@@ -68,7 +70,7 @@ func (v *nativeOwnerVerifier) completeEnrollmentWebAuthn(nonce string, proof nat
 		if err != nil || subtle.ConstantTimeCompare(credential, proof.CredentialID) != 1 {
 			return errDesktopReviewProofUnavailable
 		}
-		derived := elliptic.Marshal(elliptic.P256(), pub.X, pub.Y)
+		derived := nativeOwnerUncompressedP256(pub)
 		credentialID := base64.StdEncoding.EncodeToString(credential)
 		record := nativeOwnerEnrollment{Schema: "mora.review.enrollment", InstallationID: c.InstallationID, Host: c.Host, AppIdentity: c.AppIdentity, KeyID: nativeOwnerKeyID(c.Host, credentialID, derived), PublicKeyP256: derived, CredentialID: credentialID, EnrolledAt: now.Unix(), VerifierVersion: "native-owner-v1"}
 		encoded, err := json.Marshal(record)
@@ -91,8 +93,12 @@ func (v *nativeOwnerVerifier) beginEnrollmentWebAuthn(now time.Time) (challenge 
 		return challenge, nil, errDesktopReviewProofUnavailable
 	}
 	err = leasefile.WithGuard(nativeOwnerEnrollmentLockPath(v.cfg), func() error {
-		if _, err := v.enrollment(); err == nil {
-			return errors.New("native owner is already enrolled")
+		replaceLegacy := false
+		if existing, err := v.enrollment(); err == nil {
+			if !nativeOwnerCanUpgradeWindowsIdentity(existing.Host, existing.AppIdentity, identity) {
+				return errors.New("native owner is already enrolled")
+			}
+			replaceLegacy = true
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("existing native owner enrollment is unreadable; preserve it and repair %s: %w", nativeOwnerEnrollmentPath(v.cfg), err)
 		}
@@ -104,7 +110,7 @@ func (v *nativeOwnerVerifier) beginEnrollmentWebAuthn(now time.Time) (challenge 
 		if _, err := rand.Read(random[:]); err != nil {
 			return err
 		}
-		challenge = nativeOwnerEnrollmentChallenge{Nonce: hex.EncodeToString(random[:]), ExpiresAt: now.Add(nativeOwnerEnrollmentLifetime).Unix(), InstallationID: installationID, Host: runtime.GOOS, AppIdentity: identity}
+		challenge = nativeOwnerEnrollmentChallenge{Nonce: hex.EncodeToString(random[:]), ExpiresAt: now.Add(nativeOwnerEnrollmentLifetime).Unix(), InstallationID: installationID, Host: runtime.GOOS, AppIdentity: identity, ReplaceLegacy: replaceLegacy}
 		var bytesErr error
 		signed, bytesErr = challenge.webAuthnBytes()
 		if bytesErr != nil {
@@ -128,7 +134,11 @@ func (c nativeOwnerEnrollmentChallenge) webAuthnBytes() ([]byte, error) {
 	}
 	var out bytes.Buffer
 	out.WriteString("mora-review-windows-enrollment-v1\x00")
-	for _, value := range []string{c.Nonce, c.InstallationID, c.Host, c.AppIdentity} {
+	legacy := "0"
+	if c.ReplaceLegacy {
+		legacy = "1"
+	}
+	for _, value := range []string{c.Nonce, c.InstallationID, c.Host, c.AppIdentity, legacy} {
 		if len(value) > 1<<20 {
 			return nil, errors.New("webauthn enrollment field is too large")
 		}
@@ -143,6 +153,14 @@ func (c nativeOwnerEnrollmentChallenge) webAuthnBytes() ([]byte, error) {
 	return out.Bytes(), nil
 }
 
+func nativeOwnerCanUpgradeWindowsIdentity(host, previous, next string) bool {
+	if host != "windows" || next != nativeOwnerWindowsAppIdentity || !strings.HasPrefix(previous, "sha256:") || len(previous) != len("sha256:")+64 {
+		return false
+	}
+	_, err := hex.DecodeString(strings.TrimPrefix(previous, "sha256:"))
+	return err == nil
+}
+
 type nativeOwnerWebAuthnSessionVerifier struct {
 	base  *nativeOwnerVerifier
 	proof nativeOwnerWebAuthnProof
@@ -153,14 +171,19 @@ func (v nativeOwnerWebAuthnSessionVerifier) TrustedIdentity() (string, string, b
 }
 func (v nativeOwnerWebAuthnSessionVerifier) Verify(installationID, keyID string, signed, _ []byte) bool {
 	record, err := v.base.enrollment()
-	if err != nil || record.InstallationID != installationID || record.KeyID != keyID {
+	identity, trusted := v.base.peerTrusted()
+	if !trusted || err != nil || record.Host != runtime.GOOS || record.AppIdentity != identity || record.InstallationID != installationID || record.KeyID != keyID {
+		return false
+	}
+	credential, err := base64.StdEncoding.DecodeString(record.CredentialID)
+	if err != nil || len(credential) == 0 {
 		return false
 	}
 	pub, err := nativeOwnerP256(record.PublicKeyP256)
 	if err != nil {
 		return false
 	}
-	return nativeOwnerVerifyWebAuthn(pub, []byte(record.CredentialID), signed, v.proof)
+	return nativeOwnerVerifyWebAuthn(pub, credential, signed, v.proof)
 }
 
 // nativeOwnerValidateClientData binds the Go-issued opaque bytes to this exact
@@ -283,13 +306,23 @@ func nativeOwnerParseES256COSE(raw []byte) (*ecdsa.PublicKey, int, error) {
 	if len(x) != 32 || len(y) != 32 {
 		return nil, 0, errors.New("incomplete cose key")
 	}
-	px, py := elliptic.P256().Params().Name, elliptic.P256()
-	_ = px
-	X, Y := elliptic.Unmarshal(py, append(append([]byte{4}, x...), y...))
-	if X == nil || Y == nil {
+	encoded := append(append([]byte{4}, x...), y...)
+	pub, err := nativeOwnerP256(encoded)
+	if err != nil {
 		return nil, 0, errors.New("invalid p256 point")
 	}
-	return &ecdsa.PublicKey{Curve: elliptic.P256(), X: X, Y: Y}, i, nil
+	return pub, i, nil
+}
+
+func nativeOwnerUncompressedP256(pub *ecdsa.PublicKey) []byte {
+	if pub == nil || pub.X == nil || pub.Y == nil {
+		return nil
+	}
+	encoded := make([]byte, 65)
+	encoded[0] = 4
+	pub.X.FillBytes(encoded[1:33])
+	pub.Y.FillBytes(encoded[33:])
+	return encoded
 }
 
 func nativeOwnerCBORIsInt(raw []byte, at *int, want int) bool {
@@ -330,8 +363,4 @@ func nativeOwnerCBORBytes(raw []byte, at int) ([]byte, int, error) {
 
 func nativeOwnerWebAuthnClientData(kind string, challenge []byte) []byte {
 	return []byte(fmt.Sprintf(`{"type":%q,"challenge":%q,"origin":%q,"crossOrigin":false}`, kind, base64.RawURLEncoding.EncodeToString(challenge), nativeOwnerWindowsOrigin))
-}
-
-func nativeOwnerWebAuthnEnrollmentChallengeBytes(nonce string) []byte {
-	return bytes.Join([][]byte{[]byte("mora-review-windows-enrollment-v1\x00"), []byte(nonce)}, nil)
 }

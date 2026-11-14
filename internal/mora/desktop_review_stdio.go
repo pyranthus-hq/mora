@@ -44,6 +44,7 @@ type desktopReviewFrameResponse struct {
 	Enrolled          *bool                    `json:"enrolled,omitempty"`
 	ReadOnly          *bool                    `json:"read_only,omitempty"`
 	InstallationID    string                   `json:"installation_id,omitempty"`
+	CredentialIDB64   string                   `json:"credential_id_b64,omitempty"`
 	Nonce             string                   `json:"nonce,omitempty"`
 	ChallengeBytesB64 string                   `json:"challenge_bytes_b64,omitempty"`
 	KeyID             string                   `json:"key_id,omitempty"`
@@ -169,7 +170,15 @@ func handleDesktopReviewFrame(ctx context.Context, cfg Config, authority *deskto
 		if err != nil {
 			return desktopReviewFrameFailure("ERR_REVIEW_UNAVAILABLE", "desktop status is unavailable")
 		}
-		return desktopReviewFrameResponse{Enrolled: &enrolled, ReadOnly: &readOnly, InstallationID: installationID}
+		response := desktopReviewFrameResponse{Enrolled: &enrolled, ReadOnly: &readOnly, InstallationID: installationID}
+		if enrolled && runtime.GOOS == "windows" {
+			record, err := verifier.enrollment()
+			if err != nil || record.CredentialID == "" {
+				return desktopReviewFrameFailure("ERR_REVIEW_UNAVAILABLE", "desktop status is unavailable")
+			}
+			response.CredentialIDB64 = record.CredentialID
+		}
+		return response
 	case "enroll.begin":
 		var challenge nativeOwnerEnrollmentChallenge
 		var signed []byte
@@ -196,8 +205,12 @@ func handleDesktopReviewFrame(ctx context.Context, cfg Config, authority *deskto
 			if err := verifier.completeEnrollmentWebAuthn(request.Nonce, proof, time.Now()); err != nil {
 				return desktopReviewFrameFailure("ERR_OWNER_VERIFICATION_UNAVAILABLE", "desktop enrollment was not accepted")
 			}
+			record, err := verifier.enrollment()
+			if err != nil || record.CredentialID == "" {
+				return desktopReviewFrameFailure("ERR_REVIEW_UNAVAILABLE", "desktop enrollment is unavailable")
+			}
 			enrolled, readOnly := true, false
-			return desktopReviewFrameResponse{Enrolled: &enrolled, ReadOnly: &readOnly}
+			return desktopReviewFrameResponse{Enrolled: &enrolled, ReadOnly: &readOnly, CredentialIDB64: record.CredentialID}
 		}
 		proof, ok := decode(request.SignatureDER)
 		if !ok {

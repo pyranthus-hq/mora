@@ -21,6 +21,7 @@ import (
 )
 
 const nativeOwnerEnrollmentLifetime = 90 * time.Second
+const nativeOwnerWindowsAppIdentity = "windows-pinned-helper-v1"
 
 type nativeOwnerPeer interface{ identity() (string, bool) }
 
@@ -45,6 +46,7 @@ type nativeOwnerEnrollmentChallenge struct {
 	KeyID          string `json:"key_id"`
 	PublicKeyP256  []byte `json:"public_key_p256"`
 	CredentialID   string `json:"credential_id,omitempty"`
+	ReplaceLegacy  bool   `json:"replace_legacy,omitempty"`
 }
 
 type nativeOwnerVerifier struct {
