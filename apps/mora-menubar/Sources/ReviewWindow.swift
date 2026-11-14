@@ -207,6 +207,8 @@ struct ReviewView: View {
             }
             Text("This window renders Mora’s bounded canonical receipts. Keep and Discard require a fresh native owner proof bound to the preview shown here.")
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if !model.decisionResult.isEmpty { Text(verbatim: model.decisionResult).font(.system(size: 11)).fixedSize(horizontal: false, vertical: true) }
+            if !model.indexVisibilityResult.isEmpty { Text(verbatim: model.indexVisibilityResult).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             if let error = model.queueError {
                 Text(verbatim: error.localizedDescription).font(.system(size: 12)).foregroundStyle(.orange)
             } else if model.notes.isEmpty && !model.loadingQueue {
@@ -285,8 +287,6 @@ struct ReviewView: View {
                 }
                 Text(verbatim: model.approvalStatus)
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-				if !model.decisionResult.isEmpty { Text(verbatim: model.decisionResult).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-                if !model.indexVisibilityResult.isEmpty { Text(verbatim: model.indexVisibilityResult).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             }
             .padding(10)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
