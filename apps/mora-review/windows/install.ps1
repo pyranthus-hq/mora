@@ -8,7 +8,8 @@ foreach ($name in $required) { Copy-Item -LiteralPath (Join-Path $Source $name) 
 $start = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Mora Review.lnk'
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($start)
-$shortcut.TargetPath = Join-Path $target 'MoraReview.exe'
+$shortcut.TargetPath = Join-Path $target 'mora.exe'
+$shortcut.Arguments = 'review desktop --stdio'
 $shortcut.WorkingDirectory = $target
 $shortcut.Save()
-Write-Output "Installed Mora Review at $target. It is read-only until a trusted desktop verifier is released."
+Write-Output "Installed Mora Review at $target. Developer builds are read-only; release builds must pin the final helper SHA-256 before packaging."
