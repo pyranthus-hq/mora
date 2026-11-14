@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/pyranthus-hq/mora/internal/genericutil"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -722,7 +723,7 @@ func TestMCPBudgetCeilingsUnhealthyMaxCap(t *testing.T) {
 		tt := tt
 		subRun(t, tt.name, func(t *testing.T) {
 			pinMCPWriteBudgetClock(t, fixedNow)
-			_, ch, perSourceBytes := seedMaxCapUnhealthyBudgetFixture(t, fixedNow, tt.prodName)
+			cfg, ch, perSourceBytes := seedMaxCapUnhealthyBudgetFixture(t, fixedNow, tt.prodName)
 			if ch.Sources != healthFresh {
 				t.Fatalf("ch.Sources = %q, want fresh for sound sources fixture", ch.Sources)
 			}
@@ -773,6 +774,19 @@ func TestMCPBudgetCeilingsUnhealthyMaxCap(t *testing.T) {
 			}
 			if len(actualPerSourceJSON) != compactSourceBytesCap {
 				t.Fatalf("actual write_memory per_source = %d bytes, want %d: %s", len(actualPerSourceJSON), compactSourceBytesCap, actualPerSourceJSON)
+			}
+			written, ok := sc["memory"].(map[string]any)
+			if !ok {
+				t.Fatalf("write_memory memory = %T, want object", sc["memory"])
+			}
+			path, _ := written["path"].(string)
+			if filepath.IsAbs(path) || path == "" {
+				t.Fatalf("write_memory display path = %q, want a non-empty vault-relative path", path)
+			}
+			id, _ := written["id"].(string)
+			persisted, err := findMemory(cfg, id)
+			if err != nil || !filepath.IsAbs(persisted.Path) {
+				t.Fatalf("persisted memory path = %q, err=%v; want canonical absolute path", persisted.Path, err)
 			}
 			t.Logf("%s/write_memory: %d bytes, %d tokens; banner=%d bytes; per_source=%d bytes",
 				tt.name, writeBytes, writeTokens, len(ch.Banner), len(actualPerSourceJSON))
