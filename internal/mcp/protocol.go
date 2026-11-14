@@ -42,13 +42,13 @@ type clientReply struct {
 	Error  json.RawMessage `json:"error"`
 }
 type clientTransport struct {
-	out     io.Writer
-	writeMu sync.Mutex
-	mu      sync.Mutex
-	closed  bool
+	out         io.Writer
+	writeMu     sync.Mutex
+	mu          sync.Mutex
+	closed      bool
 	initialized bool
-	waiters map[string]chan clientReply
-	done    chan struct{}
+	waiters     map[string]chan clientReply
+	done        chan struct{}
 }
 
 func (c *clientTransport) write(v any) error {

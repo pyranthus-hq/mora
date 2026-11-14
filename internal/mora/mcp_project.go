@@ -173,6 +173,18 @@ func mcpProjectResult(ctx context.Context, value any) any {
 		health.SourcesOmitted = 0
 		health.Banner = ""
 		copy["health"] = health
+	} else if health, ok := copy["health"].(map[string]any); ok {
+		// Agent-profile filtering projects its value through JSON first, so a
+		// compactHealth arrives here as a map. Clone it before scrubbing: this
+		// final managed-workspace guard must not mutate the pre-projection value.
+		filtered := make(map[string]any, len(health))
+		for key, field := range health {
+			filtered[key] = field
+		}
+		delete(filtered, "per_source")
+		delete(filtered, "sources_omitted")
+		delete(filtered, "banner")
+		copy["health"] = filtered
 	}
 	return copy
 }

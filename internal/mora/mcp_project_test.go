@@ -380,6 +380,28 @@ func TestMCPProjectResultScrubsForeignMetadata(t *testing.T) {
 	}
 }
 
+func TestMCPProjectResultScrubsProfileProjectedHealthMetadata(t *testing.T) {
+	profile := agentProfile{Name: "raw-capable", ReadScopes: []string{"global"}, RawSources: true}
+	value, _, err := filterAgentResult(profile, "read_memory", nil, map[string]any{
+		"health": compactHealth{State: "degraded", PerSource: map[string]string{"gmail:foreign-connector": "never"}, Banner: "foreign-connector unavailable"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected := mcpProjectResult(withMCPWorkspace(context.Background()), value)
+	body, err := json.Marshal(projected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "foreign-connector") {
+		t.Fatalf("managed profile leaked health metadata: %s", body)
+	}
+	// mcpProjectResult must leave the profile-filter value unmodified.
+	if raw, err := json.Marshal(value); err != nil || !strings.Contains(string(raw), "foreign-connector") {
+		t.Fatalf("managed projection mutated its input: %s, %v", raw, err)
+	}
+}
+
 func TestMCPProjectManagedOpenLoopsFilterForeignCommitmentsBeforeAssembly(t *testing.T) {
 	mcpProjectSetup(t)
 	cfg := mustConfig(t)
