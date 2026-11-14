@@ -100,7 +100,7 @@ func tokenSet(s string) map[string]struct{} {
 	return set
 }
 func words(s string) []string {
-	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool { return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9') })
+	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool { return (r < 'a' || r > 'z') && (r < '0' || r > '9') })
 }
 func compact(in []string) []string {
 	if len(in) == 0 {

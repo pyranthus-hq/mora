@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -185,8 +186,8 @@ func validateTree(root string) error {
 	})
 }
 
-// plainExistingDir rejects aliases at the selected root and ancestors. /var is
-// the sole system-owned temporary hierarchy alias accepted on supported hosts.
+// Only the standard macOS temporary ancestors may alias /private; the selected
+// root and every application-controlled child must themselves be plain directories.
 func plainExistingDir(dir string) error {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -198,8 +199,11 @@ func plainExistingDir(dir string) error {
 			return fmt.Errorf("not a plain directory: %s", current)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			if current == "/var" {
-				continue
+			if runtime.GOOS == "darwin" && current != abs && (current == "/var" || current == "/tmp") {
+				target, aliasErr := filepath.EvalSymlinks(current)
+				if aliasErr == nil && target == "/private"+current {
+					continue
+				}
 			}
 			return fmt.Errorf("not a plain directory: %s", current)
 		}
