@@ -65,7 +65,7 @@ func TestPullSnapshotUsesSelectedTargetAndNeverTouchesLiveVault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Commit == "" || string(mustRead(t, filepath.Join(dest, "remote.md"))) != "remote-only" {
+	if result.Commit == "" || string(mustRead(t, filepath.Join(result.Destination, "remote.md"))) != "remote-only" {
 		t.Fatalf("pull=%#v", result)
 	}
 	if after := gitRun(t, vault, "status", "--porcelain"); after != before {
@@ -88,7 +88,7 @@ func TestPullSnapshotPreservesBinaryBytes(t *testing.T) {
 	if _, err := PullSnapshot(context.Background(), opts, dest); err != nil {
 		t.Fatal(err)
 	}
-	if got := mustRead(t, filepath.Join(dest, "binary.bin")); string(got) != string(want) {
+	if got := mustRead(t, filepath.Join(dest, "vault", "binary.bin")); string(got) != string(want) {
 		t.Fatalf("binary bytes changed: %v", got)
 	}
 	if got := gitRun(t, vault, "status", "--porcelain"); got != "" {
@@ -120,9 +120,9 @@ func TestSelectedTargetVerificationAndOriginDenyBeforeTransfer(t *testing.T) {
 	opts.Verify = func(context.Context, SelectedTarget) (VerifiedTarget, error) {
 		return VerifiedTarget{}, os.ErrPermission
 	}
-	opts.Runner = func(_ context.Context, _ string, _ string, _ ...string) (string, error) {
+	opts.run = func(_ context.Context, _ string, _ int, _ ...string) ([]byte, error) {
 		called = true
-		return "", nil
+		return nil, nil
 	}
 	if err := PushSelected(context.Background(), opts); err == nil || called {
 		t.Fatalf("verification failure transfer called=%v", called)
@@ -149,8 +149,8 @@ func TestProbeRelationRemoteAheadAndNoInitialCommit(t *testing.T) {
 	gitRun(t, empty, "init", "-b", "main")
 	gitRun(t, empty, "remote", "add", "origin", opts.Target.CanonicalURL)
 	emptyOpts := backupOptions(empty, opts.Target.CanonicalURL, filepath.Join(t.TempDir(), "state"))
-	if _, err := ProbeRelation(context.Background(), emptyOpts); err == nil {
-		t.Fatal("no-initial-commit relation accepted")
+	if result, err := ProbeRelation(context.Background(), emptyOpts); err != nil || result.Relation != RelationRemoteAhead || result.LocalOID != "" || result.BundlePath == "" {
+		t.Fatalf("remote-only history not preserved: %+v %v", result, err)
 	}
 }
 
@@ -173,14 +173,9 @@ func backupFixture(t *testing.T) (string, string, BackupOptions) {
 }
 func backupOptions(vault, url, state string) BackupOptions {
 	target := SelectedTarget{ID: "target1", CanonicalURL: url, RemoteDigest: "digest1", PolicyDigest: "policy1", AuthorizedReaderIDs: []string{"owner", "reader"}}
-	return BackupOptions{Vault: vault, StateDir: state, RunID: "run1", RemoteRef: "refs/heads/main", Target: target, TestTransport: true, Runner: RealExec, BytesRunner: realBytes, Verify: func(_ context.Context, got SelectedTarget) (VerifiedTarget, error) {
+	return BackupOptions{Vault: vault, StateDir: state, RunID: "run1", RemoteRef: "refs/heads/main", Target: target, testTransport: true, Verify: func(_ context.Context, got SelectedTarget) (VerifiedTarget, error) {
 		return VerifiedTarget{ID: got.ID, CanonicalURL: got.CanonicalURL, Private: true, AuthorizedReaderIDs: []string{"reader", "owner"}}, nil
 	}}
-}
-func realBytes(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = dir
-	return cmd.Output()
 }
 func cloneOther(t *testing.T, url string) string {
 	t.Helper()
