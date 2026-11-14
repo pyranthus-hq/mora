@@ -87,6 +87,9 @@ func TestPublicOwnerActionsFailClosedWithoutVerifier(t *testing.T) {
 	if err := cmdForget(testCtx(t), []string{"--chat", "owner-proof-probe", "--yes"}, ioDiscard{}, ioDiscard{}); !errors.Is(err, errOwnerVerificationUnavailable) {
 		t.Fatalf("marker-cleared forget = %v", err)
 	}
+	if err := cmdUnforget(testCtx(t), []string{"owner-proof-probe", "--yes"}, ioDiscard{}, ioDiscard{}); !errors.Is(err, errOwnerVerificationUnavailable) {
+		t.Fatalf("marker-cleared unforget = %v", err)
+	}
 	for name, args := range map[string][]string{
 		"handoff mine":    {"handoff", "write", "--mine"},
 		"teach memory":    {"teach", "memory", "correct"},

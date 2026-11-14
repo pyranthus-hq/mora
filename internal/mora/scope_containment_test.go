@@ -117,6 +117,7 @@ func TestWriteScopeEntryPoints(t *testing.T) {
 }
 
 func TestApprovalRevalidatesStoredScope(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	p := mcpWriteProposal{ID: "p_synthetic", ProposedAt: time.Now().Format(time.RFC3339), Arguments: map[string]any{"scope": "../../outside", "title": "Synthetic", "text": "Synthetic"}}
 	if _, err := mcppkg.SaveProposal(cfg, p); err != nil {
@@ -302,6 +303,7 @@ func TestEmptyScopeLegacyMemory(t *testing.T) {
 }
 
 func TestBlankWriteScopeDefaultsToGlobal(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	for _, entry := range []string{"cli", "mcp-open", "mcp-propose"} {
 		t.Run(entry, func(t *testing.T) {
 			withTempHome(t)
@@ -340,6 +342,7 @@ func TestBlankWriteScopeDefaultsToGlobal(t *testing.T) {
 }
 
 func TestProposalListSkipsInvalidScope(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	for _, scope := range []string{"global", "../../outside"} {
 		id := "p_valid"

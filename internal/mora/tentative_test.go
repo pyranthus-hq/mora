@@ -121,6 +121,7 @@ func TestTentativeCannotBeClearedOrForgedByArguments(t *testing.T) {
 // The planted false fact: searchable with a label, and absent from recall,
 // the brief and share until the owner confirms it.
 func TestTentativeStaysOutOfAuthoritativeSurfacesUntilConfirmed(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	useShippedWritePolicyDefault(t)
 	withTempHome(t)
 	run(t, "init")
@@ -182,6 +183,7 @@ func TestTentativeStaysOutOfAuthoritativeSurfacesUntilConfirmed(t *testing.T) {
 // Commitments, think and dossiers answer as Mora, so they must not cite a
 // write nobody has confirmed. Each case has an untagged control.
 func TestTentativeCannotGovernCommitmentsOrThink(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	useShippedWritePolicyDefault(t)
 	withTempHome(t)
 	run(t, "init")
@@ -247,6 +249,7 @@ func TestTentativeUndoRemovesTheMemory(t *testing.T) {
 	id := tentativeMemoryID(t, tentativeServe(t, map[string]any{
 		"title": "Heron note", "text": "The heron job runs nightly.", "type": "fact", "scope": "project:demo",
 	}))
+	legacyOpenPolicy(t)
 	run(t, "undo", id)
 	if _, err := findMemory(mustConfig(t), id); err == nil {
 		t.Fatal("undo left the memory in place")
@@ -342,6 +345,7 @@ func TestTentativeHoldReasons(t *testing.T) {
 }
 
 func TestConfirmJSONReceipt(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	useShippedWritePolicyDefault(t)
 	withTempHome(t)
 	run(t, "init")
@@ -412,6 +416,7 @@ func TestTentativeWiderSavesAndStillHolds(t *testing.T) {
 // A tentative decision and a tentative task cannot open commitments or ride a
 // hook, think or share. confirm turns each into a normal row that readers take.
 func TestTentativeDecisionAndTaskStayOutUntilConfirmed(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	useShippedWritePolicyDefault(t)
 	withTempHome(t)
 	run(t, "init")

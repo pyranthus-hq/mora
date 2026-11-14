@@ -217,6 +217,9 @@ func cmdUnforget(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	if !*yes {
 		return errors.New("refusing to unforget without --yes")
 	}
+	if err := requireVerifiedOwnerAction(ownerAction{Kind: "governance.unforget", TargetID: fs.Arg(0)}); err != nil {
+		return err
+	}
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err

@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,6 +141,28 @@ func TestUnforget_RevokesSuppression(t *testing.T) {
 	}
 	if _, err := os.Stat(destFor(cfg, mm)); err != nil {
 		t.Fatal("after unforget the memory must be re-ingestable")
+	}
+}
+
+func TestUnforget_RefusesWithoutVerifiedOwner(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	entry, err := appendGovernanceEntry(cfg, govEntry{
+		Kind: govKindForget, Action: govActionSuppress,
+		Atom: govAtom{Provider: "imessage", Kind: atomHandle, Value: "+14155550123"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withUnavailableOwnerVerifier(t)
+	if err := cmdUnforget(testCtx(t), []string{entry.ID, "--yes"}, ioDiscard{}, ioDiscard{}); !errors.Is(err, errOwnerVerificationUnavailable) {
+		t.Fatalf("unforget without verifier = %v", err)
+	}
+	g, err := loadGovernance(cfg)
+	if err != nil || len(g.activeSuppress()) != 1 {
+		t.Fatalf("denied unforget changed suppression: %+v, %v", g, err)
+	}
+	if ops := mustListOps(t, cfg); len(ops) != 0 {
+		t.Fatalf("denied unforget marked the index dirty: %+v", ops)
 	}
 }
 

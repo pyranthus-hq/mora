@@ -305,6 +305,7 @@ func TestAbandonedDeleteRetires(t *testing.T) {
 
 // The real delete paths record the unlink, or a live server's marker never clears.
 func TestDeletePathsRecordUnlink(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	for name, del := range map[string]func(*testing.T, Config, string) error{
 		"delete_memory": func(t *testing.T, _ Config, id string) error {
 			_, err := callMCPTool(testCtx(t), "delete_memory", map[string]any{"id": id})
@@ -373,6 +374,7 @@ func TestWriteCommitmentsUsesPassedGovernance(t *testing.T) {
 // Each publishing path must stamp the bytes it publishes or removes, or every
 // marker silently takes the hashless rule.
 func TestMarkersCarryPublishedHash(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	captureOp := func(t *testing.T, cfg Config, kind string) *pendingOp {
 		t.Helper()
 		var got pendingOp

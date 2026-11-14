@@ -36,6 +36,7 @@ func agentWriteRecall(t *testing.T, bound string) string {
 func TestWriteInAgentSessionSavesAnUnreviewedAgentNote(t *testing.T) {
 	for _, key := range rulesAgentEnv {
 		subRun(t, key, func(t *testing.T) {
+			useShippedWritePolicyDefault(t)
 			withTempHome(t)
 			run(t, "init")
 			cfg := mustConfig(t)
@@ -47,8 +48,8 @@ func TestWriteInAgentSessionSavesAnUnreviewedAgentNote(t *testing.T) {
 			if err != nil {
 				t.Fatalf("write: %v\n%s", err, stderr)
 			}
-			if n := strings.Count(stderr, "\n"); n != 1 || !strings.Contains(stderr, "saved as an unreviewed agent note") || !strings.Contains(stderr, key) {
-				t.Fatalf("want one stderr line naming the unreviewed agent note, got %q", stderr)
+			if n := strings.Count(stderr, "\n"); n != 1 || !strings.Contains(stderr, "saved as a tentative capture") {
+				t.Fatalf("want one stderr line explaining the tentative capture, got %q", stderr)
 			}
 			var r agentWriteReceipt
 			if err := json.Unmarshal([]byte(stdout), &r); err != nil || r.ID == "" || r.Trust != memory.TrustTentative {

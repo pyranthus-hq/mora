@@ -477,6 +477,7 @@ func setDiff(want, got map[string]bool) string {
 // deliberately invalid final flag keeps connector/network/native rows at their
 // parser or refusal boundary while still executing the real production route.
 func TestCLIRegistryRealRunDispatch(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	registry := loadCLIRegistry(t)
 	for _, row := range registry.Commands {
 		row := row
