@@ -42,7 +42,7 @@ private struct MoraMark: View {
 final class PreviewWindowDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if CommandLine.arguments.contains("--review") {
+        if CommandLine.arguments.contains("--review") || !CommandLine.arguments.contains("--preview") {
             let directory = Bundle.main.executableURL!.deletingLastPathComponent()
             ReviewWindowController.shared.show(mora: directory.appendingPathComponent("mora"), preview: CommandLine.arguments.contains("--preview"))
             return

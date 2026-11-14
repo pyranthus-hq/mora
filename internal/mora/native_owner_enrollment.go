@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
+	"github.com/pyranthus-hq/mora/internal/leasefile"
 )
 
 const nativeOwnerEnrollmentLifetime = 90 * time.Second
@@ -60,13 +61,19 @@ func nativeOwnerEnrollmentChallengePath(cfg Config) string {
 func nativeOwnerInstallationPath(cfg Config) string {
 	return filepath.Join(nativeOwnerDir(cfg), "installation-id")
 }
+func nativeOwnerEnrollmentLockPath(cfg Config) string {
+	return filepath.Join(nativeOwnerDir(cfg), "enrollment.lock")
+}
+func nativeOwnerInstallationLockPath(cfg Config) string {
+	return filepath.Join(nativeOwnerDir(cfg), "installation.lock")
+}
 
 func newNativeOwnerVerifierForPeer(cfg Config, peer nativeOwnerPeer) *nativeOwnerVerifier {
 	return &nativeOwnerVerifier{cfg: cfg, peer: peer}
 }
 
 func (v *nativeOwnerVerifier) TrustedIdentity() (string, string, bool) {
-	identity, ok := v.peer.identity()
+	identity, ok := v.peerTrusted()
 	if !ok {
 		return "", "", false
 	}
@@ -76,6 +83,8 @@ func (v *nativeOwnerVerifier) TrustedIdentity() (string, string, bool) {
 	}
 	return record.InstallationID, record.KeyID, true
 }
+
+func (v *nativeOwnerVerifier) peerTrusted() (string, bool) { return v.peer.identity() }
 
 func (v *nativeOwnerVerifier) Verify(installationID, keyID string, signed, proof []byte) bool {
 	identity, ok := v.peer.identity()
@@ -114,95 +123,128 @@ func (v *nativeOwnerVerifier) enrollment() (nativeOwnerEnrollment, error) {
 	return record, nil
 }
 
-func (v *nativeOwnerVerifier) beginEnrollment(publicKey []byte, credentialID string, now time.Time) (nativeOwnerEnrollmentChallenge, []byte, error) {
-	identity, trusted := v.peer.identity()
+func (v *nativeOwnerVerifier) beginEnrollment(publicKey []byte, credentialID string, now time.Time) (challenge nativeOwnerEnrollmentChallenge, signed []byte, err error) {
+	identity, trusted := v.peerTrusted()
 	if !trusted {
-		return nativeOwnerEnrollmentChallenge{}, nil, errDesktopReviewProofUnavailable
+		return challenge, nil, errDesktopReviewProofUnavailable
 	}
 	if _, err := nativeOwnerP256(publicKey); err != nil {
-		return nativeOwnerEnrollmentChallenge{}, nil, errors.New("invalid native owner public key")
+		return challenge, nil, errors.New("invalid native owner public key")
 	}
-	installationID, err := nativeOwnerInstallationID(v.cfg)
-	if err != nil {
-		return nativeOwnerEnrollmentChallenge{}, nil, err
-	}
-	var random [32]byte
-	if _, err := rand.Read(random[:]); err != nil {
-		return nativeOwnerEnrollmentChallenge{}, nil, err
-	}
-	c := nativeOwnerEnrollmentChallenge{Nonce: hex.EncodeToString(random[:]), ExpiresAt: now.Add(nativeOwnerEnrollmentLifetime).Unix(), InstallationID: installationID, Host: runtime.GOOS, AppIdentity: identity, KeyID: nativeOwnerKeyID(runtime.GOOS, credentialID, publicKey), PublicKeyP256: append([]byte(nil), publicKey...), CredentialID: credentialID}
-	bytes, err := c.bytes()
-	if err != nil {
-		return nativeOwnerEnrollmentChallenge{}, nil, err
-	}
-	raw, err := json.Marshal(c)
-	if err != nil {
-		return nativeOwnerEnrollmentChallenge{}, nil, err
-	}
-	if err := os.MkdirAll(nativeOwnerDir(v.cfg), 0o700); err != nil {
-		return nativeOwnerEnrollmentChallenge{}, nil, err
-	}
-	if err := atomicio.WriteDurable(nativeOwnerEnrollmentChallengePath(v.cfg), raw, 0o600); err != nil {
-		return nativeOwnerEnrollmentChallenge{}, nil, err
-	}
-	return c, bytes, nil
+	err = leasefile.WithGuard(nativeOwnerEnrollmentLockPath(v.cfg), func() error {
+		if _, err := v.enrollment(); err == nil {
+			return errors.New("native owner is already enrolled")
+		}
+		installationID, idErr := nativeOwnerInstallationID(v.cfg)
+		if idErr != nil {
+			return idErr
+		}
+		var random [32]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			return err
+		}
+		challenge = nativeOwnerEnrollmentChallenge{Nonce: hex.EncodeToString(random[:]), ExpiresAt: now.Add(nativeOwnerEnrollmentLifetime).Unix(), InstallationID: installationID, Host: runtime.GOOS, AppIdentity: identity, KeyID: nativeOwnerKeyID(runtime.GOOS, credentialID, publicKey), PublicKeyP256: append([]byte(nil), publicKey...), CredentialID: credentialID}
+		var bytesErr error
+		signed, bytesErr = challenge.bytes()
+		if bytesErr != nil {
+			return bytesErr
+		}
+		raw, marshalErr := json.Marshal(challenge)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		if err := os.MkdirAll(nativeOwnerDir(v.cfg), 0o700); err != nil {
+			return err
+		}
+		return atomicio.WriteDurable(nativeOwnerEnrollmentChallengePath(v.cfg), raw, 0o600)
+	})
+	return challenge, signed, err
 }
 
-func (v *nativeOwnerVerifier) completeEnrollment(proof []byte, now time.Time) error {
-	identity, trusted := v.peer.identity()
+func (v *nativeOwnerVerifier) completeEnrollment(nonce string, proof []byte, now time.Time) error {
+	identity, trusted := v.peerTrusted()
 	if !trusted {
 		return errDesktopReviewProofUnavailable
 	}
-	raw, err := os.ReadFile(nativeOwnerEnrollmentChallengePath(v.cfg))
-	if err != nil {
-		return errDesktopReviewUnavailable
-	}
-	var c nativeOwnerEnrollmentChallenge
-	if json.Unmarshal(raw, &c) != nil || c.ExpiresAt <= now.Unix() || c.Host != runtime.GOOS || c.AppIdentity != identity {
-		return errDesktopReviewUnavailable
-	}
-	bytes, err := c.bytes()
-	if err != nil {
-		return errDesktopReviewUnavailable
-	}
-	pub, err := nativeOwnerP256(c.PublicKeyP256)
-	if err != nil {
-		return errDesktopReviewUnavailable
-	}
-	sum := sha256.Sum256(bytes)
-	if !ecdsa.VerifyASN1(pub, sum[:], proof) {
+	return leasefile.WithGuard(nativeOwnerEnrollmentLockPath(v.cfg), func() error {
+		if _, err := v.enrollment(); err == nil {
+			return errDesktopReviewProofUnavailable
+		}
+		raw, err := os.ReadFile(nativeOwnerEnrollmentChallengePath(v.cfg))
+		if err != nil {
+			return errDesktopReviewUnavailable
+		}
+		var c nativeOwnerEnrollmentChallenge
+		if json.Unmarshal(raw, &c) != nil || c.Nonce != nonce || c.ExpiresAt <= now.Unix() || c.Host != runtime.GOOS || c.AppIdentity != identity {
+			return errDesktopReviewUnavailable
+		}
+		bytes, err := c.bytes()
+		if err != nil {
+			return errDesktopReviewUnavailable
+		}
+		pub, err := nativeOwnerP256(c.PublicKeyP256)
+		if err != nil {
+			return errDesktopReviewUnavailable
+		}
+		sum := sha256.Sum256(bytes)
+		if !ecdsa.VerifyASN1(pub, sum[:], proof) {
+			return errDesktopReviewProofUnavailable
+		}
+		record := nativeOwnerEnrollment{Schema: "mora.review.enrollment", InstallationID: c.InstallationID, Host: c.Host, AppIdentity: c.AppIdentity, KeyID: c.KeyID, PublicKeyP256: c.PublicKeyP256, CredentialID: c.CredentialID, EnrolledAt: now.Unix(), VerifierVersion: "native-owner-v1"}
+		encoded, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		if err := atomicio.WriteDurable(nativeOwnerEnrollmentPath(v.cfg), encoded, 0o600); err != nil {
+			return err
+		}
+		_ = os.Remove(nativeOwnerEnrollmentChallengePath(v.cfg))
+		return nil
+	})
+}
+
+func (v *nativeOwnerVerifier) cancelEnrollment(nonce string) error {
+	if _, trusted := v.peerTrusted(); !trusted {
 		return errDesktopReviewProofUnavailable
 	}
-	record := nativeOwnerEnrollment{Schema: "mora.review.enrollment", InstallationID: c.InstallationID, Host: c.Host, AppIdentity: c.AppIdentity, KeyID: c.KeyID, PublicKeyP256: c.PublicKeyP256, CredentialID: c.CredentialID, EnrolledAt: now.Unix(), VerifierVersion: "native-owner-v1"}
-	encoded, err := json.Marshal(record)
-	if err != nil {
-		return err
-	}
-	if err := atomicio.WriteDurable(nativeOwnerEnrollmentPath(v.cfg), encoded, 0o600); err != nil {
-		return err
-	}
-	return os.Remove(nativeOwnerEnrollmentChallengePath(v.cfg))
+	return leasefile.WithGuard(nativeOwnerEnrollmentLockPath(v.cfg), func() error {
+		raw, err := os.ReadFile(nativeOwnerEnrollmentChallengePath(v.cfg))
+		if err != nil {
+			return errDesktopReviewUnavailable
+		}
+		var challenge nativeOwnerEnrollmentChallenge
+		if json.Unmarshal(raw, &challenge) != nil || challenge.Nonce != nonce {
+			return errDesktopReviewUnavailable
+		}
+		return os.Remove(nativeOwnerEnrollmentChallengePath(v.cfg))
+	})
 }
 
 func nativeOwnerInstallationID(cfg Config) (string, error) {
-	path := nativeOwnerInstallationPath(cfg)
-	if raw, err := os.ReadFile(path); err == nil && len(raw) == 64 {
-		if _, err := hex.DecodeString(string(raw)); err == nil {
-			return string(raw), nil
+	var installationID string
+	err := leasefile.WithGuard(nativeOwnerInstallationLockPath(cfg), func() error {
+		path := nativeOwnerInstallationPath(cfg)
+		if raw, err := os.ReadFile(path); err == nil && len(raw) == 64 {
+			if _, err := hex.DecodeString(string(raw)); err == nil {
+				installationID = string(raw)
+				return nil
+			}
 		}
-	}
-	var random [32]byte
-	if _, err := rand.Read(random[:]); err != nil {
-		return "", err
-	}
-	id := hex.EncodeToString(random[:])
-	if err := os.MkdirAll(nativeOwnerDir(cfg), 0o700); err != nil {
-		return "", err
-	}
-	if err := atomicio.WriteDurable(path, []byte(id), 0o600); err != nil {
-		return "", err
-	}
-	return id, nil
+		var random [32]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			return err
+		}
+		id := hex.EncodeToString(random[:])
+		if err := os.MkdirAll(nativeOwnerDir(cfg), 0o700); err != nil {
+			return err
+		}
+		if err := atomicio.WriteDurable(path, []byte(id), 0o600); err != nil {
+			return err
+		}
+		installationID = id
+		return nil
+	})
+	return installationID, err
 }
 
 func nativeOwnerP256(value []byte) (*ecdsa.PublicKey, error) {

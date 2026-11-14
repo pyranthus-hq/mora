@@ -54,7 +54,9 @@ struct OwnerProofResponse: Decodable {
     let outcome: Outcome?
     let error: Failure?
 
-    struct Outcome: Decodable { let status: String; let applied: Bool? }
+    struct Outcome: Decodable { let status: String; let applied: Bool?; let indexVisibility: String
+        enum CodingKeys: String, CodingKey { case status, applied; case indexVisibility = "index_visibility" }
+    }
     enum CodingKeys: String, CodingKey {
         case schema, enrolled, error, outcome, nonce
         case schemaVersion = "schema_version"
@@ -75,7 +77,7 @@ struct OwnerProofStatus {
 /// and decision bytes to the Secure Enclave after the app rendered the receipt.
 struct NativeReviewClient {
     let mora: URL
-    private static let frameLimit = 1_048_576
+    private static let frameLimit = ReviewTransport.limit
 
     func status() throws -> OwnerProofStatus {
         let response = try call(OwnerProofRequest(op: "status"))
@@ -86,19 +88,30 @@ struct NativeReviewClient {
     func enroll(status: OwnerProofStatus) throws {
         let publicKey = try OwnerProof.publicKey(installationID: status.installationID)
         let begin = try call(OwnerProofRequest(op: "enroll.begin", publicKeyP256: publicKey.base64EncodedString()))
-        guard let encoded = begin.challengeBytesB64, let bytes = Data(base64Encoded: encoded) else { throw OwnerProofError.invalidResponse }
-        let proof = try OwnerProof.sign(bytes, installationID: status.installationID, reason: "Enable Mora desktop approvals")
-        let complete = try call(OwnerProofRequest(op: "enroll.complete", signatureDER: proof.base64EncodedString()))
-        guard complete.error == nil, complete.enrolled == true, complete.readOnly == false else { throw OwnerProofError.unavailable(complete.error?.message ?? "Mora did not accept desktop enrollment.") }
+        guard let encoded = begin.challengeBytesB64, let bytes = Data(base64Encoded: encoded), let nonce = begin.nonce else { throw OwnerProofError.invalidResponse }
+        do {
+            let proof = try OwnerProof.sign(bytes, installationID: status.installationID, reason: "Enable Mora desktop approvals")
+            let complete = try call(OwnerProofRequest(op: "enroll.complete", nonce: nonce, signatureDER: proof.base64EncodedString()))
+            guard complete.error == nil, complete.enrolled == true, complete.readOnly == false else { throw OwnerProofError.unavailable(complete.error?.message ?? "Mora did not accept desktop enrollment.") }
+        } catch {
+            _ = try? call(OwnerProofRequest(op: "enroll.cancel", nonce: nonce))
+            throw error
+        }
     }
 
     func decide(_ action: String, preview: ReviewPreview, status: OwnerProofStatus) throws -> OwnerProofResponse.Outcome {
         let begin = try call(OwnerProofRequest(op: "decision.begin", kind: preview.kind, id: preview.id, action: action, canonicalRevision: preview.canonicalRevision, displayDigest: preview.displayDigest))
         guard let encoded = begin.challengeBytesB64, let bytes = Data(base64Encoded: encoded) else { throw OwnerProofError.invalidResponse }
         let label = action == "keep" ? "Keep" : "Discard"
-        let proof = try OwnerProof.sign(bytes, installationID: status.installationID, reason: "\(label) this Mora review after checking its displayed preview")
         guard let nonce = begin.nonce else { throw OwnerProofError.invalidResponse }
-        let complete = try call(OwnerProofRequest(op: "decision.complete", nonce: nonce, signatureDER: proof.base64EncodedString()))
+        let complete: OwnerProofResponse
+        do {
+            let proof = try OwnerProof.sign(bytes, installationID: status.installationID, reason: "\(label) this Mora review after checking its displayed preview")
+            complete = try call(OwnerProofRequest(op: "decision.complete", nonce: nonce, signatureDER: proof.base64EncodedString()))
+        } catch {
+            _ = try? call(OwnerProofRequest(op: "cancel", nonce: nonce))
+            throw error
+        }
         // The nonce is returned inside the opaque Go challenge, never reconstructed by Swift.
         guard complete.error == nil, let outcome = complete.outcome else { throw OwnerProofError.unavailable(complete.error?.message ?? "Mora did not accept the desktop decision.") }
         return outcome
@@ -109,16 +122,25 @@ struct NativeReviewClient {
         let raw = try JSONEncoder().encode(request)
         guard raw.count <= Self.frameLimit else { throw OwnerProofError.invalidResponse }
         let process = Process(); process.executableURL = mora; process.arguments = ["review", "desktop", "--stdio"]
-        let input = Pipe(), output = Pipe(); process.standardInput = input; process.standardOutput = output; process.standardError = FileHandle.nullDevice
+        let input = Pipe(); process.standardInput = input; process.standardError = FileHandle.nullDevice
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let responseURL = directory.appendingPathComponent("desktop-response")
+        FileManager.default.createFile(atPath: responseURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        let output = try FileHandle(forWritingTo: responseURL); defer { try? output.close() }; process.standardOutput = output
         try process.run()
         var count = UInt32(raw.count).bigEndian
         try input.fileHandleForWriting.write(contentsOf: Data(bytes: &count, count: 4)); try input.fileHandleForWriting.write(contentsOf: raw); try input.fileHandleForWriting.close()
-        let response = try output.fileHandleForReading.read(upToCount: Self.frameLimit + 4) ?? Data()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0, response.count >= 4 else { throw OwnerProofError.unavailable("Desktop owner verification is unavailable in this build.") }
-        let size = response.prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
-        guard size > 0, size <= Self.frameLimit, response.count == Int(size) + 4 else { throw OwnerProofError.invalidResponse }
-        let decoded = try JSONDecoder().decode(OwnerProofResponse.self, from: response.dropFirst(4))
+        let deadline = Date().addingTimeInterval(30)
+        while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        if process.isRunning { process.terminate(); throw OwnerProofError.unavailable("Mora desktop approval timed out.") }
+        let reader = try FileHandle(forReadingFrom: responseURL); defer { try? reader.close() }
+        let response = try reader.read(upToCount: Self.frameLimit + 5) ?? Data()
+        guard process.terminationStatus == 0 else { throw OwnerProofError.unavailable("Desktop owner verification is unavailable in this build.") }
+        let body: Data
+        do { body = try ReviewTransport.response(from: [response]) } catch { throw OwnerProofError.invalidResponse }
+        let decoded = try JSONDecoder().decode(OwnerProofResponse.self, from: body)
         guard decoded.schema == "mora.review.desktop", decoded.schemaVersion == 1 else { throw OwnerProofError.invalidResponse }
         if let error = decoded.error { throw OwnerProofError.unavailable(error.message) }
         return decoded

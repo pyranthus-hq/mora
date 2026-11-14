@@ -9,7 +9,10 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -50,7 +53,7 @@ func TestNativeOwnerEnrollmentBindsTrustedIdentityAndKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := verifier.completeEnrollment(nativeOwnerTestProof(t, key, signed), now); err != nil {
+	if err := verifier.completeEnrollment(challenge.Nonce, nativeOwnerTestProof(t, key, signed), now); err != nil {
 		t.Fatal(err)
 	}
 	if installation, keyID, ok := verifier.TrustedIdentity(); !ok || installation != challenge.InstallationID || keyID != challenge.KeyID {
@@ -72,11 +75,11 @@ func TestNativeOwnerEnrollmentRefusesExpiredAndImportedProof(t *testing.T) {
 	cfg := Config{StateDir: t.TempDir()}
 	verifier := newNativeOwnerVerifierForPeer(cfg, nativeOwnerTestPeer{value: "test-app", trusted: true})
 	key, public := nativeOwnerTestKey(t)
-	_, signed, err := verifier.beginEnrollment(public, "", time.Unix(1_700_000_000, 0))
+	challenge, signed, err := verifier.beginEnrollment(public, "", time.Unix(1_700_000_000, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := verifier.completeEnrollment(nativeOwnerTestProof(t, key, signed), time.Unix(1_700_000_091, 0)); err == nil {
+	if err := verifier.completeEnrollment(challenge.Nonce, nativeOwnerTestProof(t, key, signed), time.Unix(1_700_000_091, 0)); err == nil {
 		t.Fatal("accepted expired enrollment")
 	}
 	if _, _, ok := verifier.TrustedIdentity(); ok {
@@ -126,4 +129,91 @@ func TestDesktopReviewFrameRejectsChangedEnrollmentFields(t *testing.T) {
 	if response.Error == nil {
 		t.Fatal("accepted field-mutated enrollment proof")
 	}
+}
+
+func TestDesktopReviewStdioEnrollsThenCancelsDecision(t *testing.T) {
+	cfg := reviewSetup(t)
+	id := reviewSaved(t, "stdio cancel")
+	peer := nativeOwnerTestPeer{value: "test-app", trusted: true}
+	verifier := newNativeOwnerVerifierForPeer(cfg, &peer)
+	inputReader, inputWriter := io.Pipe()
+	outputReader, outputWriter := io.Pipe()
+	errCh := make(chan error, 1)
+	go func() { errCh <- serveDesktopReviewStdio(testCtx(t), cfg, verifier, inputReader, outputWriter) }()
+	writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "status"})
+	status := readStdioResponse(t, outputReader)
+	if status.Enrolled == nil || *status.Enrolled || status.InstallationID == "" {
+		t.Fatalf("unenrolled status = %#v", status)
+	}
+	key, public := nativeOwnerTestKey(t)
+	writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "enroll.begin", PublicKeyP256: base64.StdEncoding.EncodeToString(public)})
+	begin := readStdioResponse(t, outputReader)
+	challenge, err := base64.StdEncoding.DecodeString(begin.ChallengeBytesB64)
+	if err != nil || begin.Nonce == "" {
+		t.Fatalf("enrollment begin = %#v, %v", begin, err)
+	}
+	writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "enroll.complete", Nonce: begin.Nonce, SignatureDER: base64.StdEncoding.EncodeToString(nativeOwnerTestProof(t, key, challenge))})
+	if complete := readStdioResponse(t, outputReader); complete.Enrolled == nil || !*complete.Enrolled {
+		t.Fatalf("enrollment complete = %#v", complete)
+	}
+	preview, err := loadDesktopReviewPreview(cfg, reviewKindSaved, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "decision.begin", Action: desktopReviewDiscard, Kind: reviewKindSaved, ID: id, CanonicalRevision: preview.CanonicalRevision, DisplayDigest: preview.DisplayDigest})
+	decision := readStdioResponse(t, outputReader)
+	if decision.Nonce == "" || decision.ChallengeBytesB64 == "" {
+		t.Fatalf("decision begin = %#v", decision)
+	}
+	writeStdioRequest(t, inputWriter, desktopReviewFrame{Schema: "mora.review.desktop", SchemaVersion: 1, Op: "cancel", Nonce: decision.Nonce})
+	if cancelled := readStdioResponse(t, outputReader); cancelled.Outcome == nil || cancelled.Outcome.Status != "cancelled" {
+		t.Fatalf("cancel = %#v", cancelled)
+	}
+	if err := inputWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDesktopReviewStdioRejectsUntrustedPeerBeforeStateWrite(t *testing.T) {
+	cfg := Config{StateDir: t.TempDir()}
+	verifier := newNativeOwnerVerifierForPeer(cfg, nativeOwnerTestPeer{value: "fake", trusted: false})
+	err := serveDesktopReviewStdio(testCtx(t), cfg, verifier, bytes.NewReader(nil), io.Discard)
+	if !errors.Is(err, errDesktopReviewProofUnavailable) {
+		t.Fatalf("serve error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.StateDir, "desktop-review")); !os.IsNotExist(err) {
+		t.Fatalf("untrusted peer wrote state: %v", err)
+	}
+}
+
+func writeStdioRequest(t *testing.T, writer *io.PipeWriter, frame desktopReviewFrame) {
+	t.Helper()
+	raw, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var header [4]byte
+	binary.BigEndian.PutUint32(header[:], uint32(len(raw)))
+	if _, err := writer.Write(append(header[:], raw...)); err != nil {
+		t.Fatal(err)
+	}
+}
+func readStdioResponse(t *testing.T, reader *io.PipeReader) desktopReviewFrameResponse {
+	t.Helper()
+	var header [4]byte
+	if _, err := io.ReadFull(reader, header[:]); err != nil {
+		t.Fatal(err)
+	}
+	raw := make([]byte, binary.BigEndian.Uint32(header[:]))
+	if _, err := io.ReadFull(reader, raw); err != nil {
+		t.Fatal(err)
+	}
+	var response desktopReviewFrameResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		t.Fatal(err)
+	}
+	return response
 }

@@ -54,6 +54,7 @@ final class ReviewModel: ObservableObject {
     @Published var approvalStatus = "Desktop approvals are unavailable in this build."
     @Published var ownerStatus: OwnerProofStatus?
     @Published var applying = false
+    @Published var decisionResult = ""
 
     private let mora: URL
     private let previewMode: Bool
@@ -129,12 +130,13 @@ final class ReviewModel: ObservableObject {
         do {
             let client = NativeReviewClient(mora: mora)
             let outcome = try await Task.detached(priority: .userInitiated) { try client.decide(action, preview: preview, status: status) }.value
-            approvalStatus = "Decision \(outcome.status). Vault mutation and index visibility are reported separately by Mora."
+            decisionResult = "Decision: \(outcome.status). Index visibility: \(outcome.indexVisibility.replacingOccurrences(of: "_", with: " "))."
             await load()
         } catch { approvalStatus = error.localizedDescription }
     }
 
     func show(_ row: ReviewRow) async {
+		guard !applying else { return }
         guard let token = state.beginSelection(row) else {
             previewError = .failed(ReviewReceiptError.invalidRow.localizedDescription)
             return
@@ -182,6 +184,8 @@ final class ReviewModel: ObservableObject {
 
 struct ReviewView: View {
     @ObservedObject var model: ReviewModel
+    @State private var confirmationAction: String?
+    @State private var confirmationPreview: ReviewPreview?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -190,7 +194,7 @@ struct ReviewView: View {
                 Spacer()
                 if model.loadingQueue { ProgressView().controlSize(.small) }
                 Button("Refresh") { Task { await model.load() } }
-                    .disabled(model.loadingQueue || model.loadingPreview)
+                    .disabled(model.loadingQueue || model.loadingPreview || model.applying)
                     .accessibilityLabel("Refresh review queue")
             }
             Text("This window renders Mora’s bounded canonical receipts. Keep and Discard require a fresh native owner proof bound to the preview shown here.")
@@ -211,6 +215,13 @@ struct ReviewView: View {
         .padding(14)
         .frame(minWidth: 400, minHeight: 360)
         .onExitCommand { ReviewWindowController.shared.close() }
+        .confirmationDialog("Confirm review decision", isPresented: Binding(get: { confirmationAction != nil }, set: { if !$0 { confirmationAction = nil; confirmationPreview = nil } })) {
+            Button(confirmationAction == "keep" ? "Keep" : "Discard", role: confirmationAction == "discard" ? .destructive : nil) {
+                if let action = confirmationAction, let preview = confirmationPreview { Task { await model.decide(action, preview: preview) } }
+                confirmationAction = nil; confirmationPreview = nil
+            }
+            Button("Cancel", role: .cancel) { confirmationAction = nil; confirmationPreview = nil }
+        } message: { Text("The displayed preview will be bound to a fresh native approval. Cancel leaves the note unchanged.") }
     }
 
     @ViewBuilder private var previewArea: some View {
@@ -233,6 +244,7 @@ struct ReviewView: View {
             }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+		.disabled(model.applying)
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.08)))
         .accessibilityLabel("Show preview for \(row.title)")
@@ -257,14 +269,15 @@ struct ReviewView: View {
                 Text("Index visibility is not reported by this read-only preview. Search may lag; this window does not claim the note is indexed.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
-                    if preview.isKeepEligible { Button("Keep") { Task { await model.decide("keep", preview: preview) } }.disabled(!model.canDecide) }
-                    Button("Discard") { Task { await model.decide("discard", preview: preview) } }.disabled(!model.canDecide)
+                    if preview.isKeepEligible { Button("Keep") { confirmationAction = "keep"; confirmationPreview = preview }.disabled(!model.canDecide) }
+                    Button("Discard") { confirmationAction = "discard"; confirmationPreview = preview }.disabled(!model.canDecide)
                 }
                 if model.ownerStatus?.enrolled != true {
                     Button("Enable desktop approvals") { Task { await model.enableApprovals() } }.disabled(model.applying || model.isPreviewMode)
                 }
                 Text(verbatim: model.approvalStatus)
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+				if !model.decisionResult.isEmpty { Text(verbatim: model.decisionResult).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             }
             .padding(10)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))

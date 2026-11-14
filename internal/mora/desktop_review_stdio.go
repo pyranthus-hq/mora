@@ -82,12 +82,10 @@ func writeDesktopReviewFrame(w io.Writer, response desktopReviewFrameResponse) e
 	if len(raw) > desktopReviewFrameLimit {
 		return errors.New("desktop review response exceeds limit")
 	}
-	var header [4]byte
-	binary.BigEndian.PutUint32(header[:], uint32(len(raw)))
-	if _, err := w.Write(header[:]); err != nil {
-		return err
-	}
-	_, err = w.Write(raw)
+	frame := make([]byte, 4+len(raw))
+	binary.BigEndian.PutUint32(frame[:4], uint32(len(raw)))
+	copy(frame[4:], raw)
+	_, err = w.Write(frame)
 	return err
 }
 
@@ -100,7 +98,7 @@ func serveDesktopReviewStdio(ctx context.Context, cfg Config, verifier desktopRe
 	if !ok {
 		return errDesktopReviewProofUnavailable
 	}
-	if _, _, trusted := native.TrustedIdentity(); !trusted {
+	if _, trusted := native.peerTrusted(); !trusted {
 		return errDesktopReviewProofUnavailable
 	}
 	authority := newDesktopReviewAuthority(cfg, verifier)
@@ -158,13 +156,13 @@ func handleDesktopReviewFrame(ctx context.Context, cfg Config, authority *deskto
 		if err != nil {
 			return desktopReviewFrameFailure("ERR_OWNER_VERIFICATION_UNAVAILABLE", "desktop owner verification is unavailable")
 		}
-		return desktopReviewFrameResponse{ChallengeBytesB64: base64.StdEncoding.EncodeToString(signed), KeyID: challenge.KeyID}
+		return desktopReviewFrameResponse{ChallengeBytesB64: base64.StdEncoding.EncodeToString(signed), KeyID: challenge.KeyID, Nonce: challenge.Nonce}
 	case "enroll.complete":
 		proof, ok := decode(request.SignatureDER)
 		if !ok {
 			return desktopReviewFrameFailure("ERR_INVALID_REQUEST", "invalid enrollment proof")
 		}
-		if err := verifier.completeEnrollment(proof, time.Now()); err != nil {
+		if err := verifier.completeEnrollment(request.Nonce, proof, time.Now()); err != nil {
 			return desktopReviewFrameFailure("ERR_OWNER_VERIFICATION_UNAVAILABLE", "desktop enrollment was not accepted")
 		}
 		enrolled, readOnly := true, false
@@ -189,6 +187,12 @@ func handleDesktopReviewFrame(ctx context.Context, cfg Config, authority *deskto
 			return desktopReviewFrameFailure(desktopReviewErrorCode(err), "desktop decision was not accepted")
 		}
 		return desktopReviewFrameResponse{Outcome: &out}
+	case "enroll.cancel":
+		if strings.TrimSpace(request.Nonce) == "" || verifier.cancelEnrollment(request.Nonce) != nil {
+			return desktopReviewFrameFailure("ERR_REVIEW_UNAVAILABLE", "desktop enrollment cancellation is unavailable")
+		}
+		readOnly := true
+		return desktopReviewFrameResponse{ReadOnly: &readOnly}
 	case "cancel":
 		if strings.TrimSpace(request.Nonce) == "" {
 			return desktopReviewFrameFailure("ERR_INVALID_REQUEST", "invalid cancellation")

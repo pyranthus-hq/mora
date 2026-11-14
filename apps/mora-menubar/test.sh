@@ -5,6 +5,8 @@ export TMPDIR="${TMPDIR:-/tmp/mora-source-health-tmp}"
 mkdir -p "$TMPDIR"
 swiftc Sources/StatusData.swift Sources/ReviewReceipt.swift Tests/main.swift -o "$TMPDIR/mora-menubar-status-tests"
 "$TMPDIR/mora-menubar-status-tests"
+swiftc Sources/ReviewTransport.swift Tests/ReviewTransportTests.swift -o "$TMPDIR/mora-menubar-transport-tests"
+"$TMPDIR/mora-menubar-transport-tests"
 swiftc Sources/MenuBarIcon.swift Tests/MenuBarIconTests.swift -o "$TMPDIR/mora-menubar-icon-tests"
 "$TMPDIR/mora-menubar-icon-tests"
 grep -Fq '@State private var expandedSources = false' Sources/MoraStatusApp.swift
