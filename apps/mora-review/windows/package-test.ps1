@@ -51,6 +51,7 @@ function Assert-Amd64PE([string]$Path) {
     Assert-True ($bytes.Length -ge 64 -and $bytes[0] -eq 0x4d -and $bytes[1] -eq 0x5a) "$Path is not a PE file"
     $offset = [System.BitConverter]::ToInt32($bytes, 0x3c)
     Assert-True ($offset -ge 0 -and ($offset + 6) -le $bytes.Length) "$Path has an invalid PE header"
+    Assert-True ($bytes[$offset] -eq 0x50 -and $bytes[$offset+1] -eq 0x45 -and $bytes[$offset+2] -eq 0 -and $bytes[$offset+3] -eq 0) "$Path has no PE signature"
     Assert-True ([System.BitConverter]::ToUInt16($bytes, $offset + 4) -eq 0x8664) "$Path is not AMD64"
 }
 
@@ -67,10 +68,13 @@ try {
     $env:CGO_ENABLED = '1'
     $env:GOOS = 'linux'
     $env:GOARCH = '386'
-    $env:GOFLAGS = '-tags=hostile'
-    $env:GOWORK = 'off'
+    $env:GOFLAGS = '-not-a-real-go-flag'
+    $env:GOWORK = Join-Path $outputParent 'nonexistent-hostile.go.work'
     $expected = Save-Environment @('CGO_ENABLED', 'GOOS', 'GOARCH', 'GOFLAGS', 'GOWORK')
-    & (Join-Path $sourceRoot 'apps\mora-review\windows\package.ps1') -Source $sourceRoot -OutputDirectory $OutputDirectory
+    Push-Location $outputParent
+    try {
+        & (Join-Path $sourceRoot 'apps\mora-review\windows\package.ps1') -Source $sourceRoot -OutputDirectory (Split-Path -Leaf $OutputDirectory) -ScratchDirectory '.'
+    } finally { Pop-Location }
     if ($LASTEXITCODE -ne 0) { throw "package.ps1 failed with exit code $LASTEXITCODE." }
     Assert-Environment $expected
 } finally {
@@ -112,7 +116,7 @@ $scratchOutput = Join-Path $outputParent 'scratch candidate output'
 Assert-True (!(Test-Path -LiteralPath $insideOutput)) 'Inside-source output already exists; fixture requires an unused path.'
 Assert-True (!(Test-Path -LiteralPath $scratchOutput)) 'Scratch rejection output already exists; fixture requires an unused path.'
 foreach ($attempt in @(
-    @{ Output = $insideOutput; Scratch = $env:TEMP },
+    @{ Output = $insideOutput; Scratch = $outputParent },
     @{ Output = $scratchOutput; Scratch = $sourceRoot }
 )) {
     $rejected = $false
@@ -120,11 +124,41 @@ foreach ($attempt in @(
         & (Join-Path $sourceRoot 'apps\mora-review\windows\package.ps1') -Source $sourceRoot -OutputDirectory $attempt.Output -ScratchDirectory $attempt.Scratch
         if ($LASTEXITCODE -ne 0) { $rejected = $true }
     } catch {
+        Assert-True ($_.Exception.Message -like '*must be outside the source checkout*') "Wrong source rejection: $($_.Exception.Message)"
         $rejected = $true
     }
     Assert-True $rejected 'package.ps1 accepted an output or scratch path inside source.'
     Assert-True (!(Test-Path -LiteralPath $attempt.Output)) 'Rejected source path created an output directory.'
 }
 Assert-True (@(Get-ChildItem -LiteralPath $sourceRoot -Directory -Force -Recurse -Filter 'mora-review-package-*').Count -eq 0) 'Rejected source path left a private package work directory.'
+# Exercise failure after private snapshot work starts, without a production test hook.
+$failureOutput = Join-Path $outputParent 'injected failure output'
+$failureScratch = Join-Path $outputParent 'injected failure scratch'
+New-Item -ItemType Directory -Path $failureScratch | Out-Null
+$gitExeForPackageFixture = (Get-Command git -CommandType Application | Select-Object -First 1).Source
+function git {
+    if ($args -contains 'archive') { throw 'injected package archive failure' }
+    & $gitExeForPackageFixture @args
+}
+try {
+    $message = ''
+    try {
+        & (Join-Path $sourceRoot 'apps\mora-review\windows\package.ps1') -Source $sourceRoot -OutputDirectory $failureOutput -ScratchDirectory $failureScratch
+    } catch { $message = $_.Exception.Message }
+    Assert-True ($message -like '*injected package archive failure*') "Original failure was lost: $message"
+    Assert-True (@(Get-ChildItem -LiteralPath $failureScratch -Force).Count -eq 0) 'Failed package left private work.'
+    Assert-True (@(Get-ChildItem -LiteralPath $failureOutput -Force).Count -eq 0) 'Failed package published an archive.'
+} finally { Remove-Item Function:git }
+
+$junction = Join-Path $outputParent 'source alias'
+New-Item -ItemType Junction -Path $junction -Target $sourceRoot | Out-Null
+try {
+    $message = ''
+    try {
+        & (Join-Path $sourceRoot 'apps\mora-review\windows\package.ps1') -Source $sourceRoot -OutputDirectory (Join-Path $junction 'dist\alias output')
+    } catch { $message = $_.Exception.Message }
+    Assert-True ($message -like '*cannot contain a reparse point*') "Source alias was not refused: $message"
+    Assert-True (!(Test-Path -LiteralPath (Join-Path $sourceRoot 'dist\alias output'))) 'Source alias created output.'
+} finally { [System.IO.Directory]::Delete($junction) }
 Assert-Clean $sourceRoot
 Write-Output 'PASS: Windows candidate package, pin, archive, hostile environment, and source-isolation fixture'

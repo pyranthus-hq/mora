@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$Source,
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
-    [string]$ScratchDirectory = $env:TMPDIR
+    [string]$ScratchDirectory = ""
 )
 
 # Candidate-only packaging: source stays unpinned; this script pins only a private
@@ -10,18 +10,27 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-function Resolve-Directory([string]$Path, [string]$Name) {
-    if (!(Test-Path -LiteralPath $Path -PathType Container)) { throw "$Name is not a directory: $Path" }
-    return (Resolve-Path -LiteralPath $Path).Path
-}
-
 function Resolve-CanonicalPath([string]$Path, [string]$Name) {
     if ([string]::IsNullOrWhiteSpace($Path)) { throw "$Name is required." }
-    try {
-        return [System.IO.Path]::GetFullPath($Path)
-    } catch {
-        throw "Could not canonicalize $Name: $Path"
+    $resolved = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+    $resolved = [System.IO.Path]::GetFullPath($resolved)
+    # Refuse aliases rather than guessing whether a source-contained path is safe.
+    if ($resolved -notmatch '^[A-Za-z]:\\' -or $resolved.Contains('~')) { throw "$Name requires an ordinary local Windows path." }
+    $ancestor = $resolved
+    while (![string]::IsNullOrWhiteSpace($ancestor)) {
+        if (Test-Path -LiteralPath $ancestor) {
+            $item = Get-Item -LiteralPath $ancestor -Force
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw "$Name cannot contain a reparse point." }
+        }
+        $ancestor = Split-Path -Parent $ancestor
     }
+    return $resolved
+}
+
+function Resolve-Directory([string]$Path, [string]$Name) {
+    $resolved = Resolve-CanonicalPath $Path $Name
+    if (!(Test-Path -LiteralPath $resolved -PathType Container)) { throw "$Name is not a directory: $resolved" }
+    return $resolved
 }
 
 function Assert-OutsideSource([string]$Path, [string]$Source, [string]$Name) {
@@ -127,8 +136,8 @@ if (!(Test-Path -LiteralPath (Join-Path $sourceRoot 'go.mod') -PathType Leaf)) {
 Assert-CleanSource $sourceRoot
 $revision = (& git -C $sourceRoot rev-parse --verify HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $revision -notmatch '^[0-9a-f]{40}$') { throw "Could not resolve an exact source revision for $sourceRoot." }
-if ([string]::IsNullOrWhiteSpace($ScratchDirectory)) { $ScratchDirectory = $env:TEMP }
 $outputRequested = Resolve-CanonicalPath $OutputDirectory 'OutputDirectory'
+if ([string]::IsNullOrWhiteSpace($ScratchDirectory)) { $ScratchDirectory = Split-Path -Parent $outputRequested }
 $scratchRequested = Resolve-CanonicalPath $ScratchDirectory 'ScratchDirectory'
 Assert-OutsideSource $outputRequested $sourceRoot 'OutputDirectory'
 Assert-OutsideSource $scratchRequested $sourceRoot 'ScratchDirectory'
@@ -136,7 +145,7 @@ Assert-SameVolume $outputRequested $scratchRequested
 $outputRoot = Prepare-Output $outputRequested
 $scratchRoot = Resolve-Directory $scratchRequested 'ScratchDirectory'
 $work = Join-Path $scratchRoot ("mora-review-package-" + [guid]::NewGuid().ToString('N'))
-$failed = $false
+$stagedArchive = $null
 
 try {
     New-Item -ItemType Directory -Path $work | Out-Null
@@ -226,13 +235,17 @@ try {
     Assert-Package $extracted $revision
 
     $published = Join-Path $outputRoot ("MoraReview-" + $revision.Substring(0, 12) + '-windows-amd64.zip')
+    $stagedArchive = Join-Path $outputRoot (".candidate-" + [guid]::NewGuid().ToString('N') + ".zip")
+    Move-Item -LiteralPath $archive -Destination $stagedArchive
+    Remove-Item -LiteralPath $work -Recurse -Force
     Assert-CleanSource $sourceRoot
-    Move-Item -LiteralPath $archive -Destination $published
+    Move-Item -LiteralPath $stagedArchive -Destination $published
+    $stagedArchive = $null
     Write-Output "Created candidate package: $published"
-} catch {
-    $failed = $true
-    throw
 } finally {
+    if ($null -ne $stagedArchive -and (Test-Path -LiteralPath $stagedArchive)) {
+        try { Remove-Item -LiteralPath $stagedArchive -Force } catch { Write-Warning "Could not remove staged candidate archive: $($_.Exception.Message)" }
+    }
     $cleanupFailure = $null
     if (Test-Path -LiteralPath $work) {
         try {
