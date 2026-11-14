@@ -1,0 +1,6 @@
+{
+  "ack_requested": false,
+  "schema": "mora.watch.check",
+  "schema_version": 1,
+  "watches": []
+}

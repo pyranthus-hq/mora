@@ -730,6 +730,49 @@
           "reason": "Named first-run tests witness invalid arguments and refusal before client configuration writes."
         }
       }
+    },
+    {
+      "name": "iMessage chat watches",
+      "paths": [
+        "watch",
+        "watch chats",
+        "watch add",
+        "watch list",
+        "watch check",
+        "watch remove"
+      ],
+      "evidence": {
+        "success": {
+          "status": "test",
+          "tests": [
+            "TestWatchLifecycle"
+          ]
+        },
+        "json": {
+          "status": "test",
+          "tests": [
+            "TestWatchLifecycle"
+          ]
+        },
+        "state": {
+          "status": "test",
+          "tests": [
+            "TestWatchDigestIsScopedBudgetedAndIndependent"
+          ]
+        },
+        "error": {
+          "status": "test",
+          "tests": [
+            "TestWatchFailuresPreserveState"
+          ]
+        },
+        "refusal": {
+          "status": "test",
+          "tests": [
+            "TestWatchUsageAndRefusals"
+          ]
+        }
+      }
     }
   ]
 }

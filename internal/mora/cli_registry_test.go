@@ -164,6 +164,7 @@ func TestCLIRegistryMatchesProductionDispatch(t *testing.T) {
 		{"merge", "cmdMerge", []string{"args[0]"}},
 		{"teach", "cmdTeach", []string{"args[0]"}},
 		{"tasks", "cmdTasks", []string{"args[0]"}},
+		{"watch", "cmdWatch", []string{"sub"}},
 		{"schedule", "cmdSchedule", []string{"args[0]"}},
 		{"sources", "cmdSources", []string{"args[0]"}},
 		{"connectors", "cmdConnectors", []string{"args[0]"}},

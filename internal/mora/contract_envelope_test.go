@@ -19,6 +19,7 @@ import (
 //
 // A row absent from this map is driven with `--json` alone.
 var contractEnvelopeArgs = map[string][]string{
+	"watch remove":            {"imessage_chat/absent"},
 	"doctor check":            {"imessage-access"},
 	"integrations list":       {"--binary", "/contract/mora"},
 	"write":                   {"--title", "envelope probe", "--text", "envelope probe body"},
@@ -65,6 +66,7 @@ var contractEnvelopeOrder = []string{
 // These rows still get the schema-shape assertion below — the
 // `contract.platform_policy` the registry prescribes.
 var contractEnvelopeNonExecutable = map[string]string{
+	"watch add":               "requires an imported iMessage evidence fixture and a fresh sync; covered by TestWatchLifecycle",
 	"integrations connect":    "mutates host client configuration and requires an absolute binary path",
 	"integrations disconnect": "mutates host client configuration",
 	"delete":                  "destructive memory mutation",

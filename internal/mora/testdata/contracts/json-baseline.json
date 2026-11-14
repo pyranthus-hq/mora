@@ -792,6 +792,30 @@
     "status": "parses"
   },
   {
+    "path": "watch",
+    "status": "empty"
+  },
+  {
+    "path": "watch add",
+    "status": "empty"
+  },
+  {
+    "path": "watch chats",
+    "status": "parses"
+  },
+  {
+    "path": "watch check",
+    "status": "parses"
+  },
+  {
+    "path": "watch list",
+    "status": "parses"
+  },
+  {
+    "path": "watch remove",
+    "status": "empty"
+  },
+  {
     "path": "write",
     "status": "empty"
   }

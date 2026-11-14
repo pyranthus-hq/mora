@@ -77,6 +77,12 @@ func briefIsFresh(dated, now time.Time) bool { return briefartifactpkg.IsFresh(d
 // watermark. The result is renderDigest at the same budget the WRITE side
 // persists, so a generated brief is byte-shaped like a read one.
 func resolveBrief(cfg Config, now time.Time, opts briefOpts) (string, bool, error) {
+	watches, _, err := loadChatWatches(cfg)
+	// Watch-store errors are surfaced as an unavailable section by the builder.
+	// Watches change independently of the daily artifact and must stay live.
+	if err != nil || len(watches.Watches) > 0 {
+		opts.forceRegen = true
+	}
 	// Only the GLOBAL (unfiltered) brief uses the persisted cache — the disk file is
 	// the unfiltered brief, so a filtered request must bypass it and generate fresh
 	// (§3), or it would masquerade as "nothing's up".
@@ -86,7 +92,10 @@ func resolveBrief(cfg Config, now time.Time, opts briefOpts) (string, bool, erro
 			if err != nil {
 				return "", false, err
 			}
-			return reconcileCachedBriefHealth(cfg, now, string(body)), false, nil
+			// A cached watch section can outlive the last removed watch.
+			if !strings.Contains(string(body), "\n## Watched iMessage chats") {
+				return reconcileCachedBriefHealth(cfg, now, string(body)), false, nil
+			}
 		}
 	}
 

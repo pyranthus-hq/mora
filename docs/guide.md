@@ -439,6 +439,47 @@ If setup reports a permission error, complete the
 mora sync imessage
 ```
 
+### Watch an iMessage chat
+
+Watch one conversation while keeping every other chat imported:
+
+```bash
+mora sync imessage
+mora watch chats --query "Launch Crew"     # shows exact imported chat IDs
+mora watch add 'imessage_chat/<guid>'      # use an ID from the list
+mora watch list
+mora watch check                          # preview new or edited imported messages
+mora watch check 'imessage_chat/<guid>' --ack --limit 20
+mora watch remove 'imessage_chat/<guid>'   # stop watching; keep imported messages
+```
+
+Adding a watch baselines the messages currently imported, so existing history
+is not a notification flood. Re-adding it preserves pending updates. Watches use
+exact chat IDs, so duplicate names, renames, and people in multiple group chats
+do not widen the selection. Every command accepts `--json`.
+
+The watched section reports changes since acknowledgement, independently of the
+ordinary brief time window. Pending updates appear under **Watched iMessage chats** in the personal brief
+and MCP brief. While watches exist, `mora brief` regenerates from the local vault
+instead of reusing the daily file. Briefs preview changes without consuming them;
+`watch check --ack` acknowledges only the messages it displays (20 per chat by
+default, up to 100 with `--limit`). Omitted messages stay pending. JSON reports
+`ack_requested`; acknowledgement succeeds only when the command exits successfully.
+
+Watches read the imported copy; they do not sync on their own. Run `mora sync
+imessage` to refresh, or use the existing `ingest-hourly` schedule. A failed,
+stale, disabled or missing source is shown explicitly and cannot be acknowledged.
+A truncated chat only covers retained imported messages. Older backfilled messages
+may appear as newly seen; missing messages are never inferred to be deletions.
+
+Dated brief files remain historical snapshots; acknowledgement does not erase
+messages already written into them. `watch check` checks personal watches across
+the local vault; filtered briefs only include chats within their requested scope.
+
+Watch baselines live in the local state directory, separately from the daily
+brief watermark, and are not synced between machines. Watching, acknowledging,
+or removing a watch never changes which chats are imported or deletes messages.
+
 ### WhatsApp
 
 WhatsApp v1 reads WhatsApp Desktop's own local macOS store. Enabling consent and

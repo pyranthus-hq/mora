@@ -593,6 +593,14 @@
       "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
+      "json_contract": "exempt",
+      "kind": "verb",
+      "path": "watch",
+      "payload": "",
+      "platform": "all",
+      "reason": "command family; subcommands own receipts"
+    },
+    {
       "json_contract": "receipt",
       "kind": "subcommand",
       "path": "brief correct",
@@ -1114,6 +1122,22 @@
     },
     {
       "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "watch add",
+      "payload": "mora.watch.add",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
+      "path": "watch remove",
+      "payload": "mora.watch.remove",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
       "kind": "verb",
       "path": "backup",
       "payload": "mora.backup",
@@ -1469,6 +1493,30 @@
       "kind": "subcommand",
       "path": "usage report",
       "payload": "mora.usage.report",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "watch chats",
+      "payload": "mora.watch.chats",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "watch check",
+      "payload": "mora.watch.check",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "watch list",
+      "payload": "mora.watch.list",
       "platform": "all",
       "reason": ""
     },
@@ -2417,6 +2465,26 @@
     },
     {
       "name": "mora.version",
+      "version": 1
+    },
+    {
+      "name": "mora.watch.add",
+      "version": 1
+    },
+    {
+      "name": "mora.watch.chats",
+      "version": 1
+    },
+    {
+      "name": "mora.watch.check",
+      "version": 1
+    },
+    {
+      "name": "mora.watch.list",
+      "version": 1
+    },
+    {
+      "name": "mora.watch.remove",
       "version": 1
     },
     {

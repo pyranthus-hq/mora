@@ -162,6 +162,8 @@ func Heading(s Section) string {
 		return s.Label + " — no changes since last brief"
 	case "stale":
 		return s.Label + " — stale (no recent sync)"
+	case "watch unavailable":
+		return s.Label + " — unavailable (run mora watch check)"
 	case "unavailable":
 		return s.Label + " — unavailable (sync error)"
 	case "baseline":

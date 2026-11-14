@@ -1422,6 +1422,48 @@
       "platform": "all",
       "json_contract": "exempt",
       "reason": "print-only tunnel helper; its mora.remote.expose receipt is pinned by TestRemoteExposePrintsTunnelCommands and the no-exec property by TestRemoteExposeDoesNotRunTunnels"
+    },
+    {
+      "path": "watch",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "command family; subcommands own receipts"
+    },
+    {
+      "path": "watch chats",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.watch.chats"
+    },
+    {
+      "path": "watch add",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.watch.add"
+    },
+    {
+      "path": "watch list",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.watch.list"
+    },
+    {
+      "path": "watch check",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.watch.check"
+    },
+    {
+      "path": "watch remove",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "receipt",
+      "payload": "mora.watch.remove"
     }
   ]
 }

@@ -362,3 +362,27 @@ Command results belong on stdout. Diagnostics, including advisory `note:` and `w
 ## Open questions / unverified
 
 - The CLI has no global `--no-color`/`--color` flag. Color is controlled only by env (`NO_COLOR`/`MORA_NO_COLOR`/`TERM`) and TTY detection. This appears intentional but is not asserted anywhere I read.
+
+### iMessage watch commands
+
+`watch chats|add|list|check|remove` operates on imported iMessage memory IDs; it
+does not change connector consent, exclusions, or import windows. `watch add`
+baselines stable message evidence references and content hashes. `watch check`
+previews new/edited evidence with sender, time, direction and citation; `--ack`
+requires a fresh source and persists only displayed rows after output succeeds.
+Failed output cannot consume updates; a state-write error reports that display
+succeeded but acknowledgement did not. JSON `ack_requested` is intent, with exit
+status determining successful persistence.
+
+`internal/mora/watch.go` owns the adapter and guarded atomic state in
+`StateDir/chat-watches/<vault-path-hash>.json` (0600), fenced by vault identity.
+Seen references are retained when the import window moves, so reappearing evidence
+is not repeated and absence never implies deletion. Truncation remains explicit.
+Brief previews use already-filtered digest inputs, stay within existing budgets,
+and do not advance either watch state or source watermarks. Watch summary lines
+are excluded from source-watermark survival accounting. Active watches bypass the
+CLI daily artifact cache. Project/source/entity filters still bound watch content.
+
+Regression witnesses: `TestWatchLifecycle`, `TestWatchFailuresPreserveState`,
+`TestWatchUsageAndRefusals`, `TestWatchDigestIsScopedBudgetedAndIndependent`, and
+`TestWatchRetainedHistoryAndVaultIsolation`.

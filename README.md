@@ -28,7 +28,7 @@ Named after [Hermaeus Mora](https://www.elderscrollsonline.com/en-us/returning),
 
 ## What you can do with Mora
 
-- **Search your messages without a cloud inbox.** The iMessage connector reads your Mac's local Messages database in read-only mode, with no network calls. Find a conversation or retrieve the specific message behind a search result.
+- **Search your messages without a cloud inbox.** The iMessage connector reads your Mac's local Messages database in read-only mode, with no network calls. Find a conversation, retrieve the specific message behind a search result, or [watch a selected chat](docs/guide.md#watch-an-imessage-chat) for changes in your brief.
 - **Bring mail, meetings, and files together.** Read-only Gmail and calendar connectors put correspondence and events alongside your notes and documents. WhatsApp, Apple Calendar, and GitHub Issues are supported too.
 - **Explore context around a person.** A local people graph links people to messages and meetings. Your agent can retrieve evidence about a person and inspect connections through shared conversations and events.
 - **Walk into meetings with context.** Get a daily brief or prepare for a calendar event with cited prior conversations, open items, and source freshness.
