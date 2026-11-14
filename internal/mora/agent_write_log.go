@@ -198,10 +198,8 @@ func cmdUndo(ctx context.Context, args []string, stdout, stderr io.Writer) error
 }
 
 // undoMemory deletes one memory and appends the undo line. A non-empty
-// expectSHA is the content hash of the file the owner saw: the core refuses if
-// the file it reads differs, and deletes after that same read. A file system
-// has no compare-and-swap, so the window left is the time between that read and
-// the delete.
+// expectSHA is the content hash of the file the owner saw: the core checks it
+// and deletes while holding the shared saved-memory mutation guard.
 func undoMemory(ctx context.Context, cfg Config, m Memory, force bool, expectSHA string, stderr io.Writer) (agent, logged, reconcile bool, err error) {
 	err = withMemoryMutationGuard(cfg, m.ID, func() error {
 		if expectSHA != "" {
