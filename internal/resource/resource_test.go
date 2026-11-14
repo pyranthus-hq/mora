@@ -280,6 +280,12 @@ func TestDiscoverResourcesNoMatchAndIncompleteSkill(t *testing.T) {
 	if revision.Complete || revision.Availability != AvailabilityIncomplete {
 		t.Fatalf("missing required file is active: %#v", revision)
 	}
+	if _, _, err := ReadRevision(root, record.StableID, revision.RevisionDigest); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, outcome, err := Import(root, partial); err != nil || !outcome.Duplicate {
+		t.Fatalf("incomplete duplicate: %#v, %v", outcome, err)
+	}
 	results, err := Discover(root, Query{ProjectScope: "project:alpha", Task: "deployment", Bindings: []Binding{{ResourceID: record.StableID, RevisionDigest: revision.RevisionDigest, Scope: "project:alpha", Eligible: true, Active: true}}})
 	if err != nil || len(results) != 0 {
 		t.Fatalf("incomplete skill discovered: %#v, %v", results, err)

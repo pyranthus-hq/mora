@@ -155,7 +155,7 @@ func validateTree(root string) error {
 		if err := safePath(filepath.ToSlash(rel)); err != nil {
 			return err
 		}
-		if entry.Type()&os.ModeSymlink != 0 {
+		if entry.Type()&(os.ModeSymlink|os.ModeIrregular) != 0 {
 			return fmt.Errorf("%w: links are refused", ErrUnsafeSource)
 		}
 		key := strings.ToLower(filepath.ToSlash(rel))
@@ -203,7 +203,7 @@ func plainExistingDir(dir string) error {
 			}
 			return fmt.Errorf("not a plain directory: %s", current)
 		}
-		if !info.IsDir() {
+		if info.Mode().Type() != os.ModeDir {
 			return fmt.Errorf("not a plain directory: %s", current)
 		}
 		parent := filepath.Dir(current)

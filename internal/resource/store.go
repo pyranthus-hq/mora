@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -18,6 +19,8 @@ import (
 	"github.com/pyranthus-hq/mora/internal/leasefile"
 	"github.com/pyranthus-hq/mora/internal/managedtree"
 )
+
+const maxManifestBytes = 4 << 20
 
 // Import persists only intrinsic evidence. It never approves, activates,
 // executes, fetches, or materializes the imported resource.
@@ -62,6 +65,9 @@ func Import(root string, candidate Candidate) (Record, Revision, ImportOutcome, 
 			return err
 		}
 		if exists {
+			if record.StableID != id {
+				return ErrCorrupt
+			}
 			if record.Kind != c.Kind || (!derived && record.CanonicalSource != identity) {
 				return fmt.Errorf("%w: stable ID identity mismatch", ErrInvalidCandidate)
 			}
@@ -89,7 +95,7 @@ func Import(root string, candidate Candidate) (Record, Revision, ImportOutcome, 
 				return nil
 			}
 			outcome.Duplicate = true
-			return nil
+			return atomicio.SyncDir(resourceRoot)
 		}
 		if exists && c.StableID == "" && c.Kind != KindRepository {
 			return fmt.Errorf("%w: %s", ErrPriorStableIDRequired, id)
@@ -158,12 +164,15 @@ func plainChild(parent, name string, create bool) (string, error) {
 		if err := os.Mkdir(child, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 			return "", err
 		}
+		if err := atomicio.SyncDir(parent); err != nil {
+			return "", err
+		}
 		info, err = os.Lstat(child)
 	}
 	if err != nil {
 		return "", err
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+	if info.Mode().Type() != os.ModeDir {
 		return "", fmt.Errorf("%w: non-plain vault directory", ErrUnsafeSource)
 	}
 	return child, nil
@@ -188,14 +197,14 @@ func existingID(root string, kind Kind, identity string) (string, error) {
 		if !entry.IsDir() || !validID(entry.Name()) {
 			continue
 		}
-		if info, err := os.Lstat(filepath.Join(resources, entry.Name())); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		if info, err := os.Lstat(filepath.Join(resources, entry.Name())); err != nil || info.Mode().Type() != os.ModeDir {
 			continue
 		}
 		record, exists, err := readRecord(filepath.Join(resources, entry.Name(), "record.json"))
 		if err != nil {
 			continue // A corrupt unrelated record must not block a fresh resource.
 		}
-		if exists && record.Kind == kind && record.CanonicalSource == identity {
+		if exists && record.StableID == entry.Name() && record.Kind == kind && record.CanonicalSource == identity {
 			return record.StableID, nil
 		}
 	}
@@ -210,10 +219,10 @@ func storedRevisionMatches(revisionRoot string, expected Revision) (bool, error)
 	if err != nil {
 		return false, err
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+	if info.Mode().Type() != os.ModeDir {
 		return false, ErrCorrupt
 	}
-	body, err := readRegular(filepath.Join(revisionRoot, "manifest.json"), 128<<10)
+	body, err := readRegular(filepath.Join(revisionRoot, "manifest.json"), maxManifestBytes)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, ErrCorrupt
 	}
@@ -226,7 +235,7 @@ func storedRevisionMatches(revisionRoot string, expected Revision) (bool, error)
 	}
 	if actual.TreeDigest != "" {
 		tree, err := managedtree.DigestTree(filepath.Join(revisionRoot, "tree"))
-		if err != nil || tree.Digest != actual.TreeDigest {
+		if err != nil || !treeMatches(actual, tree) {
 			return false, ErrCorrupt
 		}
 	}
@@ -249,7 +258,11 @@ func ReadRevision(root, resourceID, revisionDigest string) (Record, Revision, er
 	if record.StableID != resourceID {
 		return Record{}, Revision{}, ErrNotFound
 	}
-	body, err := readRegular(filepath.Join(resourceRoot, "revisions", revisionDigest, "manifest.json"), 128<<10)
+	revisionRoot, err := plainChild(filepath.Join(resourceRoot, "revisions"), revisionDigest, false)
+	if err != nil {
+		return Record{}, Revision{}, ErrNotFound
+	}
+	body, err := readRegular(filepath.Join(revisionRoot, "manifest.json"), maxManifestBytes)
 	if err != nil {
 		return Record{}, Revision{}, ErrNotFound
 	}
@@ -259,7 +272,7 @@ func ReadRevision(root, resourceID, revisionDigest string) (Record, Revision, er
 	}
 	if revision.TreeDigest != "" {
 		actual, err := managedtree.DigestTree(filepath.Join(resourceRoot, "revisions", revisionDigest, "tree"))
-		if err != nil || actual.Digest != revision.TreeDigest {
+		if err != nil || !treeMatches(revision, actual) {
 			return Record{}, Revision{}, ErrNotFound
 		}
 	}
@@ -340,6 +353,9 @@ func buildRevision(record Record, c Candidate, tree managedtree.Revision) (Revis
 		r.Availability, r.Complete = AvailabilityIncomplete, false
 	}
 	r.RevisionDigest = revisionDigest(r)
+	if len(mustJSON(r)) > maxManifestBytes {
+		return Revision{}, ErrUnsafeSource
+	}
 	return r, nil
 }
 
@@ -395,7 +411,7 @@ func publishRevision(destination string, revision Revision, c Candidate, sourceT
 		return err
 	}
 	defer os.RemoveAll(stage)
-	if revision.Complete {
+	if revision.TreeDigest != "" {
 		tree := filepath.Join(stage, "tree")
 		if err := os.MkdirAll(tree, 0o700); err != nil {
 			return err
@@ -411,7 +427,7 @@ func publishRevision(destination string, revision Revision, c Candidate, sourceT
 			}
 		}
 		actual, err := managedtree.DigestTree(tree)
-		if err != nil || actual.Digest != revision.TreeDigest {
+		if err != nil || !treeMatches(revision, actual) {
 			return fmt.Errorf("%w: copied tree changed", ErrUnsafeSource)
 		}
 		if err := syncTree(tree); err != nil {
@@ -481,7 +497,7 @@ func readRecord(path string) (Record, bool, error) {
 		return Record{}, false, err
 	}
 	var r Record
-	if err := json.Unmarshal(body, &r); err != nil || !validID(r.StableID) || !validKind(r.Kind) || r.CanonicalSource == "" {
+	if err := json.Unmarshal(body, &r); err != nil || r.Schema != 1 || !validID(r.StableID) || !validKind(r.Kind) || r.CanonicalSource == "" {
 		return Record{}, false, fmt.Errorf("invalid resource record")
 	}
 	return r, true, nil
@@ -495,9 +511,19 @@ func readRegular(path string, max int64) ([]byte, error) {
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > max {
 		return nil, ErrCorrupt
 	}
-	f, err := os.Open(path)
+	root, err := os.OpenRoot(filepath.Dir(path))
 	if err != nil {
 		return nil, err
+	}
+	defer root.Close()
+	f, err := root.Open(filepath.Base(path))
+	if err != nil {
+		return nil, err
+	}
+	opened, err := f.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+		f.Close()
+		return nil, ErrCorrupt
 	}
 	body, readErr := io.ReadAll(io.LimitReader(f, max+1))
 	closeErr := f.Close()
@@ -513,13 +539,16 @@ func readRegular(path string, max int64) ([]byte, error) {
 	return body, nil
 }
 
+// Hard-link publication never exposes an empty record or replaces foreign bytes.
+// Filesystems without hard links are refused rather than using a crash-unsafe placeholder.
 func writeCreateExclusive(path string, body []byte) error {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	f, err := os.CreateTemp(filepath.Dir(path), ".resource-record-*")
 	if err != nil {
 		return err
 	}
+	defer os.Remove(f.Name())
 	if _, err = f.Write(body); err == nil {
-		err = f.Sync()
+		err = atomicio.MarkerSyncFn(f)
 	}
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
@@ -527,7 +556,23 @@ func writeCreateExclusive(path string, body []byte) error {
 	if err != nil {
 		return err
 	}
+	if err := os.Link(f.Name(), path); err != nil {
+		return err
+	}
 	return atomicio.SyncDir(filepath.Dir(path))
+}
+
+func treeMatches(expected Revision, actual managedtree.Revision) bool {
+	if len(expected.Files) != len(actual.Files) {
+		return false
+	}
+	for i, file := range expected.Files {
+		got := actual.Files[i]
+		if file.Path != got.Path || file.SHA256 != got.SHA256 || (runtime.GOOS != "windows" && file.Executable != got.Executable) {
+			return false
+		}
+	}
+	return true
 }
 
 func writeFileDurable(path string, body []byte, mode os.FileMode) error {
