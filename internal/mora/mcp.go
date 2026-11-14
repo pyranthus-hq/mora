@@ -986,6 +986,14 @@ func mcpBrief(ctx context.Context, cfg Config, args map[string]any) (any, error)
 	// A server started with --project-dir for a bound folder answers a bare
 	// brief with that project's rules; daily:true asks for the daily brief.
 	if p, ok := mcpProjectFrom(ctx); ok && !boolArg(args, "daily", false) {
+		if mcpWorkspaceManaged(ctx) {
+			filter, ferr := mcpProjectFilter(ctx, "", searchFilters{})
+			if ferr != nil {
+				return nil, ferr
+			}
+			text, ids, err := buildProjectBriefFiltered(cfg, p.scope, p.root, briefClock(), filter)
+			return projectBriefResult{Scope: p.scope, Root: p.root, Text: text, IDs: ids}, err
+		}
 		text, ids, err := buildProjectBrief(cfg, p.scope, p.root, briefClock())
 		return projectBriefResult{Scope: p.scope, Root: p.root, Text: text, IDs: ids}, err
 	}

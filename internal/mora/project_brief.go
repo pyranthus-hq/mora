@@ -129,8 +129,15 @@ func buildProjectBrief(cfg Config, scope, root string, now time.Time) (text stri
 	return buildProjectBriefWithin(cfg, scope, now, projectBriefMaxChars)
 }
 
+// buildProjectBriefFiltered is the managed-MCP variant. Its trusted filter is
+// applied while selecting records, before ordering or fitting the rendered
+// brief, so excluded connector records cannot displace an authored rule.
+func buildProjectBriefFiltered(cfg Config, scope, root string, now time.Time, filter searchFilters) (text string, emittedIDs []string, err error) {
+	return buildProjectBriefWithin(cfg, scope, now, projectBriefMaxChars, filter)
+}
+
 // buildProjectBriefWithin fits whole lines to the byte budget left by the caller.
-func buildProjectBriefWithin(cfg Config, scope string, now time.Time, maxBytes int) (text string, emittedIDs []string, err error) {
+func buildProjectBriefWithin(cfg Config, scope string, now time.Time, maxBytes int, filters ...searchFilters) (text string, emittedIDs []string, err error) {
 	// A hand-edited projects.json must not point the brief at personal notes.
 	if err := validProjectScope(scope); err != nil {
 		return "", nil, err
@@ -138,7 +145,7 @@ func buildProjectBriefWithin(cfg Config, scope string, now time.Time, maxBytes i
 	var rules, notes []projectBriefLine
 	var handoffs []Memory
 	for rank, sc := range []string{scope, "global"} {
-		mems, err := listMemories(cfg, sc, 0)
+		mems, err := listMemories(cfg, sc, 0, filters...)
 		if err != nil {
 			return "", nil, err
 		}

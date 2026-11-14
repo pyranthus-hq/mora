@@ -84,6 +84,11 @@ func (c *workspaceMCPClient) call(id int, name string, args map[string]any) map[
 	return c.next(id)
 }
 
+func (c *workspaceMCPClient) listTools(id int) map[string]json.RawMessage {
+	c.send(map[string]any{"jsonrpc": "2.0", "id": id, "method": "tools/list"})
+	return c.next(id)
+}
+
 func (c *workspaceMCPClient) next(id int) map[string]json.RawMessage {
 	c.t.Helper()
 	for frame := range c.frames {
@@ -213,34 +218,83 @@ func TestMCPProjectSessionRootsSnapshotPreventsCrossProjectReads(t *testing.T) {
 	pbSeed(t, cfg, "global-id", "global", "fact", "Global title", "needle-global", 3)
 	pbSeed(t, cfg, "personal-id", "personal", "fact", "Personal title", "needle-personal", 4)
 	pbSeed(t, cfg, "raw-id", "project:a", "fact", "Raw title", "needle-raw", 5, func(m *Memory) { m.Provider = "gmail" })
+	pbOwner(t, cfg, "brief-a", "project:a", "decision", "A rule", "Keep A isolated.", 6)
+	pbOwner(t, cfg, "brief-raw", "project:a", "decision", "Raw rule", "Never expose connector text.", 7, func(m *Memory) { m.Provider = "gmail" })
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
 	c := newWorkspaceMCPClient(t, []mcppkg.Root{{URI: mcpProjectTestURI(a)}})
+	listed := string(c.listTools(2)["result"])
+	for _, name := range []string{"search_memory", "read_memory", "list_memory", "context_memory", "write_memory", "brief"} {
+		if !strings.Contains(listed, name) {
+			t.Fatalf("managed catalog omitted safe tool %q: %s", name, listed)
+		}
+	}
+	if strings.Contains(listed, "calendar_events") || strings.Contains(listed, "delete_memory") {
+		t.Fatalf("managed catalog exposed unsafe tools: %s", listed)
+	}
 
-	result := c.call(2, "search_memory", map[string]any{"query": "needle"})
+	result := c.call(3, "search_memory", map[string]any{"query": "needle"})
 	if got := string(result["result"]); !strings.Contains(got, "A title") || !strings.Contains(got, "Global title") || strings.Contains(got, "B title") || strings.Contains(got, "Personal title") || strings.Contains(got, "Raw title") {
 		t.Fatalf("A search leaked or omitted scope: %s", got)
 	}
-	result = c.call(3, "read_memory", map[string]any{"id": "b-id"})
+	result = c.call(4, "read_memory", map[string]any{"id": "b-id"})
 	if got := string(result["result"]); !strings.Contains(got, "not found") || strings.Contains(got, "B title") {
 		t.Fatalf("foreign direct read leaked: %s", got)
 	}
 
 	c.setRoots([]mcppkg.Root{{URI: mcpProjectTestURI(b)}})
-	result = c.call(4, "search_memory", map[string]any{"query": "needle"})
+	result = c.call(5, "search_memory", map[string]any{"query": "needle"})
 	if got := string(result["result"]); !strings.Contains(got, "B title") || !strings.Contains(got, "Global title") || strings.Contains(got, "A title") {
 		t.Fatalf("B request did not use its own roots snapshot: %s", got)
 	}
 	c.setRoots([]mcppkg.Root{{URI: mcpProjectTestURI(unbound)}})
-	result = c.call(5, "search_memory", map[string]any{"query": "needle"})
+	result = c.call(6, "search_memory", map[string]any{"query": "needle"})
 	if got := string(result["result"]); !strings.Contains(got, errMCPWorkspaceUnavailable.Error()) || strings.Contains(got, "A title") || strings.Contains(got, "B title") {
 		t.Fatalf("unbound request fell back to broad reads: %s", got)
 	}
 	c.setRoots([]mcppkg.Root{{URI: mcpProjectTestURI(a)}})
-	result = c.call(6, "list_memory", map[string]any{})
+	result = c.call(7, "list_memory", map[string]any{})
 	if got := string(result["result"]); !strings.Contains(got, "A title") || !strings.Contains(got, "Global title") || strings.Contains(got, "B title") || strings.Contains(got, "Personal title") {
 		t.Fatalf("A rebind leaked or omitted scope: %s", got)
+	}
+	result = c.call(8, "context_memory", map[string]any{"query": "needle"})
+	if got := string(result["result"]); !strings.Contains(got, "A title") || !strings.Contains(got, "Global title") || strings.Contains(got, "B title") || strings.Contains(got, "Personal title") || strings.Contains(got, "Raw title") {
+		t.Fatalf("context assembled foreign or raw rows: %s", got)
+	}
+	result = c.call(9, "brief", map[string]any{})
+	if got := string(result["result"]); !strings.Contains(got, "A rule") || strings.Contains(got, "Raw rule") || strings.Contains(got, "brief-raw") {
+		t.Fatalf("brief assembled a raw connector rule: %s", got)
+	}
+}
+
+func TestMCPProjectSessionWorkspaceFailsClosedAndProjectDirWins(t *testing.T) {
+	mcpProjectSetup(t)
+	dir, _ := mcpProjectBind(t, "project:explicit")
+
+	noRoots, _ := mcpProjectServe(t, []string{"--workspace"}, [2]any{"search_memory", map[string]any{"query": "anything"}})
+	if got := noRoots[0].Result.Instructions; got != errMCPWorkspaceUnavailable.Error() {
+		t.Fatalf("workspace without roots initialized as %q", got)
+	}
+	if result := noRoots[1].Result; !result.IsError || !strings.Contains(result.Content[0].Text, errMCPWorkspaceUnavailable.Error()) {
+		t.Fatalf("workspace without roots served a broad tool call: %+v", result)
+	}
+
+	// --project-dir is the legacy administrator surface; it remains deliberate
+	// and has precedence even when a managed client has not declared roots.
+	explicit, _ := mcpProjectServe(t, []string{"--workspace", "--project-dir", dir}, [2]any{"brief", map[string]any{}})
+	if explicit[0].Result.Instructions == errMCPWorkspaceUnavailable.Error() || explicit[1].Result.IsError {
+		t.Fatalf("explicit project-dir did not win over unavailable roots: %+v", explicit)
+	}
+
+	other := t.TempDir()
+	if _, _, err := bindProjectDir(testCtx(t), other, "project:other"); err != nil {
+		t.Fatal(err)
+	}
+	c := newWorkspaceMCPClient(t, []mcppkg.Root{{URI: mcpProjectTestURI(dir)}, {URI: mcpProjectTestURI(other)}})
+	result := c.call(2, "search_memory", map[string]any{"query": "anything"})
+	if got := string(result["result"]); !strings.Contains(got, errMCPWorkspaceUnavailable.Error()) {
+		t.Fatalf("ambiguous roots did not fail closed: %s", got)
 	}
 }
 
