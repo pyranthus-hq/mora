@@ -279,7 +279,7 @@ func cmdReviewDesktop(ctx context.Context, args []string, stdout io.Writer, stdi
 		return err
 	}
 	if args[0] == "--stdio" {
-		return serveDesktopReviewStdio(ctx, cfg, newNativeOwnerVerifier(cfg), stdin, stdout)
+		return serveNativeDesktopReview(ctx, cfg, stdin, stdout)
 	}
 	return emitReceipt(stdout, "mora.review.desktop", 1, desktopReviewOutcome{Status: "unavailable", IndexVisibility: "not_checked"})
 }

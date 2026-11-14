@@ -4,6 +4,7 @@ package mora
 
 import (
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -33,4 +34,8 @@ func (darwinNativeOwnerPeer) identity() (string, bool) {
 
 func newNativeOwnerVerifier(cfg Config) desktopReviewVerifier {
 	return newNativeOwnerVerifierForPeer(cfg, darwinNativeOwnerPeer{})
+}
+
+func serveNativeDesktopReview(ctx context.Context, cfg Config, stdin io.Reader, stdout io.Writer) error {
+	return serveDesktopReviewStdio(ctx, cfg, newNativeOwnerVerifier(cfg), stdin, stdout)
 }

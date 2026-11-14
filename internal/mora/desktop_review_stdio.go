@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -14,18 +15,21 @@ import (
 const desktopReviewFrameLimit = 1 << 20
 
 type desktopReviewFrame struct {
-	Schema            string              `json:"schema"`
-	SchemaVersion     int                 `json:"schema_version"`
-	Op                string              `json:"op"`
-	Kind              string              `json:"kind,omitempty"`
-	ID                string              `json:"id,omitempty"`
-	Action            desktopReviewAction `json:"action,omitempty"`
-	CanonicalRevision string              `json:"canonical_revision,omitempty"`
-	DisplayDigest     string              `json:"display_digest,omitempty"`
-	Nonce             string              `json:"nonce,omitempty"`
-	PublicKeyP256     string              `json:"public_key_p256_b64,omitempty"`
-	CredentialID      string              `json:"credential_id,omitempty"`
-	SignatureDER      string              `json:"signature_der_b64,omitempty"`
+	Schema             string              `json:"schema"`
+	SchemaVersion      int                 `json:"schema_version"`
+	Op                 string              `json:"op"`
+	Kind               string              `json:"kind,omitempty"`
+	ID                 string              `json:"id,omitempty"`
+	Action             desktopReviewAction `json:"action,omitempty"`
+	CanonicalRevision  string              `json:"canonical_revision,omitempty"`
+	DisplayDigest      string              `json:"display_digest,omitempty"`
+	Nonce              string              `json:"nonce,omitempty"`
+	PublicKeyP256      string              `json:"public_key_p256_b64,omitempty"`
+	CredentialID       string              `json:"credential_id,omitempty"`
+	SignatureDER       string              `json:"signature_der_b64,omitempty"`
+	ClientDataJSON     string              `json:"client_data_json_b64,omitempty"`
+	AuthenticatorData  string              `json:"authenticator_data_b64,omitempty"`
+	AssertionSignature string              `json:"assertion_signature_der_b64,omitempty"`
 }
 
 type desktopReviewFrameError struct {
@@ -122,6 +126,25 @@ func handleDesktopReviewFrame(ctx context.Context, cfg Config, authority *deskto
 		bytes, err := base64.StdEncoding.DecodeString(value)
 		return bytes, err == nil && len(bytes) > 0
 	}
+	webProof := func(requireSignature bool) (nativeOwnerWebAuthnProof, bool) {
+		credential, ok := decode(request.CredentialID)
+		if !ok {
+			return nativeOwnerWebAuthnProof{}, false
+		}
+		client, ok := decode(request.ClientDataJSON)
+		if !ok {
+			return nativeOwnerWebAuthnProof{}, false
+		}
+		auth, ok := decode(request.AuthenticatorData)
+		if !ok {
+			return nativeOwnerWebAuthnProof{}, false
+		}
+		signature, ok := decode(request.AssertionSignature)
+		if requireSignature && !ok {
+			return nativeOwnerWebAuthnProof{}, false
+		}
+		return nativeOwnerWebAuthnProof{CredentialID: credential, ClientDataJSON: client, AuthenticatorData: auth, SignatureDER: signature}, true
+	}
 	switch request.Op {
 	case "list":
 		notes, err := listReviewNotes(cfg, io.Discard)
@@ -148,16 +171,34 @@ func handleDesktopReviewFrame(ctx context.Context, cfg Config, authority *deskto
 		}
 		return desktopReviewFrameResponse{Enrolled: &enrolled, ReadOnly: &readOnly, InstallationID: installationID}
 	case "enroll.begin":
-		public, ok := decode(request.PublicKeyP256)
-		if !ok {
-			return desktopReviewFrameFailure("ERR_INVALID_REQUEST", "invalid enrollment request")
+		var challenge nativeOwnerEnrollmentChallenge
+		var signed []byte
+		var err error
+		if runtime.GOOS == "windows" && request.PublicKeyP256 == "" && request.CredentialID == "" {
+			challenge, signed, err = verifier.beginEnrollmentWebAuthn(time.Now())
+		} else {
+			public, ok := decode(request.PublicKeyP256)
+			if !ok {
+				return desktopReviewFrameFailure("ERR_INVALID_REQUEST", "invalid enrollment request")
+			}
+			challenge, signed, err = verifier.beginEnrollment(public, request.CredentialID, time.Now())
 		}
-		challenge, signed, err := verifier.beginEnrollment(public, request.CredentialID, time.Now())
 		if err != nil {
 			return desktopReviewFrameFailure("ERR_OWNER_VERIFICATION_UNAVAILABLE", "desktop owner verification is unavailable")
 		}
 		return desktopReviewFrameResponse{ChallengeBytesB64: base64.StdEncoding.EncodeToString(signed), KeyID: challenge.KeyID, Nonce: challenge.Nonce}
 	case "enroll.complete":
+		if runtime.GOOS == "windows" {
+			proof, ok := webProof(false)
+			if !ok {
+				return desktopReviewFrameFailure("ERR_INVALID_REQUEST", "invalid enrollment proof")
+			}
+			if err := verifier.completeEnrollmentWebAuthn(request.Nonce, proof, time.Now()); err != nil {
+				return desktopReviewFrameFailure("ERR_OWNER_VERIFICATION_UNAVAILABLE", "desktop enrollment was not accepted")
+			}
+			enrolled, readOnly := true, false
+			return desktopReviewFrameResponse{Enrolled: &enrolled, ReadOnly: &readOnly}
+		}
 		proof, ok := decode(request.SignatureDER)
 		if !ok {
 			return desktopReviewFrameFailure("ERR_INVALID_REQUEST", "invalid enrollment proof")
@@ -178,6 +219,17 @@ func handleDesktopReviewFrame(ctx context.Context, cfg Config, authority *deskto
 		}
 		return desktopReviewFrameResponse{ChallengeBytesB64: base64.StdEncoding.EncodeToString(signed), KeyID: challenge.KeyID, Nonce: challenge.Nonce, Outcome: nil}
 	case "decision.complete":
+		if runtime.GOOS == "windows" {
+			proof, ok := webProof(true)
+			if !ok {
+				return desktopReviewFrameFailure("ERR_INVALID_REQUEST", "invalid decision proof")
+			}
+			out, err := newDesktopReviewAuthority(cfg, nativeOwnerWebAuthnSessionVerifier{base: verifier, proof: proof}).complete(ctx, request.Nonce, nil, false)
+			if err != nil {
+				return desktopReviewFrameFailure(desktopReviewErrorCode(err), "desktop decision was not accepted")
+			}
+			return desktopReviewFrameResponse{Outcome: &out}
+		}
 		proof, ok := decode(request.SignatureDER)
 		if !ok {
 			return desktopReviewFrameFailure("ERR_INVALID_REQUEST", "invalid decision proof")

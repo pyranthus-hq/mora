@@ -8,11 +8,13 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -106,6 +108,98 @@ func TestNativeOwnerEnrollmentPreservesCorruptRecord(t *testing.T) {
 	got, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(got, broken) {
 		t.Fatalf("corrupt enrollment changed: %q, %v", got, err)
+	}
+}
+
+func TestNativeOwnerWebAuthnValidationRejectsChangedTrustFields(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	challenge := []byte("opaque-go-challenge")
+	credential := []byte("credential")
+	auth := make([]byte, 37)
+	copy(auth, nativeOwnerWindowsRPHash())
+	auth[32] = nativeOwnerWebAuthnUP | nativeOwnerWebAuthnUV
+	client := nativeOwnerWebAuthnClientData("webauthn.get", challenge)
+	clientHash := sha256.Sum256(client)
+	signed := append(append([]byte(nil), auth...), clientHash[:]...)
+	sum := sha256.Sum256(signed)
+	signature, err := ecdsa.SignASN1(rand.Reader, key, sum[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof := nativeOwnerWebAuthnProof{CredentialID: credential, ClientDataJSON: client, AuthenticatorData: auth, SignatureDER: signature}
+	if !nativeOwnerVerifyWebAuthn(&key.PublicKey, credential, challenge, proof) {
+		t.Fatal("valid assertion rejected")
+	}
+	for name, mutate := range map[string]func(*nativeOwnerWebAuthnProof){
+		"credential": func(p *nativeOwnerWebAuthnProof) { p.CredentialID = []byte("other") },
+		"origin": func(p *nativeOwnerWebAuthnProof) {
+			p.ClientDataJSON = []byte(`{"type":"webauthn.get","challenge":"b3BhcXVlLWdvLWNoYWxsZW5nZQ","origin":"https://other","crossOrigin":false}`)
+		},
+		"up":        func(p *nativeOwnerWebAuthnProof) { p.AuthenticatorData[32] = nativeOwnerWebAuthnUV },
+		"uv":        func(p *nativeOwnerWebAuthnProof) { p.AuthenticatorData[32] = nativeOwnerWebAuthnUP },
+		"rp":        func(p *nativeOwnerWebAuthnProof) { p.AuthenticatorData[0] ^= 1 },
+		"signature": func(p *nativeOwnerWebAuthnProof) { p.SignatureDER[len(p.SignatureDER)-1] ^= 1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			altered := nativeOwnerWebAuthnProof{CredentialID: append([]byte(nil), proof.CredentialID...), ClientDataJSON: append([]byte(nil), proof.ClientDataJSON...), AuthenticatorData: append([]byte(nil), proof.AuthenticatorData...), SignatureDER: append([]byte(nil), proof.SignatureDER...)}
+			mutate(&altered)
+			if nativeOwnerVerifyWebAuthn(&key.PublicKey, credential, challenge, altered) {
+				t.Fatal("accepted altered webauthn assertion")
+			}
+		})
+	}
+}
+
+func TestNativeOwnerWebAuthnEnrollmentDerivesAttestedCredential(t *testing.T) {
+	cfg := Config{StateDir: t.TempDir()}
+	verifier := newNativeOwnerVerifierForPeer(cfg, nativeOwnerTestPeer{value: "test-app", trusted: true})
+	challenge, signed, err := verifier.beginEnrollmentWebAuthn(time.Now())
+	if err != nil || challenge.Nonce == "" || len(signed) == 0 {
+		t.Fatalf("begin webauthn enrollment = %#v, %v", challenge, err)
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential := []byte("credential-id")
+	auth := make([]byte, 37+16+2+len(credential))
+	copy(auth, nativeOwnerWindowsRPHash())
+	auth[32] = nativeOwnerWebAuthnUP | nativeOwnerWebAuthnUV | nativeOwnerWebAuthnAT
+	binary.BigEndian.PutUint16(auth[53:55], uint16(len(credential)))
+	copy(auth[55:], credential)
+	cose := []byte{0xa5, 0x01, 0x02, 0x03, 0x26, 0x20, 0x01, 0x21, 0x58, 0x20}
+	cose = append(cose, key.X.FillBytes(make([]byte, 32))...)
+	cose = append(cose, 0x22, 0x58, 0x20)
+	cose = append(cose, key.Y.FillBytes(make([]byte, 32))...)
+	auth = append(auth, cose...)
+	proof := nativeOwnerWebAuthnProof{CredentialID: credential, ClientDataJSON: nativeOwnerWebAuthnClientData("webauthn.create", signed), AuthenticatorData: auth}
+	if err := verifier.completeEnrollmentWebAuthn(challenge.Nonce, proof, time.Now()); err != nil {
+		t.Fatalf("complete webauthn enrollment = %v", err)
+	}
+	record, err := verifier.enrollment()
+	if err != nil || record.CredentialID != base64.StdEncoding.EncodeToString(credential) || len(record.PublicKeyP256) != 65 {
+		t.Fatalf("enrollment record = %#v, %v", record, err)
+	}
+}
+
+func TestNativeOwnerHelperDigestRejectsEmptyWrongAndRebuiltBytes(t *testing.T) {
+	good := sha256.Sum256([]byte("review helper"))
+	for _, tc := range []struct {
+		name, body, digest string
+		want               bool
+	}{
+		{"empty", "review helper", "", false}, {"wrong", "review helper", strings.Repeat("0", 64), false},
+		{"rebuilt", "review helper changed", hex.EncodeToString(good[:]), false}, {"exact", "review helper", hex.EncodeToString(good[:]), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := nativeOwnerHelperDigestMatches(strings.NewReader(tc.body), tc.digest)
+			if (err == nil) != tc.want {
+				t.Fatalf("digest result = %v", err)
+			}
+		})
 	}
 }
 
