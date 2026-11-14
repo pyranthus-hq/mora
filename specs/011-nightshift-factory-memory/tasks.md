@@ -1,22 +1,27 @@
 # Tasks: NightShift consumes Mora
 
-All boxes remain open for live acceptance. The released adapter and its
-limits are recorded in the [0.19 map](../mora-0.19.md).
+The [qualification receipt](qualification.md) records the macOS fixture
+results. Live factory acceptance remains open.
 
 ## Qualify the released pair
 
-- [ ] T001 [NightShift] Run NightShift v0.4.0 with the checksum-pinned Mora
-  0.17.0 binary in a disposable connector-free vault. Record both revisions,
-  OS, scoped brief and search, owner rule and advisory note labels,
-  unconfirmed terminal writes, and visible missing or changed-binary
-  degradation. Verify personal-connector startup refusal. Use synthetic
-  data and keep the existing live factory untouched.
-- [ ] T002 [Joint] Pin Mora's revision; map supported scoped operations, generic authorization, provenance/trust/status metadata and demonstrated gaps. Test repositories with the same normalized short name. Keep factory/run semantics in NightShift. Propose any missing generic Mora capability separately. Depends on T001.
+- [x] T001 [NightShift] Run the released pair in disposable macOS vaults.
+  Check scoped recall, same-name collisions, mismatched briefs, unconfirmed
+  terminal writes, missing/wrong checksum degradation, and independent
+  vault write protection. See [results](qualification.md).
+- [ ] T002 [Joint] Validate connector startup refusal, owner-confirmed rule
+  and advisory-note labels, and the real pinned pair on the intended
+  factory host. Confirm the server-controlled factory/repository mapping
+  and approved corpus. Depends on T001.
 
 ## Pull integration after qualification
 
 - [ ] T003 [NightShift/deployment] Select the bounded pilot, supported OS, factory-to-scope mapping, approved corpus and read-only worker access. Verify provider/deployment isolation including shell access. Prove that the shipped terminal writes cannot persist in the read-only pilot. Depends on T002.
-- [ ] T004 [NightShift] Reuse the upstream integration path and adapt only demonstrated gaps. Preserve source/revision/trust mapping, exclude unapproved context and keep execution approvals authoritative in NightShift. Depends on T003.
+- [ ] T004 [NightShift] Implement the stable repository/factory binding,
+  collision refusal, brief scope/root validation, and read-only mode that
+  skips terminal writes. Retest same-name repos and a wrongly bound or
+  unbound checkout with the real binary. Verify approved-only admission,
+  unchanged execution approval, and zero terminal write calls. Depends on T003.
 - [ ] T005 [NightShift] Confirm actual context limits/deadlines; record supplied context and visible advisory/required-context behavior through supported interfaces. Keep retries, snapshots and run recovery consumer-owned. Depends on T004.
 - [ ] T006 [Independent tester] Run relevant FM-A/FM-B read cases, FM-D1 and FM-E on pinned builds. Publish commands and receipts; stop on isolation/authority failures. No write-back gate is required for pull-only acceptance. Depends on T005.
 

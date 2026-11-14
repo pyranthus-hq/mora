@@ -3,8 +3,8 @@
 **Feature**: `011-nightshift-factory-memory`
 
 **Status**: Mora 0.19 integration. NightShift v0.4.0 ships the adapter.
-Live qualification of the pinned pair is open. See the
-[released baseline](../mora-0.19.md#released-baseline).
+The macOS real-binary fixture run found scope and write-policy gaps.
+Live factory acceptance remains open. See the [qualification receipt](qualification.md).
 
 **Acceptance**: Relevant FM-A/FM-B read cases, FM-D1 and FM-E for the pull integration. FM-C/FM-D2 and capture-specific requirements are deferred options, not read-only or Mora 0.18 gates. E2 remains the separate startup-budget prerequisite.
 
@@ -62,14 +62,31 @@ NightShift owns the adapter, factory-to-scope mapping, retrieval timing, admissi
 
 NightShift v0.4.0 uses a checksum-pinned Mora 0.17.0 CLI and already
 attempts unconfirmed writes at the end of runs. Reuse this adapter. The
-first qualification runs the real released pair in an isolated synthetic
-vault and records brief and search results, provenance and approval
-labels, terminal writes, and degradation. The release derives
-`project:<repo>` from the normalized short repository name. Detect
-collisions and isolate factories before using shared infrastructure.
+fixture run used the real released pair in an isolated synthetic vault.
+The release derives `project:<repo>` from the normalized short repository
+name. The required adapter changes below follow from the observed results.
 
 For the initial pull integration, retain the relevant FM-A/FM-B read cases, FM-D1 outage behavior and FM-E usefulness comparison as consumer acceptance targets. Scope isolation, trustworthy provenance, exclusion of unapproved context and unchanged execution approvals remain required. FM-A restore repetition applies if the tested deployment restores from backup; FM-D2 capture restore remains deferred. Its installed rules/skills routes apply only if that deployment installs them, in which case the existing 003/005 contracts apply. Measure aggregate recall latency and bytes. The CLI implementation has a 15-second default timeout per command and the brief is capped at 1,999 characters. The earlier five-second aggregate target needs separate qualification.
 
 Write-back, the outbox and canonical idempotency proposal in FM03, persisted factory checkpoints, FM-C and FM-D2 capture/restore tests are deferred design options. They are not prerequisites for the pull integration, default read-only use, or Mora 0.18. Default read-only use requires its read gates and an explicit deployment decision. If later work needs a missing Mora capability, propose a generic memory capability separately, with evidence that the consumer cannot meet the need through existing interfaces. Do not replace provider-side integrity with adapter-only deduplication or weaken access/trust checks to keep the boundary abstract.
 
 For the pull-only pilot, prove the deployment blocks persistence of the shipped terminal writes while still allowing scoped recall. Verify connector refusal and keep the personal vault outside the factory boundary.
+
+### Released adapter changes
+
+- Resolve scope from a stable, server-controlled factory and full repository
+  identity. Refuse a collision before binding or recall. Preserve an existing
+  unambiguous scope only through an explicit mapping. Verify that a missing,
+  stale, or mismatched checkout binding returns a visible degraded result
+  with no memory text. Validate the brief's scope and canonical root against
+  that binding as well as each search result's scope.
+- Give NightShift's Mora adapter an explicit read-only mode. Skip terminal
+  note and handoff commands in that mode and make the disabled write-back
+  visible without reporting an outage or a successful write. Provision the
+  binding before entering read-only mode. Keep the approved factory vault
+  protected by an independent filesystem or service boundary. Mora's
+  `mcp_write_policy=readonly` applies to MCP calls. The shipped adapter calls
+  the CLI, which the fixture showed can still persist records under that setting.
+- Qualify these changes with the shipped Mora 0.17.0 pin before testing a
+  newer version. Any new pin must pass the same compatibility and isolation
+  cases. Keep factory policy in NightShift and deployment.

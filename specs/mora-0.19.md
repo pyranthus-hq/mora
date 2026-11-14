@@ -17,19 +17,23 @@ results as rules and other results as advisory notes. At run end it writes
 unconfirmed outcome notes and a handoff. Its ledger records identifiers and
 hashes. Owner review remains in Mora, and NightShift owns run approval.
 
-The upstream [daemon test](https://github.com/abhikarode/nightshift/blob/7f7c4eb1134edd9c448c82be7cfd1ab651c78dbe/tests/e2e/memory-mora-daemon.e2e.ts) uses
-a fake Mora executable. Begin with the real pinned binary in a disposable
-factory vault before making live compatibility or isolation claims.
+A [real-binary fixture run](011-nightshift-factory-memory/qualification.md)
+on macOS arm64 confirmed scoped recall for distinct, correctly bound
+projects. Two scope checks failed. Repositories with the same short name
+shared an effective scope, and a mismatched checkout mixed the returned
+brief with the expected project's search results. MCP read-only allowed
+both CLI writes. A filesystem write barrier preserved recall and blocked
+both writes.
 
 ## Build order
 
-1. Run [the adapter acceptance tasks](011-nightshift-factory-memory/tasks.md)
-   against the released pair. Measure scope isolation, trust labels,
-   bounded degradation and the write outcomes. Test repositories with the
-   same short name and ensure the pilot can prevent a shared scope.
-2. Qualify the read-only pilot using the existing adapter. Enforce the
-   read-only boundary before the run. The shipped adapter attempts terminal
-   writes, so the pilot must demonstrate those writes cannot persist.
+1. Fix the demonstrated [adapter gaps](011-nightshift-factory-memory/spec.md#released-adapter-changes).
+   Use a stable factory/repository binding, reject collisions and invalid
+   bindings, and validate the returned brief before it can reach a prompt.
+2. Add an explicit read-only mode that skips terminal notes and handoffs.
+   Keep the independent vault write barrier and qualify it on the intended
+   factory host. Run the remaining [acceptance tasks](011-nightshift-factory-memory/tasks.md)
+   with the real binary and approved corpus before a live pilot.
 3. Test the Spearhead logging, recovery and recall workflow. Keep NightShift
    in charge of editing the spec, reapproval and run state. Capture, replay,
    restore and wider deployment are separate acceptance work.

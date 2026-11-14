@@ -16,13 +16,11 @@ Reuse [002 governance](../002-governance-baseline/spec.md), [001 review](../001-
 
 ## Next checkpoint
 
-The [released baseline](../mora-0.19.md#released-baseline) pins NightShift
-v0.4.0 and Mora 0.17.0. Reuse the shipped adapter and qualify the released
-pair in an isolated Linux or macOS fixture. Check matching binaries,
-short-name scope collisions, connector refusal, trust labels and end-of-run
-writes. Upstream fake-binary tests supply regression cases. Before a live
-read-only pilot, prove the deployment prevents terminal write persistence
-while scoped reads still work.
+The [macOS qualification](qualification.md) tested NightShift v0.4.0 and
+the real Mora 0.17.0 pin. Fix the [demonstrated adapter gaps](spec.md#released-adapter-changes)
+in scope binding, brief validation, and read-only write suppression.
+Retest against the real binary on the intended factory host. Enforce
+vault write protection and verify connector refusal and trust labels.
 
 ## Pull integration after qualification
 
@@ -35,4 +33,4 @@ while scoped reads still work.
 
 FM03 write-back/outbox/idempotency, factory checkpoint persistence, FM-C and FM-D2 capture/restore acceptance, multi-origin sync and wider rollout require a later scope decision. The earlier detailed factory section is a design checklist subject to the controlling architecture clarification, not a mandate to add factory concepts to Mora. If write-back is later selected, preserve provider-side integrity and governed writes; adapter-only deduplication cannot be presented as a crash-safe guarantee.
 
-No production implementation is delivered by this planning update. The first implementation decision follows qualification with the real binary.
+No production implementation is delivered by this planning update. The fixture results define the required NightShift adapter changes.
