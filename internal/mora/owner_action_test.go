@@ -74,6 +74,19 @@ func TestPublicOwnerActionsFailClosedWithoutVerifier(t *testing.T) {
 	if err := cmdForget(testCtx(t), []string{"--chat", "owner-proof-probe", "--yes"}, ioDiscard{}, ioDiscard{}); !errors.Is(err, errOwnerVerificationUnavailable) {
 		t.Fatalf("marker-cleared forget = %v", err)
 	}
+	for name, args := range map[string][]string{
+		"handoff mine":    {"handoff", "write", "--mine"},
+		"teach memory":    {"teach", "memory", "correct"},
+		"teach consent":   {"teach", "consent", "enable"},
+		"merge":           {"merge", "confirm"},
+		"rule off":        {"rules", "off", "compound-cd"},
+		"rule grant":      {"rules", "grant", "compound-cd", "--to", "project:demo", "--as", "owner", "--key", "/missing.pub"},
+		"proposal reject": {"mcp", "proposals", "reject", "missing"},
+	} {
+		if err := Run(testCtx(t), args, ioDiscard{}, ioDiscard{}, strings.NewReader("yes\n")); !errors.Is(err, errOwnerVerificationUnavailable) {
+			t.Fatalf("marker-cleared %s = %v", name, err)
+		}
+	}
 }
 
 func TestCLIDestructivePolicyRefusesBeforeMutationAndOpenExecutes(t *testing.T) {
@@ -100,13 +113,20 @@ func TestCLIDestructivePolicyRefusesBeforeMutationAndOpenExecutes(t *testing.T) 
 		{"undo-force", func(m Memory) error { return cmdUndo(testCtx(t), []string{"--force", m.ID}, ioDiscard{}, ioDiscard{}) }},
 	} {
 		t.Run(operation.name, func(t *testing.T) {
-			m := seed("policy " + operation.name)
-			if err := operation.run(m); err == nil || !strings.Contains(err.Error(), "does not authorize destructive") {
-				t.Fatalf("tentative %s = %v", operation.name, err)
+			for _, policy := range []string{mcppkg.WritePolicyTentative, mcpWritePolicyPropose, mcpWritePolicyReadonly} {
+				m := seed("policy " + operation.name + " " + policy)
+				cfg.MCPWritePolicy = policy
+				if err := writeConfig(cfg); err != nil {
+					t.Fatal(err)
+				}
+				if err := operation.run(m); err == nil {
+					t.Fatalf("%s %s = %v", policy, operation.name, err)
+				}
+				if _, err := findMemory(cfg, m.ID); err != nil {
+					t.Fatalf("refused %s changed memory: %v", operation.name, err)
+				}
 			}
-			if _, err := findMemory(cfg, m.ID); err != nil {
-				t.Fatalf("refused %s changed memory: %v", operation.name, err)
-			}
+			m := seed("open " + operation.name)
 			cfg.MCPWritePolicy = mcpWritePolicyOpen
 			if err := writeConfig(cfg); err != nil {
 				t.Fatal(err)
