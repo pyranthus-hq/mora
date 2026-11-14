@@ -7,6 +7,7 @@ import (
 	configstore "github.com/pyranthus-hq/mora/internal/config"
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -18,9 +19,8 @@ const (
 
 // unsetMCPWritePolicy is what an install without an mcp_write_policy line
 // resolves to. In production it is always mcppkg.DefaultWritePolicy. It is a
-// variable only so this package's TestMain can keep the many older tests that
-// exercise open-mode writes after a bare `mora init` on their old behavior;
-// write_policy_default_test.go restores the shipped value and pins it.
+// variable only so tests can pin the shipped default while exercising an
+// isolated configuration. Production always uses mcppkg.DefaultWritePolicy.
 var unsetMCPWritePolicy = mcppkg.DefaultWritePolicy
 
 func parseMCPWritePolicy(raw string) (string, error) { return configstore.ParseMCPWritePolicy(raw) }
@@ -56,9 +56,15 @@ func cliTaskMutationAllowed(cfg Config) error {
 // stageCLICapture reuses the normal proposal queue, preserving the authored
 // memory fields instead of creating a second raw-CLI staging format.
 func stageCLICapture(cfg Config, m Memory, heldBecause []string) (any, error) {
+	if err := refuseOwnerConfirmedTags(m.Tags); err != nil {
+		return nil, err
+	}
+	if len(m.Tags) != 0 {
+		return nil, errors.New("CLI proposal staging does not support tags; remove --tags or use mcp_write_policy=open")
+	}
 	args := map[string]any{
 		"scope": m.Scope, "type": m.Type, "title": m.Title, "text": m.Text,
-		"source": m.Source, "tags": append([]string(nil), m.Tags...),
+		"source": m.Source,
 	}
 	if m.Meta != nil {
 		if target, ok := m.Meta["target"].(string); ok {
@@ -71,7 +77,7 @@ func stageCLICapture(cfg Config, m Memory, heldBecause []string) (any, error) {
 	if m.Decision != nil {
 		args["as_of"] = m.Decision.AsOf
 		args["durability"] = m.Decision.Durability
-		args["flip_conditions"] = append([]string(nil), m.Decision.FlipConditions...)
+		args["flip_conditions"] = strings.Join(m.Decision.FlipConditions, ";")
 		args["review_by"] = m.Decision.ReviewBy
 	}
 	return stageMCPWriteProposalHeld(cfg, args, "cli", heldBecause)

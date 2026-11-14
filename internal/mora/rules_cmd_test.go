@@ -33,6 +33,7 @@ func clearAgentEnv(t *testing.T) {
 // the person types typed.
 func stubRulesTerminal(t *testing.T, typed string) {
 	t.Helper()
+	withTestVerifiedOwnerAction(t)
 	clearAgentEnv(t)
 	prevInteractive, prevConfirm := rulesInteractive, rulesReadConfirm
 	rulesInteractive = func(io.Reader) bool { return true }

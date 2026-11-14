@@ -3,6 +3,7 @@ package mora
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -20,9 +21,30 @@ func withUnavailableOwnerVerifier(t *testing.T) {
 	t.Cleanup(func() { ownerActionVerifier = previous })
 }
 
+// withTestVerifiedOwnerAction is an explicit, per-test verifier for legacy
+// kernel/provenance fixtures. It is never installed by TestMain, and public
+// route tests keep the production-unavailable verifier unless they opt in.
+func withTestVerifiedOwnerAction(t *testing.T) {
+	t.Helper()
+	previous := ownerActionVerifier
+	ownerActionVerifier = func(action ownerAction) error {
+		if action.Kind == "" {
+			return errors.New("test owner verifier requires an action kind")
+		}
+		if key := rulesAgentSession(); key != "" {
+			if strings.HasPrefix(action.Kind, "rule.") {
+				return fmt.Errorf(rulesAgentRefusal, key)
+			}
+			return fmt.Errorf("refusing %s from inside an agent session (%s is set). The owner can run it from their own terminal.", action.Kind, key)
+		}
+		return nil
+	}
+	t.Cleanup(func() { ownerActionVerifier = previous })
+}
+
 func TestPublicOwnerActionsFailClosedWithoutVerifier(t *testing.T) {
-	withUnavailableOwnerVerifier(t)
 	cfg := reviewSetup(t)
+	withUnavailableOwnerVerifier(t)
 	clearAgentEnv(t) // A cleared marker and a fake terminal are still not proof.
 	previousInteractive := rulesInteractive
 	rulesInteractive = func(io.Reader) bool { return true }
@@ -74,20 +96,30 @@ func TestCLICaptureAndTaskPolicyMatrix(t *testing.T) {
 			}
 			var out, errOut bytes.Buffer
 			err := Run(testCtx(t), []string{"write", "--scope", "project:demo", "--type", "fact", "--title", "CLI policy", "--text", "body", "--json"}, &out, &errOut, nil)
-			if policy.wantErr {
-				if err == nil {
-					t.Fatal("readonly capture wrote")
-				}
-				return
+			if policy.wantErr && err == nil {
+				t.Fatal("readonly capture wrote")
 			}
-			if err != nil {
+			if !policy.wantErr && err != nil {
 				t.Fatalf("write = %v; %s", err, errOut.String())
+			}
+			if policy.wantErr {
+				if err := Run(testCtx(t), []string{"tasks", "add", "policy task"}, ioDiscard{}, ioDiscard{}, nil); err == nil {
+					t.Fatal("readonly task mutation succeeded")
+				}
+			}
+			handoffOut, handoffRunErr := hoCmd(t, cfg, "write", "--scope", "project:demo", "--title", "CLI policy handoff", "--text", "Direction: retain policy")
+			if policy.wantErr {
+				if handoffRunErr == nil {
+					t.Fatalf("readonly handoff mutation succeeded: %q", handoffOut)
+				}
+			} else if handoffRunErr != nil {
+				t.Fatalf("handoff capture = %v", handoffRunErr)
 			}
 			files, err := allMemoryFiles(cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if (len(files) == 1) != policy.wantMemory {
+			if (len(files) > 0) != policy.wantMemory {
 				t.Fatalf("memory files = %v, wantMemory=%v", files, policy.wantMemory)
 			}
 			if policy.wantMemory {
@@ -96,19 +128,68 @@ func TestCLICaptureAndTaskPolicyMatrix(t *testing.T) {
 					t.Fatalf("captured memory = %+v, %v", m, err)
 				}
 			}
-			if !policy.wantMemory {
-				if pending, err := pendingMCPProposalCount(cfg); err != nil || pending != 1 {
+			if policy.write == mcpWritePolicyPropose {
+				if pending, err := pendingMCPProposalCount(cfg); err != nil || pending < 1 {
 					t.Fatalf("pending capture proposal = %d, %v", pending, err)
 				}
 			}
 			before, _ := os.ReadFile(filepath.Join(cfg.VaultDir, "live-tasks.md"))
-			if err := Run(testCtx(t), []string{"tasks", "add", "policy task"}, ioDiscard{}, ioDiscard{}, nil); err == nil && policy.write != mcpWritePolicyOpen {
+			taskAddErr := Run(testCtx(t), []string{"tasks", "add", "policy task"}, ioDiscard{}, ioDiscard{}, nil)
+			if policy.write == mcpWritePolicyOpen && taskAddErr != nil {
+				t.Fatalf("open task add = %v", taskAddErr)
+			}
+			if policy.write != mcpWritePolicyOpen && taskAddErr == nil {
 				t.Fatal("non-open task mutation succeeded")
+			}
+			doneErr := Run(testCtx(t), []string{"tasks", "done", "policy task"}, ioDiscard{}, ioDiscard{}, nil)
+			syncErr := Run(testCtx(t), []string{"tasks", "sync", "--write"}, ioDiscard{}, ioDiscard{}, nil)
+			if policy.write == mcpWritePolicyOpen && (doneErr != nil || syncErr != nil) {
+				t.Fatalf("open task done/sync = %v / %v", doneErr, syncErr)
+			}
+			if policy.write != mcpWritePolicyOpen && (doneErr == nil || syncErr == nil) {
+				t.Fatalf("non-open task done/sync = %v / %v", doneErr, syncErr)
 			}
 			after, _ := os.ReadFile(filepath.Join(cfg.VaultDir, "live-tasks.md"))
 			if policy.write != mcpWritePolicyOpen && !bytes.Equal(before, after) {
 				t.Fatal("refused task mutation changed live-tasks.md")
 			}
 		})
+	}
+}
+
+func TestCLIProposalStagingPreservesDecisionFieldsOrRefusesTags(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	cfg.MCPWritePolicy = mcpWritePolicyPropose
+	if err := writeConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	m := Memory{
+		Scope: "project:demo", Type: "decision", Title: "Staged decision", Text: "Keep the verified field values.", Source: "manual",
+		Decision: &DecisionValidity{AsOf: "2026-11-13T00:00:00Z", Durability: decisionStanding, FlipConditions: []string{"first condition", "second condition"}, ReviewBy: "2026-12-01T00:00:00Z"},
+	}
+	staged, err := stageCLICapture(cfg, m, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := staged.(map[string]any)["proposal"].(map[string]any)
+	id := pending["id"].(string)
+	memoryID, err := decideMCPWriteProposal(testCtx(t), cfg, id, "approve")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := findMemory(cfg, memoryID)
+	if err != nil || stored.Decision == nil || strings.Join(stored.Decision.FlipConditions, "|") != "first condition|second condition" || stored.Decision.ReviewBy != m.Decision.ReviewBy {
+		t.Fatalf("staged decision = %+v, %v", stored, err)
+	}
+	m.Tags = []string{"keep"}
+	if _, err := stageCLICapture(cfg, m, nil); err == nil || !strings.Contains(err.Error(), "does not support tags") {
+		t.Fatalf("tagged proposal = %v", err)
+	}
+	m.Tags = []string{memory.OwnerConfirmedTagPrefix + "forged"}
+	if _, err := stageCLICapture(cfg, m, nil); err == nil || !strings.Contains(err.Error(), "reserved prefix") {
+		t.Fatalf("reserved tag proposal = %v", err)
 	}
 }

@@ -11,6 +11,7 @@ import (
 )
 
 func TestTeachConcurrentCorrectionsCompareCurrentBeforeCreating(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
@@ -117,6 +118,7 @@ func TestTeachConcurrentCorrectionsCompareCurrentBeforeCreating(t *testing.T) {
 }
 
 func TestTeachUndoCannotRestoreAncestorAfterConcurrentCorrection(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)

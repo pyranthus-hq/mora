@@ -253,6 +253,7 @@ func TestRetentionInvalidCompactionIsAtomic(t *testing.T) {
 }
 
 func TestTeachUnsafeScopeOverride(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	for _, decision := range []string{"correct", "supersede"} {
 		t.Run(decision, func(t *testing.T) {
 			withTempHome(t)

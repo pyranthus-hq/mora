@@ -678,11 +678,11 @@ neither authorizes a Keep or Discard decision. The command accepts only pending
 `saved` and `held` IDs, does not prompt, and makes no vault, state, index, or
 proposal-queue changes.
 
-`mora review` needs your own terminal. It refuses when stdin is not a terminal
-or an agent session variable is set. Keep and reject do what `mora confirm` or
-`mora mcp proposals approve` (keep), and `mora undo` or
-`mora mcp proposals reject` (reject), do. If a note changes after it is shown,
-the walk does not act on it and shows it again.
+`mora review --list` and `--show` are read-only. Keep and reject require a
+verified owner action bound to the shown revision and digest. No production
+owner verifier is installed yet, so the interactive decision path returns
+`ERR_OWNER_VERIFICATION_UNAVAILABLE`; a terminal, typed response, or cleared
+agent marker is not authority proof.
 
 While agent notes wait for review, Mora says so: the `write_memory` result
 (`review_notice`), `mora brief`, the MCP brief, the session-start hook and

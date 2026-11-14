@@ -20,6 +20,7 @@ func imsgNamedMM(guid, handle, name string) memory.MappedMemory {
 }
 
 func TestMergeDuplicateNameHandleVariantsStayReviewOnly(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	if err := writeMappedMemory(cfg, imsgNamedMM("riya-work", "+14155550123", "Riya Sharma")); err != nil {
 		t.Fatal(err)
@@ -107,6 +108,7 @@ func aliasesOf(t *testing.T, cfg Config, name string) []string {
 // one-tap `mora merge confirm` collapses the phone contact and the email into one
 // person carrying both identities.
 func TestMergeConfirmUnifiesEmailPhone(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	if err := writeMappedMemory(cfg, imsgNamedMM("solo", "+14155550123", "Riya Sharma")); err != nil {
 		t.Fatal(err)
@@ -219,6 +221,7 @@ func TestMergeDecisionsResolvesAtoms(t *testing.T) {
 // TestMergeConfirmPersistsProvenance proves the confirmed fusion is durably recorded
 // in the person_merges table for audit.
 func TestMergeConfirmPersistsProvenance(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	if err := writeMappedMemory(cfg, imsgNamedMM("solo", "+14155550123", "Riya Sharma")); err != nil {
 		t.Fatal(err)

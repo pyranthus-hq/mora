@@ -3,6 +3,7 @@ package mora
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -37,11 +38,29 @@ func mineArgs(cmd string, extra ...string) []string {
 // minePlain saves an ordinary agent note and returns its id.
 func minePlain(t *testing.T, extra ...string) string {
 	t.Helper()
-	var r struct{ ID string }
-	if err := json.Unmarshal([]byte(run(t, append(mineArgs("write", extra...), "--json")...)), &r); err != nil || r.ID == "" {
-		t.Fatalf("plain write: %v", err)
+	title := "Heron cache choice"
+	for i := 0; i+1 < len(extra); i++ {
+		if extra[i] == "--title" {
+			title = extra[i+1]
+		}
 	}
-	return r.ID
+	cfg := mustConfig(t)
+	m, op, err := createMemory(testCtx(t), cfg, Memory{
+		Scope: "project:demo", Type: "decision", Title: title,
+		Text: "Use the heron cache for all lookups.", Source: "manual", CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := indexUpsert(testCtx(t), cfg, m); err != nil {
+		t.Fatal(err)
+	}
+	if authoredWriteProjectionPending(cfg, op) {
+		if err := markFTSCommitted(cfg, op); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return m.ID
 }
 
 func mineHasTag(m Memory) bool {
@@ -138,15 +157,16 @@ func TestWriteMineSavesNothingWithoutAYes(t *testing.T) {
 
 func TestWriteMineRefusesOutsideTheOwnerTerminal(t *testing.T) {
 	reviewSetup(t)
+	withUnavailableOwnerVerifier(t)
 	clearAgentEnv(t)
 
-	// A pipe: the real terminal check, not the test fake.
+	// A pipe and a terminal-looking stdin are not trusted owner authority.
 	_, _, err := mineRun(t, strings.NewReader(mineYes), mineArgs("write", "--mine")...)
-	if err == nil || !strings.Contains(err.Error(), "non-interactive") {
+	if !errors.Is(err, errOwnerVerificationUnavailable) {
 		t.Fatalf("pipe: %v", err)
 	}
 	_, _, err = mineRun(t, nil, mineArgs("write", "--mine")...)
-	if err == nil {
+	if !errors.Is(err, errOwnerVerificationUnavailable) {
 		t.Fatal("nil stdin was accepted")
 	}
 
@@ -159,7 +179,7 @@ func TestWriteMineRefusesOutsideTheOwnerTerminal(t *testing.T) {
 			}
 			defer os.Unsetenv(key)
 			_, _, err := mineRun(t, strings.NewReader(mineYes), mineArgs("write", "--mine")...)
-			if err == nil || !strings.Contains(err.Error(), key) {
+			if !errors.Is(err, errOwnerVerificationUnavailable) {
 				t.Fatalf("%s set: err = %v", key, err)
 			}
 		}()
@@ -171,6 +191,10 @@ func TestWriteMineRefusesOutsideTheOwnerTerminal(t *testing.T) {
 
 func TestPlainWriteIsNeverOwnerConfirmed(t *testing.T) {
 	cfg := reviewSetup(t)
+	cfg.MCPWritePolicy = mcpWritePolicyOpen
+	if err := writeConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
 	reviewTerminal(t) // even in the owner terminal
 	out := run(t, mineArgs("write")...)
 	// run merges stderr: the one-line terminal hint is expected, the receipt is the rest.
@@ -277,12 +301,13 @@ func TestConfirmMineAsksThenConfersOwnerConfirmed(t *testing.T) {
 
 func TestConfirmMineRefusesOutsideTheOwnerTerminal(t *testing.T) {
 	cfg := reviewSetup(t)
+	withUnavailableOwnerVerifier(t)
 	clearAgentEnv(t)
 	id := minePlain(t)
 	before, _ := os.ReadFile(ownerMemory(t, cfg, id).Path)
 
 	_, _, err := mineRun(t, strings.NewReader(mineYes), "confirm", id, "--mine")
-	if err == nil || !strings.Contains(err.Error(), "non-interactive") {
+	if !errors.Is(err, errOwnerVerificationUnavailable) {
 		t.Fatalf("pipe: %v", err)
 	}
 	reviewTerminal(t)
@@ -293,7 +318,7 @@ func TestConfirmMineRefusesOutsideTheOwnerTerminal(t *testing.T) {
 			}
 			defer os.Unsetenv(key)
 			_, _, err := mineRun(t, strings.NewReader(mineYes), "confirm", id, "--mine")
-			if err == nil || !strings.Contains(err.Error(), key) {
+			if !errors.Is(err, errOwnerVerificationUnavailable) {
 				t.Fatalf("%s set: err = %v", key, err)
 			}
 		}()
