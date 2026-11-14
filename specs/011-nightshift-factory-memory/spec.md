@@ -2,7 +2,9 @@
 
 **Feature**: `011-nightshift-factory-memory`
 
-**Status**: Consumer integration planning; product acceptance open. Mora stays abstract and NightShift pulls from it. Inspect the actual v0.4.0 integration before further design. The architecture clarification below controls over earlier implementation and rollout proposals.
+**Status**: Mora 0.19 integration. NightShift v0.4.0 ships the adapter.
+Live qualification of the pinned pair is open. See the
+[released baseline](../mora-0.19.md#released-baseline).
 
 **Acceptance**: Relevant FM-A/FM-B read cases, FM-D1 and FM-E for the pull integration. FM-C/FM-D2 and capture-specific requirements are deferred options, not read-only or Mora 0.18 gates. E2 remains the separate startup-budget prerequisite.
 
@@ -18,7 +20,7 @@ As a factory operator, I can recover acknowledged captures and the last verified
 
 ## NightShift factory memory — integration workstream
 
-This workstream extends the existing 0.18 foundation for one NightShift factory, one repository and one authoritative writable host first. Select and record the supported factory host OS before implementation; the Mac/Windows client checks do not establish Linux factory support. It specifies the integration and its acceptance; it does not claim implementation or make wider factory rollout a 0.18 release gate. NightShift remains authoritative for tasks, runs, specs, approvals, budgets and execution. Mora provides cited knowledge and continuity across runs.
+This workstream starts with one isolated NightShift factory and one repository. Qualify recall and writes in fixtures before deciding on a live read-only deployment. Select and record the supported factory host OS before implementation; the Mac/Windows client checks do not establish Linux factory support. It specifies the integration and its acceptance; it does not claim implementation or make wider factory rollout a 0.18 release gate. NightShift remains authoritative for tasks, runs, specs, approvals, budgets and execution. Mora provides cited knowledge and continuity across runs.
 
 Reuse the existing governance and exact-revision review requirements (F/G1), project isolation tests (E1), context budgets (E2), session handoff pilot (D1), and governed friction/recovery pilot (DR1). These are prerequisites and reusable tests, not new parallel systems. Keep the broader skill library, personal cross-project recall, 15-minute sync and multi-owner sharing outside this factory pilot. A project tool catalog is not an access grant; adding brief or skills to a catalog must not widen a factory's permissions.
 
@@ -54,14 +56,20 @@ Read-only pilot: FM01, the read/admission portion of FM02, source/context contro
 
 ### Architecture direction — Mora stays abstract
 
-This clarification supersedes the implementation ownership and rollout commitments in the preceding factory section. Mora remains a general-purpose, agent-agnostic memory service. NightShift is a consumer that pulls from Mora through supported scoped interfaces. Mora does not acquire factory, task, run, pipeline, scheduling or execution-approval concepts for this integration. This also overrides earlier requirement verbs: factory identity mapping and adapter implementation belong to NightShift/deployment; FM03's proposed Mora publication changes are deferred generic capability candidates, not current requirements or a transfer of integrity guarantees to adapter-only deduplication. The earlier writable-host wording concerns a deferred capture topology; the initial consumer is read-only on a supported host selected after inspection.
+This clarification supersedes the implementation ownership and rollout commitments in the preceding factory section. Mora remains a general-purpose, agent-agnostic memory service. NightShift is a consumer that pulls from Mora through supported scoped interfaces. Mora does not acquire factory, task, run, pipeline, scheduling or execution-approval concepts for this integration. This also overrides earlier requirement verbs: factory identity mapping and adapter implementation belong to NightShift/deployment; FM03's proposed Mora publication changes are deferred generic capability candidates, not current requirements or a transfer of integrity guarantees to adapter-only deduplication. A writable production host is a deferred capture topology. The initial live pilot is read-only on a supported host.
 
 NightShift owns the adapter, factory-to-scope mapping, retrieval timing, admission to prompts, context snapshots, budgets, retries and run recovery. Mora owns generic authorization, scope enforcement, memory records, provenance, revision/trust metadata and honest retrieval/index status. A namespace may be opaque to Mora; the meaning of a factory ID belongs to NightShift. Consumer-side filtering never substitutes for the provider/deployment access boundary. Existing governed writes and review semantics remain intact.
 
-The next checkpoint is to inspect NightShift v0.4.0's actual Mora integration or introduction once available, pin its revision and document the interface it exposes. This is an inspection target, not a claim that v0.4.0 has shipped or that its integration works. Reuse that path and fill only demonstrated gaps. Do not freeze a new factory protocol, Mora schema, service topology or duplicated adapter before this inspection.
+NightShift v0.4.0 uses a checksum-pinned Mora 0.17.0 CLI and already
+attempts unconfirmed writes at the end of runs. Reuse this adapter. The
+first qualification runs the real released pair in an isolated synthetic
+vault and records brief and search results, provenance and approval
+labels, terminal writes, and degradation. The release derives
+`project:<repo>` from the normalized short repository name. Detect
+collisions and isolate factories before using shared infrastructure.
 
-For the initial pull integration, retain the relevant FM-A/FM-B read cases, FM-D1 outage behavior and FM-E usefulness comparison as consumer acceptance targets. Scope isolation, trustworthy provenance, exclusion of unapproved context and unchanged execution approvals remain required. FM-A restore repetition applies if the tested deployment restores from backup; FM-D2 capture restore remains deferred. Its installed rules/skills routes apply only if that deployment installs them, in which case the existing 003/005 contracts apply. Confirm the adapter's actual context limits, deadline and supported deployment after inspecting v0.4.0; earlier numbers and the dedicated-service topology are provisional candidates, not new Mora guarantees.
+For the initial pull integration, retain the relevant FM-A/FM-B read cases, FM-D1 outage behavior and FM-E usefulness comparison as consumer acceptance targets. Scope isolation, trustworthy provenance, exclusion of unapproved context and unchanged execution approvals remain required. FM-A restore repetition applies if the tested deployment restores from backup; FM-D2 capture restore remains deferred. Its installed rules/skills routes apply only if that deployment installs them, in which case the existing 003/005 contracts apply. Measure aggregate recall latency and bytes. The CLI implementation has a 15-second default timeout per command and the brief is capped at 1,999 characters. The earlier five-second aggregate target needs separate qualification.
 
 Write-back, the outbox and canonical idempotency proposal in FM03, persisted factory checkpoints, FM-C and FM-D2 capture/restore tests are deferred design options. They are not prerequisites for the pull integration, default read-only use, or Mora 0.18. Default read-only use requires its read gates and an explicit deployment decision. If later work needs a missing Mora capability, propose a generic memory capability separately, with evidence that the consumer cannot meet the need through existing interfaces. Do not replace provider-side integrity with adapter-only deduplication or weaken access/trust checks to keep the boundary abstract.
 
-The first implementation decision follows the v0.4.0 inspection. No factory implementation, write-back rollout, or broader deployment is authorized or claimed by this planning clarification.
+For the pull-only pilot, prove the deployment blocks persistence of the shipped terminal writes while still allowing scoped recall. Verify connector refusal and keep the personal vault outside the factory boundary.

@@ -4,8 +4,9 @@
 
 - [ ] T001 Build the acceptance results matrix for the candidate SHA.
   Resolve which proposed cases have entered release scope. Attach the
-  actual-client evidence and leave deferred, failed, or untested rows
-  visible. Covers AC-FIRST-USE, AC-RELEASE, AC-COMPARE.
+  actual-client evidence, including [skill library](../012-skill-library/tasks.md)
+  T005 results for S001, and leave deferred, failed, or untested rows
+  visible. Covers AC-FIRST-USE, AC-RELEASE, AC-COMPARE, S001.
 
 ## Phase 2 — Run release acceptance
 

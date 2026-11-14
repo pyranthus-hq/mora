@@ -6,7 +6,8 @@ use the [rules](../003-owner-rules/tasks.md),
 [setup](../006-project-setup/tasks.md), and
 [budget](../008-startup-budget/tasks.md) acceptance results. Include
 [review](../001-cross-platform-review/tasks.md) T008 for the no-terminal
-review claim.
+review claim. Include [skill library](../012-skill-library/tasks.md) T005
+and the final E2 measurements with the library enabled.
 
 ## Delivery order
 

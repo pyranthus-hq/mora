@@ -1,6 +1,6 @@
 # Implementation Plan: NightShift consumes Mora
 
-**Input**: [Specification](spec.md), especially its controlling architecture clarification, and [release map](../mora-0.18.md). Product acceptance remains open.
+**Input**: [Specification](spec.md), especially its controlling architecture clarification, and [0.19 release map](../mora-0.19.md). Product acceptance remains open.
 
 ## Boundary
 
@@ -16,9 +16,15 @@ Reuse [002 governance](../002-governance-baseline/spec.md), [001 review](../001-
 
 ## Next checkpoint
 
-Inspect NightShift v0.4.0's actual Mora integration or introduction once available. Pin both revisions and record the interface, supported operations, trust metadata, access boundary and deployment assumptions. Availability and behavior are not yet verified by this plan. Reuse the upstream path; do not prebuild a competing adapter or freeze protocol/schema/topology choices before inspection.
+The [released baseline](../mora-0.19.md#released-baseline) pins NightShift
+v0.4.0 and Mora 0.17.0. Reuse the shipped adapter and qualify the released
+pair in an isolated Linux or macOS fixture. Check matching binaries,
+short-name scope collisions, connector refusal, trust labels and end-of-run
+writes. Upstream fake-binary tests supply regression cases. Before a live
+read-only pilot, prove the deployment prevents terminal write persistence
+while scoped reads still work.
 
-## Pull integration after inspection
+## Pull integration after qualification
 
 1. Compare the actual interface with existing Mora capabilities. Record only demonstrated gaps; any missing Mora feature must be proposed as a generic memory capability with separate scope.
 2. Select one bounded factory pilot and its supported host. Use a reviewed corpus and read-only worker access. Keep factory identity interpretation in NightShift and generic scope authorization in Mora/deployment.
@@ -29,4 +35,4 @@ Inspect NightShift v0.4.0's actual Mora integration or introduction once availab
 
 FM03 write-back/outbox/idempotency, factory checkpoint persistence, FM-C and FM-D2 capture/restore acceptance, multi-origin sync and wider rollout require a later scope decision. The earlier detailed factory section is a design checklist subject to the controlling architecture clarification, not a mandate to add factory concepts to Mora. If write-back is later selected, preserve provider-side integrity and governed writes; adapter-only deduplication cannot be presented as a crash-safe guarantee.
 
-No production implementation is delivered by this planning update. The first implementation decision follows the v0.4.0 inspection.
+No production implementation is delivered by this planning update. The first implementation decision follows qualification with the real binary.

@@ -21,9 +21,9 @@ loader use it for a recurring task in that project.
 - **FR-002**. The task can discover and load the skill in a fresh session.
   Other projects and the unrelated task must not load it. Detaching it
   removes only Mora-managed files.
-- **FR-003**. Changed content needs a new approval. A library, version
-  history, automatic suggestions or attachment, skills sync, and expanded
-  sub-agent support are follow-ups to the pilot.
+- **FR-003**. Changed content needs a new approval. The [0.18 skill library](../012-skill-library/spec.md) adds chat intake,
+  version history, and discovery after the pilot. Skill sync and expanded
+  sub-agent support remain follow-ups.
 
 ## Success Criteria
 

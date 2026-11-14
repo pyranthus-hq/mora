@@ -25,20 +25,19 @@ identifiers. The numbered list under Build first gives execution order.
    task. Use those results for scoped setup and project switching. Budget
    fixtures can start on the baseline. Recheck budgets against the final
    catalog and actual scoped setup.
-5. **Run both-host release acceptance last.** Use the chosen build and
+5. **Build the skill library.** After the one-skill pilot and scoped setup,
+   add skills from chat, project and global scope, and task-based discovery
+   for skills, best practices, repositories, and tools. Verify S001 on Mac
+   and Windows.
+6. **Run both-host release acceptance last.** Use the chosen build and
    approved scenarios, and record evidence for the release owner.
 
 D1 handoff persistence is an independent pilot after the baseline, using an
 authorized share. The friction feedback check is a companion pilot and can use
-existing read paths. Full kits, broader skill management, 15-minute sync,
+existing read paths. Full kits, 15-minute sync,
 and friction import expansion each require a separate scope decision.
 
-The [NightShift factory-memory workstream](011-nightshift-factory-memory/spec.md)
-keeps Mora abstract: NightShift pulls from supported scoped memory interfaces
-and owns factory semantics. First inspect the actual NightShift v0.4.0
-integration/introduction once available, then reuse it and address demonstrated
-gaps. Pull-only acceptance is separate from deferred capture/write-back.
-This planning work adds no product behavior or factory rollout gate to 0.18.
+See [Mora 0.19](mora-0.19.md) for NightShift factory integration.
 
 ## Feature packages
 
@@ -52,9 +51,9 @@ This planning work adds no product behavior or factory rollout gate to 0.18.
 | 5 | Project setup | [Spec](006-project-setup/spec.md) · [Plan](006-project-setup/plan.md) · [Tasks](006-project-setup/tasks.md) | Proposed. Full acceptance uses rule and skill fixtures. Full project kits are conditional. | E1, G |
 | 6 | Session handoffs and sync | [Spec](007-session-handoffs/spec.md) · [Plan](007-session-handoffs/plan.md) · [Tasks](007-session-handoffs/tasks.md) | D1 pilot after baseline. D depends on a wider sync decision. | D1, D |
 | 7 | Startup and diagnostics | [Spec](008-startup-budget/spec.md) · [Plan](008-startup-budget/plan.md) · [Tasks](008-startup-budget/tasks.md) | Proposed. Final measurements use the chosen catalog and scoped setup. | E, E2 |
-| 8 | Release validation | [Spec](009-release-validation/spec.md) · [Plan](009-release-validation/plan.md) · [Tasks](009-release-validation/tasks.md) | Last. Validate approved scope on the release candidate. | G, H, H1 |
+| 8 | Skill library | [Spec](012-skill-library/spec.md) · [Plan](012-skill-library/plan.md) · [Tasks](012-skill-library/tasks.md) | 0.18 release scope after the one-skill pilot and scoped setup. | S001 |
+| 9 | Release validation | [Spec](009-release-validation/spec.md) · [Plan](009-release-validation/plan.md) · [Tasks](009-release-validation/tasks.md) | Last. Validate approved scope on the release candidate. | G, H, H1 |
 | Companion | Friction feedback | [Spec](010-friction-feedback/spec.md) · [Plan](010-friction-feedback/plan.md) · [Tasks](010-friction-feedback/tasks.md) | Pilot. One reviewed report. No release dependency. | DR1 |
-| Integration | NightShift factory memory | [Spec](011-nightshift-factory-memory/spec.md) · [Plan](011-nightshift-factory-memory/plan.md) · [Tasks](011-nightshift-factory-memory/tasks.md) | Inspect v0.4.0 first; Mora stays abstract. Reuse generic governance/scope/budgets. Capture is deferred, not a pull-only gate. | Read: FM-A/FM-B, FM-D1, FM-E; deferred: FM-C/FM-D2 |
 
 ## Open any package
 
@@ -91,22 +90,28 @@ require their own scope decision before becoming release criteria.
 | F | Proposed release | Exercise MCP, CLI, handoff, correction, task, and imported-file paths that can introduce agent content. Under the configured write policy, verify each attempt is tentative, held, or refused. No case gains owner standing or activates a rule. The baseline covers existing write paths. After desktop review is available, run the separate G1 owner-proof and receipt controls. |
 | G | Proposed release | On Mac and Windows, start the timer at the end of installation and stop when the first rule-follow action is observed in a fresh session. The operator uses no terminal after install. Record the elapsed time without claiming a time target, and record first use and second-day use separately. |
 | G1 | Spec Kit pilot | Run the [review app acceptance](001-cross-platform-review/quickstart.md) on Mac and Windows. Launch directly and via the platform entry when available, Keep and Discard, Cancel, and verify scoped fresh-session recall with agent provenance intact. The linked AC-STALE checks cover changed or incomplete previews, expiry, replay, and a local caller without owner proof. |
+| S001 | Release | On Mac and Windows, add a skill from chat, approve its exact revision and project or global binding, discover and load it by task, and resolve project overrides. Verify scoped discovery of skills, best practices, repositories, and tools, with lifecycle, budget, and access controls. Run all [skill library acceptance checks](012-skill-library/spec.md#acceptance-test--skill-intake-and-discovery-s001). |
 | H | Release prerequisite | The candidate commit is on main and all required jobs, including Windows, are green before tagging. |
 | H1 | Pilot comparison | Rerun the shared-repo decision-recall prompts against a plain `DECISIONS.md`. Mora meets or exceeds its correct-answer count on the same fixture. Record the score separately from H. |
 | DR1 | Companion pilot | Verify idempotent, scoped recall of one reviewed report from a fresh agent, including devbox eligibility and an index refresh. See [friction acceptance](010-friction-feedback/spec.md#success-criteria). |
 
-## NightShift factory integration acceptance
+## Saahith design-partner walkthrough
 
-The factory cases extend existing checks; they do not replace A–H1 or DR1.
-See [011 specification](011-nightshift-factory-memory/spec.md) for complete
-pass conditions and the controlling architecture clarification. Relevant FM-A/FM-B
-read cases, FM-D1 and FM-E govern pull-only use; capture/write-back is deferred.
-Earlier numeric limits and topology are provisional until the v0.4.0 inspection.
+Use the Big Data Bowl project and a second disposable project to walk through
+client setup and scoped notes, one confirmed sub-agent rule, typed capture,
+and one approved skill for a recurring task. Verify the rule and skill in a
+fresh session, then switch projects and verify isolation. The setup guide
+should show where the managed project context goes in the client's instruction
+file, such as `CLAUDE.md`, and how to verify it in a fresh session.
 
-| Case | Extends | Factory pass condition |
-| --- | --- | --- |
-| FM-A | E1 | Same-repo factories remain isolated across tools, evidence, generated files, filesystem access, refresh and restore. Unbound/revoked identities refuse. |
-| FM-B | F/G1 | Exact trust mapping and human proof; no worker self-approval or injected authority; reproducible bundles and revocation-aware replay. |
-| FM-C (deferred) | D1/DR1 write paths | Four workers, 100 unique events, duplicate delivery and crash injection preserve captures/proposals exactly once logically, including restore and changed-payload conflicts. |
-| FM-D1/FM-D2 | D1 | FM-D1: visible bounded advisory failure and required-context blocking. FM-D2 (deferred capture): ledger-backed checkpoint recovery and isolated restore. |
-| FM-E | H1 | Frozen 20-task comparison with curated files and memory off; no harmful carry-over, baseline recall parity and a pre-registered material benefit, with cost measurements. |
+On Mac, open review directly and from the Mora Status menu bar. On Windows,
+launch from Start. Review and decide on the exact note, then verify recall.
+Check backup and sync health, last success, recovery guidance, and one alert
+per unresolved failure. Run the [desktop checks](001-cross-platform-review/quickstart.md)
+and record the Mac and Windows results separately.
+
+The portability tests cover one project skill on each host and one eligible
+handoff in each direction. After the one-skill walkthrough, run the chat
+intake and task-based library checks in S001. Automatic 15-minute
+cross-device sync remains conditional. The approved backup design uses one
+private vault for authorized backup and pulls, with separate scoped shares.

@@ -17,6 +17,6 @@
 ## Phase 3 — Record verification
 
 - [ ] T003 Cross-review the diff. Have a separate tester run the Mac and
-  Windows acceptance with the same task and control prompts. Record whether
-  the pilot earns wider scope. Depends on T002. Covers AC-SKILL,
+  Windows acceptance with the same task and control prompts. Record the result before starting
+  the [skill library](../012-skill-library/tasks.md). Depends on T002. Covers AC-SKILL,
   AC-SKILL-SCOPE.

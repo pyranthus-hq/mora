@@ -4,7 +4,7 @@
 
 **Status**: Release gate. Gather evidence after features reach acceptance.
 
-**Acceptance**: G and H, plus H1 pilot comparison. References the approved A–F, E1, E2, and G1 checks.
+**Acceptance**: G and H, plus H1 pilot comparison. References the approved A–F, E1, E2, and G1 checks, and the S001 skill-library release case.
 
 ## User Scenarios and Testing
 
