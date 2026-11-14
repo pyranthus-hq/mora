@@ -53,6 +53,10 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 		inv.err = unknownMCPToolError(name)
 		return inv
 	}
+	if !mcpProjectAllowsTool(ctx, name) {
+		inv.err = unknownMCPToolError(name)
+		return inv
+	}
 	inv.loggable = true
 	args = withProjectScope(ctx, name, args)
 	traced := context.WithValue(ctx, mcpUsageTraceKey{}, trace)

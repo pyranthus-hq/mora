@@ -44,6 +44,9 @@ func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin 
 		if a.hasDir {
 			ctx = withMCPServeProject(ctx, a.dir, stderr)
 		}
+		if a.workspace {
+			ctx = withMCPWorkspace(ctx)
+		}
 		if !a.hasProfile {
 			return serveMCP(ctx, stdout, stdin)
 		}
@@ -55,7 +58,7 @@ func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin 
 	if len(args) >= 2 && args[0] == "proposals" {
 		return cmdMCPProposals(ctx, args[1:], stdout, stderr)
 	}
-	return errors.New("usage: mora mcp serve [--profile NAME] [--project-dir DIR] | mora mcp serve-http [--port N] [--allow-host HOST] | mora mcp proposals <list|show ID|approve ID|reject ID>")
+	return errors.New("usage: mora mcp serve [--profile NAME] [--project-dir DIR] [--workspace] | mora mcp serve-http [--port N] [--allow-host HOST] | mora mcp proposals <list|show ID|approve ID|reject ID>")
 }
 
 // serveMCPProfile is `mora mcp serve --profile NAME`: stdio MCP bound to one
@@ -183,16 +186,41 @@ const budgetUnitTokens = "tokens"
 // (what the T0 gate measures) respects the ceiling while the knob still scales
 // (a 20k request yields a strictly larger compact budget than the 6k default).
 func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
+	var err error
+	if ctx, err = withMCPWorkspaceProject(ctx); err != nil {
+		return mcppkg.Dispatch(ctx, req,
+			func() any {
+				return map[string]any{"protocolVersion": "2024-11-05", "instructions": errMCPWorkspaceUnavailable.Error()}
+			},
+			func() any { return map[string]any{"tools": []any{}} },
+			func(context.Context, string, map[string]any) any {
+				return toCallToolResult(nil, errMCPWorkspaceUnavailable)
+			},
+		)
+	}
 	return mcppkg.Dispatch(ctx, req,
 		func() any {
 			cfg, err := loadConfigFor(ctx)
 			return withProjectInstruction(ctx, mcppkg.InitializeResult(BuildVersion, configMCPWritePolicy(cfg), err == nil), err == nil)
 		},
-		func() any { return map[string]any{"tools": mcppkg.RenderTools(mcppkg.ToolCatalog())} },
+		func() any { return map[string]any{"tools": mcppkg.RenderTools(mcpSessionToolCatalog(ctx))} },
 		func(ctx context.Context, name string, args map[string]any) any {
 			return invokeMCPTool(ctx, name, args).result()
 		},
 	)
+}
+
+func mcpSessionToolCatalog(ctx context.Context) []mcppkg.ToolDefinition {
+	catalog := mcppkg.ToolCatalog()
+	profile, profiled := agentProfileFrom(ctx)
+	out := make([]mcppkg.ToolDefinition, 0, len(catalog))
+	for _, tool := range catalog {
+		if !mcpProjectAllowsTool(ctx, tool.Name) || (profiled && !profile.allowsTool(tool.Name)) {
+			continue
+		}
+		out = append(out, tool)
+	}
+	return out
 }
 
 // toCallToolResult wraps a tool's native return value in a spec-compliant MCP
@@ -423,6 +451,11 @@ func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 	retrievalStarted := time.Now()
 	m, err := findMemory(cfg, strArg(args, "id", ""))
 	if err != nil {
+		if mcpWorkspaceManaged(ctx) {
+			recordMCPPhases(ctx, time.Since(retrievalStarted), 0)
+			recordMCPUsage(ctx, cfg, readUsageEvent(args, nil, false))
+			return nil, fmt.Errorf("memory %q not found", strArg(args, "id", ""))
+		}
 		// Same read-only shared-corpus fallback as `mora read`: search
 		// returns shared ids with 240-rune snippets, so read_memory is the
 		// documented expansion path for them too.
@@ -449,6 +482,11 @@ func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 		recordMCPPhases(ctx, time.Since(retrievalStarted), 0)
 		recordMCPUsage(ctx, cfg, readUsageEvent(args, nil, false))
 		return nil, err
+	}
+	if !mcpProjectAllowsMemory(ctx, m) {
+		recordMCPPhases(ctx, time.Since(retrievalStarted), 0)
+		recordMCPUsage(ctx, cfg, readUsageEvent(args, nil, false))
+		return nil, fmt.Errorf("memory %q not found", strArg(args, "id", ""))
 	}
 	if decorated, derr := decorateDispositions(cfg, []Memory{m}, time.Now()); derr != nil {
 		return nil, derr
@@ -531,6 +569,10 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	// fail-closed (never a silent no-filter) on an unrecognized source or a
 	// since_hours that is not a positive integer.
 	filters, ferr := parseSearchFilters(args, now)
+	if ferr != nil {
+		return nil, ferr
+	}
+	filters, ferr = mcpProjectFilter(ctx, scope, filters)
 	if ferr != nil {
 		return nil, ferr
 	}
@@ -674,6 +716,10 @@ func mcpListMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 	if err != nil {
 		return nil, err
 	}
+	filter, err = mcpProjectFilter(ctx, strArg(args, "scope", ""), filter)
+	if err != nil {
+		return nil, err
+	}
 	limit := intArg(args, "limit", 10)
 	if hours > 0 {
 		if value, ok := args["limit"]; ok {
@@ -736,6 +782,10 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 	query := strArg(args, "query", "")
 	tokenBudget, charBudget := resolveContextBudgetTokens(cfg, intArg(args, "max_tokens", 0))
 	filters, ferr := parseSearchFilters(args, now)
+	if ferr != nil {
+		return nil, ferr
+	}
+	filters, ferr = mcpProjectFilter(ctx, scope, filters)
 	if ferr != nil {
 		return nil, ferr
 	}
@@ -928,6 +978,9 @@ func mcpBrief(ctx context.Context, cfg Config, args map[string]any) (any, error)
 	// path is the human CLI's; the agent reads the STRUCTURED, budgeted projection
 	// (like the digest tool), not a render string.
 	if dir := strArg(args, "project_dir", ""); dir != "" {
+		if mcpWorkspaceManaged(ctx) {
+			return nil, errMCPWorkspaceUnavailable
+		}
 		return projectBriefForDir(cfg, dir, briefClock())
 	}
 	// A server started with --project-dir for a bound folder answers a bare

@@ -143,7 +143,7 @@ func mcpProjectForLocalRoot(bindings []projectBinding, dir string) (mcpProject, 
 				(cur != binding.Dir && (!mcpRootDirectoryChain(binding.Dir) || !sameProjectDir(cur, binding.Dir))) {
 				continue
 			}
-			candidate := mcpProject{scope: binding.Scope, root: binding.Dir}
+			candidate := mcpProject{scope: binding.Scope, root: binding.Dir, ownerOnly: binding.OwnerOnly}
 			if selected != (mcpProject{}) && selected != candidate {
 				return mcpProject{}, errMCPProjectRootsAmbiguous
 			}

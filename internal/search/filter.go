@@ -47,6 +47,9 @@ type Filter struct {
 	// Like every other predicate they run in the SQL WHERE clause of each arm.
 	Scopes          []string
 	NoProjectScopes bool
+	// AuthoredOnly excludes connector rows before retrieval ranking. It is a
+	// trusted session policy, never a caller-provided filter.
+	AuthoredOnly bool
 	// Now is the reference instant SinceHours is computed against. It is
 	// captured ONCE per MCP call (mcp.go handlers) and threaded down, so a
 	// single call sees one consistent clock across every retrieval arm —
@@ -76,7 +79,7 @@ func (f Filter) ScopeAllowed(scope string) bool {
 	return len(f.Scopes) == 0 || slices.Contains(f.Scopes, scope)
 }
 func (f Filter) Active() bool {
-	return f.Source != "" || f.SinceHours > 0 || f.EventSinceHours > 0 || len(f.ExcludeDispositions) > 0
+	return f.Source != "" || f.SinceHours > 0 || f.EventSinceHours > 0 || len(f.ExcludeDispositions) > 0 || f.AuthoredOnly
 }
 func (f Filter) Receipt() map[string]any {
 	if !f.Active() {
@@ -137,6 +140,9 @@ func (f Filter) SQLPredicate() (clause string, args []any) {
 	}
 	if f.NoProjectScopes {
 		parts = append(parts, "substr(m.scope, 1, 8) <> 'project:'")
+	}
+	if f.AuthoredOnly {
+		parts = append(parts, "COALESCE(m.provider, '') = ''")
 	}
 	if len(parts) == 0 {
 		return "", nil

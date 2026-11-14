@@ -1,17 +1,100 @@
 package mora
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 )
+
+// workspaceMCPClient is a small reciprocal stdio MCP client. It answers the
+// server's real roots/list requests, so session tests cover the transport and
+// request snapshot rather than only the pure root resolver.
+type workspaceMCPClient struct {
+	t      *testing.T
+	in     *io.PipeWriter
+	frames chan map[string]json.RawMessage
+	mu     sync.Mutex
+	roots  []mcppkg.Root
+}
+
+func newWorkspaceMCPClient(t *testing.T, roots []mcppkg.Root) *workspaceMCPClient {
+	t.Helper()
+	serverIn, in := io.Pipe()
+	clientOut, out := io.Pipe()
+	c := &workspaceMCPClient{t: t, in: in, frames: make(chan map[string]json.RawMessage, 32), roots: roots}
+	go func() {
+		if err := cmdMCP(testCtx(t), []string{"serve", "--workspace"}, out, io.Discard, serverIn); err != nil {
+			t.Errorf("workspace mcp serve: %v", err)
+		}
+		close(c.frames)
+	}()
+	go func() {
+		s := bufio.NewScanner(clientOut)
+		for s.Scan() {
+			var frame map[string]json.RawMessage
+			if json.Unmarshal(s.Bytes(), &frame) != nil {
+				t.Errorf("workspace frame is not JSON: %q", s.Text())
+				continue
+			}
+			var method string
+			_ = json.Unmarshal(frame["method"], &method)
+			if method == "roots/list" {
+				c.mu.Lock()
+				roots := append([]mcppkg.Root(nil), c.roots...)
+				c.mu.Unlock()
+				c.send(map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(frame["id"]), "result": map[string]any{"roots": roots}})
+				continue
+			}
+			c.frames <- frame
+		}
+	}()
+	t.Cleanup(func() { _ = c.in.Close() })
+	c.send(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"capabilities": map[string]any{"roots": map[string]any{"listChanged": true}}}})
+	c.next(1)
+	return c
+}
+
+func (c *workspaceMCPClient) send(frame any) {
+	c.t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := json.NewEncoder(c.in).Encode(frame); err != nil {
+		c.t.Fatalf("workspace client send: %v", err)
+	}
+}
+
+func (c *workspaceMCPClient) setRoots(roots []mcppkg.Root) {
+	c.mu.Lock()
+	c.roots = roots
+	c.mu.Unlock()
+}
+
+func (c *workspaceMCPClient) call(id int, name string, args map[string]any) map[string]json.RawMessage {
+	c.send(map[string]any{"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": map[string]any{"name": name, "arguments": args}})
+	return c.next(id)
+}
+
+func (c *workspaceMCPClient) next(id int) map[string]json.RawMessage {
+	c.t.Helper()
+	for frame := range c.frames {
+		var got int
+		if json.Unmarshal(frame["id"], &got) == nil && got == id {
+			return frame
+		}
+	}
+	c.t.Fatalf("workspace client closed before response %d", id)
+	return nil
+}
 
 type mcpProjectReply struct {
 	ID     int `json:"id"`
@@ -105,6 +188,59 @@ func TestMCPProjectDirInstructionsEndWithTheProjectSentence(t *testing.T) {
 				t.Logf("emitted sentence: %s", strings.TrimPrefix(bound[0].Result.Instructions, mcppkg.InstructionsFor(policy)+" "))
 			}
 		})
+	}
+}
+
+func TestMCPProjectSessionRootsSnapshotPreventsCrossProjectReads(t *testing.T) {
+	cfg := mcpProjectSetup(t)
+	parent := mcpProjectRootsTempDir(t)
+	a := filepath.Join(parent, "A")
+	b := filepath.Join(parent, "B")
+	unbound := filepath.Join(parent, "unbound")
+	for _, dir := range []string{a, b, unbound} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := bindProjectDir(testCtx(t), a, "project:a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := bindProjectDir(testCtx(t), b, "project:b"); err != nil {
+		t.Fatal(err)
+	}
+	pbSeed(t, cfg, "a-id", "project:a", "fact", "A title", "needle-a", 1)
+	pbSeed(t, cfg, "b-id", "project:b", "fact", "B title", "needle-b", 2)
+	pbSeed(t, cfg, "global-id", "global", "fact", "Global title", "needle-global", 3)
+	pbSeed(t, cfg, "personal-id", "personal", "fact", "Personal title", "needle-personal", 4)
+	pbSeed(t, cfg, "raw-id", "project:a", "fact", "Raw title", "needle-raw", 5, func(m *Memory) { m.Provider = "gmail" })
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	c := newWorkspaceMCPClient(t, []mcppkg.Root{{URI: mcpProjectTestURI(a)}})
+
+	result := c.call(2, "search_memory", map[string]any{"query": "needle"})
+	if got := string(result["result"]); !strings.Contains(got, "A title") || !strings.Contains(got, "Global title") || strings.Contains(got, "B title") || strings.Contains(got, "Personal title") || strings.Contains(got, "Raw title") {
+		t.Fatalf("A search leaked or omitted scope: %s", got)
+	}
+	result = c.call(3, "read_memory", map[string]any{"id": "b-id"})
+	if got := string(result["result"]); !strings.Contains(got, "not found") || strings.Contains(got, "B title") {
+		t.Fatalf("foreign direct read leaked: %s", got)
+	}
+
+	c.setRoots([]mcppkg.Root{{URI: mcpProjectTestURI(b)}})
+	result = c.call(4, "search_memory", map[string]any{"query": "needle"})
+	if got := string(result["result"]); !strings.Contains(got, "B title") || !strings.Contains(got, "Global title") || strings.Contains(got, "A title") {
+		t.Fatalf("B request did not use its own roots snapshot: %s", got)
+	}
+	c.setRoots([]mcppkg.Root{{URI: mcpProjectTestURI(unbound)}})
+	result = c.call(5, "search_memory", map[string]any{"query": "needle"})
+	if got := string(result["result"]); !strings.Contains(got, errMCPWorkspaceUnavailable.Error()) || strings.Contains(got, "A title") || strings.Contains(got, "B title") {
+		t.Fatalf("unbound request fell back to broad reads: %s", got)
+	}
+	c.setRoots([]mcppkg.Root{{URI: mcpProjectTestURI(a)}})
+	result = c.call(6, "list_memory", map[string]any{})
+	if got := string(result["result"]); !strings.Contains(got, "A title") || !strings.Contains(got, "Global title") || strings.Contains(got, "B title") || strings.Contains(got, "Personal title") {
+		t.Fatalf("A rebind leaked or omitted scope: %s", got)
 	}
 }
 
