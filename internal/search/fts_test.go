@@ -52,6 +52,32 @@ func TestExecuteFTSFilteringOrderingAndPool(t *testing.T) {
 		t.Fatalf("tags=%v", got.Memories[0].Tags)
 	}
 }
+
+func TestExecuteFTSAuthoredOnlyExcludesFilesystemBeforeRanking(t *testing.T) {
+	db := ftsDB(t)
+	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	insert := func(id, path, tags, text string) {
+		t.Helper()
+		if _, err := db.Exec(`INSERT INTO memories VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, id, "project:demo", "note", "note", tags, "", now.Format(time.RFC3339), path, text, "", "", now.Unix()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`INSERT INTO memories_fts VALUES(?,?,?,?,?,?)`, id, "project:demo", "note", tags, "", text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("src_raw", "/vault/sources/filesystem/docs/src_raw.md", "filesystem,docs", "isolationneedle isolationneedle isolationneedle")
+	insert("gmail_thread/legacy", "/vault/sources/gmail/gmail_thread_legacy.md", "gmail", "isolationneedle isolationneedle")
+	insert("mem_allowed", "/vault/memories/project/demo/mem_allowed.md", "", "isolationneedle")
+	insert("src_mirror", "/vault/sources/filesystem/codex-memory/src_mirror.md", "filesystem,codex-memory", "isolationneedle")
+
+	got, err := ExecuteFTS(context.Background(), db, "isolationneedle", "project:demo", 1, Filter{AuthoredOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Memories) != 2 || got.Memories[0].ID != "mem_allowed" || got.Memories[1].ID != "src_mirror" {
+		t.Fatalf("AuthoredOnly must filter before ranking and retain agent-note mirrors, got %+v", got.ParentIDs)
+	}
+}
 func TestExecuteFTSEmptyAndLimitEdges(t *testing.T) {
 	db := ftsDB(t)
 	got, err := ExecuteFTS(context.Background(), db, "!?", "", 10, Filter{})

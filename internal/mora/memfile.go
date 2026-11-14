@@ -172,6 +172,9 @@ func listMemories(cfg Config, scope string, limit int, filters ...searchFilters)
 		if scope != "" && m.Scope != scope {
 			continue
 		}
+		if len(f.Scopes) > 0 && !scopeInFilter(f.Scopes, m.Scope) {
+			continue
+		}
 		if f.Active() && !searchFilterPasses(f, m) {
 			continue
 		}
@@ -187,6 +190,15 @@ func listMemories(cfg Config, scope string, limit int, filters ...searchFilters)
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+func scopeInFilter(scopes []string, scope string) bool {
+	for _, allowed := range scopes {
+		if allowed == scope {
+			return true
+		}
+	}
+	return false
 }
 
 // writeWikiIndex refreshes a derived state-cache page. It intentionally never

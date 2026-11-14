@@ -18,6 +18,9 @@ const (
 var (
 	// ErrRootsUnavailable means the client did not declare the roots capability.
 	ErrRootsUnavailable = errors.New("MCP client roots unavailable")
+	// ErrClientNotInitialized means the client has not acknowledged the
+	// initialize response with notifications/initialized yet.
+	ErrClientNotInitialized = errors.New("MCP client is not initialized")
 	// ErrRootsRequestFailed hides errors containing client or filesystem details.
 	ErrRootsRequestFailed = errors.New("MCP client roots request failed")
 	// ErrInvalidRootsReply means the response exceeded a limit or was malformed.
@@ -57,6 +60,12 @@ func ListClientRoots(ctx context.Context) ([]Root, error) {
 	}
 	if !session.supported {
 		return nil, ErrRootsUnavailable
+	}
+	session.client.mu.Lock()
+	ready := session.client.initialized
+	session.client.mu.Unlock()
+	if !ready {
+		return nil, ErrClientNotInitialized
 	}
 	raw, err := session.client.call(ctx, "roots/list", nil, rootsRequestTimeout)
 	switch err {

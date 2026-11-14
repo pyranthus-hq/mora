@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
-	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 )
 
 // Agent profiles (#539) bind one MCP client to a policy Mora enforces, so the
@@ -831,19 +830,6 @@ func agentsLog(cfg Config, args []string, stdout io.Writer) error {
 		fmt.Fprintln(stdout, line)
 	}
 	return nil
-}
-
-// agentToolDefs is the tools/list catalog a profile sees: only its tools, in
-// the canonical order.
-func agentToolDefs(p agentProfile) []mcppkg.ToolDefinition {
-	all := mcppkg.ToolCatalog()
-	out := make([]mcppkg.ToolDefinition, 0, len(p.Tools))
-	for _, def := range all {
-		if p.allowsTool(def.Name) {
-			out = append(out, def)
-		}
-	}
-	return out
 }
 
 func agentNow() string { return time.Now().UTC().Format(time.RFC3339) }

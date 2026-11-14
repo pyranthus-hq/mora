@@ -2,6 +2,7 @@ package mora
 
 import (
 	"github.com/pyranthus-hq/mora/internal/activity"
+	"github.com/pyranthus-hq/mora/internal/memory"
 	searchpkg "github.com/pyranthus-hq/mora/internal/search"
 	"sort"
 	"time"
@@ -94,6 +95,12 @@ type searchFilters = searchpkg.Filter
 // NOT the raw f.Source — see normalizedSource's doc comment for why the raw
 // string is unsafe to compare with for an aliased family:instance selector.
 func searchFilterPasses(f searchFilters, m Memory) bool {
+	if !f.ScopeAllowed(m.Scope) {
+		return false
+	}
+	if f.AuthoredOnly && (memory.DeriveProvenance(m) != memory.ProvenanceAuthored || (m.Provider != "" && !memory.IsAgentNoteMirror(m))) {
+		return false
+	}
 	if f.SourceFamily != "" {
 		key, ok := sourceInstanceKey(m)
 		if !ok || !digestSourceMatches(key, f.NormalizedSource()) {

@@ -63,7 +63,7 @@ func TestCoreB_McpCmdMCPBadSubcommand(t *testing.T) {
 		if err == nil {
 			t.Fatalf("cmdMCP(%v) = nil, want usage error", args)
 		}
-		const usage = "usage: mora mcp serve [--profile NAME] [--project-dir DIR] | mora mcp serve-http [--port N] [--allow-host HOST] | mora mcp proposals <list|show ID|approve ID|reject ID>"
+		const usage = "usage: mora mcp serve [--profile NAME] [--project-dir DIR] [--workspace] | mora mcp serve-http [--port N] [--allow-host HOST] | mora mcp proposals <list|show ID|approve ID|reject ID>"
 		if err.Error() != usage {
 			t.Fatalf("cmdMCP(%v) error = %q, want %q", args, err.Error(), usage)
 		}
