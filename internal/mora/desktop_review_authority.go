@@ -166,14 +166,26 @@ func (a *desktopReviewAuthority) complete(ctx context.Context, nonce string, pro
 			case reviewKindSaved:
 				note, noteErr := loadDesktopSavedReviewNote(a.cfg, c.ID)
 				if noteErr != nil || note.SHA != c.CanonicalRevision || note.Scope != c.Scope {
-					return errDesktopReviewUnavailable
+					c.State = "stale"
+					if writeErr := a.writeChallenge(path, c); writeErr != nil {
+						out = desktopReviewIndeterminateOutcome()
+						return nil
+					}
+					out = desktopReviewStaleOutcome()
+					return nil
 				}
 				if c.Action == desktopReviewKeep {
 					_, _, err = confirmMemory(ctx, a.cfg, c.ID, note.SHA, note.Confirm, io.Discard)
 				} else {
 					m, findErr := findMemory(a.cfg, c.ID)
 					if findErr != nil {
-						return errDesktopReviewUnavailable
+						c.State = "stale"
+						if writeErr := a.writeChallenge(path, c); writeErr != nil {
+							out = desktopReviewIndeterminateOutcome()
+							return nil
+						}
+						out = desktopReviewStaleOutcome()
+						return nil
 					}
 					_, _, _, err = undoMemory(ctx, a.cfg, m, false, note.SHA, io.Discard)
 				}

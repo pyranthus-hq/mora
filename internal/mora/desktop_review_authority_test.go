@@ -482,6 +482,56 @@ func TestDesktopReviewAuthoritySerializesWithPublicMemoryMutations(t *testing.T)
 	}
 }
 
+func TestDesktopReviewAuthorityRecordsStaleWhenPublicMutationWinsBeforeKernel(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		action desktopReviewAction
+		mutate func(context.Context, Config, string) error
+	}{
+		{"confirm", desktopReviewKeep, func(ctx context.Context, cfg Config, id string) error {
+			_, _, err := confirmMemory(ctx, cfg, id, "", "", io.Discard)
+			return err
+		}},
+		{"cli delete", desktopReviewKeep, func(ctx context.Context, cfg Config, id string) error {
+			m, err := findMemory(cfg, id)
+			if err != nil {
+				return err
+			}
+			_, err = deleteMemoryFile(ctx, cfg, m)
+			return err
+		}},
+		{"mcp delete", desktopReviewDiscard, func(ctx context.Context, cfg Config, id string) error {
+			_, err := mcpDeleteMemory(ctx, cfg, map[string]any{"id": id})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := reviewSetup(t)
+			id := reviewSaved(t, "durable stale "+tc.name)
+			a, verifier := desktopAuthority(t, cfg)
+			challenge := desktopChallenge(t, a, tc.action, reviewKindSaved, id)
+			write := a.writeChallenge
+			a.writeChallenge = func(path string, state desktopReviewChallenge) error {
+				if err := write(path, state); err != nil {
+					return err
+				}
+				if state.State == "applying" {
+					return tc.mutate(testCtx(t), cfg, id)
+				}
+				return nil
+			}
+			out, err := a.complete(testCtx(t), challenge.Nonce, verifier.proof(t, challenge), false)
+			if err != nil || out.Status != "stale" || !desktopReviewNotApplied(out) {
+				t.Fatalf("completion = %+v, %v", out, err)
+			}
+			replay, err := a.complete(testCtx(t), challenge.Nonce, verifier.proof(t, challenge), false)
+			if err != nil || replay.Status != "stale" || !desktopReviewNotApplied(replay) {
+				t.Fatalf("replay = %+v, %v", replay, err)
+			}
+		})
+	}
+}
+
 func TestReviewDesktopStatusIsReadOnly(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
