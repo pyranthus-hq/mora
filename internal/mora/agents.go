@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
-	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 )
 
 // Agent profiles (#539) bind one MCP client to a policy Mora enforces, so the
