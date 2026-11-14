@@ -830,7 +830,14 @@ func TestMCPWriteMemoryAlreadyPublishedReceiptPath(t *testing.T) {
 	if !ok {
 		t.Fatalf("already-published memory = %T", row["memory"])
 	}
-	assertMCPWriteReceiptPath(t, cfg, written.ID, written.Path)
+	if !filepath.IsAbs(written.Path) {
+		t.Fatalf("native already-published memory path = %q, want canonical absolute path", written.Path)
+	}
+	wire, ok := mcpWireValue(cfg, "write_memory", row).(map[string]any)["memory"].(Memory)
+	if !ok {
+		t.Fatal("wire result did not retain a memory")
+	}
+	assertMCPWriteReceiptPath(t, cfg, wire.ID, wire.Path)
 }
 
 func assertMCPWriteReceiptPath(t *testing.T, cfg Config, id, path string) {
