@@ -10,16 +10,17 @@ import (
 
 // Config is the resolved durable configuration plus process-local orchestration overrides.
 type Config struct {
-	VaultDir       string
-	ConfigDir      string
-	DataDir        string
-	StateDir       string
-	MCPWritePolicy string
-	UpdatePolicy   string
-	Embedder       string
-	ContextProfile string
-	SelfEmails     []string
-	MMR            bool
+	VaultDir         string
+	ConfigDir        string
+	DataDir          string
+	StateDir         string
+	MCPWritePolicy   string
+	UpdatePolicy     string
+	Embedder         string
+	ContextProfile   string
+	SelfEmails       []string
+	MMR              bool
+	HookUnboundBrief bool
 
 	operationRunID     string
 	operationSourceKey string

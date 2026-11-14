@@ -63,6 +63,7 @@ func noticeSurfaces(t *testing.T, cfg Config) map[string]string {
 	_ = json.Unmarshal(b, &mj)
 	out["mcp brief"] = mj.ReviewNotice
 
+	enableUnboundSessionBrief(t)
 	restore := stubHookBrief(t, "today's local brief")
 	defer restore()
 	var hook bytes.Buffer

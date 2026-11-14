@@ -973,7 +973,8 @@ brief" and "Which notes appear on their own" below); search and save do not.
 
 When an agent session starts in a bound folder, the global `SessionStart` hook
 writes that project's owner rules instead of the daily mail and calendar brief.
-In a folder with no binding, nothing changes. See it yourself:
+In a folder with no binding, SessionStart stays quiet by default. See the
+project brief yourself:
 
 ```bash
 mora brief --project            # the bound folder, or DIR if you pass one
@@ -1010,7 +1011,8 @@ The session-start hook never falls back to the daily brief for a project folder
 it cannot serve. When `projects.json` exists but cannot be read, it writes one
 line telling you to run `mora project list`. When the folder is bound but the
 brief cannot be built, it writes one line telling you to run `mora doctor`. With
-no `projects.json`, or no binding for the folder, the daily brief is unchanged.
+no `projects.json` or no binding for the folder, SessionStart emits no context
+by default.
 
 ### Use Mora in one project
 
@@ -1158,17 +1160,28 @@ a `wsl.exe` command into that Windows file.
 
 The installer adds three commands to `~/.claude/settings.json`:
 
-- `SessionStart` adds the current brief when a session begins. In a bound
-  folder it adds that project's brief.
+- `SessionStart` adds the project brief when a session begins in a bound folder.
 - `UserPromptSubmit` adds up to three short related memories for a prompt.
 - `SessionEnd` keeps your last requests of the session in a bound folder (see
   "Handoff of the last session"). It writes nothing to the session.
 
 In the global install, `SessionStart` and `SessionEnd` check the folder Claude
-runs in: a bound folder gets its project brief and its handoff, any other
-folder gets the daily brief and no handoff. `UserPromptSubmit` recall follows the
-folder too (see "Which notes appear on their own"). Run `mora hook install` again to add a missing one; it never adds a
-second copy.
+runs in. A bound folder gets its project brief and handoff. An unbound
+folder gets no startup context or handoff by default, including on upgrades
+from older configs. To opt in to the daily brief at the start of unbound
+sessions, set this in your Mora `config.toml` (normally
+`~/.config/mora/config.toml`):
+
+```toml
+hook_unbound_brief = true
+```
+
+This allows the unbound daily brief, which can include personal mail and
+calendar summaries, to appear in the agent's context. Remove the setting
+or set it to `false` to restore the quiet default. Project-only hooks with
+`--project-dir` never fall back to the daily brief. `UserPromptSubmit` recall
+follows the folder (see "Which notes appear on their own"). Run
+`mora hook install` again to add a missing hook. It never adds a second copy.
 
 Mora keeps other valid settings and hooks. It refuses to change an unreadable
 or invalid JSON settings file. Remove only Mora's managed hooks with:
@@ -1244,7 +1257,7 @@ the brief at session start. Both follow the folder the session runs in:
 | --- | --- |
 | In a folder bound to `project:X` | `project:X` and `global` |
 | In a folder bound with `--owner-only` | `project:X`, `global` and `personal` in recall. The project brief never shows `personal` notes. |
-| In a folder with no binding | every scope except `project:*` (so `global`, `personal` and any other) |
+| In a folder with no binding | Recall searches every scope except `project:*`. SessionStart stays quiet unless `hook_unbound_brief` is enabled. |
 
 The binding of the folder the hook runs in decides, and the deepest binding wins:
 an owner-only parent gives no `personal` notes inside a nested binding that is not
@@ -1259,15 +1272,16 @@ of recall, as before.
 In a folder with a binding, the health banner is replaced by one fixed line,
 `Mora: memory health needs attention. Run "mora doctor".`, shown only when the
 detailed banner would not be empty, so a source error of another project cannot
-leak. Folders without a binding keep the detailed banner.
+leak. In unbound folders, prompt recall and an opted-in daily brief keep the
+detailed banner.
 
 The scope limit is applied inside every search arm before ranking, so a note of
 another project is never fetched and cannot push a matching note out of the
-result. At session start in a folder with no binding, the daily brief leaves out
-every record whose scope starts with `project:`, whatever its origin (authored
-notes, mail, messages, calendar). Records in other scopes are unchanged. That
-brief is built fresh each time, because the saved daily brief can hold project
-records. `mora brief` typed in your own terminal is unchanged.
+result. If you opt in to the daily brief for unbound sessions, that brief
+excludes every record whose scope starts with `project:`, including authored
+notes, mail, messages and calendar records. Mora builds it fresh each time
+because the saved daily brief can hold project records. You can still run
+`mora brief` from your terminal.
 
 A deliberate search is not limited by any of this: `mora search`, `search_memory`
 and `context_memory` still find other projects' notes.

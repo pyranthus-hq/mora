@@ -3,6 +3,26 @@
     "bound": false,
     "cwd": "\u003ccwd\u003e"
   },
+  "mcp": {
+    "catalog": {
+      "bytes": 13593,
+      "characters": 13589,
+      "estimated_tokens": 3398
+    },
+    "caveat": "Hooks, rules, and recall are excluded; client token counts are estimated, not an authenticated profile or live-client measurement.",
+    "combined": {
+      "bytes": 17978,
+      "characters": 17958,
+      "estimated_tokens": 4490
+    },
+    "instructions": {
+      "bytes": 4385,
+      "characters": 4369,
+      "estimated_tokens": 1093
+    },
+    "surface": "current local stdio default/project-bound MCP-only surface",
+    "tool_count": 13
+  },
   "review": {
     "held": 0,
     "saved": 0

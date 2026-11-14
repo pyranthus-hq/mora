@@ -126,6 +126,11 @@ func (l projectBriefLine) line(runes int) string {
 // no model call, and gives the same text for the same vault. emittedIDs lists
 // exactly the notes whose lines are in text, in order.
 func buildProjectBrief(cfg Config, scope, root string, now time.Time) (text string, emittedIDs []string, err error) {
+	return buildProjectBriefWithin(cfg, scope, now, projectBriefMaxChars)
+}
+
+// buildProjectBriefWithin fits whole lines to the byte budget left by the caller.
+func buildProjectBriefWithin(cfg Config, scope string, now time.Time, maxBytes int) (text string, emittedIDs []string, err error) {
 	// A hand-edited projects.json must not point the brief at personal notes.
 	if err := validProjectScope(scope); err != nil {
 		return "", nil, err
@@ -167,12 +172,12 @@ func buildProjectBrief(cfg Config, scope, root string, now time.Time) (text stri
 	handoff := handoffBlock(cfg, scope, now)
 	if len(all) == 0 {
 		text := fmt.Sprintf("Project %s: no owner rules recorded yet.", shown)
-		text, withID := appendProjectHandoff(text, false, handoffMemLine, handoffPointer, handoff)
+		text, withID := appendProjectHandoff(text, false, handoffMemLine, handoffPointer, handoff, maxBytes)
 		ids := []string{}
 		if withID && handoffID != "" {
 			ids = append(ids, handoffID)
 		}
-		return capProjectBrief(text, ids)
+		return capProjectBrief(text, ids, maxBytes)
 	}
 	notice := reviewNotice(context.Background(), cfg)
 	render := func(k, form int, withNotice bool) string {
@@ -210,19 +215,19 @@ func buildProjectBrief(cfg Config, scope, root string, now time.Time) (text stri
 	for form := 0; ; form++ {
 		k := len(all)
 		if form == last {
-			for k > 0 && len(render(k, form, false)) > projectBriefMaxChars {
+			for k > 0 && len(render(k, form, false)) > maxBytes {
 				k--
 			}
-		} else if len(render(k, form, false)) > projectBriefMaxChars {
+		} else if len(render(k, form, false)) > maxBytes {
 			continue
 		}
 		text = render(k, form, false)
-		if full := render(k, form, true); len(full) <= projectBriefMaxChars {
+		if full := render(k, form, true); len(full) <= maxBytes {
 			text = full
 		}
 		// The handoff goes last and is the first thing dropped: it never costs
 		// a rule, a note or the review notice a place.
-		text, withID := appendProjectHandoff(text, k > min(k, len(rules)), handoffMemLine, handoffPointer, handoff)
+		text, withID := appendProjectHandoff(text, k > min(k, len(rules)), handoffMemLine, handoffPointer, handoff, maxBytes)
 		emittedIDs = make([]string, 0, k+1)
 		for _, l := range all[:k] {
 			emittedIDs = append(emittedIDs, l.id)
@@ -232,7 +237,7 @@ func buildProjectBrief(cfg Config, scope, root string, now time.Time) (text stri
 		if withID && handoffID != "" {
 			emittedIDs = append(emittedIDs, handoffID)
 		}
-		return capProjectBrief(text, emittedIDs)
+		return capProjectBrief(text, emittedIDs, maxBytes)
 	}
 }
 
@@ -331,7 +336,7 @@ func renderProjectHandoffLine(m *Memory) string {
 // under the cap. pointer, when set, follows the handoff line and never carries
 // handoff content. withID reports whether the memory handoff line itself made
 // it into the text.
-func appendProjectHandoff(base string, framed bool, handoffMemLine, pointer, transcriptHandoff string) (text string, withID bool) {
+func appendProjectHandoff(base string, framed bool, handoffMemLine, pointer, transcriptHandoff string, maxBytes int) (text string, withID bool) {
 	type candidate struct {
 		text   string
 		hasMem bool
@@ -354,7 +359,7 @@ func appendProjectHandoff(base string, framed bool, handoffMemLine, pointer, tra
 		candidates = append(candidates, candidate{transcriptHandoff, false})
 	}
 	for _, c := range candidates {
-		if h := handoffFrame(c.text, framed); h != "" && len(base)+1+len(h) <= projectBriefMaxChars {
+		if h := handoffFrame(c.text, framed); h != "" && len(base)+1+len(h) <= maxBytes {
 			return base + "\n" + h, c.hasMem
 		}
 	}
@@ -372,11 +377,11 @@ func handoffFrame(block string, framed bool) string {
 
 // capProjectBrief is the last guard: no branch returns more than the cap. Text
 // cut here no longer matches its ids, so the ids are dropped with it.
-func capProjectBrief(text string, ids []string) (string, []string, error) {
-	if len(text) <= projectBriefMaxChars {
+func capProjectBrief(text string, ids []string, maxBytes int) (string, []string, error) {
+	if len(text) <= maxBytes {
 		return text, ids, nil
 	}
-	return strings.ToValidUTF8(text[:projectBriefMaxChars], ""), []string{}, nil
+	return strings.ToValidUTF8(text[:maxBytes], ""), []string{}, nil
 }
 
 type projectBriefResult struct {

@@ -267,26 +267,31 @@ func hookSessionStart(ctx context.Context, args []string, stdout io.Writer, stdi
 	if projectDir != "" && !hookProjectGate(cfg, projectDir, in.CWD) {
 		return emitEmpty() // a project install never falls back to the daily brief
 	}
-	// A folder bound to a project gets that project's owner rules instead of the
-	// daily brief. No binding file, or no match for cwd, keeps the daily brief.
-	// A binding store that cannot be read, or a brief that cannot be built, shows
-	// one diagnostic line: the daily brief holds personal mail and calendar.
+	// A bound folder gets its project brief. Keep binding and project errors
+	// visible without falling back to the unbound daily brief.
 	if filepath.IsAbs(in.CWD) {
 		scope, root, found, lerr := lookupProject(cfg, in.CWD)
-		text := ""
+		var text, banner string
 		var emitted []string
+		if lerr != nil || found {
+			banner = boundHealthBanner(cfg)
+		}
 		switch {
 		case lerr != nil:
 			text = `Mora: the project bindings file cannot be read, so no brief is shown. Run "mora project list".`
 		case found:
+			maxBytes := projectBriefMaxChars
+			if banner != "" {
+				maxBytes -= len(banner) + 1 // Include the newline above the brief.
+			}
 			var perr error
-			if text, emitted, perr = buildProjectBrief(cfg, scope, root, hookNow()); perr != nil {
+			if text, emitted, perr = buildProjectBriefWithin(cfg, scope, hookNow(), maxBytes); perr != nil {
 				text = fmt.Sprintf(`Mora: the brief for %s could not be built. Run "mora doctor".`, clipProjectScope(scope))
 				emitted = nil
 			}
 		}
 		if text != "" {
-			fullText := prependBannerLine(boundHealthBanner(cfg), text)
+			fullText := prependBannerLine(banner, text)
 			var werr error
 			if isAntigravity {
 				werr = writeAntigravityHookOutput(stdout, fullText, projectBriefMarkdown(len(emitted)))
@@ -299,7 +304,10 @@ func hookSessionStart(ctx context.Context, args []string, stdout io.Writer, stdi
 			return nil
 		}
 	}
-	// No binding for this folder: the daily brief leaves out every project record.
+	if !cfg.HookUnboundBrief {
+		return emitEmpty()
+	}
+	// The opted-in daily brief leaves out every project record.
 	body, _, berr := hookResolveBrief(cfg, hookNow(), briefOpts{excludeProjectScopes: true})
 	if berr != nil {
 		// C2 ▸A: hookSessionStart used to swallow EVERY resolveBrief error with
@@ -409,8 +417,11 @@ func hookRecall(ctx context.Context, args []string, stdout io.Writer, stdin io.R
 				kept = append(kept, m)
 			}
 		}
-		mems = kept
-		body, recalledIDs = hookspkg.FormatRecallContextIDs(mems, prompt, opts.threshold, hookNow())
+		maxBytes := hookRecallByteLimit
+		if banner != "" {
+			maxBytes -= len(banner) + 1 // Include the newline above the recall.
+		}
+		body, recalledIDs = hookspkg.FormatRecallContextWithin(kept, prompt, opts.threshold, hookNow(), maxBytes)
 	}
 	body = prependBannerLine(banner, body)
 	if body == "" {

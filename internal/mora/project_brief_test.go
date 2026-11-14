@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 var projectBriefNow = time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
@@ -356,6 +357,66 @@ func pbHook(t *testing.T, cwd string) string {
 	return env.HookSpecificOutput.AdditionalContext
 }
 
+func TestProjectBriefSessionStartIncludesHealthWithinBudget(t *testing.T) {
+	cfg := projectBriefSetup(t)
+	dir := pbBind(t)
+	for i := 1; i <= 20; i++ {
+		id := fmt.Sprintf("mem_budget%02d", i)
+		title := fmt.Sprintf("Rule %02d ", i) + strings.Repeat("規", 34)
+		pbOwner(t, cfg, id, pbScope, "decision", title, strings.Repeat("budget fixture ", 24), i)
+	}
+	run(t, "index", "rebuild")
+	if banner := boundHealthBanner(cfg); banner != "" {
+		t.Fatalf("expected a healthy fixture, got %q", banner)
+	}
+
+	body, bodyIDs := pbBuild(t, cfg)
+	if len(body)+len(boundHealthLine)+1 <= projectBriefMaxChars {
+		t.Fatalf("fixture body length %d leaves room for the banner", len(body))
+	}
+	check := func(wantBanner bool) string {
+		t.Helper()
+		before := len(givenLinesOf(t, cfg))
+		text := pbHook(t, dir)
+		if len(text) > projectBriefMaxChars || !utf8.ValidString(text) {
+			t.Fatalf("session-start context has %d bytes (max %d), valid UTF-8: %v", len(text), projectBriefMaxChars, utf8.ValidString(text))
+		}
+		if !strings.Contains(text, "Owner rules for "+pbScope) || !strings.Contains(text, "規") {
+			t.Fatalf("missing project marker or non-ASCII fixture:\n%s", text)
+		}
+		if got := strings.HasPrefix(text, boundHealthLine+"\n"); got != wantBanner {
+			t.Fatalf("generic health banner present: %v, want %v", got, wantBanner)
+		}
+		lines := givenLinesOf(t, cfg)
+		if len(lines) != before+1 {
+			t.Fatalf("given-log lines = %d, want %d", len(lines), before+1)
+		}
+		entry := lines[before]
+		if len(entry.IDs) == 0 || len(entry.IDs) != gc(entry) {
+			t.Fatalf("given-log IDs = %v, count = %d", entry.IDs, gc(entry))
+		}
+		pbCheckIDs(t, text, entry.IDs)
+		for _, line := range strings.Split(text, "\n") {
+			if strings.HasPrefix(line, "- [") && !pbLineID.MatchString(line) {
+				t.Fatalf("incomplete rule: %q", line)
+			}
+		}
+		return text
+	}
+
+	if healthy := check(false); healthy != body {
+		t.Fatalf("healthy hook changed the project body:\n%s", healthy)
+	}
+	rsBreakGmail(t, cfg)
+	unhealthy := check(true)
+	if strings.Contains(unhealthy, rsHealthMarker) || len(pbLineIDs(unhealthy)) >= len(bodyIDs) {
+		t.Fatalf("unhealthy hook must use the generic banner and fit fewer rules:\n%s", unhealthy)
+	}
+	if got, ids := pbBuild(t, cfg); got != body || strings.Join(ids, ",") != strings.Join(bodyIDs, ",") {
+		t.Fatalf("direct brief budget changed with health: %d bytes, %v", len(got), ids)
+	}
+}
+
 func TestProjectBriefSessionStartHook(t *testing.T) {
 	cfg := projectBriefSetup(t)
 	pbOwner(t, cfg, "mem_a", pbScope, "decision", "Use pnpm", "Always use pnpm.", 1)
@@ -372,6 +433,16 @@ func TestProjectBriefSessionStartHook(t *testing.T) {
 	got := pbHook(t, filepath.Join(dir, "sub"))
 	if !strings.HasPrefix(got, "Owner rules for project:demo") || strings.Contains(got, "daily brief body") || daily != 0 {
 		t.Fatalf("bound cwd: daily calls %d, context:\n%s", daily, got)
+	}
+	if got := pbHook(t, t.TempDir()); got != "" || daily != 0 {
+		t.Fatalf("unbound cwd by default: calls %d, context %q", daily, got)
+	}
+	enableUnboundSessionBrief(t)
+	if got := hoProjectStart(t, dir, t.TempDir()); got != "" || daily != 0 {
+		t.Fatalf("project-only hook outside the bound folder: calls %d, output %q", daily, got)
+	}
+	if got := pbHook(t, filepath.Join(dir, "sub")); !strings.HasPrefix(got, "Owner rules for project:demo") || strings.Contains(got, "daily brief body") || daily != 0 {
+		t.Fatalf("bound cwd after opt-in: daily calls %d, context:\n%s", daily, got)
 	}
 	if got := pbHook(t, t.TempDir()); got != "daily brief body" || daily != 1 {
 		t.Fatalf("unbound cwd: calls %d, context %q", daily, got)
@@ -406,7 +477,7 @@ func TestProjectBriefSessionStartHook(t *testing.T) {
 	if got := pbHook(t, dir); got != want || daily != 0 {
 		t.Fatalf("builder failure: calls %d, got %q", daily, got)
 	}
-	// No store at all keeps today's behaviour.
+	// No binding store still permits the opted-in daily brief.
 	if err := os.Remove(filepath.Join(cfg.ConfigDir, "projects.json")); err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +541,7 @@ func TestProjectBriefClipsTitleScopeAndNeverExceedsCap(t *testing.T) {
 	if err != nil || len(got) > 2000 || len(gotIDs) != 1 || !strings.Contains(got, "Owner rules for "+long[:80]+"...") {
 		t.Fatalf("long scope with a rule: len %d ids %v err %v\n%s", len(got), gotIDs, err, got)
 	}
-	if capped, capIDs, _ := capProjectBrief(strings.Repeat("é", 2000), []string{"x"}); len(capped) > 2000 || len(capIDs) != 0 {
+	if capped, capIDs, _ := capProjectBrief(strings.Repeat("é", 2000), []string{"x"}, projectBriefMaxChars); len(capped) > 2000 || len(capIDs) != 0 {
 		t.Fatalf("final guard: len %d ids %v", len(capped), capIDs)
 	}
 }

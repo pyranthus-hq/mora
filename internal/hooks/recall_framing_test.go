@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
@@ -47,5 +48,25 @@ func TestRecallFramingFirstLineByteBudget(t *testing.T) {
 	got, count := FormatRecallContextCount([]memory.Memory{m}, "", 0, now)
 	if got != "" || count != 0 {
 		t.Fatalf("got %q (count %d), want empty output and zero count", got, count)
+	}
+}
+
+func TestRecallFramingBudgetsValidUTF8AndWholeLines(t *testing.T) {
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	note := memory.Memory{ID: "fixture", Title: "Quillfish\xff規", Text: "Full note."}
+	unbounded, _ := FormatRecallContextIDs([]memory.Memory{note}, "", 0, now)
+	if !utf8.ValidString(unbounded) || !strings.Contains(unbounded, "Quillfish�規") {
+		t.Fatalf("expected a valid rendered note, got %q", unbounded)
+	}
+	want := len(unbounded)
+	for _, budget := range []int{want - 1, want} {
+		got, ids := FormatRecallContextWithin([]memory.Memory{note}, "", 0, now, budget)
+		if budget < want {
+			if got != "" || len(ids) != 0 {
+				t.Fatalf("insufficient budget emitted %q with IDs %v", got, ids)
+			}
+		} else if got != unbounded || len(ids) != 1 || ids[0] != note.ID {
+			t.Fatalf("exact budget emitted %q with IDs %v", got, ids)
+		}
 	}
 }
