@@ -6,6 +6,19 @@ import (
 	"github.com/pyranthus-hq/mora/internal/health"
 )
 
+// Inspect preserves load failures in the public health projection and returns
+// their typed recovery evidence separately from the fixed safe display text.
+func Inspect(stateDir string, expected JobSpec, target *Target, producer *health.Producer, now time.Time) (Health, error) {
+	receipt, found, err := LoadReceipt(stateDir, expected.JobID)
+	if err != nil {
+		return healthFor(expected, "failed", "receipt_unreadable", false, safeMessage("receipt_unreadable"), "Review the backup receipt."), err
+	}
+	if !found {
+		return Classify(stateDir, expected, target, nil, producer, now), nil
+	}
+	return Classify(stateDir, expected, target, &receipt, producer, now), nil
+}
+
 // Classify is side-effect-free. Running liveness comes from Begin's OS lease.
 func Classify(stateDir string, expected JobSpec, target *Target, receipt *Receipt, producer *health.Producer, now time.Time) Health {
 	if err := validateExpected(expected); err != nil {
@@ -16,6 +29,9 @@ func Classify(stateDir string, expected JobSpec, target *Target, receipt *Receip
 	}
 	if targetRequired(expected) && target != nil && (validateTarget(*target, now) != nil || target.ID != expected.TargetID) {
 		return healthFor(expected, "failed", "destination_mismatch", false, safeMessage("destination_mismatch"), "Review the selected backup target.")
+	}
+	if expected.TargetID == "" {
+		return healthFor(expected, "failed", "destination_mismatch", false, safeMessage("destination_mismatch"), "Review the backup job target.")
 	}
 	if receipt == nil {
 		return healthFor(expected, "stale", "", true, "No confirmed backup success is recorded.", "Retry the registered backup job.")

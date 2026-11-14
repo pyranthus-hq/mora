@@ -9,14 +9,17 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
-	schema      = 1
-	maxID       = 128
-	maxReaderID = 64
-	maxDigest   = 128
+	schema         = 1
+	maxID          = 128
+	maxReaderID    = 64
+	maxDigest      = 128
+	maxReaders     = 1024
+	maxRecordBytes = 128 * 1024
 )
 
 var (
@@ -70,10 +73,20 @@ type Run struct {
 	Receipt  Receipt
 	stateDir string
 	lock     *os.File
+	mu       sync.Mutex
 }
 
 func (r *Run) Close() error {
-	if r == nil || r.lock == nil {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.closeLocked()
+}
+
+func (r *Run) closeLocked() error {
+	if r.lock == nil {
 		return nil
 	}
 	lock := r.lock
@@ -102,16 +115,18 @@ type Alert struct {
 	Sequence                                int
 }
 
-type unreadableError struct{ kind, digest string }
+// UnreadableError exposes observed-byte evidence for explicit local recovery.
+// An empty Digest means the file exceeded the bounded reader and needs local inspection.
+type UnreadableError struct{ Kind, Digest string }
 
-func (e *unreadableError) Error() string { return e.kind + " is unreadable" }
-func (e *unreadableError) Is(target error) bool {
-	return (e.kind == "backup receipt" && target == ErrReceiptUnreadable) || (e.kind == "backup alert" && target == ErrAlertUnreadable)
+func (e *UnreadableError) Error() string { return e.Kind + " is unreadable" }
+func (e *UnreadableError) Is(target error) bool {
+	return (e.Kind == "backup receipt" && target == ErrReceiptUnreadable) || (e.Kind == "backup alert" && target == ErrAlertUnreadable)
 }
 func unreadableDigest(err error) string {
-	var bad *unreadableError
+	var bad *UnreadableError
 	if errors.As(err, &bad) {
-		return bad.digest
+		return bad.Digest
 	}
 	return ""
 }
@@ -133,7 +148,7 @@ func safeToken(v string, max int) bool {
 }
 
 func validJobID(v string) bool {
-	if v == "vault-git" || v == "local-archive" {
+	if v == "vault-git" || v == "vault-git-pull" || v == "local-archive" {
 		return true
 	}
 	for _, prefix := range []string{"share-pull:", "share-push:"} {
@@ -143,10 +158,18 @@ func validJobID(v string) bool {
 	}
 	return false
 }
-func validOperation(v string) bool {
-	switch v {
-	case "push", "isolated_pull", "local_archive", "share_pull", "share_push":
-		return true
+func validJobOperation(id, operation string) bool {
+	switch {
+	case id == "vault-git":
+		return operation == "push"
+	case id == "vault-git-pull":
+		return operation == "isolated_pull"
+	case id == "local-archive":
+		return operation == "local_archive"
+	case strings.HasPrefix(id, "share-pull:"):
+		return operation == "share_pull"
+	case strings.HasPrefix(id, "share-push:"):
+		return operation == "share_push"
 	}
 	return false
 }
@@ -164,6 +187,9 @@ func validateTarget(t Target, now time.Time) error {
 	if len(parts) != 2 || !safeToken(parts[0], maxID) || !safeToken(parts[1], maxID) {
 		return errors.New("invalid backup target repository")
 	}
+	if len(t.AuthorizedReaderIDs) > maxReaders {
+		return errors.New("too many backup target readers")
+	}
 	seen := map[string]bool{}
 	for _, reader := range t.AuthorizedReaderIDs {
 		if !safeToken(reader, maxReaderID) || seen[reader] {
@@ -175,7 +201,7 @@ func validateTarget(t Target, now time.Time) error {
 }
 
 func validateExpected(spec JobSpec) error {
-	if !validJobID(spec.JobID) || !safeToken(spec.TargetID, maxID) || !safeToken(spec.PolicyDigest, maxDigest) || !validOperation(spec.Operation) || (spec.RunID != "" && !safeToken(spec.RunID, maxID)) {
+	if !validJobID(spec.JobID) || (spec.TargetID != "" && !safeToken(spec.TargetID, maxID)) || !safeToken(spec.PolicyDigest, maxDigest) || !validJobOperation(spec.JobID, spec.Operation) || (spec.RunID != "" && !safeToken(spec.RunID, maxID)) {
 		return errors.New("invalid backup job identity")
 	}
 	if (spec.RecoverRunID == "") != (spec.RecoverStartedAt == "") || (spec.RecoverRunID != "" && !safeToken(spec.RecoverRunID, maxID)) || (spec.RecoverReceiptDigest != "" && !safeToken(spec.RecoverReceiptDigest, maxDigest)) {
@@ -185,7 +211,7 @@ func validateExpected(spec JobSpec) error {
 }
 
 func validateReceipt(r Receipt, now time.Time) error {
-	if r.Schema != schema || !validJobID(r.JobID) || !safeToken(r.TargetID, maxID) || !safeToken(r.PolicyDigest, maxDigest) || !safeToken(r.RunID, maxID) || !validOperation(r.Operation) || !validTimestamp(r.StartedAt, now) || (r.LocalOID != "" && !safeToken(r.LocalOID, maxDigest)) || (r.RemoteOID != "" && !safeToken(r.RemoteOID, maxDigest)) {
+	if r.Schema != schema || !validJobID(r.JobID) || !safeToken(r.TargetID, maxID) || !safeToken(r.PolicyDigest, maxDigest) || !safeToken(r.RunID, maxID) || !validJobOperation(r.JobID, r.Operation) || !validTimestamp(r.StartedAt, now) || (r.LocalOID != "" && !safeToken(r.LocalOID, maxDigest)) || (r.RemoteOID != "" && !safeToken(r.RemoteOID, maxDigest)) {
 		return errors.New("invalid backup receipt identity")
 	}
 	start, _ := parseTimestamp(r.StartedAt)

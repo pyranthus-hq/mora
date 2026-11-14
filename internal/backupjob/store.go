@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -36,7 +37,7 @@ func LoadTarget(configDir string) (Target, bool, error) {
 	if err != nil {
 		return Target{}, false, err
 	}
-	b, err := os.ReadFile(path)
+	b, err := readRecord(path, "backup target")
 	if errors.Is(err, os.ErrNotExist) {
 		return Target{}, false, nil
 	}
@@ -96,6 +97,9 @@ func Begin(stateDir string, spec JobSpec, now time.Time) (_ *Run, retErr error) 
 			return nil, err
 		}
 	}
+	if spec.TargetID == "" {
+		return nil, errors.New("backup target identity is required")
+	}
 	if err := validateExpected(spec); err != nil {
 		return nil, err
 	}
@@ -133,12 +137,18 @@ func Begin(stateDir string, spec JobSpec, now time.Time) (_ *Run, retErr error) 
 				return err
 			}
 		}
+		if found && validateReceipt(previous, now) != nil {
+			return errors.New("backup clock precedes stored receipt")
+		}
 		if found && previous.State == "running" && (spec.RecoverRunID != previous.RunID || spec.RecoverStartedAt != previous.StartedAt || !validTimestamp(spec.RecoverStartedAt, now)) {
 			return ErrRunning
 		}
 		next := Receipt{Schema: schema, JobID: spec.JobID, TargetID: spec.TargetID, PolicyDigest: spec.PolicyDigest, RunID: spec.RunID, Operation: spec.Operation, State: "running", StartedAt: now.UTC().Format(time.RFC3339Nano)}
 		if found && previous.JobID == spec.JobID && previous.TargetID == spec.TargetID && previous.PolicyDigest == spec.PolicyDigest && previous.Operation == spec.Operation {
 			next.LastSuccessAt = previous.LastSuccessAt
+		}
+		if err := validateReceipt(next, now); err != nil {
+			return err
 		}
 		if err := writeDurableJSON(path, next); err != nil {
 			return err
@@ -153,14 +163,19 @@ func Begin(stateDir string, spec JobSpec, now time.Time) (_ *Run, retErr error) 
 
 // Finish cannot accept a copied Receipt: it consumes the Run which still holds
 // the OS lease established by Begin.
-func Finish(run *Run, result Result, now time.Time) (Receipt, error) {
-	if run == nil || run.lock == nil || run.Receipt.State != "running" || validateReceipt(run.Receipt, now) != nil {
+func Finish(run *Run, result Result, now time.Time) (out Receipt, retErr error) {
+	if run == nil {
 		return Receipt{}, ErrOwnershipLost
 	}
-	defer run.Close()
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if run.lock == nil || run.Receipt.State != "running" || validateReceipt(run.Receipt, now) != nil {
+		return Receipt{}, ErrOwnershipLost
+	}
 	if (result.State != "succeeded" && result.State != "failed" && result.State != "diverged") || (result.LocalOID != "" && !safeToken(result.LocalOID, maxDigest)) || (result.RemoteOID != "" && !safeToken(result.RemoteOID, maxDigest)) {
 		return Receipt{}, errors.New("invalid backup result")
 	}
+	defer func() { retErr = errors.Join(retErr, run.closeLocked()) }()
 	path, err := checkedPath(run.stateDir, receiptPath(run.stateDir, run.Receipt.JobID))
 	if err != nil {
 		return Receipt{}, err
@@ -182,6 +197,9 @@ func Finish(run *Run, result Result, now time.Time) (Receipt, error) {
 				next.FailureCode = "diverged"
 			}
 			next.SafeDetail = safeMessage(next.FailureCode)
+		}
+		if err := validateReceipt(next, now); err != nil {
+			return err
 		}
 		return writeDurableJSON(path, next)
 	})
@@ -215,7 +233,7 @@ func LeaseLive(stateDir, jobID string) (bool, error) {
 }
 
 func loadReceipt(path, expectedJobID string) (Receipt, bool, error) {
-	b, err := os.ReadFile(path)
+	b, err := readRecord(path, "backup receipt")
 	if errors.Is(err, os.ErrNotExist) {
 		return Receipt{}, false, nil
 	}
@@ -224,7 +242,7 @@ func loadReceipt(path, expectedJobID string) (Receipt, bool, error) {
 	}
 	var receipt Receipt
 	if json.Unmarshal(b, &receipt) != nil || receipt.JobID != expectedJobID || validateReceipt(receipt, time.Now()) != nil {
-		return Receipt{}, false, &unreadableError{kind: "backup receipt", digest: digestBytes(b)}
+		return Receipt{}, false, &UnreadableError{Kind: "backup receipt", Digest: digestBytes(b)}
 	}
 	return receipt, true, nil
 }
@@ -248,16 +266,38 @@ func sameTarget(a, b Target) bool {
 }
 func digestBytes(b []byte) string { sum := sha256.Sum256(b); return hex.EncodeToString(sum[:]) }
 func quarantine(path, digest string) error {
-	dest := path + ".corrupt-" + digest[:16]
-	if _, err := os.Lstat(dest); err == nil {
-		return errors.New("backup corrupt receipt quarantine already exists")
-	} else if !errors.Is(err, os.ErrNotExist) {
+	id, err := newRunID()
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(path, dest); err != nil {
+	dest := path + ".corrupt-" + digest[:16] + "-" + id
+	// No replacement: preserve every observed corrupt record, including repeats.
+	if err := os.Link(path, dest); err != nil {
+		return err
+	}
+	if err := atomicio.SyncDir(filepath.Dir(path)); err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil {
 		return err
 	}
 	return atomicio.SyncDir(filepath.Dir(path))
+}
+
+func readRecord(path, kind string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxRecordBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxRecordBytes {
+		return nil, &UnreadableError{Kind: kind}
+	}
+	return b, nil
 }
 func writeDurableJSON(path string, value any) error {
 	b, err := json.MarshalIndent(value, "", "  ")
@@ -312,7 +352,7 @@ func checkedPath(root, path string) (string, error) {
 			return "", errors.New("backup output path escapes state directory")
 		}
 		root, path = canonical, filepath.Join(canonical, rel)
-	} else if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	} else if !errors.Is(err, os.ErrNotExist) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", errors.New("backup output path escapes state directory")
 	}
 	current := root

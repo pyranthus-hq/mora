@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"time"
 
@@ -32,6 +31,9 @@ func AdvanceAlert(stateDir string, health Health, now time.Time) (Alert, bool, e
 		if health.State == "healthy" {
 			if found && prior.RecoveredAt == "" && sameAlertScope(prior, health) && successAfter(health.LastSuccessAt, prior.FailureAttemptAt, now) {
 				prior.RecoveredAt, prior.LastSeenAt = now.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano)
+				if !validAlert(prior, health.JobID, now) {
+					return errors.New("invalid backup alert chronology")
+				}
 				if err := writeDurableJSON(path, prior); err != nil {
 					return err
 				}
@@ -46,6 +48,12 @@ func AdvanceAlert(stateDir string, health Health, now time.Time) (Alert, bool, e
 		fingerprint := fingerprintFor(health)
 		if found && prior.Fingerprint == fingerprint && prior.RecoveredAt == "" {
 			prior.LastSeenAt = now.UTC().Format(time.RFC3339Nano)
+			if successAfter(health.LastAttemptAt, prior.FailureAttemptAt, now) {
+				prior.FailureAttemptAt = health.LastAttemptAt
+			}
+			if !validAlert(prior, health.JobID, now) {
+				return errors.New("invalid backup alert chronology")
+			}
 			if err := writeDurableJSON(path, prior); err != nil {
 				return err
 			}
@@ -62,8 +70,15 @@ func AdvanceAlert(stateDir string, health Health, now time.Time) (Alert, bool, e
 			attempt = stamp
 		}
 		out = Alert{JobID: health.JobID, TargetID: health.TargetID, Fingerprint: fingerprint, PolicyDigest: health.PolicyDigest, FailureAttemptAt: attempt, FirstSeenAt: stamp, LastSeenAt: stamp, State: health.State, FailureCode: safeFailureCode(health.FailureCode), Sequence: sequence, DeliveryState: "unknown"}
-		out.EpisodeID = fmt.Sprintf("backup-%s-%d", fingerprint[:16], sequence)
+		id, err := newRunID()
+		if err != nil {
+			return err
+		}
+		out.EpisodeID = "backup-" + id
 		out.NotificationID = out.EpisodeID
+		if !validAlert(out, health.JobID, now) {
+			return errors.New("invalid backup alert")
+		}
 		if err := writeDurableJSON(path, out); err != nil {
 			return err
 		}
@@ -92,6 +107,9 @@ func RecordAlertDelivery(stateDir, jobID, episodeID string, now time.Time) error
 			return ErrOwnershipLost
 		}
 		alert.DeliveryState, alert.LastSeenAt = "delivered", now.UTC().Format(time.RFC3339Nano)
+		if !validAlert(alert, jobID, now) {
+			return errors.New("invalid backup alert chronology")
+		}
 		return writeDurableJSON(path, alert)
 	})
 }
@@ -106,39 +124,53 @@ func RecoverAlert(stateDir, jobID, observedDigest string) error {
 	if err != nil {
 		return err
 	}
-	_, _, loadErr := loadAlert(path, jobID)
-	if !errors.Is(loadErr, ErrAlertUnreadable) {
-		if loadErr == nil {
-			return errors.New("backup alert is not corrupt")
+	return leasefile.WithGuard(path, func() error {
+		_, _, loadErr := loadAlert(path, jobID)
+		if !errors.Is(loadErr, ErrAlertUnreadable) {
+			if loadErr == nil {
+				return errors.New("backup alert is not corrupt")
+			}
+			return loadErr
 		}
-		return loadErr
-	}
-	if digest := unreadableDigest(loadErr); digest != observedDigest {
-		return errors.New("backup alert recovery evidence does not match")
-	}
-	return quarantine(path, observedDigest)
+		if digest := unreadableDigest(loadErr); digest != observedDigest {
+			return errors.New("backup alert recovery evidence does not match")
+		}
+		return quarantine(path, observedDigest)
+	})
 }
 
 func loadAlert(path, expectedJobID string) (Alert, bool, error) {
-	b, err := os.ReadFile(path)
+	b, err := readRecord(path, "backup alert")
 	if errors.Is(err, os.ErrNotExist) {
 		return Alert{}, false, nil
 	}
 	if err != nil {
-		return Alert{}, false, fmt.Errorf("read backup alert: %w", err)
+		return Alert{}, false, errors.Join(errors.New("read backup alert"), err)
 	}
 	var alert Alert
 	if json.Unmarshal(b, &alert) != nil || !validAlert(alert, expectedJobID, time.Now()) {
-		return Alert{}, false, &unreadableError{kind: "backup alert", digest: digestBytes(b)}
+		return Alert{}, false, &UnreadableError{Kind: "backup alert", Digest: digestBytes(b)}
 	}
 	return alert, true, nil
 }
 func validAlert(a Alert, jobID string, now time.Time) bool {
-	if a.JobID != jobID || !validJobID(a.JobID) || (a.TargetID != "" && !safeToken(a.TargetID, maxID)) || !safeToken(a.PolicyDigest, maxDigest) || !alertable(Health{JobID: a.JobID, TargetID: a.TargetID, State: a.State, FailureCode: a.FailureCode, PolicyDigest: a.PolicyDigest}) || safeFailureCode(a.FailureCode) != a.FailureCode || a.Fingerprint != fingerprintFor(Health{JobID: a.JobID, TargetID: a.TargetID, State: a.State, FailureCode: a.FailureCode, PolicyDigest: a.PolicyDigest}) || a.EpisodeID == "" || a.NotificationID != a.EpisodeID || len(a.Fingerprint) != 64 || a.Sequence < 1 || (a.DeliveryState != "unknown" && a.DeliveryState != "delivered") || !validTimestamp(a.FirstSeenAt, now) || !validTimestamp(a.LastSeenAt, now) || !validTimestamp(a.FailureAttemptAt, now) {
+	if a.JobID != jobID || !validJobID(a.JobID) || (a.TargetID != "" && !safeToken(a.TargetID, maxID)) || !safeToken(a.PolicyDigest, maxDigest) || !alertable(Health{JobID: a.JobID, TargetID: a.TargetID, State: a.State, FailureCode: a.FailureCode, PolicyDigest: a.PolicyDigest}) || safeFailureCode(a.FailureCode) != a.FailureCode || a.Fingerprint != fingerprintFor(Health{JobID: a.JobID, TargetID: a.TargetID, State: a.State, FailureCode: a.FailureCode, PolicyDigest: a.PolicyDigest}) || !safeToken(a.EpisodeID, maxID) || a.NotificationID != a.EpisodeID || len(a.Fingerprint) != 64 || a.Sequence < 1 || (a.DeliveryState != "unknown" && a.DeliveryState != "delivered") || !validTimestamp(a.FirstSeenAt, now) || !validTimestamp(a.LastSeenAt, now) || !validTimestamp(a.FailureAttemptAt, now) {
 		return false
 	}
 	if a.RecoveredAt != "" && !validTimestamp(a.RecoveredAt, now) {
 		return false
+	}
+	first, _ := parseTimestamp(a.FirstSeenAt)
+	last, _ := parseTimestamp(a.LastSeenAt)
+	attempt, _ := parseTimestamp(a.FailureAttemptAt)
+	if last.Before(first) || attempt.After(last) {
+		return false
+	}
+	if a.RecoveredAt != "" {
+		recovered, _ := parseTimestamp(a.RecoveredAt)
+		if recovered.Before(first) || recovered.After(last) {
+			return false
+		}
 	}
 	return true
 }

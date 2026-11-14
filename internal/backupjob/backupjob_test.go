@@ -39,7 +39,7 @@ func TestBeginDurableBeforeWork(t *testing.T) {
 	}
 }
 
-func TestLiveRunCannotBeRecoveredAndInterruptedRunCan(t *testing.T) {
+func TestStaleCompleterCannotReplaceSuccessor(t *testing.T) {
 	state := t.TempDir()
 	first, err := Begin(state, testSpec("run1"), testNow)
 	if err != nil {
@@ -58,6 +58,9 @@ func TestLiveRunCannotBeRecoveredAndInterruptedRunCan(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer second.Close()
+	if _, err := Finish(first, Result{State: "succeeded"}, testNow.Add(2*time.Minute)); !errors.Is(err, ErrOwnershipLost) {
+		t.Fatal("stale completer accepted", err)
+	}
 	if second.Receipt.RunID != "run2" {
 		t.Fatalf("recovered run=%#v", second.Receipt)
 	}
