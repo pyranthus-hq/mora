@@ -4,8 +4,10 @@ export TMPDIR="${TMPDIR:-/tmp/mora-source-health-tmp}"
 mkdir -p "$TMPDIR"
 cd "$(dirname "$0")/../.."
 APP_DIR="${APP_DIR:-$PWD/apps/mora-menubar/build/Mora Status.app}"
-COLLECTOR="${1:-${MORA_TENTACLES:-}}"
-MORA_BINARY="${2:-${MORA_BINARY:-}}"
+COLLECTOR="${MORA_TENTACLES:-}"
+MORA_BINARY="${MORA_BINARY:-}"
+[ "$#" -ge 1 ] && COLLECTOR="$1"
+[ "$#" -ge 2 ] && MORA_BINARY="$2"
 if [ -z "$COLLECTOR" ] || [ ! -x "$COLLECTOR" ]; then
   echo "Usage: $0 /path/to/mora-tentacles /path/to/mora (or set MORA_TENTACLES and MORA_BINARY)" >&2
   exit 2
@@ -22,7 +24,7 @@ swiftc apps/mora-menubar/Sources/MenuBarIcon.swift apps/mora-menubar/Tools/Build
 "$ICON_WORK/build-icon" "$ICON_WORK/Mora.iconset"
 iconutil -c icns "$ICON_WORK/Mora.iconset" -o "$APP_DIR/Contents/Resources/Mora.icns"
 swiftc -O -target arm64-apple-macos13.0 -framework SwiftUI -framework AppKit \
-  apps/mora-menubar/Sources/StatusData.swift apps/mora-menubar/Sources/ReviewReceipt.swift apps/mora-menubar/Sources/MenuBarIcon.swift apps/mora-menubar/Sources/ReviewWindow.swift apps/mora-menubar/Sources/MoraStatusApp.swift \
+  apps/mora-menubar/Sources/StatusData.swift apps/mora-menubar/Sources/ReviewReceipt.swift apps/mora-menubar/Sources/ReviewTransport.swift apps/mora-menubar/Sources/OwnerProof.swift apps/mora-menubar/Sources/MenuBarIcon.swift apps/mora-menubar/Sources/ReviewWindow.swift apps/mora-menubar/Sources/MoraStatusApp.swift \
   -o "$APP_DIR/Contents/MacOS/Mora Status"
 cp "$COLLECTOR" "$APP_DIR/Contents/MacOS/mora-tentacles"
 cp "$MORA_BINARY" "$APP_DIR/Contents/MacOS/mora"

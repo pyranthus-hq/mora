@@ -8,7 +8,10 @@ struct MoraStatusApp: App {
     @StateObject private var model: StatusModel
     @NSApplicationDelegateAdaptor(PreviewWindowDelegate.self) private var appDelegate
 
-    init() { _model = StateObject(wrappedValue: StatusModel(preview: CommandLine.arguments.contains("--preview"))) }
+    init() {
+        signal(SIGPIPE, SIG_IGN)
+        _model = StateObject(wrappedValue: StatusModel(preview: CommandLine.arguments.contains("--preview")))
+    }
 
     private var needsAttention: Bool {
         guard model.error == nil, let snapshot = model.snapshot else { return true }
@@ -42,7 +45,8 @@ private struct MoraMark: View {
 final class PreviewWindowDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if CommandLine.arguments.contains("--review") {
+        // Finder/login launches intentionally open review; --preview remains fixture-only.
+        if CommandLine.arguments.contains("--review") || !CommandLine.arguments.contains("--preview") {
             let directory = Bundle.main.executableURL!.deletingLastPathComponent()
             ReviewWindowController.shared.show(mora: directory.appendingPathComponent("mora"), preview: CommandLine.arguments.contains("--preview"))
             return

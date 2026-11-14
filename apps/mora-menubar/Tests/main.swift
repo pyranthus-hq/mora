@@ -118,6 +118,7 @@ let previewJSON = #"{"schema":"mora.review.preview","schema_version":1,"preview"
 let preview = try JSONDecoder().decode(ReviewPreviewReceipt.self, from: Data(previewJSON.utf8))
 let validatedPreview = try preview.validated(for: reviewList.notes[0])
 check(validatedPreview.id == "mem_1", "canonical full preview decoded")
+check(validatedPreview.canonicalRevision == "revision" && validatedPreview.displayDigest == "digest", "displayed preview keeps the Go-bound revision and digest")
 check(preview.preview.details.isEmpty, "omitted details decode as an empty list")
 check(preview.preview.incompleteness == ["redacted values", "omitted arguments"], "incomplete preview remains ineligible for Keep")
 let unsupportedPreview = try JSONDecoder().decode(ReviewPreviewReceipt.self, from: Data(#"{"schema":"wrong","schema_version":1,"preview":{"id":"mem_1","kind":"saved","title":"x","text":"x","scope":"global","type":"fact","source":"mcp","provenance":"authored","state":"tentative","details":[],"complete":true,"redacted":false,"truncated":false,"escaped":false,"omitted_arguments":false,"canonical_revision":"r","display_digest":"d"}}"#.utf8))
