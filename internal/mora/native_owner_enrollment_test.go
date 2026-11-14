@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -84,6 +85,84 @@ func TestNativeOwnerEnrollmentRefusesExpiredAndImportedProof(t *testing.T) {
 	}
 	if _, _, ok := verifier.TrustedIdentity(); ok {
 		t.Fatal("enrolled expired proof")
+	}
+}
+
+func TestNativeOwnerEnrollmentPreservesCorruptRecord(t *testing.T) {
+	cfg := Config{StateDir: t.TempDir()}
+	if err := os.MkdirAll(nativeOwnerDir(cfg), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := nativeOwnerEnrollmentPath(cfg)
+	broken := []byte("not enrollment json")
+	if err := os.WriteFile(path, broken, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	verifier := newNativeOwnerVerifierForPeer(cfg, nativeOwnerTestPeer{value: "test-app", trusted: true})
+	_, public := nativeOwnerTestKey(t)
+	if _, _, err := verifier.beginEnrollment(public, "", time.Now()); err == nil {
+		t.Fatal("accepted replacement of corrupt enrollment")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, broken) {
+		t.Fatalf("corrupt enrollment changed: %q, %v", got, err)
+	}
+}
+
+func TestNativeOwnerInstallationIDPreservesInvalidFile(t *testing.T) {
+	cfg := Config{StateDir: t.TempDir()}
+	if err := os.MkdirAll(nativeOwnerDir(cfg), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := nativeOwnerInstallationPath(cfg)
+	broken := []byte("not-an-installation-id")
+	if err := os.WriteFile(path, broken, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nativeOwnerInstallationID(cfg); err == nil {
+		t.Fatal("accepted replacement of invalid installation ID")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, broken) {
+		t.Fatalf("invalid installation ID changed: %q, %v", got, err)
+	}
+}
+
+func TestNativeOwnerInstallationIDConcurrentFirstUseIsStable(t *testing.T) {
+	cfg := Config{StateDir: t.TempDir()}
+	const callers = 8
+	ids := make(chan string, callers)
+	errs := make(chan error, callers)
+	var group sync.WaitGroup
+	for range callers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			id, err := nativeOwnerInstallationID(cfg)
+			if err != nil {
+				errs <- err
+				return
+			}
+			ids <- id
+		}()
+	}
+	group.Wait()
+	close(ids)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	var first string
+	for id := range ids {
+		if first == "" {
+			first = id
+		}
+		if id != first {
+			t.Fatalf("concurrent installation IDs differ: %q and %q", first, id)
+		}
+	}
+	if first == "" {
+		t.Fatal("no installation ID returned")
 	}
 }
 

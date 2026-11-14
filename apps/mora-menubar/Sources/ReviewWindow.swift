@@ -55,6 +55,7 @@ final class ReviewModel: ObservableObject {
     @Published var ownerStatus: OwnerProofStatus?
     @Published var applying = false
     @Published var decisionResult = ""
+    @Published var indexVisibilityResult = ""
 
     private let mora: URL
     private let previewMode: Bool
@@ -126,13 +127,20 @@ final class ReviewModel: ObservableObject {
     func decide(_ action: String, preview: ReviewPreview) async {
         guard !previewMode, !applying, let status = ownerStatus, status.enrolled, !status.readOnly else { return }
         if action == "keep" && !preview.isKeepEligible { return }
+        decisionResult = ""
+        indexVisibilityResult = ""
         applying = true; defer { applying = false }
         do {
             let client = NativeReviewClient(mora: mora)
             let outcome = try await Task.detached(priority: .userInitiated) { try client.decide(action, preview: preview, status: status) }.value
-            decisionResult = "Decision: \(outcome.status). Index visibility: \(outcome.indexVisibility.replacingOccurrences(of: "_", with: " "))."
-            await load()
-        } catch { approvalStatus = error.localizedDescription }
+            indexVisibilityResult = "Index visibility: \(outcome.indexVisibility.replacingOccurrences(of: "_", with: " "))."
+            switch outcome.status {
+            case "cancelled": decisionResult = "Cancelled. Note unchanged."
+            case "applied": decisionResult = "Applied."; await load()
+            case "stale": decisionResult = "Changed since shown. Not applied."
+            default: decisionResult = "Outcome unknown. Refresh before retrying."
+            }
+        } catch { decisionResult = "Outcome unknown. Refresh before retrying." }
     }
 
     func show(_ row: ReviewRow) async {
@@ -278,6 +286,7 @@ struct ReviewView: View {
                 Text(verbatim: model.approvalStatus)
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
 				if !model.decisionResult.isEmpty { Text(verbatim: model.decisionResult).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                if !model.indexVisibilityResult.isEmpty { Text(verbatim: model.indexVisibilityResult).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             }
             .padding(10)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))

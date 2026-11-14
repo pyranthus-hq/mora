@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -134,6 +135,8 @@ func (v *nativeOwnerVerifier) beginEnrollment(publicKey []byte, credentialID str
 	err = leasefile.WithGuard(nativeOwnerEnrollmentLockPath(v.cfg), func() error {
 		if _, err := v.enrollment(); err == nil {
 			return errors.New("native owner is already enrolled")
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("existing native owner enrollment is unreadable; preserve it and repair %s: %w", nativeOwnerEnrollmentPath(v.cfg), err)
 		}
 		installationID, idErr := nativeOwnerInstallationID(v.cfg)
 		if idErr != nil {
@@ -169,6 +172,8 @@ func (v *nativeOwnerVerifier) completeEnrollment(nonce string, proof []byte, now
 	return leasefile.WithGuard(nativeOwnerEnrollmentLockPath(v.cfg), func() error {
 		if _, err := v.enrollment(); err == nil {
 			return errDesktopReviewProofUnavailable
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("existing native owner enrollment is unreadable; preserve it and repair %s: %w", nativeOwnerEnrollmentPath(v.cfg), err)
 		}
 		raw, err := os.ReadFile(nativeOwnerEnrollmentChallengePath(v.cfg))
 		if err != nil {
@@ -224,11 +229,18 @@ func nativeOwnerInstallationID(cfg Config) (string, error) {
 	var installationID string
 	err := leasefile.WithGuard(nativeOwnerInstallationLockPath(cfg), func() error {
 		path := nativeOwnerInstallationPath(cfg)
-		if raw, err := os.ReadFile(path); err == nil && len(raw) == 64 {
-			if _, err := hex.DecodeString(string(raw)); err == nil {
-				installationID = string(raw)
-				return nil
+		raw, err := os.ReadFile(path)
+		if err == nil {
+			if len(raw) == 64 {
+				if _, err := hex.DecodeString(string(raw)); err == nil {
+					installationID = string(raw)
+					return nil
+				}
 			}
+			return fmt.Errorf("existing installation ID is invalid; preserve it and repair %s", path)
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("existing installation ID is unreadable; preserve it and repair %s: %w", path, err)
 		}
 		var random [32]byte
 		if _, err := rand.Read(random[:]); err != nil {
