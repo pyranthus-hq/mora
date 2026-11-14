@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"time"
@@ -301,6 +302,15 @@ var mcpWriteClock = time.Now
 
 func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
 	return mcpWriteMemoryWith(ctx, cfg, args)
+}
+
+// mcpWriteDisplayMemory keeps the persisted absolute path private and makes
+// the bounded MCP response independent of the caller's vault-root length.
+func mcpWriteDisplayMemory(cfg Config, m Memory) Memory {
+	if rel, err := filepath.Rel(cfg.VaultDir, m.Path); err == nil && filepath.IsLocal(rel) {
+		m.Path = filepath.ToSlash(rel)
+	}
+	return m
 }
 
 // mcpWriteMemoryWith is mcpWriteMemory with the governed create's options.
