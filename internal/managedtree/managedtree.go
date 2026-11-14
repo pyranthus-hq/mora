@@ -14,11 +14,17 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 )
 
 var ErrConflict = errors.New("managed tree conflict")
+
+var (
+	syncFile = (*os.File).Sync
+	syncDir  = atomicio.SyncDir
+)
 
 // File is one regular file in a managed tree. Path is slash-separated and
 // relative to the tree root.
@@ -68,7 +74,7 @@ func InstallTree(source Revision, destination string, prior *Manifest) (Manifest
 	if err != nil {
 		return Manifest{}, fmt.Errorf("digesting source: %w", err)
 	}
-	if !sameRevision(source, actual) {
+	if !sourceMatchesRevision(source, actual) {
 		return Manifest{}, fmt.Errorf("%w: source changed since its revision was calculated", ErrConflict)
 	}
 
@@ -82,13 +88,9 @@ func InstallTree(source Revision, destination string, prior *Manifest) (Manifest
 	}
 	defer parentRoot.Close()
 
-	stage, backup := stageNames(base)
-	recovered, err := recoverInterrupted(parentRoot, base, stage, backup, source)
-	if err != nil {
+	marker := transactionMarker(base)
+	if err := incompleteTransaction(parentRoot, parent, marker); err != nil {
 		return Manifest{}, err
-	}
-	if recovered {
-		return Manifest{Revision: source, Destination: dest, InstalledAt: time.Now().UTC()}, nil
 	}
 
 	destInfo, err := parentRoot.Lstat(base)
@@ -113,13 +115,21 @@ func InstallTree(source Revision, destination string, prior *Manifest) (Manifest
 		return Manifest{}, fmt.Errorf("%w: manifest destination is missing", ErrConflict)
 	}
 
-	if err := parentRoot.Mkdir(stage, 0o700); err != nil {
+	stagePath, err := os.MkdirTemp(parent, "."+base+".managedtree-stage-")
+	if err != nil {
 		return Manifest{}, fmt.Errorf("creating staging tree: %w", err)
 	}
-	keepStage := false
+	stage := filepath.Base(stagePath)
+	backup := stage + ".backup"
+	if err := beginTransaction(parent, marker, stage, backup); err != nil {
+		_ = os.RemoveAll(stagePath)
+		return Manifest{}, err
+	}
+	preserveTransaction := false
 	defer func() {
-		if !keepStage {
+		if !preserveTransaction {
 			_ = parentRoot.RemoveAll(stage)
+			_ = parentRoot.Remove(marker)
 		}
 	}()
 
@@ -152,30 +162,43 @@ func InstallTree(source Revision, destination string, prior *Manifest) (Manifest
 	if err != nil {
 		return Manifest{}, fmt.Errorf("staging revision: %w", err)
 	}
+	if err := syncTree(stagePath); err != nil {
+		return Manifest{}, fmt.Errorf("syncing staged tree: %w", err)
+	}
 
 	if exists {
+		if _, err := parentRoot.Lstat(backup); !errors.Is(err, os.ErrNotExist) {
+			return Manifest{}, fmt.Errorf("%w: generated backup path already exists", ErrConflict)
+		}
 		if err := parentRoot.Rename(base, backup); err != nil {
 			return Manifest{}, fmt.Errorf("parking prior destination: %w", err)
 		}
+		preserveTransaction = true
+		if err := syncDir(parent); err != nil {
+			return Manifest{}, transactionRecoveryError(parent, marker, stage, backup, err)
+		}
 	}
 	if err := parentRoot.Rename(stage, base); err != nil {
-		keepStage = true
-		if exists {
-			_ = parentRoot.Rename(backup, base)
-		}
-		return Manifest{}, fmt.Errorf("publishing staged tree: %w", err)
+		preserveTransaction = true
+		return Manifest{}, transactionRecoveryError(parent, marker, stage, backup, err)
 	}
-	keepStage = true // stage was renamed; preserve backup until the durable publish barrier.
-	if err := atomicio.SyncDir(parent); err != nil {
-		return Manifest{}, fmt.Errorf("syncing published tree: %w", err)
+	preserveTransaction = true
+	if err := syncDir(parent); err != nil {
+		return Manifest{}, transactionRecoveryError(parent, marker, stage, backup, err)
 	}
 	if exists {
 		if err := parentRoot.RemoveAll(backup); err != nil {
-			return Manifest{}, fmt.Errorf("removing recovered prior tree: %w", err)
+			return Manifest{}, transactionRecoveryError(parent, marker, stage, backup, err)
 		}
-		if err := atomicio.SyncDir(parent); err != nil {
-			return Manifest{}, fmt.Errorf("syncing replacement cleanup: %w", err)
+		if err := syncDir(parent); err != nil {
+			return Manifest{}, transactionRecoveryError(parent, marker, stage, backup, err)
 		}
+	}
+	if err := parentRoot.Remove(marker); err != nil {
+		return Manifest{}, transactionRecoveryError(parent, marker, stage, backup, err)
+	}
+	if err := syncDir(parent); err != nil {
+		return Manifest{}, transactionRecoveryError(parent, marker, stage, backup, err)
 	}
 	return Manifest{Revision: source, Destination: dest, InstalledAt: time.Now().UTC()}, nil
 }
@@ -213,12 +236,16 @@ func DetachTree(destination string, manifest Manifest) ([]string, error) {
 	var conflicts []string
 	for _, file := range manifest.Revision.Files {
 		info, err := root.Lstat(file.Path)
-		if err != nil || !info.Mode().IsRegular() || unsafeMode(info.Mode()) {
+		if errors.Is(err, os.ErrNotExist) {
+			continue // an earlier interrupted detach already removed this exact manifest path
+		}
+		unsafe, reparseErr := unsafeReparse(filepath.Join(dest, file.Path), info)
+		if err != nil || !info.Mode().IsRegular() || unsafeMode(info.Mode()) || reparseErr != nil || unsafe {
 			conflicts = append(conflicts, file.Path)
 			continue
 		}
 		hash, err := hashRootFile(root, file.Path)
-		if err != nil || hash != file.SHA256 || executable(info.Mode()) != file.Executable {
+		if err != nil || hash != file.SHA256 || !executableMatches(file.Executable, info.Mode()) {
 			conflicts = append(conflicts, file.Path)
 			continue
 		}
@@ -242,7 +269,8 @@ func cleanDirectory(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !info.IsDir() || unsafeMode(info.Mode()) || unsafeReparse(abs, info) {
+	unsafe, reparseErr := unsafeReparse(abs, info)
+	if !info.IsDir() || unsafeMode(info.Mode()) || reparseErr != nil || unsafe {
 		return "", fmt.Errorf("%w: root is not a plain directory", ErrConflict)
 	}
 	return filepath.Clean(abs), nil
@@ -261,82 +289,36 @@ func destinationParts(destination string) (string, string, string, error) {
 	return abs, filepath.Dir(abs), base, nil
 }
 
-func stageNames(base string) (string, string) {
-	return "." + base + ".managedtree-stage", "." + base + ".managedtree-backup"
+func transactionMarker(base string) string { return "." + base + ".managedtree-transaction" }
+
+func beginTransaction(parent, marker, stage, backup string) error {
+	body := []byte("mora-managedtree-transaction-v1\n" + stage + "\n" + backup + "\n")
+	path := filepath.Join(parent, marker)
+	if err := atomicio.CreateExclusive(path, body, 0o600); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("%w: incomplete transaction marker already exists at %s; preserve it and inspect its named paths before retrying", ErrConflict, path)
+		}
+		return fmt.Errorf("recording transaction marker: %w", err)
+	}
+	if err := syncDir(parent); err != nil {
+		return transactionRecoveryError(parent, marker, stage, backup, err)
+	}
+	return nil
 }
 
-func recoverInterrupted(parent *os.Root, base, stage, backup string, source Revision) (bool, error) {
-	state := func(name string) (bool, error) {
-		info, err := parent.Lstat(name)
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		if err != nil || !info.IsDir() || unsafeMode(info.Mode()) {
-			return false, fmt.Errorf("%w: invalid interrupted-install artifact %q", ErrConflict, name)
-		}
-		return true, nil
+func incompleteTransaction(parent *os.Root, parentPath, marker string) error {
+	info, err := parent.Lstat(marker)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
 	}
-	dest, err := state(base)
-	if err != nil {
-		return false, err
+	if err != nil || !info.Mode().IsRegular() || unsafeMode(info.Mode()) {
+		return fmt.Errorf("%w: unrecognized transaction marker at %s; it was not modified", ErrConflict, filepath.Join(parentPath, marker))
 	}
-	hasStage, err := state(stage)
-	if err != nil {
-		return false, err
-	}
-	hasBackup, err := state(backup)
-	if err != nil {
-		return false, err
-	}
-	if !hasStage && !hasBackup {
-		return false, nil
-	}
-	if hasStage {
-		stageRoot, err := parent.OpenRoot(stage)
-		if err != nil {
-			return false, err
-		}
-		err = verifyFiles(stageRoot, source.Files)
-		stageRoot.Close()
-		if err != nil {
-			return false, fmt.Errorf("%w: staging artifact does not match requested revision", ErrConflict)
-		}
-	}
-	switch {
-	case !dest && hasStage:
-		if err := parent.Rename(stage, base); err != nil {
-			return false, err
-		}
-		if hasBackup {
-			if err := parent.RemoveAll(backup); err != nil {
-				return false, err
-			}
-		}
-		return true, atomicio.SyncDir(parent.Name())
-	case !dest && hasBackup:
-		if err := parent.Rename(backup, base); err != nil {
-			return false, err
-		}
-		return false, atomicio.SyncDir(parent.Name())
-	case dest && hasBackup:
-		root, err := parent.OpenRoot(base)
-		if err != nil {
-			return false, err
-		}
-		err = verifyFiles(root, source.Files)
-		root.Close()
-		if err != nil {
-			return false, fmt.Errorf("%w: published tree and backup disagree", ErrConflict)
-		}
-		if err := parent.RemoveAll(backup); err != nil {
-			return false, err
-		}
-		return true, atomicio.SyncDir(parent.Name())
-	case dest && hasStage:
-		return false, parent.RemoveAll(stage)
-	default:
-		return false, nil
-	}
+	return fmt.Errorf("%w: incomplete earlier install preserved at %s; inspect the marker and its named stage/backup paths before retrying", ErrConflict, filepath.Join(parentPath, marker))
+}
+
+func transactionRecoveryError(parent, marker, stage, backup string, cause error) error {
+	return fmt.Errorf("%w: install state preserved after %v; inspect %s, %s, and %s before retrying", ErrConflict, cause, filepath.Join(parent, marker), filepath.Join(parent, stage), filepath.Join(parent, backup))
 }
 
 func scanTree(path string) ([]File, error) {
@@ -366,7 +348,8 @@ func scanRoot(root *os.Root) ([]File, error) {
 		if err != nil {
 			return err
 		}
-		if unsafeMode(info.Mode()) || unsafeReparse(filepath.Join(root.Name(), path), info) {
+		unsafe, reparseErr := unsafeReparse(filepath.Join(root.Name(), path), info)
+		if unsafeMode(info.Mode()) || reparseErr != nil || unsafe {
 			return fmt.Errorf("%w: links or reparse points are not supported: %s", ErrConflict, rel)
 		}
 		if info.IsDir() {
@@ -408,7 +391,14 @@ func copyTree(from *os.Root, fromName string, to *os.Root, toName string) error 
 		if walkErr != nil || path == "." || !entry.IsDir() {
 			return walkErr
 		}
-		return target.MkdirAll(path, 0o700)
+		info, err := source.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if err := target.MkdirAll(path, info.Mode().Perm()); err != nil {
+			return err
+		}
+		return target.Chmod(path, info.Mode().Perm())
 	}); err != nil {
 		return err
 	}
@@ -418,6 +408,10 @@ func copyTree(from *os.Root, fromName string, to *os.Root, toName string) error 
 func copyFiles(from, to *os.Root, files []File) error {
 	for _, file := range files {
 		if err := to.MkdirAll(filepath.ToSlash(filepath.Dir(file.Path)), 0o700); err != nil && filepath.Dir(file.Path) != "." {
+			return err
+		}
+		info, err := from.Lstat(file.Path)
+		if err != nil {
 			return err
 		}
 		in, err := from.Open(file.Path)
@@ -432,6 +426,9 @@ func copyFiles(from, to *os.Root, files []File) error {
 			err = closeErr
 		}
 		if out != nil {
+			if err == nil {
+				err = syncFile(out)
+			}
 			if closeErr := out.Close(); err == nil {
 				err = closeErr
 			}
@@ -439,11 +436,7 @@ func copyFiles(from, to *os.Root, files []File) error {
 		if err != nil {
 			return err
 		}
-		mode := os.FileMode(0o600)
-		if file.Executable {
-			mode = 0o700
-		}
-		if err := to.Chmod(file.Path, mode); err != nil {
+		if err := to.Chmod(file.Path, info.Mode().Perm()); err != nil {
 			return err
 		}
 	}
@@ -478,7 +471,8 @@ func verifyFiles(root *os.Root, files []File) error {
 			return fmt.Errorf("%w: managed file is missing or unsafe: %s", ErrConflict, file.Path)
 		}
 		hash, err := hashRootFile(root, file.Path)
-		if err != nil || hash != file.SHA256 || executable(info.Mode()) != file.Executable {
+		unsafe, reparseErr := unsafeReparse(filepath.Join(root.Name(), file.Path), info)
+		if err != nil || hash != file.SHA256 || reparseErr != nil || unsafe || !executableMatches(file.Executable, info.Mode()) {
 			return fmt.Errorf("%w: managed file was edited: %s", ErrConflict, file.Path)
 		}
 	}
@@ -547,6 +541,28 @@ func hashRootFile(root *os.Root, name string) (string, error) {
 
 func executable(mode os.FileMode) bool { return mode.Perm()&0o111 != 0 }
 
+func syncTree(path string) error {
+	var dirs []string
+	err := filepath.WalkDir(path, func(current string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			dirs = append(dirs, current)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for i := len(dirs) - 1; i >= 0; i-- {
+		if err := syncDir(dirs[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func unsafeMode(mode os.FileMode) bool {
 	return mode&os.ModeSymlink != 0 || mode&os.ModeIrregular != 0
 }
@@ -573,6 +589,11 @@ func validRelative(path string, seen map[string]string) error {
 func validComponent(component string) error {
 	if component == "" || component == "." || component == ".." || strings.ContainsAny(component, "<>:\"/\\|?*") || strings.TrimSpace(component) == "" || strings.TrimRight(component, ". ") != component {
 		return fmt.Errorf("%w: invalid path component %q", ErrConflict, component)
+	}
+	for _, r := range component {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%w: control character in path component %q", ErrConflict, component)
+		}
 	}
 	if portableKey(component) == "" || windowsDeviceName(portableKey(component)) {
 		return fmt.Errorf("%w: unsupported platform path component %q", ErrConflict, component)
