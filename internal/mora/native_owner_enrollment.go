@@ -263,11 +263,11 @@ func nativeOwnerP256(value []byte) (*ecdsa.PublicKey, error) {
 	if len(value) != 65 || value[0] != 4 {
 		return nil, errors.New("invalid p256 public key")
 	}
-	x, y := elliptic.Unmarshal(elliptic.P256(), value)
-	if x == nil || y == nil {
+	pub, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), value)
+	if err != nil {
 		return nil, errors.New("invalid p256 public key")
 	}
-	return &ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}, nil
+	return pub, nil
 }
 func nativeOwnerKeyID(host, credentialID string, publicKey []byte) string {
 	sum := sha256.Sum256(append(append(append([]byte(host), 0), []byte(credentialID)...), append([]byte{0}, publicKey...)...))
