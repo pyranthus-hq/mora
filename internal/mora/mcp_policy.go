@@ -60,7 +60,7 @@ func stageCLICapture(cfg Config, m Memory, heldBecause []string) (any, error) {
 		return nil, err
 	}
 	if len(m.Tags) != 0 {
-		return nil, errors.New("CLI proposal staging does not support tags; remove --tags or use mcp_write_policy=open")
+		return nil, errors.New("CLI proposal staging does not support tags; remove --tags before staging")
 	}
 	args := map[string]any{
 		"scope": m.Scope, "type": m.Type, "title": m.Title, "text": m.Text,

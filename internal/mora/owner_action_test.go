@@ -119,19 +119,32 @@ func TestCLICaptureAndTaskPolicyMatrix(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if (len(files) > 0) != policy.wantMemory {
-				t.Fatalf("memory files = %v, wantMemory=%v", files, policy.wantMemory)
-			}
 			if policy.wantMemory {
-				m, err := parseMemory(files[0])
-				if err != nil || memory.IsTentative(m) != policy.wantTent || memory.IsOwnerConfirmed(m) {
-					t.Fatalf("captured memory = %+v, %v", m, err)
+				if len(files) != 2 {
+					t.Fatalf("captured memory files = %v, want raw write plus handoff", files)
 				}
-			}
-			if policy.write == mcpWritePolicyPropose {
-				if pending, err := pendingMCPProposalCount(cfg); err != nil || pending < 1 {
-					t.Fatalf("pending capture proposal = %d, %v", pending, err)
+				seen := map[string]Memory{}
+				for _, path := range files {
+					m, err := parseMemory(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					seen[m.Title] = m
 				}
+				for title, wantType := range map[string]string{"CLI policy": "fact", "CLI policy handoff": memory.TypeHandoff} {
+					m, ok := seen[title]
+					if !ok || m.Type != wantType || memory.IsTentative(m) != policy.wantTent || memory.IsOwnerConfirmed(m) {
+						t.Fatalf("captured %q = %+v, found=%v", title, m, ok)
+					}
+				}
+			} else if policy.write == mcpWritePolicyPropose {
+				if pending, err := pendingMCPProposalCount(cfg); err != nil || pending != 2 {
+					t.Fatalf("pending capture proposals = %d, %v; want 2", pending, err)
+				}
+			} else if len(files) != 0 {
+				t.Fatalf("readonly capture left memory files: %v", files)
+			} else if pending, err := pendingMCPProposalCount(cfg); err != nil || pending != 0 {
+				t.Fatalf("readonly capture proposals = %d, %v", pending, err)
 			}
 			before, _ := os.ReadFile(filepath.Join(cfg.VaultDir, "live-tasks.md"))
 			taskAddErr := Run(testCtx(t), []string{"tasks", "add", "policy task"}, ioDiscard{}, ioDiscard{}, nil)
