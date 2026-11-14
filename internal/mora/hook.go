@@ -267,10 +267,8 @@ func hookSessionStart(ctx context.Context, args []string, stdout io.Writer, stdi
 	if projectDir != "" && !hookProjectGate(cfg, projectDir, in.CWD) {
 		return emitEmpty() // a project install never falls back to the daily brief
 	}
-	// A folder bound to a project gets that project's owner rules instead of the
-	// daily brief. No binding file, or no match for cwd, keeps the daily brief.
-	// A binding store that cannot be read, or a brief that cannot be built, shows
-	// one diagnostic line: the daily brief holds personal mail and calendar.
+	// A bound folder gets its project brief. Keep binding and project errors
+	// visible without falling back to the unbound daily brief.
 	if filepath.IsAbs(in.CWD) {
 		scope, root, found, lerr := lookupProject(cfg, in.CWD)
 		text := ""
@@ -299,7 +297,10 @@ func hookSessionStart(ctx context.Context, args []string, stdout io.Writer, stdi
 			return nil
 		}
 	}
-	// No binding for this folder: the daily brief leaves out every project record.
+	if !cfg.HookUnboundBrief {
+		return emitEmpty()
+	}
+	// The opted-in daily brief leaves out every project record.
 	body, _, berr := hookResolveBrief(cfg, hookNow(), briefOpts{excludeProjectScopes: true})
 	if berr != nil {
 		// C2 ▸A: hookSessionStart used to swallow EVERY resolveBrief error with

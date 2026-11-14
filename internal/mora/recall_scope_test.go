@@ -305,6 +305,7 @@ func TestRecallScopePreRankProofSegmentArm(t *testing.T) {
 // path leaves it out and keeps the global and personal ones.
 func TestSessionStartDailyBriefLeavesOutProjectNotes(t *testing.T) {
 	cfg := projectBriefSetup(t)
+	enableUnboundSessionBrief(t)
 	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
 	for _, n := range []struct{ id, scope string }{{"g", "global"}, {"p", "personal"}, {"a", "project:a"}} {
 		pbSeed(t, cfg, "mem_"+n.id, n.scope, "decision", "Brief "+rsMark(n.id), "authored body "+n.id, 10,
@@ -359,6 +360,7 @@ func TestSessionStartDailyBriefLeavesOutProjectMail(t *testing.T) {
 // must not serve it.
 func TestSessionStartDailyBriefNeverServesCachedBody(t *testing.T) {
 	cfg := projectBriefSetup(t)
+	enableUnboundSessionBrief(t)
 	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
 	seedBriefFile(t, cfg, now.Format("2006-01-02"), "# Brief\nMARK_CACHED_PROJECT_A is in project:a\n")
 	if body, generated, err := resolveBrief(cfg, now, briefOpts{}); err != nil || generated || !strings.Contains(body, "MARK_CACHED_PROJECT_A") {

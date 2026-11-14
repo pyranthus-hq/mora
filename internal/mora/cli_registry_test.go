@@ -688,6 +688,7 @@ func TestCLIRegistryHookIOThroughRun(t *testing.T) {
 	subRun(t, "session start", func(t *testing.T) {
 		withTempHome(t)
 		run(t, "init")
+		enableUnboundSessionBrief(t)
 		restore := stubHookBrief(t, "today's local brief")
 		defer restore()
 		var out bytes.Buffer
