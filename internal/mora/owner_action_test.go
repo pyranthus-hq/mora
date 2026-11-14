@@ -21,6 +21,19 @@ func withUnavailableOwnerVerifier(t *testing.T) {
 	t.Cleanup(func() { ownerActionVerifier = previous })
 }
 
+// legacyOpenPolicy is an explicit fixture choice for tests that exercise the
+// historical direct-write kernel. It is never installed by TestMain or shared
+// home setup, so bare-init/default-policy tests still execute production
+// tentative behavior.
+func legacyOpenPolicy(t *testing.T) {
+	t.Helper()
+	cfg := mustConfig(t)
+	cfg.MCPWritePolicy = mcpWritePolicyOpen
+	if err := writeConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // withTestVerifiedOwnerAction is an explicit, per-test verifier for legacy
 // kernel/provenance fixtures. It is never installed by TestMain, and public
 // route tests keep the production-unavailable verifier unless they opt in.
