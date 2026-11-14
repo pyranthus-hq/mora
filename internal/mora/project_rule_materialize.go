@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
+	"github.com/pyranthus-hq/mora/internal/leasefile"
 )
 
 const (
@@ -40,19 +41,36 @@ type projectRuleManifest struct {
 }
 
 type projectRuleMaterializationPlan struct {
-	binding        projectBinding
-	installation   string
-	client         string
-	path           string
-	relPath        string
-	existed        bool
-	before         []byte
-	after          []byte
-	manifestPath   string
-	manifest       projectRuleManifest
-	removeFile     bool
-	removeManifest bool
-	noop           bool
+	binding         projectBinding
+	installation    string
+	client          string
+	path            string
+	relPath         string
+	existed         bool
+	mode            os.FileMode
+	before          []byte
+	after           []byte
+	manifestPath    string
+	intentPath      string
+	manifestExisted bool
+	manifestBefore  []byte
+	manifestAfter   []byte
+	manifest        projectRuleManifest
+	removeFile      bool
+	removeManifest  bool
+	noop            bool
+}
+
+// projectRuleMaterializationIntent retains both ownership states until the
+// loader and manifest agree. It is deliberately local state: it is a recovery
+// receipt, never an activation grant.
+type projectRuleMaterializationIntent struct {
+	Schema                                    string
+	LoaderPath, LoaderRelPath                 string
+	BeforeSHA256, AfterSHA256                 string
+	BeforeExists, AfterExists                 bool
+	ManifestBefore, ManifestAfter             []byte
+	ManifestBeforeExists, ManifestAfterExists bool
 }
 
 func projectRuleSHA256(b []byte) string {
@@ -64,12 +82,30 @@ func projectRuleManifestPath(cfg Config, root string) string {
 	return filepath.Join(cfg.StateDir, "project-rules", "materializations", projectRuleSHA256([]byte(root)), projectRuleManifestName)
 }
 
+func projectRuleIntentPath(cfg Config, root string) string {
+	return filepath.Join(filepath.Dir(projectRuleManifestPath(cfg, root)), "codex.intent.json")
+}
+
+func projectRuleManifestBytes(m projectRuleManifest) ([]byte, error) {
+	b, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
+}
+
+func removeProjectRuleFileDurable(path string) error {
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	return atomicio.SyncDirFn(filepath.Dir(path))
+}
+
 func selectCodexProjectInstructions(binding projectBinding) (path, rel string, exists bool, err error) {
 	if binding.Dir == "" || !filepath.IsAbs(binding.Dir) || filepath.Clean(binding.Dir) != binding.Dir {
 		return "", "", false, fmt.Errorf("%w: invalid project root", errProjectRuleUnsupported)
 	}
-	rootInfo, err := os.Lstat(binding.Dir)
-	if err != nil || rootInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() {
+	if !mcpRootDirectoryChain(binding.Dir) {
 		return "", "", false, fmt.Errorf("%w: unsafe project root", errProjectRuleUnsupported)
 	}
 	for _, candidate := range []string{"AGENTS.override.md", "AGENTS.md"} {
@@ -77,14 +113,14 @@ func selectCodexProjectInstructions(binding projectBinding) (path, rel string, e
 		if filepath.Dir(p) != binding.Dir {
 			return "", "", false, fmt.Errorf("%w: loader path escaped project", errProjectRuleUnsupported)
 		}
-		info, statErr := os.Lstat(p)
+		regular, statErr := projectRuleRegularFile(p)
 		if errors.Is(statErr, os.ErrNotExist) {
 			if candidate == "AGENTS.override.md" {
 				continue
 			}
 			return p, candidate, false, nil
 		}
-		if statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		if statErr != nil || !regular {
 			return "", "", false, fmt.Errorf("%w: unsafe %s", errProjectRuleUnsupported, candidate)
 		}
 		return p, candidate, true, nil
@@ -161,13 +197,28 @@ func planProjectRuleMaterialization(cfg Config, binding projectBinding, installa
 		return projectRuleMaterializationPlan{}, err
 	}
 	before := []byte(nil)
+	mode := os.FileMode(0o644)
 	if exists {
 		before, err = os.ReadFile(path)
 		if err != nil {
 			return projectRuleMaterializationPlan{}, fmt.Errorf("%w: read loader: %v", errProjectRuleUnsupported, err)
 		}
+		regular, statErr := projectRuleRegularFile(path)
+		if statErr != nil || !regular {
+			return projectRuleMaterializationPlan{}, fmt.Errorf("%w: loader changed while planning", errProjectRuleConflict)
+		}
+		if info, statErr := os.Lstat(path); statErr == nil && info.Mode().Perm() != 0 {
+			mode = info.Mode().Perm()
+		}
 	}
 	manifestPath := projectRuleManifestPath(cfg, binding.Dir)
+	manifestBefore, manifestReadErr := os.ReadFile(manifestPath)
+	manifestExisted := manifestReadErr == nil
+	if errors.Is(manifestReadErr, os.ErrNotExist) {
+		manifestBefore = nil
+	} else if manifestReadErr != nil {
+		return projectRuleMaterializationPlan{}, fmt.Errorf("%w: read manifest", errProjectRuleConflict)
+	}
 	prior, priorFound, err := readProjectRuleManifest(manifestPath)
 	if err != nil {
 		return projectRuleMaterializationPlan{}, fmt.Errorf("%w: invalid manifest", errProjectRuleConflict)
@@ -187,7 +238,7 @@ func planProjectRuleMaterialization(cfg Config, binding projectBinding, installa
 	if err != nil {
 		return projectRuleMaterializationPlan{}, err
 	}
-	plan := projectRuleMaterializationPlan{binding: binding, installation: installationID, client: client, path: path, relPath: rel, existed: exists, before: before, manifestPath: manifestPath}
+	plan := projectRuleMaterializationPlan{binding: binding, installation: installationID, client: client, path: path, relPath: rel, existed: exists, mode: mode, before: before, manifestPath: manifestPath, intentPath: projectRuleIntentPath(cfg, binding.Dir), manifestExisted: manifestExisted, manifestBefore: manifestBefore}
 	if len(rules) == 0 {
 		if !hasRegion {
 			plan.noop = true
@@ -206,8 +257,96 @@ func planProjectRuleMaterialization(cfg Config, binding projectBinding, installa
 	} else {
 		plan.after = append(append(append([]byte(nil), before...), '\n'), region...)
 	}
-	plan.manifest = projectRuleManifest{Schema: projectRuleDecisionSchema, InstallationID: installationID, Client: client, ProjectRoot: binding.Dir, Scope: binding.Scope, LoaderRelPath: rel, FileSHA256: projectRuleSHA256(plan.after), ManagedRegionSHA256: projectRuleSHA256(region), CreatedFile: !exists, Delivered: delivered, Omitted: omitted}
+	createdFile := !exists
+	if hasRegion {
+		createdFile = prior.CreatedFile
+	}
+	plan.manifest = projectRuleManifest{Schema: projectRuleDecisionSchema, InstallationID: installationID, Client: client, ProjectRoot: binding.Dir, Scope: binding.Scope, LoaderRelPath: rel, FileSHA256: projectRuleSHA256(plan.after), ManagedRegionSHA256: projectRuleSHA256(region), CreatedFile: createdFile, Delivered: delivered, Omitted: omitted}
+	plan.manifestAfter, err = projectRuleManifestBytes(plan.manifest)
+	if err != nil {
+		return projectRuleMaterializationPlan{}, err
+	}
 	return plan, nil
+}
+
+func writeProjectRuleIntent(plan projectRuleMaterializationPlan) error {
+	intent := projectRuleMaterializationIntent{Schema: projectRuleDecisionSchema, LoaderPath: plan.path, LoaderRelPath: plan.relPath, BeforeSHA256: projectRuleSHA256(plan.before), AfterSHA256: projectRuleSHA256(plan.after), BeforeExists: plan.existed, AfterExists: !plan.removeFile, ManifestBefore: plan.manifestBefore, ManifestAfter: plan.manifestAfter, ManifestBeforeExists: plan.manifestExisted, ManifestAfterExists: !plan.removeManifest}
+	b, err := json.Marshal(intent)
+	if err != nil {
+		return err
+	}
+	return atomicio.WriteDurable(plan.intentPath, append(b, '\n'), 0o600)
+}
+
+func clearProjectRuleIntent(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return atomicio.SyncDirFn(filepath.Dir(path))
+}
+
+// recoverProjectRuleMaterialization completes only an intent whose observed
+// loader and manifest still exactly match an owned before/after state. A foreign
+// edit is a conflict and stays untouched for the owner to inspect.
+func recoverProjectRuleMaterialization(cfg Config, binding projectBinding) error {
+	intentPath := projectRuleIntentPath(cfg, binding.Dir)
+	b, err := os.ReadFile(intentPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%w: read materialization intent", errProjectRuleConflict)
+	}
+	var intent projectRuleMaterializationIntent
+	if json.Unmarshal(b, &intent) != nil || intent.Schema != projectRuleDecisionSchema {
+		return fmt.Errorf("%w: invalid materialization intent", errProjectRuleConflict)
+	}
+	path, rel, _, err := selectCodexProjectInstructions(binding)
+	if err != nil || path != intent.LoaderPath || rel != intent.LoaderRelPath {
+		return fmt.Errorf("%w: loader selection changed during recovery", errProjectRuleConflict)
+	}
+	manifestPath := projectRuleManifestPath(cfg, binding.Dir)
+	manifest, manifestErr := os.ReadFile(manifestPath)
+	manifestExists := manifestErr == nil
+	if errors.Is(manifestErr, os.ErrNotExist) {
+		manifest = nil
+	} else if manifestErr != nil {
+		return fmt.Errorf("%w: read recovery manifest", errProjectRuleConflict)
+	}
+	// Read once here so empty existing files remain distinct from missing files.
+	loader, loaderErr := os.ReadFile(path)
+	loaderExists := loaderErr == nil
+	if !loaderExists && !errors.Is(loaderErr, os.ErrNotExist) {
+		return fmt.Errorf("%w: read recovery loader", errProjectRuleConflict)
+	}
+	before := loaderExists == intent.BeforeExists && (!loaderExists || projectRuleSHA256(loader) == intent.BeforeSHA256)
+	after := loaderExists == intent.AfterExists && (!loaderExists || projectRuleSHA256(loader) == intent.AfterSHA256)
+	if !before && !after {
+		return fmt.Errorf("%w: loader differs from recovery intent", errProjectRuleConflict)
+	}
+	manifestBefore := manifestExists == intent.ManifestBeforeExists && (!manifestExists || bytes.Equal(manifest, intent.ManifestBefore))
+	manifestAfter := manifestExists == intent.ManifestAfterExists && (!manifestExists || bytes.Equal(manifest, intent.ManifestAfter))
+	if before {
+		if !manifestBefore {
+			return fmt.Errorf("%w: manifest differs from recovery intent", errProjectRuleConflict)
+		}
+		return clearProjectRuleIntent(intentPath)
+	}
+	if !manifestBefore && !manifestAfter {
+		return fmt.Errorf("%w: manifest differs from recovery intent", errProjectRuleConflict)
+	}
+	if !intent.ManifestAfterExists {
+		if manifestExists {
+			if err := removeProjectRuleFileDurable(manifestPath); err != nil {
+				return fmt.Errorf("%w: remove stale manifest: %v", errProjectRuleIndeterminate, err)
+			}
+		}
+	} else if !manifestAfter {
+		if err := atomicio.WriteDurable(manifestPath, intent.ManifestAfter, 0o600); err != nil {
+			return fmt.Errorf("%w: repair manifest: %v", errProjectRuleIndeterminate, err)
+		}
+	}
+	return clearProjectRuleIntent(intentPath)
 }
 
 func commitProjectRuleMaterialization(plan projectRuleMaterializationPlan) error {
@@ -228,30 +367,29 @@ func commitProjectRuleMaterialization(plan projectRuleMaterializationPlan) error
 	if !bytes.Equal(current, plan.before) {
 		return fmt.Errorf("%w: loader changed before commit", errProjectRuleConflict)
 	}
+	if err := writeProjectRuleIntent(plan); err != nil {
+		return fmt.Errorf("%w: write materialization intent: %v", errProjectRuleIndeterminate, err)
+	}
 	if plan.removeFile {
-		if err := os.Remove(path); err != nil {
+		if err := removeProjectRuleFileDurable(path); err != nil {
 			return fmt.Errorf("%w: remove loader: %v", errProjectRuleIndeterminate, err)
 		}
-	} else if err := atomicio.Write(path, plan.after, 0o644); err != nil {
+	} else if err := atomicio.WriteDurable(path, plan.after, plan.mode); err != nil {
 		return fmt.Errorf("%w: write loader: %v", errProjectRuleIndeterminate, err)
 	}
 	if plan.removeManifest {
-		if err := os.Remove(plan.manifestPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := removeProjectRuleFileDurable(plan.manifestPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("%w: remove manifest: %v", errProjectRuleIndeterminate, err)
 		}
-		return nil
+		return clearProjectRuleIntent(plan.intentPath)
 	}
 	if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, plan.after) {
 		return fmt.Errorf("%w: loader changed during commit", errProjectRuleIndeterminate)
 	}
-	b, err := json.MarshalIndent(plan.manifest, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := atomicio.Write(plan.manifestPath, append(b, '\n'), 0o600); err != nil {
+	if err := atomicio.WriteDurable(plan.manifestPath, plan.manifestAfter, 0o600); err != nil {
 		return fmt.Errorf("%w: write manifest: %v", errProjectRuleIndeterminate, err)
 	}
-	return nil
+	return clearProjectRuleIntent(plan.intentPath)
 }
 
 // reconcileProjectRuleMaterialization removes a now-stale source revision from
@@ -259,11 +397,16 @@ func commitProjectRuleMaterialization(plan projectRuleMaterializationPlan) error
 // narrow filesystem reconciliation seam; authority and decision ordering stay
 // with the native-proof integrator.
 func reconcileProjectRuleMaterialization(cfg Config, binding projectBinding, installationID, client string) error {
-	plan, err := planProjectRuleMaterialization(cfg, binding, installationID, client)
-	if err != nil {
-		return err
-	}
-	return commitProjectRuleMaterialization(plan)
+	return leasefile.WithGuard(projectRuleManifestPath(cfg, binding.Dir)+".lock", func() error {
+		if err := recoverProjectRuleMaterialization(cfg, binding); err != nil {
+			return err
+		}
+		plan, err := planProjectRuleMaterialization(cfg, binding, installationID, client)
+		if err != nil {
+			return err
+		}
+		return commitProjectRuleMaterialization(plan)
+	})
 }
 
 // reconcileRetiredProjectRuleMaterialization is called only after the trusted
@@ -284,7 +427,7 @@ func verifiedProjectRuleDelivery(cfg Config, binding projectBinding, installatio
 		return nil
 	}
 	m, found, err := readProjectRuleManifest(projectRuleManifestPath(cfg, binding.Dir))
-	if err != nil || !found || !validProjectRuleManifest(m, binding, installationID, client, rel) || m.Omitted != 0 {
+	if err != nil || !found || !validProjectRuleManifest(m, binding, installationID, client, rel) {
 		return nil
 	}
 	b, err := os.ReadFile(path)
@@ -296,11 +439,11 @@ func verifiedProjectRuleDelivery(cfg Config, binding projectBinding, installatio
 		return nil
 	}
 	rules, err := activeProjectRuleRevisions(cfg, binding, installationID, client)
-	if err != nil || len(rules) != len(m.Delivered) {
+	if err != nil || m.Omitted != len(rules)-len(m.Delivered) || len(m.Delivered) > len(rules) {
 		return nil
 	}
-	want := make([]projectRuleKey, len(rules))
-	for i, r := range rules {
+	want := make([]projectRuleKey, len(m.Delivered))
+	for i, r := range rules[:len(m.Delivered)] {
 		want[i] = projectRuleKey{RuleID: r.RuleID, RevisionSHA256: r.RevisionSHA256}
 	}
 	if !sameProjectRuleKeys(want, m.Delivered) {

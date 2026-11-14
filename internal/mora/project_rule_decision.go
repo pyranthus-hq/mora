@@ -57,6 +57,14 @@ func appendProjectRuleDecision(cfg Config, d projectRuleDecision) error {
 // Retire relies on this barrier: a crash after it returns must not resurrect a
 // rule through a brief merely because loader cleanup has not run yet.
 func appendProjectRuleDecisionDurable(path string, line []byte) (err error) {
+	if existing, readErr := os.ReadFile(path); readErr == nil && len(existing) > 0 && existing[len(existing)-1] != '\n' {
+		return errors.New("project rule decision log has a torn final row")
+	} else if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return readErr
+	}
+	if err := validateProjectRuleDecisionLog(path); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -74,6 +82,26 @@ func appendProjectRuleDecisionDurable(path string, line []byte) (err error) {
 	return atomicio.SyncDir(filepath.Dir(path))
 }
 
+func validateProjectRuleDecisionLog(path string) error {
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	s := bufio.NewScanner(f)
+	s.Buffer(make([]byte, 1024), 1<<20)
+	for s.Scan() {
+		var d projectRuleDecision
+		if json.Unmarshal(s.Bytes(), &d) != nil || !validProjectRuleDecision(d) {
+			return errors.New("project rule decision log contains an invalid row")
+		}
+	}
+	return s.Err()
+}
+
 func loadProjectRuleState(cfg Config, binding projectBinding, installationID, client string) (projectRuleState, error) {
 	state := projectRuleState{Active: make(map[string]projectRuleDecision)}
 	if binding.Dir == "" || binding.Scope == "" || installationID == "" || client != "codex" {
@@ -88,14 +116,16 @@ func loadProjectRuleState(cfg Config, binding projectBinding, installationID, cl
 	}
 	defer f.Close()
 	s := bufio.NewScanner(f)
-	// A single decision is deliberately small; this only prevents a corrupt
-	// local state file from silently truncating the last valid row.
+	// A single decision is deliberately small. Any malformed row is a refusal,
+	// not an invitation to resurrect an earlier activation.
 	s.Buffer(make([]byte, 1024), 1<<20)
 	last := make(map[string]projectRuleDecision)
 	for s.Scan() {
 		var d projectRuleDecision
-		if json.Unmarshal(s.Bytes(), &d) != nil || !validProjectRuleDecision(d) ||
-			d.InstallationID != installationID || d.Client != client || d.ProjectRoot != binding.Dir || d.Scope != binding.Scope {
+		if json.Unmarshal(s.Bytes(), &d) != nil || !validProjectRuleDecision(d) {
+			return state, errors.New("project rule decision log contains an invalid row")
+		}
+		if d.InstallationID != installationID || d.Client != client || d.ProjectRoot != binding.Dir || d.Scope != binding.Scope {
 			continue
 		}
 		last[d.RuleID] = d

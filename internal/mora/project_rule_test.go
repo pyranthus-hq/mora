@@ -2,13 +2,16 @@ package mora
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
@@ -95,6 +98,9 @@ func TestProjectRuleDecisionLastValidLocalRowWins(t *testing.T) {
 	if err := appendProjectRuleDecision(cfg, wrongRoot); err != nil {
 		t.Fatal(err)
 	}
+	if active, err := activeProjectRuleRevisions(cfg, binding, projectRuleTestInstallation, projectRuleTestClient); err != nil || len(active) != 1 {
+		t.Fatalf("valid foreign row changed local active state: %#v, %v", active, err)
+	}
 	f, err := os.OpenFile(projectRuleDecisionPath(cfg), os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -106,16 +112,34 @@ func TestProjectRuleDecisionLastValidLocalRowWins(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if active, err := activeProjectRuleRevisions(cfg, binding, projectRuleTestInstallation, projectRuleTestClient); err != nil || len(active) != 1 {
-		t.Fatalf("wrong-root/corrupt rows changed local active state: %#v, %v", active, err)
+	if _, err := activeProjectRuleRevisions(cfg, binding, projectRuleTestInstallation, projectRuleTestClient); err == nil {
+		t.Fatal("corrupt decision row must fail closed")
 	}
 	retire := projectRuleTestDecision(r, binding, "retire")
 	retire.ChallengeNonce = "valid-retire"
-	if err := appendProjectRuleDecision(cfg, retire); err != nil {
+	if err := appendProjectRuleDecision(cfg, retire); err == nil {
+		t.Fatal("append must refuse a corrupt decision history")
+	}
+}
+
+func TestProjectRuleTornRetireFailsClosedWithoutResurrection(t *testing.T) {
+	cfg, binding := projectRuleTestBinding(t)
+	r := projectRuleTestMemory(t, cfg, binding, "mem_torn", "Never resurrect a torn retire.")
+	activateProjectRule(t, cfg, binding, r)
+	retire := projectRuleTestDecision(r, binding, "retire")
+	retire.ChallengeNonce = "torn-retire"
+	b, err := json.Marshal(retire)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if state, err := loadProjectRuleState(cfg, binding, projectRuleTestInstallation, projectRuleTestClient); err != nil || len(state.Active) != 0 {
-		t.Fatalf("last retire did not win: %#v, %v", state.Active, err)
+	if err := os.WriteFile(projectRuleDecisionPath(cfg), append(b[:len(b)-1], '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := activeProjectRuleRevisions(cfg, binding, projectRuleTestInstallation, projectRuleTestClient); err == nil {
+		t.Fatal("torn retire must fail closed, not restore activation")
+	}
+	if err := appendProjectRuleDecision(cfg, retire); err == nil {
+		t.Fatal("append must refuse a torn decision history")
 	}
 }
 
@@ -219,8 +243,8 @@ func TestProjectRuleMaterializationCapsAndRetiresWithRetry(t *testing.T) {
 	if err := commitProjectRuleMaterialization(plan); err != nil {
 		t.Fatal(err)
 	}
-	if got := verifiedProjectRuleDelivery(cfg, binding, projectRuleTestInstallation, projectRuleTestClient); got != nil {
-		t.Fatalf("partial materialization must not suppress brief: %#v", got)
+	if got := verifiedProjectRuleDelivery(cfg, binding, projectRuleTestInstallation, projectRuleTestClient); len(got) != 1 || got[0].RuleID != first.RuleID {
+		t.Fatalf("only the deterministically delivered rule may be deduplicated: %#v", got)
 	}
 	// A retirement is append-first. A cleanup race must leave the retired rule
 	// excluded from active state, then allow a later reconciliation retry.
@@ -252,6 +276,142 @@ func TestProjectRuleMaterializationCapsAndRetiresWithRetry(t *testing.T) {
 	got, err := os.ReadFile(path)
 	if err != nil || bytes.Contains(got, []byte("alpha ")) || !bytes.Contains(got, []byte("beta ")) {
 		t.Fatalf("retirement = %q, %v", got, err)
+	}
+}
+
+func TestProjectRuleRejectsReservedManagedMarkers(t *testing.T) {
+	cfg, binding := projectRuleTestBinding(t)
+	for _, marker := range []string{projectRuleBegin, projectRuleEnd} {
+		m := Memory{ID: "mem_marker_" + projectRuleSHA256([]byte(marker))[:8], Scope: binding.Scope, Type: memory.TypeCorrection, Title: "marker", Text: "foreign " + marker, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
+		m.Tags = []string{memory.OwnerConfirmedTagPrefix + memory.OwnerConfirmedDigest(m)}
+		if err := writeMemory(cfg, m); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadProjectRuleRevision(cfg, binding, m.ID); err == nil {
+			t.Fatalf("marker %q was accepted", marker)
+		}
+	}
+}
+
+func TestProjectRuleMaterializationRecoversAfterManifestWriteFailure(t *testing.T) {
+	cfg, binding := projectRuleTestBinding(t)
+	r := projectRuleTestMemory(t, cfg, binding, "mem_intent", "Recover a durable transaction.")
+	activateProjectRule(t, cfg, binding, r)
+	plan, err := planProjectRuleMaterialization(cfg, binding, projectRuleTestInstallation, projectRuleTestClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalSync := atomicio.MarkerSyncFn
+	t.Cleanup(func() { atomicio.MarkerSyncFn = originalSync })
+	calls := 0
+	atomicio.MarkerSyncFn = func(f *os.File) error {
+		calls++
+		if calls == 3 {
+			return errors.New("manifest sync failed")
+		}
+		return originalSync(f)
+	}
+	if err := commitProjectRuleMaterialization(plan); !errors.Is(err, errProjectRuleIndeterminate) {
+		t.Fatalf("commit error = %v", err)
+	}
+	atomicio.MarkerSyncFn = originalSync
+	if _, err := os.Stat(plan.intentPath); err != nil {
+		t.Fatalf("intent lost after manifest failure: %v", err)
+	}
+	if err := reconcileProjectRuleMaterialization(cfg, binding, projectRuleTestInstallation, projectRuleTestClient); err != nil {
+		t.Fatalf("intent recovery: %v", err)
+	}
+	if _, err := os.Stat(plan.intentPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("intent not cleared: %v", err)
+	}
+	if got := verifiedProjectRuleDelivery(cfg, binding, projectRuleTestInstallation, projectRuleTestClient); len(got) != 1 {
+		t.Fatalf("recovered delivery = %#v", got)
+	}
+}
+
+func TestProjectRuleRecoveryRefusesSelectionChange(t *testing.T) {
+	cfg, binding := projectRuleTestBinding(t)
+	r := projectRuleTestMemory(t, cfg, binding, "mem_selection", "Do not transfer recovery to an override.")
+	activateProjectRule(t, cfg, binding, r)
+	plan, err := planProjectRuleMaterialization(cfg, binding, projectRuleTestInstallation, projectRuleTestClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalSync := atomicio.MarkerSyncFn
+	t.Cleanup(func() { atomicio.MarkerSyncFn = originalSync })
+	calls := 0
+	atomicio.MarkerSyncFn = func(f *os.File) error {
+		calls++
+		if calls == 3 {
+			return errors.New("manifest sync failed")
+		}
+		return originalSync(f)
+	}
+	if err := commitProjectRuleMaterialization(plan); !errors.Is(err, errProjectRuleIndeterminate) {
+		t.Fatalf("commit error = %v", err)
+	}
+	atomicio.MarkerSyncFn = originalSync
+	if err := os.WriteFile(filepath.Join(binding.Dir, "AGENTS.override.md"), []byte("new selection\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileProjectRuleMaterialization(cfg, binding, projectRuleTestInstallation, projectRuleTestClient); !errors.Is(err, errProjectRuleConflict) {
+		t.Fatalf("selection change error = %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(binding.Dir, "AGENTS.md")); err != nil || !bytes.Equal(got, plan.after) {
+		t.Fatalf("old loader was not preserved: %q, %v", got, err)
+	}
+}
+
+func TestProjectRuleRetirementRecoversAfterDurableRemovalFailure(t *testing.T) {
+	cfg, binding := projectRuleTestBinding(t)
+	r := projectRuleTestMemory(t, cfg, binding, "mem_remove", "Remove safely after retirement.")
+	activateProjectRule(t, cfg, binding, r)
+	if err := reconcileProjectRuleMaterialization(cfg, binding, projectRuleTestInstallation, projectRuleTestClient); err != nil {
+		t.Fatal(err)
+	}
+	retire := projectRuleTestDecision(r, binding, "retire")
+	retire.ChallengeNonce = "retire-remove"
+	if err := appendProjectRuleDecision(cfg, retire); err != nil {
+		t.Fatal(err)
+	}
+	originalSync := atomicio.SyncDirFn
+	calls := 0
+	atomicio.SyncDirFn = func(dir string) error {
+		calls++
+		if calls == 2 {
+			return errors.New("loader removal directory sync failed")
+		}
+		return originalSync(dir)
+	}
+	t.Cleanup(func() { atomicio.SyncDirFn = originalSync })
+	if err := reconcileRetiredProjectRuleMaterialization(cfg, binding, projectRuleTestInstallation, projectRuleTestClient); !errors.Is(err, errProjectRuleRetiredWithLoaderConflict) {
+		t.Fatalf("retire error = %v", err)
+	}
+	atomicio.SyncDirFn = originalSync
+	if err := reconcileRetiredProjectRuleMaterialization(cfg, binding, projectRuleTestInstallation, projectRuleTestClient); err != nil {
+		t.Fatalf("retire recovery: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(binding.Dir, "AGENTS.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retired loader remained: %v", err)
+	}
+}
+
+func TestProjectRuleMaterializationPreservesExistingMode(t *testing.T) {
+	cfg, binding := projectRuleTestBinding(t)
+	path := filepath.Join(binding.Dir, "AGENTS.md")
+	if err := os.WriteFile(path, []byte("private instructions\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := projectRuleTestMemory(t, cfg, binding, "mem_mode", "Keep file permissions.")
+	activateProjectRule(t, cfg, binding, r)
+	if err := reconcileProjectRuleMaterialization(cfg, binding, projectRuleTestInstallation, projectRuleTestClient); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("mode = %v, %v", info.Mode(), err)
+		}
 	}
 }
 
