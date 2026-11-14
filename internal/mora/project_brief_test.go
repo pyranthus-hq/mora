@@ -666,7 +666,7 @@ func TestProjectBriefSuppressesOnlyVerifiedNativeRuleDeliveryAndExactRetire(t *t
 	if err := reconcileProjectRuleMaterialization(cfg, binding, installation, "codex"); err != nil {
 		t.Fatal(err)
 	}
-	text, ids, err := buildProjectBrief(cfg, pbScope, dir, projectBriefNow)
+	text, ids, err := buildProjectBriefWithin(cfg, pbScope, dir, "codex", projectBriefNow, projectBriefMaxChars)
 	if err != nil || strings.Contains(text, rule.Text) || strings.Contains(strings.Join(ids, ","), rule.RuleID) {
 		t.Fatalf("verified delivery remained in brief: %q %v %v", text, ids, err)
 	}
@@ -678,7 +678,7 @@ func TestProjectBriefSuppressesOnlyVerifiedNativeRuleDeliveryAndExactRetire(t *t
 	if err := reconcileRetiredProjectRuleMaterialization(cfg, binding, installation, "codex"); err != nil {
 		t.Fatal(err)
 	}
-	text, ids, err = buildProjectBrief(cfg, pbScope, dir, projectBriefNow)
+	text, ids, err = buildProjectBriefWithin(cfg, pbScope, dir, "codex", projectBriefNow, projectBriefMaxChars)
 	if err != nil || strings.Contains(text, rule.Text) || strings.Contains(strings.Join(ids, ","), rule.RuleID) {
 		t.Fatalf("exact retired rule returned to brief: %q %v %v", text, ids, err)
 	}
@@ -712,7 +712,7 @@ func TestProjectBriefVerifiedDecisionDoesNotFallThroughAsAgentNote(t *testing.T)
 	if err := reconcileProjectRuleMaterialization(cfg, binding, installation, "codex"); err != nil {
 		t.Fatal(err)
 	}
-	text, ids, err := buildProjectBrief(cfg, pbScope, dir, projectBriefNow)
+	text, ids, err := buildProjectBriefWithin(cfg, pbScope, dir, "codex", projectBriefNow, projectBriefMaxChars)
 	if err != nil || strings.Contains(text, m.Text) || strings.Contains(strings.Join(ids, ","), m.ID) {
 		t.Fatalf("delivered decision fell through as a note: %q %v %v", text, ids, err)
 	}

@@ -352,7 +352,7 @@ func TestProjectRuleNativeOverflowKeepsOnlyOmittedBriefFallback(t *testing.T) {
 	if err != nil || !found || manifest.Omitted != 1 || len(manifest.Delivered) != 2 {
 		t.Fatalf("overflow: %+v %v", manifest, err)
 	}
-	_, ids, err := buildProjectBrief(cfg, b.Scope, b.Dir, time.Now())
+	_, ids, err := buildProjectBriefWithin(cfg, b.Scope, b.Dir, "codex", time.Now(), projectBriefMaxChars)
 	if err != nil || len(ids) != 1 || ids[0] != "mem_overflow_c" {
 		t.Fatalf("fallback IDs: %v %v", ids, err)
 	}
@@ -402,5 +402,44 @@ func TestProjectRuleApprovalBindsWholeDisplayedPreview(t *testing.T) {
 				t.Fatalf("stale approval added authority: %v %v", found, err)
 			}
 		})
+	}
+}
+
+func TestProjectRuleDeliveryIsSpecificToConsumingClient(t *testing.T) {
+	cfg := projectBriefSetup(t)
+	dir := pbBind(t)
+	b, found, err := lookupProjectBinding(cfg, dir)
+	if err != nil || !found {
+		t.Fatal("binding unavailable", err)
+	}
+	a, v := projectRuleNativeAuthority(t, cfg)
+	r := projectRuleNativeActivate(t, cfg, b, a, v, "mem_client_delivery", "Keep this rule in hosts without the Codex loader.")
+	for _, client := range []string{"", "claude", "antigravity", "unknown", "codex"} {
+		_, ids, err := buildProjectBriefWithin(cfg, b.Scope, b.Dir, client, time.Now(), projectBriefMaxChars)
+		if err != nil {
+			t.Fatal(err)
+		}
+		included := strings.Contains(strings.Join(ids, ","), r.RuleID)
+		if included != (client != "codex") {
+			t.Fatalf("client %q IDs %v", client, ids)
+		}
+		result, err := mcpBrief(withAgentCaller(testCtx(t), "mcp-stdio/"+client), cfg, map[string]any{"project_dir": b.Dir})
+		if err != nil {
+			t.Fatal(err)
+		}
+		brief := result.(projectBriefResult)
+		if strings.Contains(strings.Join(brief.IDs, ","), r.RuleID) != (client != "codex") {
+			t.Fatalf("MCP client %q IDs %v", client, brief.IDs)
+		}
+		if client == "" || client == "claude" || client == "antigravity" {
+			input, _ := json.Marshal(map[string]string{"cwd": b.Dir, "source": "startup"})
+			var out bytes.Buffer
+			if err := hookSessionStart(testCtx(t), []string{"--client", client}, &out, bytes.NewReader(input)); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out.String(), r.Text) {
+				t.Fatalf("hook %q lost fallback: %s", client, out.String())
+			}
+		}
 	}
 }

@@ -126,23 +126,23 @@ func (l projectBriefLine) line(runes int) string {
 // no model call, and gives the same text for the same vault. emittedIDs lists
 // exactly the notes whose lines are in text, in order.
 func buildProjectBrief(cfg Config, scope, root string, now time.Time) (text string, emittedIDs []string, err error) {
-	return buildProjectBriefWithin(cfg, scope, root, now, projectBriefMaxChars)
+	return buildProjectBriefWithin(cfg, scope, root, "", now, projectBriefMaxChars)
 }
 
 // buildProjectBriefFiltered is the managed-MCP variant. Its trusted filter is
 // applied while selecting records, before ordering or fitting the rendered
 // brief, so excluded connector records cannot displace an authored rule.
-func buildProjectBriefFiltered(cfg Config, scope, root string, now time.Time, filter searchFilters) (text string, emittedIDs []string, err error) {
-	return buildProjectBriefWithin(cfg, scope, root, now, projectBriefMaxChars, filter)
+func buildProjectBriefFiltered(cfg Config, scope, root, client string, now time.Time, filter searchFilters) (text string, emittedIDs []string, err error) {
+	return buildProjectBriefWithin(cfg, scope, root, client, now, projectBriefMaxChars, filter)
 }
 
 // buildProjectBriefWithin fits whole lines to the byte budget left by the caller.
-func buildProjectBriefWithin(cfg Config, scope, root string, now time.Time, maxBytes int, filters ...searchFilters) (text string, emittedIDs []string, err error) {
+func buildProjectBriefWithin(cfg Config, scope, root, client string, now time.Time, maxBytes int, filters ...searchFilters) (text string, emittedIDs []string, err error) {
 	// A hand-edited projects.json must not point the brief at personal notes.
 	if err := validProjectScope(scope); err != nil {
 		return "", nil, err
 	}
-	projectRuleSkip := projectRuleBriefSkips(cfg, scope, root)
+	projectRuleSkip := projectRuleBriefSkips(cfg, scope, root, client)
 	var rules, notes []projectBriefLine
 	var handoffs []Memory
 	for rank, sc := range []string{scope, "global"} {
@@ -252,7 +252,11 @@ func buildProjectBriefWithin(cfg Config, scope, root string, now time.Time, maxB
 // projectRuleBriefSkips suppresses only exact revisions whose native loader
 // delivery is currently verified, plus an exact local retirement. Any missing
 // installation, decision, manifest, or changed source falls back to the brief.
-func projectRuleBriefSkips(cfg Config, scope, root string) func(Memory) bool {
+func projectRuleBriefSkips(cfg Config, scope, root, client string) func(Memory) bool {
+	// A verified Codex loader says nothing about another host's delivery.
+	if client != "codex" {
+		return func(Memory) bool { return false }
+	}
 	binding, found, err := lookupProjectBinding(cfg, root)
 	if err != nil || !found || binding.Scope != scope || binding.Dir != root {
 		return func(Memory) bool { return false }
@@ -431,7 +435,7 @@ type projectBriefResult struct {
 
 // projectBriefForDir is the one path behind `mora brief --project` and the MCP
 // brief tool's project_dir argument.
-func projectBriefForDir(cfg Config, dir string, now time.Time) (projectBriefResult, error) {
+func projectBriefForDir(cfg Config, dir, client string, now time.Time) (projectBriefResult, error) {
 	scope, root, found, err := lookupProject(cfg, dir)
 	if err != nil {
 		return projectBriefResult{}, err
@@ -439,12 +443,12 @@ func projectBriefForDir(cfg Config, dir string, now time.Time) (projectBriefResu
 	if !found {
 		return projectBriefResult{}, fmt.Errorf("folder %q is not bound to a project; run `mora project bind --scope project:NAME %s`", dir, dir)
 	}
-	text, ids, err := buildProjectBrief(cfg, scope, root, now)
+	text, ids, err := buildProjectBriefWithin(cfg, scope, root, client, now, projectBriefMaxChars)
 	return projectBriefResult{Scope: scope, Root: root, Text: text, IDs: ids}, err
 }
 
 func cmdBriefProject(cfg Config, dir string, jsonOut bool, stdout io.Writer) error {
-	res, err := projectBriefForDir(cfg, dir, briefClock())
+	res, err := projectBriefForDir(cfg, dir, "", briefClock())
 	if err != nil {
 		return err
 	}
