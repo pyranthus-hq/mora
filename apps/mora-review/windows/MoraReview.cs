@@ -320,12 +320,13 @@ internal sealed class ReviewForm : Form
         if (channel == null) { status.Text = fixture == null ? "Read-only developer shell. Start Mora Review from its shortcut to use the Go-owned review route." : "Synthetic fixture: read-only."; return; }
         try {
             var response = await ChannelAsync(channel.Frame("status"));
-            enrolled = Bool(response, "enrolled");
-            enrolledCredentialID = enrolled ? Decode(RequiredString(response, "credential_id_b64")) : null;
+            bool available = Bool(response, "enrolled");
+            enrolledCredentialID = available ? Decode(RequiredString(response, "credential_id_b64")) : null;
+            enrolled = available && enrolledCredentialID.Length > 0;
             if (!WindowsHello.Available()) status.Text = "Read-only. Windows Hello platform verification is unavailable.";
             else status.Text = enrolled ? "Windows Hello enrolled. Loading review queue…" : "Read-only until Windows Hello enrollment completes.";
             SetActions();
-        } catch (Exception error) { status.Text = "Read-only. " + error.Message; SetActions(); }
+        } catch (Exception error) { enrolled = false; enrolledCredentialID = null; status.Text = "Read-only. " + error.Message; SetActions(); }
     }
 
     private async Task EnrollAsync()
@@ -345,7 +346,7 @@ internal sealed class ReviewForm : Form
             enrolledCredentialID = Decode(RequiredString(result, "credential_id_b64"));
             status.Text = "Windows Hello enrolled. Review the canonical preview before applying a decision.";
         } catch (Exception error) { failure = error; }
-        if (failure != null) { await CancelEnrollmentAsync(nonce); status.Text = "Read-only. Enrollment was not completed. " + failure.Message; }
+        if (failure != null) { enrolled = false; enrolledCredentialID = null; await CancelEnrollmentAsync(nonce); await LoadStatusAsync(); if (!enrolled) status.Text = "Enrollment is not confirmed. " + failure.Message; }
         SetBusy(false, null);
     }
 
@@ -367,8 +368,12 @@ internal sealed class ReviewForm : Form
         } catch (Exception error) { failure = error; }
         if (failure != null) {
             var recorded = await CancelIfPendingAsync(pendingNonce);
-            status.Text = recorded == null ? "Decision status unknown. Refresh before retrying. " + failure.Message : Outcome(recorded);
-        } else { status.Text = outcome; await LoadQueueAsync(); }
+            outcome = "Decision status unknown. Refresh before retrying. " + failure.Message;
+            try { if (recorded != null) outcome = Outcome(recorded); } catch (Exception) { }
+        }
+        await LoadQueueAsync();
+        if (IsDisposed || lifetime.IsCancellationRequested) return;
+        status.Text = outcome;
         SetBusy(false, null);
     }
 
