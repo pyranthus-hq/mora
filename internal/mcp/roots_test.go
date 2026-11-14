@@ -32,6 +32,7 @@ func initializeRootsTestServer(t *testing.T, s *twoWay, capabilities string) {
 	if f := s.read(); string(f["id"]) != `"init"` || len(f["method"]) != 0 {
 		t.Fatalf("unexpected initialize frame: %s", f)
 	}
+	s.send(map[string]any{"method": "notifications/initialized"})
 }
 
 func requestRootsTestServer(t *testing.T, s *twoWay) map[string]json.RawMessage {
@@ -82,6 +83,31 @@ func TestListClientRootsUsesTheInitializedConnection(t *testing.T) {
 	}
 	a.finish(nil)
 	b.finish(nil)
+}
+
+func TestListClientRootsWaitsForInitializedNotification(t *testing.T) {
+	s := rootsTestServer(t, context.Background())
+	s.send(map[string]any{
+		"id": "init", "method": "initialize",
+		"params": json.RawMessage(`{"capabilities":{"roots":{}}}`),
+	})
+	if f := s.read(); string(f["id"]) != `"init"` {
+		t.Fatalf("unexpected initialize frame: %s", f)
+	}
+	// A strict client has received initialize's response but has not yet sent
+	// notifications/initialized. The server must fail locally rather than send
+	// the forbidden roots/list request.
+	s.send(request("before", "discover"))
+	if f := s.read(); string(f["id"]) != `"before"` || string(f["result"]) != `"`+ErrClientNotInitialized.Error()+`"` {
+		t.Fatalf("roots request escaped before initialized notification: %s", f)
+	}
+	s.send(map[string]any{"method": "notifications/initialized"})
+	call := requestRootsTestServer(t, s)
+	s.send(result(call["id"], map[string]any{"roots": []any{}}))
+	if f := s.read(); string(f["id"]) != `"roots"` || string(f["result"]) != `[]` {
+		t.Fatalf("roots did not resume after initialized notification: %s", f)
+	}
+	s.finish(nil)
 }
 
 func TestListClientRootsRejectsInvalidAndOversizedReplies(t *testing.T) {

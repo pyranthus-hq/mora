@@ -20,20 +20,25 @@ import (
 // server's real roots/list requests, so session tests cover the transport and
 // request snapshot rather than only the pure root resolver.
 type workspaceMCPClient struct {
-	t      *testing.T
-	in     *io.PipeWriter
-	frames chan map[string]json.RawMessage
-	mu     sync.Mutex
-	roots  []mcppkg.Root
+	t         *testing.T
+	in        *io.PipeWriter
+	frames    chan map[string]json.RawMessage
+	mu        sync.Mutex
+	roots     []mcppkg.Root
+	rootCalls int
 }
 
 func newWorkspaceMCPClient(t *testing.T, roots []mcppkg.Root) *workspaceMCPClient {
+	return newWorkspaceMCPClientArgs(t, []string{"serve", "--workspace"}, roots)
+}
+
+func newWorkspaceMCPClientArgs(t *testing.T, args []string, roots []mcppkg.Root) *workspaceMCPClient {
 	t.Helper()
 	serverIn, in := io.Pipe()
 	clientOut, out := io.Pipe()
 	c := &workspaceMCPClient{t: t, in: in, frames: make(chan map[string]json.RawMessage, 32), roots: roots}
 	go func() {
-		if err := cmdMCP(testCtx(t), []string{"serve", "--workspace"}, out, io.Discard, serverIn); err != nil {
+		if err := cmdMCP(testCtx(t), args, out, io.Discard, serverIn); err != nil {
 			t.Errorf("workspace mcp serve: %v", err)
 		}
 		close(c.frames)
@@ -50,6 +55,7 @@ func newWorkspaceMCPClient(t *testing.T, roots []mcppkg.Root) *workspaceMCPClien
 			_ = json.Unmarshal(frame["method"], &method)
 			if method == "roots/list" {
 				c.mu.Lock()
+				c.rootCalls++
 				roots := append([]mcppkg.Root(nil), c.roots...)
 				c.mu.Unlock()
 				c.send(map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(frame["id"]), "result": map[string]any{"roots": roots}})
@@ -61,6 +67,10 @@ func newWorkspaceMCPClient(t *testing.T, roots []mcppkg.Root) *workspaceMCPClien
 	t.Cleanup(func() { _ = c.in.Close() })
 	c.send(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"capabilities": map[string]any{"roots": map[string]any{"listChanged": true}}}})
 	c.next(1)
+	if c.rootRequests() != 0 {
+		t.Fatal("initialize must not request roots before the handshake reply")
+	}
+	c.send(map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
 	return c
 }
 
@@ -77,6 +87,12 @@ func (c *workspaceMCPClient) setRoots(roots []mcppkg.Root) {
 	c.mu.Lock()
 	c.roots = roots
 	c.mu.Unlock()
+}
+
+func (c *workspaceMCPClient) rootRequests() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.rootCalls
 }
 
 func (c *workspaceMCPClient) call(id int, name string, args map[string]any) map[string]json.RawMessage {
@@ -104,6 +120,9 @@ func (c *workspaceMCPClient) next(id int) map[string]json.RawMessage {
 type mcpProjectReply struct {
 	ID     int `json:"id"`
 	Result struct {
+		ProtocolVersion   string         `json:"protocolVersion"`
+		ServerInfo        map[string]any `json:"serverInfo"`
+		Capabilities      map[string]any `json:"capabilities"`
 		Instructions      string         `json:"instructions"`
 		IsError           bool           `json:"isError"`
 		StructuredContent map[string]any `json:"structuredContent"`
@@ -225,6 +244,9 @@ func TestMCPProjectSessionRootsSnapshotPreventsCrossProjectReads(t *testing.T) {
 	}
 	c := newWorkspaceMCPClient(t, []mcppkg.Root{{URI: mcpProjectTestURI(a)}})
 	listed := string(c.listTools(2)["result"])
+	if c.rootRequests() != 1 {
+		t.Fatalf("tools/list roots requests = %d, want 1 after initialize", c.rootRequests())
+	}
 	for _, name := range []string{"search_memory", "read_memory", "list_memory", "context_memory", "write_memory", "brief"} {
 		if !strings.Contains(listed, name) {
 			t.Fatalf("managed catalog omitted safe tool %q: %s", name, listed)
@@ -235,7 +257,7 @@ func TestMCPProjectSessionRootsSnapshotPreventsCrossProjectReads(t *testing.T) {
 	}
 
 	result := c.call(3, "search_memory", map[string]any{"query": "needle"})
-	if got := string(result["result"]); !strings.Contains(got, "A title") || !strings.Contains(got, "Global title") || strings.Contains(got, "B title") || strings.Contains(got, "Personal title") || strings.Contains(got, "Raw title") {
+	if got := string(result["result"]); !strings.Contains(got, "A title") || !strings.Contains(got, "Global title") || strings.Contains(got, "B title") || strings.Contains(got, "Personal title") || strings.Contains(got, "Raw title") || strings.Contains(got, "freshness") || strings.Contains(got, "shares_unhealthy") {
 		t.Fatalf("A search leaked or omitted scope: %s", got)
 	}
 	result = c.call(4, "read_memory", map[string]any{"id": "b-id"})
@@ -259,12 +281,16 @@ func TestMCPProjectSessionRootsSnapshotPreventsCrossProjectReads(t *testing.T) {
 		t.Fatalf("A rebind leaked or omitted scope: %s", got)
 	}
 	result = c.call(8, "context_memory", map[string]any{"query": "needle"})
-	if got := string(result["result"]); !strings.Contains(got, "A title") || !strings.Contains(got, "Global title") || strings.Contains(got, "B title") || strings.Contains(got, "Personal title") || strings.Contains(got, "Raw title") {
+	if got := string(result["result"]); !strings.Contains(got, "A title") || !strings.Contains(got, "Global title") || strings.Contains(got, "B title") || strings.Contains(got, "Personal title") || strings.Contains(got, "Raw title") || strings.Contains(got, "freshness") || strings.Contains(got, "shared_corpora") {
 		t.Fatalf("context assembled foreign or raw rows: %s", got)
 	}
 	result = c.call(9, "brief", map[string]any{})
 	if got := string(result["result"]); !strings.Contains(got, "A rule") || strings.Contains(got, "Raw rule") || strings.Contains(got, "brief-raw") {
 		t.Fatalf("brief assembled a raw connector rule: %s", got)
+	}
+	result = c.call(10, "brief", map[string]any{"daily": true})
+	if got := string(result["result"]); !strings.Contains(got, errMCPWorkspaceUnavailable.Error()) || strings.Contains(got, "B title") || strings.Contains(got, "Personal title") {
+		t.Fatalf("managed daily brief escaped project isolation: %s", got)
 	}
 }
 
@@ -273,8 +299,8 @@ func TestMCPProjectSessionWorkspaceFailsClosedAndProjectDirWins(t *testing.T) {
 	dir, _ := mcpProjectBind(t, "project:explicit")
 
 	noRoots, _ := mcpProjectServe(t, []string{"--workspace"}, [2]any{"search_memory", map[string]any{"query": "anything"}})
-	if got := noRoots[0].Result.Instructions; got != errMCPWorkspaceUnavailable.Error() {
-		t.Fatalf("workspace without roots initialized as %q", got)
+	if init := noRoots[0].Result; init.ProtocolVersion == "" || init.ServerInfo["name"] != mcppkg.ServerName || init.Capabilities["tools"] == nil {
+		t.Fatalf("workspace without roots returned an incomplete initialize result: %+v", init)
 	}
 	if result := noRoots[1].Result; !result.IsError || !strings.Contains(result.Content[0].Text, errMCPWorkspaceUnavailable.Error()) {
 		t.Fatalf("workspace without roots served a broad tool call: %+v", result)
@@ -295,6 +321,60 @@ func TestMCPProjectSessionWorkspaceFailsClosedAndProjectDirWins(t *testing.T) {
 	result := c.call(2, "search_memory", map[string]any{"query": "anything"})
 	if got := string(result["result"]); !strings.Contains(got, errMCPWorkspaceUnavailable.Error()) {
 		t.Fatalf("ambiguous roots did not fail closed: %s", got)
+	}
+}
+
+func TestMCPProjectSessionProfileOnlyNarrowsTheManagedScope(t *testing.T) {
+	cfg := mcpProjectSetup(t)
+	dir := t.TempDir()
+	if _, _, err := bindProjectDir(testCtx(t), dir, "project:narrow"); err != nil {
+		t.Fatal(err)
+	}
+	pbSeed(t, cfg, "narrow-project", "project:narrow", "fact", "Project hidden", "profile-needle", 1)
+	pbSeed(t, cfg, "narrow-global", "global", "fact", "Global allowed", "profile-needle", 2)
+	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	profile := agentProfile{Name: "global-only", ReadScopes: []string{"global"}, Write: mcpWritePolicyReadonly, Tools: []string{"search_memory", "read_memory", "list_memory", "write_memory"}}
+	if err := saveAgentsStore(cfg, agentsStore{Profiles: []agentProfile{profile}}); err != nil {
+		t.Fatal(err)
+	}
+	c := newWorkspaceMCPClientArgs(t, []string{"serve", "--workspace", "--profile", profile.Name}, []mcppkg.Root{{URI: mcpProjectTestURI(dir)}})
+	listed := string(c.listTools(2)["result"])
+	if !strings.Contains(listed, "search_memory") || strings.Contains(listed, "brief") || strings.Contains(listed, "calendar_events") {
+		t.Fatalf("profile/catalog intersection = %s", listed)
+	}
+	result := c.call(3, "search_memory", map[string]any{"query": "profile-needle"})
+	if got := string(result["result"]); !strings.Contains(got, "Global allowed") || strings.Contains(got, "Project hidden") {
+		t.Fatalf("profile did not narrow before the managed search result: %s", got)
+	}
+	result = c.call(4, "brief", map[string]any{})
+	if got := string(result["result"]); !strings.Contains(got, "not available") || strings.Contains(got, "Project hidden") {
+		t.Fatalf("hidden profile tool dispatched in managed session: %s", got)
+	}
+}
+
+func TestMCPProjectResultScrubsForeignMetadata(t *testing.T) {
+	ctx := withMCPWorkspace(context.Background())
+	result := mcpProjectResult(ctx, map[string]any{
+		"freshness":        map[string]string{"gmail:work": "never"},
+		"shared_corpora":   map[string]any{"subscriptions": 1},
+		"shares_unhealthy": []string{"private-share"},
+		"health": compactHealth{
+			State: "degraded", Sources: "degraded", Index: "fresh",
+			PerSource: map[string]string{"gmail:work": "never"}, SourcesOmitted: 2,
+			Banner: "Gmail work is unavailable",
+		},
+	})
+	out := result.(map[string]any)
+	for _, key := range []string{"freshness", "shared_corpora", "shares_unhealthy"} {
+		if _, found := out[key]; found {
+			t.Fatalf("managed result exposed %s: %#v", key, out)
+		}
+	}
+	health := out["health"].(compactHealth)
+	if health.PerSource != nil || health.SourcesOmitted != 0 || health.Banner != "" {
+		t.Fatalf("managed result exposed raw health metadata: %+v", health)
 	}
 }
 

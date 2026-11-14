@@ -234,6 +234,12 @@ func handleAgentMCP(ctx context.Context, p agentProfile, req jsonRPCRequest) jso
 	case "ping":
 		return jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{}}
 	}
+	var err error
+	if req.Method != "initialize" {
+		if ctx, err = withMCPWorkspaceProject(ctx); err != nil {
+			return mcpWorkspaceUnavailableResponse(ctx, req)
+		}
+	}
 	return mcppkg.Dispatch(ctx, req,
 		func() any {
 			_, err := loadConfigFor(ctx)
@@ -244,7 +250,7 @@ func handleAgentMCP(ctx context.Context, p agentProfile, req jsonRPCRequest) jso
 			}
 			return withProjectInstruction(ctx, result, err == nil)
 		},
-		func() any { return map[string]any{"tools": mcppkg.RenderTools(agentToolDefs(p))} },
+		func() any { return map[string]any{"tools": mcppkg.RenderTools(mcpSessionToolCatalog(ctx))} },
 		func(ctx context.Context, name string, args map[string]any) any {
 			return invokeMCPTool(ctx, name, args).result()
 		},

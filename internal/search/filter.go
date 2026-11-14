@@ -50,6 +50,11 @@ type Filter struct {
 	// AuthoredOnly excludes connector rows before retrieval ranking. It is a
 	// trusted session policy, never a caller-provided filter.
 	AuthoredOnly bool
+	// NoShares excludes subscribed corpora from a trusted session boundary.
+	// It is deliberately distinct from AuthoredOnly: share rows are authored
+	// memories, but they belong to another vault and cannot be admitted by a
+	// workspace root.
+	NoShares bool
 	// Now is the reference instant SinceHours is computed against. It is
 	// captured ONCE per MCP call (mcp.go handlers) and threaded down, so a
 	// single call sees one consistent clock across every retrieval arm —

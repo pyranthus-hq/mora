@@ -149,6 +149,34 @@ func mcpProjectAllowsScope(p mcpProject, scope string) bool {
 	return scope == p.scope || scope == "global" || (p.ownerOnly && scope == "personal")
 }
 
+// mcpProjectResult removes metadata for sources and subscribed corpora that a
+// managed workspace request is not allowed to discover. Retrieval already
+// applies scope before ranking; this is the final envelope guard for fields
+// assembled after the result rows.
+func mcpProjectResult(ctx context.Context, value any) any {
+	if !mcpWorkspaceManaged(ctx) {
+		return value
+	}
+	out, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	copy := make(map[string]any, len(out))
+	for k, v := range out {
+		copy[k] = v
+	}
+	delete(copy, "freshness")
+	delete(copy, "shared_corpora")
+	delete(copy, "shares_unhealthy")
+	if health, ok := copy["health"].(compactHealth); ok {
+		health.PerSource = nil
+		health.SourcesOmitted = 0
+		health.Banner = ""
+		copy["health"] = health
+	}
+	return copy
+}
+
 func mcpProjectFilter(ctx context.Context, requested string, f searchFilters) (searchFilters, error) {
 	p, ok := mcpProjectFrom(ctx)
 	if !ok || !mcpWorkspaceManaged(ctx) {
@@ -158,15 +186,32 @@ func mcpProjectFilter(ctx context.Context, requested string, f searchFilters) (s
 		if !mcpProjectAllowsScope(p, requested) {
 			return f, errMCPWorkspaceUnavailable
 		}
+		if profile, profiled := agentProfileFrom(ctx); profiled && !profile.allowsScope(requested) {
+			return f, errMCPWorkspaceUnavailable
+		}
 		f.Scopes = []string{requested}
 		f.AuthoredOnly = true
+		f.NoShares = true
 		return f, nil
 	}
 	f.Scopes = []string{p.scope, "global"}
 	if p.ownerOnly {
 		f.Scopes = append(f.Scopes, "personal")
 	}
+	if profile, profiled := agentProfileFrom(ctx); profiled {
+		allowed := f.Scopes[:0]
+		for _, scope := range f.Scopes {
+			if profile.allowsScope(scope) {
+				allowed = append(allowed, scope)
+			}
+		}
+		if len(allowed) == 0 {
+			return f, errMCPWorkspaceUnavailable
+		}
+		f.Scopes = allowed
+	}
 	f.AuthoredOnly = true
+	f.NoShares = true
 	return f, nil
 }
 

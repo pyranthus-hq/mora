@@ -187,16 +187,13 @@ const budgetUnitTokens = "tokens"
 // (a 20k request yields a strictly larger compact budget than the 6k default).
 func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
 	var err error
-	if ctx, err = withMCPWorkspaceProject(ctx); err != nil {
-		return mcppkg.Dispatch(ctx, req,
-			func() any {
-				return map[string]any{"protocolVersion": "2024-11-05", "instructions": errMCPWorkspaceUnavailable.Error()}
-			},
-			func() any { return map[string]any{"tools": []any{}} },
-			func(context.Context, string, map[string]any) any {
-				return toCallToolResult(nil, errMCPWorkspaceUnavailable)
-			},
-		)
+	// Roots are a post-initialization client request. A strict client may refuse
+	// roots/list until it receives a complete handshake, so initialize must stay
+	// valid even when a managed workspace has no usable roots yet.
+	if req.Method != "initialize" {
+		if ctx, err = withMCPWorkspaceProject(ctx); err != nil {
+			return mcpWorkspaceUnavailableResponse(ctx, req)
+		}
 	}
 	return mcppkg.Dispatch(ctx, req,
 		func() any {
@@ -206,6 +203,19 @@ func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
 		func() any { return map[string]any{"tools": mcppkg.RenderTools(mcpSessionToolCatalog(ctx))} },
 		func(ctx context.Context, name string, args map[string]any) any {
 			return invokeMCPTool(ctx, name, args).result()
+		},
+	)
+}
+
+func mcpWorkspaceUnavailableResponse(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
+	return mcppkg.Dispatch(ctx, req,
+		func() any {
+			cfg, err := loadConfigFor(ctx)
+			return mcppkg.InitializeResult(BuildVersion, configMCPWritePolicy(cfg), err == nil)
+		},
+		func() any { return map[string]any{"tools": []any{}} },
+		func(context.Context, string, map[string]any) any {
+			return toCallToolResult(nil, errMCPWorkspaceUnavailable)
 		},
 	)
 }
@@ -982,6 +992,11 @@ func mcpBrief(ctx context.Context, cfg Config, args map[string]any) (any, error)
 			return nil, errMCPWorkspaceUnavailable
 		}
 		return projectBriefForDir(cfg, dir, briefClock())
+	}
+	// Managed project sessions never fall through to a vault-wide daily digest.
+	// A legacy explicit --project-dir server retains its administrator behavior.
+	if mcpWorkspaceManaged(ctx) && boolArg(args, "daily", false) {
+		return nil, errMCPWorkspaceUnavailable
 	}
 	// A server started with --project-dir for a bound folder answers a bare
 	// brief with that project's rules; daily:true asks for the daily brief.

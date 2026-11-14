@@ -46,6 +46,7 @@ type clientTransport struct {
 	writeMu sync.Mutex
 	mu      sync.Mutex
 	closed  bool
+	initialized bool
 	waiters map[string]chan clientReply
 	done    chan struct{}
 }
@@ -144,8 +145,22 @@ func Serve(ctx context.Context, out io.Writer, in io.Reader, maxRequestBytes int
 	scanner.Buffer(make([]byte, 64*1024), maxRequestBytes)
 	for scanner.Scan() {
 		var req Request
-		if json.Unmarshal(scanner.Bytes(), &req) != nil || req.ID == nil {
+		if json.Unmarshal(scanner.Bytes(), &req) != nil {
 			continue
+		}
+		if req.Method == "notifications/initialized" {
+			c.mu.Lock()
+			c.initialized = true
+			c.mu.Unlock()
+			continue
+		}
+		if req.ID == nil {
+			continue
+		}
+		if req.Method == "initialize" {
+			c.mu.Lock()
+			c.initialized = false
+			c.mu.Unlock()
 		}
 		if req.Method == "" {
 			if id, ok := req.ID.(string); ok {
