@@ -2,7 +2,9 @@ package gitsync
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -169,5 +171,143 @@ func TestSelectedBackupDoesNotReuseOperationRef(t *testing.T) {
 	}
 	if after := gitRun(t, opts.Vault, "rev-parse", ref); before != after {
 		t.Fatal("preserved ref changed")
+	}
+}
+
+func TestSelectedBackupRefusesRepositoryTransportPrograms(t *testing.T) {
+	for _, key := range []string{"core.sshCommand", "core.gitProxy", "credential.helper", "http.proxy", "http.sslVerify", "http.https://github.com/.proxy"} {
+		t.Run(key, func(t *testing.T) {
+			vault, _, opts := backupFixture(t)
+			gitRun(t, vault, "config", key, "fixture-must-not-run")
+			writeGitFile(t, vault, "pending.md", "unchanged")
+			before := gitRun(t, vault, "status", "--porcelain")
+			if err := PushSelected(context.Background(), opts); err == nil {
+				t.Fatal("repository transport override accepted")
+			}
+			if after := gitRun(t, vault, "status", "--porcelain"); before != after {
+				t.Fatal("refusal changed index")
+			}
+		})
+	}
+}
+
+func TestSelectedBackupPinsWorktreeAndDisablesSigning(t *testing.T) {
+	vault, _, opts := backupFixture(t)
+	foreign := t.TempDir()
+	writeGitFile(t, foreign, "foreign.md", "not backup content")
+	gitRun(t, vault, "config", "core.worktree", foreign)
+	gitRun(t, vault, "config", "commit.gpgsign", "true")
+	gitRun(t, vault, "config", "gpg.program", "fixture-missing-signing-program")
+	writeGitFile(t, vault, "right.md", "right content")
+	if err := PushSelected(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	out, err := selectedCommand(context.Background(), opts, 4096, "ls-tree", "-r", "--name-only", "HEAD")
+	if err != nil || !strings.Contains(string(out), "right.md") || strings.Contains(string(out), "foreign.md") {
+		t.Fatalf("wrong tree: %q %v", out, err)
+	}
+}
+
+func TestSelectedBackupSensitiveRefusalDoesNotStage(t *testing.T) {
+	vault, _, opts := backupFixture(t)
+	writeGitFile(t, vault, "tokens/fixture", "synthetic")
+	before := gitRun(t, vault, "status", "--porcelain")
+	if err := PushSelected(context.Background(), opts); err == nil {
+		t.Fatal("sensitive path accepted")
+	}
+	if after := gitRun(t, vault, "status", "--porcelain"); before != after {
+		t.Fatal("sensitive path staged")
+	}
+}
+
+func TestSelectedBackupPreservesCRLFAndRefusesTransformingAttributes(t *testing.T) {
+	vault, _, opts := backupFixture(t)
+	gitRun(t, vault, "config", "core.autocrlf", "true")
+	writeGitFile(t, vault, "crlf.md", "a\r\nb\r\n")
+	if err := PushSelected(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	out, err := selectedCommand(context.Background(), opts, 100, "show", "HEAD:crlf.md")
+	if err != nil || string(out) != "a\r\nb\r\n" {
+		t.Fatalf("rewritten bytes: %q %v", out, err)
+	}
+	writeGitFile(t, vault, ".gitattributes", "*.md text\n")
+	before := gitRun(t, vault, "status", "--porcelain")
+	if err := PushSelected(context.Background(), opts); err == nil {
+		t.Fatal("transforming attributes accepted")
+	}
+	if after := gitRun(t, vault, "status", "--porcelain"); before != after {
+		t.Fatal("attribute refusal changed index")
+	}
+}
+
+func TestSelectedPushLostReplyIsIndeterminate(t *testing.T) {
+	vault, remote, opts := backupFixture(t)
+	writeGitFile(t, vault, "accepted.md", "accepted before reply lost")
+	base := opts
+	opts.run = func(ctx context.Context, _ string, limit int, args ...string) ([]byte, error) {
+		out, err := selectedCommand(ctx, base, limit, args...)
+		if args[0] == "push" && err == nil {
+			return nil, context.DeadlineExceeded
+		}
+		return out, err
+	}
+	err := PushSelected(context.Background(), opts)
+	if !errors.Is(err, ErrPushIndeterminate) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("outcome misreported: %v", err)
+	}
+	gitRun(t, remote, "cat-file", "-e", "refs/heads/main:accepted.md")
+}
+
+func TestPullSnapshotRefusesUnicodeNormalizationCollision(t *testing.T) {
+	_, _, opts := backupFixture(t)
+	other := cloneOther(t, opts.Target.CanonicalURL)
+	var tree strings.Builder
+	for _, name := range []string{"caf\u00e9.md", "cafe\u0301.md"} {
+		cmd := exec.Command("git", "hash-object", "-w", "--stdin")
+		cmd.Dir, cmd.Stdin = other, strings.NewReader(name)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		tree.WriteString("100644 blob " + strings.TrimSpace(string(out)) + "\t" + name + "\x00")
+	}
+	cmd := exec.Command("git", "mktree", "-z")
+	cmd.Dir, cmd.Stdin = other, strings.NewReader(tree.String())
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := gitRun(t, other, "commit-tree", strings.TrimSpace(string(out)), "-p", "HEAD", "-m", "normalization collision")
+	gitRun(t, other, "update-ref", "refs/heads/main", commit)
+	gitRun(t, other, "push", "origin", "main")
+	dest := filepath.Join(opts.StateDir, "backup", "restores", opts.RunID)
+	result, err := PullSnapshot(context.Background(), opts, dest)
+	if err == nil || result.Published {
+		t.Fatal("colliding tree published")
+	}
+	if _, err := os.Lstat(dest); !os.IsNotExist(err) {
+		t.Fatal("refusal exposed restore", err)
+	}
+}
+
+func TestSelectedBackupEmptyRemoteAndWrongBranch(t *testing.T) {
+	vault, _, opts := backupFixture(t)
+	bare := filepath.Join(t.TempDir(), "empty.git")
+	gitRun(t, filepath.Dir(bare), "init", "--bare", bare)
+	url := "file://" + bare
+	gitRun(t, vault, "remote", "set-url", "origin", url)
+	opts = backupOptions(vault, url, opts.StateDir)
+	result, err := ProbeRelation(context.Background(), opts)
+	if err != nil || result.Relation != RelationClean || result.RemoteOID != "" {
+		t.Fatalf("empty selected ref: %+v %v", result, err)
+	}
+	if err := PushSelected(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, bare, "rev-parse", "refs/heads/main")
+	gitRun(t, vault, "checkout", "-b", "different")
+	if _, err := ProbeRelation(context.Background(), opts); err == nil {
+		t.Fatal("wrong branch compared")
 	}
 }

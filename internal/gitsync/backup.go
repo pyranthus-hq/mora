@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -20,6 +21,7 @@ import (
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	"github.com/pyranthus-hq/mora/internal/leasefile"
 	"github.com/pyranthus-hq/mora/internal/managedtree"
+	"golang.org/x/text/unicode/norm"
 )
 
 type SelectedTarget struct {
@@ -66,6 +68,10 @@ type PullResult struct {
 	Published                         bool
 }
 
+// ErrPushIndeterminate means the remote may have accepted the ref before the
+// command failed. Only a later verified observation can confirm its outcome.
+var ErrPushIndeterminate = errors.New("selected backup push outcome is unknown")
+
 // PushSelected revalidates the provider identity and current origin before it
 // stages a bounded, filter-free commit and pushes only the selected ref.
 func PushSelected(ctx context.Context, opts BackupOptions) error {
@@ -80,6 +86,9 @@ func pushSelected(ctx context.Context, opts BackupOptions) error {
 	}
 	if head, err := gitOutput(ctx, opts, "symbolic-ref", "-q", "HEAD"); err != nil || head != opts.RemoteRef {
 		return errors.New("selected backup branch does not match target ref")
+	}
+	if err := checkBackupCandidates(ctx, opts); err != nil {
+		return err
 	}
 	filters, filterErr := gitOutput(ctx, opts, "config", "--name-only", "--get-regexp", "^filter\\.")
 	if filterErr != nil && !absentGitConfig(filterErr) {
@@ -135,7 +144,7 @@ func pushSelected(ctx context.Context, opts BackupOptions) error {
 		return err
 	}
 	if _, err := gitOutput(ctx, opts, "push", opts.Target.CanonicalURL, "HEAD:"+opts.RemoteRef); err != nil {
-		return fmt.Errorf("selected backup push failed: %w", err)
+		return fmt.Errorf("%w: %w", ErrPushIndeterminate, err)
 	}
 	return nil
 }
@@ -157,9 +166,20 @@ func probeRelation(ctx context.Context, opts BackupOptions) (RelationResult, err
 	if !validRef(opts.RemoteRef) || !safeRun(opts.RunID) {
 		return RelationResult{}, errors.New("invalid selected backup relation request")
 	}
+	if branch, err := gitOutput(ctx, opts, "symbolic-ref", "-q", "HEAD"); err != nil || branch != opts.RemoteRef {
+		return RelationResult{}, errors.New("selected backup branch does not match target ref")
+	}
 	remoteRef := "refs/mora/backup/" + opts.RunID + "/remote"
 	if err := requireUnusedBackupRef(ctx, opts, remoteRef); err != nil {
 		return RelationResult{}, err
+	}
+	if _, err := gitOutput(ctx, opts, "ls-remote", "--exit-code", "--refs", opts.Target.CanonicalURL, opts.RemoteRef); err != nil {
+		var status *exec.ExitError
+		if errors.As(err, &status) && status.ExitCode() == 2 {
+			// An existing selected repository may not have its first backup ref yet.
+			return RelationResult{Relation: RelationClean}, nil
+		}
+		return RelationResult{}, fmt.Errorf("selected backup remote ref is unavailable: %w", err)
 	}
 	if _, err := gitOutput(ctx, opts, "fetch", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", opts.Target.CanonicalURL, opts.RemoteRef+":"+remoteRef); err != nil {
 		return RelationResult{}, fmt.Errorf("selected backup relation fetch failed: %w", err)
@@ -294,7 +314,8 @@ func pullSnapshot(ctx context.Context, opts BackupOptions, destination string) (
 		if err := os.MkdirAll(filepath.Dir(out), 0o700); err != nil {
 			return PullResult{}, err
 		}
-		if err := atomicio.WriteDurable(out, body, 0o600); err != nil {
+		// The stage is unpublished; InstallTree supplies the final durability barrier.
+		if err := atomicio.CreateExclusive(out, body, 0o600); err != nil {
 			return PullResult{}, err
 		}
 	}
@@ -336,6 +357,11 @@ func authorize(ctx context.Context, opts BackupOptions) error {
 	return nil
 }
 func checkOrigin(ctx context.Context, opts BackupOptions) error {
+	// Repository-controlled transport helpers cannot inherit the owner's authority.
+	unsafeKeys, unsafeErr := gitOutput(ctx, opts, "config", "--local", "--includes", "--name-only", "--get-regexp", "^(core\\.(sshcommand|gitproxy)|credential\\.|http\\.)")
+	if unsafeKeys != "" || (unsafeErr != nil && !absentGitConfig(unsafeErr)) {
+		return errors.New("selected backup repository has unsupported transport configuration")
+	}
 	fetch, err := gitOutput(ctx, opts, "remote", "get-url", "--all", "origin")
 	push, pushErr := gitOutput(ctx, opts, "remote", "get-url", "--push", "--all", "origin")
 	rewrites, rewriteErr := gitOutput(ctx, opts, "config", "--get-regexp", "^url\\.")
@@ -351,6 +377,42 @@ func gitOutput(ctx context.Context, opts BackupOptions, args ...string) (string,
 func gitBytes(ctx context.Context, opts BackupOptions, limit int, args ...string) ([]byte, error) {
 	return selectedCommand(ctx, opts, limit, args...)
 }
+
+func checkBackupCandidates(ctx context.Context, opts BackupOptions) error {
+	data, err := gitBytes(ctx, opts, 2<<20, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return err
+	}
+	paths := strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00")
+	if len(paths) == 1 && paths[0] == "" {
+		return nil
+	}
+	for _, path := range paths {
+		if sensitivePath(path) {
+			return errors.New("selected backup contains sensitive files")
+		}
+	}
+	// Explicit attributes can transform bytes even with autocrlf and filters disabled.
+	for start := 0; start < len(paths); start += 100 {
+		end := min(start+100, len(paths))
+		args := append([]string{"check-attr", "-z", "text", "eol", "ident", "working-tree-encoding", "--"}, paths[start:end]...)
+		attrs, err := gitBytes(ctx, opts, 1<<20, args...)
+		if err != nil {
+			return err
+		}
+		fields := strings.Split(strings.TrimSuffix(string(attrs), "\x00"), "\x00")
+		if len(fields) != (end-start)*12 {
+			return errors.New("backup content attributes are unreadable")
+		}
+		for i := 2; i < len(fields); i += 3 {
+			if fields[i] != "unspecified" && fields[i] != "unset" {
+				return errors.New("backup content-transforming attributes require local review")
+			}
+		}
+	}
+	return nil
+}
+
 func validTargetIdentity(t SelectedTarget) bool {
 	return safeRun(t.ID) && len(t.CanonicalURL) > 0 && len(t.CanonicalURL) <= 1024 && safeRun(t.RemoteDigest) && safeRun(t.PolicyDigest) && validReaders(t.AuthorizedReaderIDs)
 }
@@ -520,7 +582,7 @@ func safeTreePath(path string, seen map[string]string) bool {
 		if name == "CON" || name == "PRN" || name == "AUX" || name == "NUL" || name == "CONIN$" || name == "CONOUT$" || name == "CLOCK$" || (len(name) == 4 && (strings.HasPrefix(name, "COM") || strings.HasPrefix(name, "LPT")) && name[3] >= '1' && name[3] <= '9') {
 			return false
 		}
-		key := parent + "/" + strings.ToUpper(part)
+		key := parent + "/" + norm.NFC.String(strings.ToUpper(norm.NFC.String(part)))
 		if prev, found := seen[key]; found && prev != part {
 			return false
 		}

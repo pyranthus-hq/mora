@@ -41,7 +41,10 @@ func selectedCommand(ctx context.Context, opts BackupOptions, limit int, args ..
 	if err != nil || len(entries) != 0 {
 		return nil, errors.New("disabled hook directory is not empty")
 	}
-	prefix := []string{"-c", "core.hooksPath=" + hooks, "-c", "core.fsmonitor=false", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "protocol.ext.allow=never", "-c", "fetch.recurseSubmodules=false"}
+	prefix := []string{"--git-dir=" + filepath.Join(opts.Vault, ".git"), "--work-tree=" + opts.Vault,
+		"-c", "core.hooksPath=" + hooks, "-c", "core.fsmonitor=false", "-c", "commit.gpgsign=false",
+		"-c", "core.autocrlf=false", "-c", "core.safecrlf=false", "-c", "transfer.fsckObjects=true",
+		"-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "protocol.ext.allow=never", "-c", "fetch.recurseSubmodules=false"}
 	for _, name := range opts.disabledFilters {
 		prefix = append(prefix, "-c", "filter."+name+".clean=", "-c", "filter."+name+".smudge=", "-c", "filter."+name+".process=", "-c", "filter."+name+".required=false")
 	}
