@@ -106,7 +106,7 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 			receipt.ProposalID = proposalIDOf(inv.value)
 		case action == mcppkg.ActionRefuse:
 			receipt.Action = "refused"
-		case name == "write_memory" || name == "delete_memory":
+		case name == "write_memory" || name == "delete_memory" || name == "confirm_memory":
 			receipt.Action = "wrote"
 		}
 		if inv.err == nil && !proposed {

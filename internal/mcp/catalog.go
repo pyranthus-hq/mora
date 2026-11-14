@@ -73,6 +73,10 @@ var toolCatalog = []ToolDefinition{
 		Params: []Param{{"id", "string", "The memory id to delete", true}},
 	},
 	{
+		Name: "confirm_memory", Description: "Ask the user, in a prompt only they can answer, to confirm an agent-written note as their own rule (owner-confirmed). Without their explicit yes the note is unchanged.",
+		Params: []Param{{"id", "string", "The memory id to confirm (as returned by write_memory/search_memory)", true}},
+	},
+	{
 		Name: "context_memory", Description: "Assemble one dense, budget-bounded context block for a query (or a session-start briefing when no query is given)",
 		Params: []Param{
 			{"query", "string", "Topic to assemble context for; omit for a recency briefing", false},

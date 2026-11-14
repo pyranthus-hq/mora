@@ -192,3 +192,44 @@ func TestElicitTransportErrors(t *testing.T) {
 		})
 	}
 }
+
+// ElicitConfirm names how a no came about; only accept+true is ElicitYes.
+func TestElicitConfirmOutcomes(t *testing.T) {
+	for raw, want := range map[string]ElicitOutcome{
+		`{"action":"accept","content":{"confirm":true}}`:   ElicitYes,
+		`{"action":"accept","content":{"confirm":false}}`:  ElicitNo,
+		`{"action":"accept","content":{"confirm":"true"}}`: ElicitNo,
+		`{"action":"accept"}`:                              ElicitNo,
+		`{"action":"decline","content":{"confirm":true}}`:  ElicitDeclined,
+		`{"action":"cancel","content":{"confirm":true}}`:   ElicitCancelled,
+		`{"action":"Accept","content":{"confirm":true}}`:   ElicitCancelled,
+		`{"action":true}`: ElicitInvalid,
+		`null`:            ElicitInvalid,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			outcomes := make(chan ElicitOutcome, 1)
+			s := startTwoWay(t, context.Background(), func(ctx context.Context, r Request) Response {
+				if r.Method == "initialize" {
+					if !ElicitAvailable(ctx) {
+						t.Error("capability not seen")
+					}
+					got, err := ElicitConfirm(ctx, "Proceed?", "confirm", "Approval", time.Second)
+					if err != nil {
+						t.Error(err)
+					}
+					outcomes <- got
+				}
+				return Response{ID: r.ID, Result: "done"}
+			})
+			s.send(map[string]any{"id": 1, "method": "initialize", "params": json.RawMessage(`{"capabilities":{"elicitation":{}}}`)})
+			f := s.read()
+			checkElicitFrame(t, f)
+			s.send(result(f["id"], json.RawMessage(raw)))
+			if got := <-outcomes; got != want {
+				t.Fatalf("outcome=%v want %v", got, want)
+			}
+			s.read()
+			s.finish(nil)
+		})
+	}
+}
