@@ -17,11 +17,9 @@ import (
 )
 
 const (
-	reviewUsage      = "usage: mora review [--list [--json] | --show saved|held ID --json]"
-	reviewRefusal    = "refusing to walk through agent notes from a non-interactive shell or from inside an agent session. Run `mora review` in your own terminal, or use `mora review --list`."
-	reviewAgentRefus = "refusing to walk through agent notes from inside an agent session (%s is set). Run `mora review` in your own terminal, or use `mora review --list`."
-	reviewKindSaved  = "saved"
-	reviewKindHeld   = "held"
+	reviewUsage     = "usage: mora review [--list [--json] | --show saved|held ID --json]"
+	reviewKindSaved = "saved"
+	reviewKindHeld  = "held"
 )
 
 // reviewNote is one agent note that waits for the owner. Digest binds a held
@@ -193,16 +191,6 @@ func listReviewNotes(cfg Config, stderr io.Writer) ([]reviewNote, error) {
 		notes = append(notes, n)
 	}
 	return notes, nil
-}
-
-func requireReviewTerminal(stdin io.Reader) error {
-	if key := rulesAgentSession(); key != "" {
-		return fmt.Errorf(reviewAgentRefus, key)
-	}
-	if !rulesInteractive(stdin) {
-		return errors.New(reviewRefusal)
-	}
-	return nil
 }
 
 // reviewShowText escapes each line, so only newlines can move the cursor.

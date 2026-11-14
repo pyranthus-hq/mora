@@ -130,16 +130,6 @@ func cmdConfirm(ctx context.Context, args []string, stdout, stderr io.Writer, st
 	return nil
 }
 
-// refuseInAgentSession refuses an owner action from inside an agent session,
-// the same variable check requireReviewTerminal makes, without also demanding a
-// terminal: the owner's own scripts may pipe into these commands.
-func refuseInAgentSession(cmd string) error {
-	if key := rulesAgentSession(); key != "" {
-		return fmt.Errorf("refusing %s from inside an agent session (%s is set). The owner can run it from their own terminal.", cmd, key)
-	}
-	return nil
-}
-
 // requireMineTerminal is the check `mora review` makes, worded for --mine: a
 // person at their own terminal, not a pipe and not a known agent session. It
 // cannot prove a human typed: a program inside a fake terminal passes.

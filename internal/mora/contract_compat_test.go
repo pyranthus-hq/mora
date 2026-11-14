@@ -327,6 +327,7 @@ func contractReadGolden(t *testing.T, schema string) (any, bool) {
 // that message names a schema_version bump instead, because regenerating would
 // launder a breaking change into a green suite.
 func TestContractGoldenCorpusIsFrozen(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	live := contractLiveDocuments(t)
 
@@ -726,6 +727,7 @@ var contractUnknownField = regexp.MustCompile(`unknown field "([^"]*)"`)
 // golden. Neither offers regeneration, because regenerating is how a removal
 // would be laundered into a green suite.
 func TestContractCompatRemovalIsCaught(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	live := contractLiveDocuments(t)
 
@@ -766,6 +768,7 @@ const contractFutureField = "mora_future_field_added_by_a_later_phase"
 // array element, and asserts the v1 consumer's view is byte-identical. Additive
 // safety is proven here rather than assumed from the version number.
 func TestContractCompatAdditiveIsSafe(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	live := contractLiveDocuments(t)
 

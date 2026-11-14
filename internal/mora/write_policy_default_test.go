@@ -227,6 +227,7 @@ func TestExplicitWritePolicyIsKeptAndEnforced(t *testing.T) {
 // propose still queues, refuses deletes, logs nothing until approval, and doctor
 // counts what is waiting.
 func TestExplicitProposeStillQueuesAndDoctorCountsPending(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	run(t, "init")
 	run(t, "config", "mcp-write-policy", "propose")

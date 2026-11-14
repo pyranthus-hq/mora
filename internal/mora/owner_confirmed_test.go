@@ -426,12 +426,17 @@ func TestReservedTagPrefixIsRefusedWhereverACommandTakesTags(t *testing.T) {
 // adoption line.
 func TestReviewShowsAndBindsGoverningFields(t *testing.T) {
 	cfg := reviewSetup(t)
+	legacyOpenPolicy(t)
 	var w bytes.Buffer
 	if err := Run(testCtx(t), []string{"write", "--scope", "project:demo", "--type", "fact", "--title", "Old plan", "--text", "The old plan.", "--json"}, &w, &w, nil); err != nil {
 		t.Fatal(err)
 	}
 	var target struct{ ID string }
 	if err := json.Unmarshal(w.Bytes(), &target); err != nil {
+		t.Fatal(err)
+	}
+	cfg.MCPWritePolicy = "tentative"
+	if err := writeConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
 	held := func(res map[string]any) string {
