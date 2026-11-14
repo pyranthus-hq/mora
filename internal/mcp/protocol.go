@@ -86,7 +86,11 @@ func (c *clientTransport) call(ctx context.Context, method string, params any, t
 	c.waiters[id] = reply
 	c.mu.Unlock()
 	defer func() { c.mu.Lock(); delete(c.waiters, id); c.mu.Unlock() }()
-	if err := c.write(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}); err != nil {
+	request := map[string]any{"jsonrpc": "2.0", "id": id, "method": method}
+	if params != nil {
+		request["params"] = params
+	}
+	if err := c.write(request); err != nil {
 		return nil, err
 	}
 	timer := time.NewTimer(timeout)
@@ -131,6 +135,7 @@ func Serve(ctx context.Context, out io.Writer, in io.Reader, maxRequestBytes int
 		for req := range requests {
 			if req.Method == "initialize" {
 				handlerCtx = context.WithValue(ctx, elicitationSessionKey{}, elicitationSession{client: c, form: declaresForm(req.Params)})
+				handlerCtx = context.WithValue(handlerCtx, rootsSessionKey{}, rootsSession{client: c, supported: declaresRoots(req.Params)})
 			}
 			_ = c.write(handle(handlerCtx, req))
 		}
