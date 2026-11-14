@@ -122,6 +122,7 @@ var unreachableByNote = map[string]string{
 }
 
 func runTentativeSurfaceContract(t *testing.T, typ, scope string) {
+	withTestVerifiedOwnerAction(t)
 	useShippedWritePolicyDefault(t)
 	withTempHome(t)
 	run(t, "init")
@@ -260,11 +261,17 @@ func TestTentativeContextReceiptsCarryTrust(t *testing.T) {
 // Filtering must come before the limit: newer tentative notes may not push a
 // confirmed memory out of the default list.
 func TestTentativeDoesNotCrowdOutListMemory(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	useShippedWritePolicyDefault(t)
 	withTempHome(t)
 	run(t, "init")
+	legacyOpenPolicy(t)
 	run(t, "write", "--scope", "project:demo", "--type", "fact", "--title", "Confirmed baseline", "--text", "Confirmed note.")
 	cfg := mustConfig(t)
+	cfg.MCPWritePolicy = ""
+	if err := writeConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
 	rows, err := listMemories(cfg, "project:demo", 0)
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("baseline rows = %v, %v", rows, err)

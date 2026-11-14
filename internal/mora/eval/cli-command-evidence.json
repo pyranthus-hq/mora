@@ -136,6 +136,17 @@
       }
     },
     {
+      "name": "desktop review status",
+      "paths": ["review desktop"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestReviewDesktopStatusIsReadOnly"]},
+        "json": {"status": "test", "tests": ["TestReviewDesktopStatusIsReadOnly"]},
+        "state": {"status": "not_applicable", "reason": "The production desktop verifier is unavailable and the status receipt is read-only."},
+        "error": {"status": "test", "tests": ["TestReviewDesktopStatusIsReadOnly"]},
+        "refusal": {"status": "test", "tests": ["TestReviewDesktopStatusIsReadOnly"]}
+      }
+    },
+    {
       "name": "entities",
       "paths": ["entities"],
       "evidence": {

@@ -7,6 +7,7 @@ import (
 	configstore "github.com/pyranthus-hq/mora/internal/config"
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -18,9 +19,8 @@ const (
 
 // unsetMCPWritePolicy is what an install without an mcp_write_policy line
 // resolves to. In production it is always mcppkg.DefaultWritePolicy. It is a
-// variable only so this package's TestMain can keep the many older tests that
-// exercise open-mode writes after a bare `mora init` on their old behavior;
-// write_policy_default_test.go restores the shipped value and pins it.
+// variable only so tests can pin the shipped default while exercising an
+// isolated configuration. Production always uses mcppkg.DefaultWritePolicy.
 var unsetMCPWritePolicy = mcppkg.DefaultWritePolicy
 
 func parseMCPWritePolicy(raw string) (string, error) { return configstore.ParseMCPWritePolicy(raw) }
@@ -33,6 +33,68 @@ func configMCPWritePolicy(c Config) string {
 		return unsetMCPWritePolicy
 	}
 	return mcppkg.NormalizeWritePolicy(c.MCPWritePolicy)
+}
+
+// cliCaptureAction applies the configured mutation policy to raw CLI capture.
+// It is intentionally independent of environment markers: those describe a
+// caller, not authority or the configured storage disposition.
+func cliCaptureAction(cfg Config) (string, error) {
+	return mcppkg.MutationAction(configMCPWritePolicy(cfg), "write_memory")
+}
+
+func cliTaskMutationAllowed(cfg Config) error {
+	action, err := cliCaptureAction(cfg)
+	if err != nil {
+		return err
+	}
+	if action != mcppkg.ActionExecute {
+		return fmt.Errorf("task mutation refused: mcp_write_policy=%s; tasks have no exact pending-operation queue yet", configMCPWritePolicy(cfg))
+	}
+	return nil
+}
+
+// cliDestructiveMutationAllowed keeps irreversible raw CLI operations inside
+// the same explicit policy boundary as capture. --force changes undo's target
+// eligibility only; it never grants mutation authority.
+func cliDestructiveMutationAllowed(cfg Config, operation string) error {
+	action, err := cliCaptureAction(cfg)
+	if err != nil {
+		return err
+	}
+	if action != mcppkg.ActionExecute {
+		return fmt.Errorf("%s refused: mcp_write_policy=%s does not authorize destructive CLI mutations", operation, configMCPWritePolicy(cfg))
+	}
+	return nil
+}
+
+// stageCLICapture reuses the normal proposal queue, preserving the authored
+// memory fields instead of creating a second raw-CLI staging format.
+func stageCLICapture(cfg Config, m Memory, heldBecause []string) (any, error) {
+	if err := refuseOwnerConfirmedTags(m.Tags); err != nil {
+		return nil, err
+	}
+	if len(m.Tags) != 0 {
+		return nil, errors.New("CLI proposal staging does not support tags; remove --tags before staging")
+	}
+	args := map[string]any{
+		"scope": m.Scope, "type": m.Type, "title": m.Title, "text": m.Text,
+		"source": m.Source,
+	}
+	if m.Meta != nil {
+		if target, ok := m.Meta["target"].(string); ok {
+			args["target"] = target
+		}
+		if disposition, ok := m.Meta["disposition"].(string); ok {
+			args["disposition"] = disposition
+		}
+	}
+	if m.Decision != nil {
+		args["as_of"] = m.Decision.AsOf
+		args["durability"] = m.Decision.Durability
+		args["flip_conditions"] = strings.Join(m.Decision.FlipConditions, ";")
+		args["review_by"] = m.Decision.ReviewBy
+	}
+	return stageMCPWriteProposalHeld(cfg, args, "cli", heldBecause)
 }
 
 type mcpWriteProposal = mcppkg.Proposal
@@ -187,11 +249,11 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 		return showMCPWriteProposal(cfg, args[1], stdout)
 	}
 	if len(args) >= 2 && args[0] == "approve" {
-		if err := refuseInAgentSession("mora mcp proposals approve"); err != nil {
-			return err
-		}
 		ids := args[1:]
 		for _, id := range ids {
+			if err := requireVerifiedOwnerAction(ownerAction{Kind: "proposal.approve", TargetID: id}); err != nil {
+				return err
+			}
 			if err := refuseDashLedPositional("mcp proposals approve", "proposal id", id); err != nil {
 				return err
 			}
@@ -262,6 +324,9 @@ func cmdMCPProposals(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 	if len(args) == 2 && args[0] == "reject" {
 		if err := refuseDashLedPositional("mcp proposals reject", "proposal id", args[1]); err != nil {
+			return err
+		}
+		if err := requireVerifiedOwnerAction(ownerAction{Kind: "proposal.reject", TargetID: args[1]}); err != nil {
 			return err
 		}
 		if _, err := decideMCPWriteProposal(ctx, cfg, args[1], "reject"); err != nil {

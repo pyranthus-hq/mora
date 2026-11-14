@@ -230,6 +230,7 @@ var contractMatrixSharedGuardPaths = []string{
 // TestContractSharedDashLedGuardIsWitnessed is the mutation witness for
 // refuseDashLedPositional. Neutering that function must fail this test.
 func TestContractSharedDashLedGuardIsWitnessed(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	run(t, "init")
 	for _, path := range contractMatrixSharedGuardPaths {

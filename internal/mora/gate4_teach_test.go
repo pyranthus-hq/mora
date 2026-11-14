@@ -35,8 +35,10 @@ func gate4CommitmentMemory() Memory {
 
 func gate4CommitmentCfg(t *testing.T) (Config, Commitment) {
 	t.Helper()
+	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	run(t, "init")
+	legacyOpenPolicy(t)
 	cfg := mustConfig(t)
 	if err := saveSources(cfg, []Source{{
 		Name: "gmail", Type: "gmail", Email: "self@example.com",
@@ -202,6 +204,7 @@ func TestGate4EveryCommitmentVerdictRoundTripsThroughCLIRebuildAndUndo(t *testin
 		"useful",
 	} {
 		subRun(t, decision, func(t *testing.T) {
+			withTestVerifiedOwnerAction(t)
 			cfg, before := gate4CommitmentCfg(t)
 			var canonicalID string
 			if decision == "duplicate" {
@@ -313,6 +316,7 @@ func TestGate4EveryCommitmentVerdictRoundTripsThroughCLIRebuildAndUndo(t *testin
 func TestGate4AuthoredMemoryCorrectSupersedeRetractUndo(t *testing.T) {
 	for _, decision := range []string{"correct", "supersede"} {
 		subRun(t, decision, func(t *testing.T) {
+			withTestVerifiedOwnerAction(t)
 			withTempHome(t)
 			run(t, "init")
 			cfg := mustConfig(t)
@@ -412,8 +416,10 @@ func TestGate4AuthoredMemoryCorrectSupersedeRetractUndo(t *testing.T) {
 }
 
 func TestGate4AuthoredMemoryHistoryTraversesRevisionChainNewestFirst(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	run(t, "init")
+	legacyOpenPolicy(t)
 	cfg := mustConfig(t)
 	original := Memory{
 		ID: "mem_gate4_chain_a", Scope: "project:gate4", Type: "fact",
@@ -533,6 +539,7 @@ func TestGate4NeedsReviewDecisionNeverGovernsCommitments(t *testing.T) {
 func TestGate4ReviewDeadlineInvalidatesInventoryWithoutRebuild(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
+	legacyOpenPolicy(t)
 	cfg := mustConfig(t)
 	builtAt := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
 	gate2PinClock(t, builtAt)
@@ -581,8 +588,10 @@ func TestGate4ReviewDeadlineInvalidatesInventoryWithoutRebuild(t *testing.T) {
 }
 
 func TestGate4DecisionValidityRoundTripsThroughCurrentReadAndSearch(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	run(t, "init")
+	legacyOpenPolicy(t)
 	cfg := mustConfig(t)
 	raw := run(t, "write",
 		"--scope", "project:gate4",
@@ -632,6 +641,7 @@ func TestGate4DecisionValidityRoundTripsThroughCurrentReadAndSearch(t *testing.T
 }
 
 func TestGate4EvalExamplesRequireConsentAndMinimizeContent(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)
@@ -676,6 +686,7 @@ func TestGate4EvalExamplesRequireConsentAndMinimizeContent(t *testing.T) {
 }
 
 func TestGate4ConnectorEvidenceCannotBeRevisedAsAuthoredMemory(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	run(t, "init")
 	cfg := mustConfig(t)

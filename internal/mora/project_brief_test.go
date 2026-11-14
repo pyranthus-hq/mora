@@ -24,6 +24,7 @@ func projectBriefSetup(t *testing.T) Config {
 	t.Helper()
 	withTempHome(t)
 	run(t, "init")
+	legacyOpenPolicy(t)
 	return mustConfig(t)
 }
 

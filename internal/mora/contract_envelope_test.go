@@ -128,6 +128,7 @@ var contractEnvelopeNonExecutable = map[string]string{
 // non-exempt row count, so a silently skipped row fails the test rather than
 // shrinking the table.
 func TestContractEveryPayloadIsVersioned(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	run(t, "init")
 	seed := run(t, "write", "--title", "envelope seed", "--text", "envelope probe seed", "--json")

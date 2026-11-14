@@ -35,6 +35,7 @@ var contractBaselineNonExecutable = map[string]string{
 	"undo":               "destructive memory mutation",
 	"confirm":            "memory trust mutation",
 	"review":             "interactive memory trust mutation",
+	"review desktop":     "read-only unavailable desktop verifier status",
 	"forget":             "destructive governance mutation",
 	"unforget":           "governance mutation",
 	"disconnect":         "mutates connector configuration",

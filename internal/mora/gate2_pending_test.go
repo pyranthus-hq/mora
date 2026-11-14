@@ -76,6 +76,7 @@ func govFingerprint(t *testing.T, cfg Config) (entries, revoked int) {
 // site's own mark leaves only the rebuild's A4 self-mark, which fires AFTER the
 // vault/ledger byte already changed.
 func TestEveryVaultMutationMarksDirty(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	// captureFirstMark installs a testHookPostMarkerWrite that runs `record` exactly
 	// once, at the first markIndexDirty of the dispatch. Returns a restore func.
 	captureFirstMark := func(record func()) func() {

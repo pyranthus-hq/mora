@@ -71,6 +71,7 @@ func TestMCPWritePolicyConfigRoundTripAndRejectsInvalid(t *testing.T) {
 }
 
 func TestMCPWritePolicyProposeStagesThenOwnerApproves(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	dir := t.TempDir()
 	t.Setenv("MORA_CONFIG_DIR", dir)
 	cfg := mustConfig(t)

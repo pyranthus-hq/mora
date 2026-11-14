@@ -17,11 +17,9 @@ import (
 )
 
 const (
-	reviewUsage      = "usage: mora review [--list [--json] | --show saved|held ID --json]"
-	reviewRefusal    = "refusing to walk through agent notes from a non-interactive shell or from inside an agent session. Run `mora review` in your own terminal, or use `mora review --list`."
-	reviewAgentRefus = "refusing to walk through agent notes from inside an agent session (%s is set). Run `mora review` in your own terminal, or use `mora review --list`."
-	reviewKindSaved  = "saved"
-	reviewKindHeld   = "held"
+	reviewUsage     = "usage: mora review [--list [--json] | --show saved|held ID --json]"
+	reviewKindSaved = "saved"
+	reviewKindHeld  = "held"
 )
 
 // reviewNote is one agent note that waits for the owner. Digest binds a held
@@ -195,16 +193,6 @@ func listReviewNotes(cfg Config, stderr io.Writer) ([]reviewNote, error) {
 	return notes, nil
 }
 
-func requireReviewTerminal(stdin io.Reader) error {
-	if key := rulesAgentSession(); key != "" {
-		return fmt.Errorf(reviewAgentRefus, key)
-	}
-	if !rulesInteractive(stdin) {
-		return errors.New(reviewRefusal)
-	}
-	return nil
-}
-
 // reviewShowText escapes each line, so only newlines can move the cursor.
 func reviewShowText(s string) string {
 	lines := strings.Split(s, "\n")
@@ -298,6 +286,9 @@ func reviewWarnings(w io.Writer, buf *bytes.Buffer) {
 }
 
 func cmdReview(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
+	if len(args) > 0 && args[0] == "desktop" {
+		return cmdReviewDesktop(ctx, args[1:], stdout)
+	}
 	fs := flag.NewFlagSet("review", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	list := fs.Bool("list", false, "list agent notes that wait for review")
@@ -328,7 +319,7 @@ func cmdReview(ctx context.Context, args []string, stdout, stderr io.Writer, std
 		return errors.New(reviewUsage)
 	}
 	if !*list {
-		if err := requireReviewTerminal(stdin); err != nil {
+		if err := requireVerifiedOwnerAction(ownerAction{Kind: "review.decide"}); err != nil {
 			return err
 		}
 	}

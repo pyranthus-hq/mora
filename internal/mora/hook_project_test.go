@@ -162,6 +162,7 @@ func TestHookProjectRecallOmitsGlobalHealth(t *testing.T) {
 }
 
 func TestHookProjectRecallRetractUndo(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	run(t, "init")
 	root := t.TempDir()

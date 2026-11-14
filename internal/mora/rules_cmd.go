@@ -290,6 +290,9 @@ func rulesApprove(ctx context.Context, args []string, stdout io.Writer, stdin io
 	if err := rulesRequireTerminal(stdin); err != nil {
 		return err
 	}
+	if err := requireVerifiedOwnerAction(ownerAction{Kind: "rule.approve", TargetID: id}); err != nil {
+		return err
+	}
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
 		return err
@@ -345,6 +348,9 @@ func rulesOff(ctx context.Context, args []string, stdout io.Writer, stdin io.Rea
 	}
 	id := pos[0]
 	if err := rulesRequireTerminal(stdin); err != nil {
+		return err
+	}
+	if err := requireVerifiedOwnerAction(ownerAction{Kind: "rule.off", TargetID: id}); err != nil {
 		return err
 	}
 	cfg, err := loadConfigFor(ctx)

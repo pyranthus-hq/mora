@@ -464,6 +464,10 @@
     "status": "static_only"
   },
   {
+    "path": "review desktop",
+    "status": "static_only"
+  },
+  {
     "path": "rules",
     "status": "empty"
   },

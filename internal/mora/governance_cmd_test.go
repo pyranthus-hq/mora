@@ -1,6 +1,7 @@
 package mora
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ func destFor(cfg Config, mm memory.MappedMemory) string {
 }
 
 func TestForget_ChatRemovesAndSuppressesResync(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	mm := imsgMM("solo", "+14155550123")
 	dest := destFor(cfg, mm)
@@ -41,6 +43,7 @@ func TestForget_ChatRemovesAndSuppressesResync(t *testing.T) {
 }
 
 func TestForget_HandleRemovesSoleKeepsGroup(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	solo := imsgMM("solo", "+14155550123")
 	group := imsgMM("grp", "+14155550123", "+14155550999")
@@ -62,6 +65,7 @@ func TestForget_HandleRemovesSoleKeepsGroup(t *testing.T) {
 }
 
 func TestForget_EmailSoleAddressKeepsMulti(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	solo := gmailMM("solo", []string{"sam@example.com"}, nil)
 	multi := gmailMM("multi", []string{"sam@example.com"}, []string{"me@x.com"})
@@ -116,6 +120,7 @@ func TestForget_RefusesWithoutYes(t *testing.T) {
 }
 
 func TestUnforget_RevokesSuppression(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	mm := imsgMM("solo", "+14155550123")
 	if err := writeMappedMemory(cfg, mm); err != nil {
@@ -139,7 +144,30 @@ func TestUnforget_RevokesSuppression(t *testing.T) {
 	}
 }
 
+func TestUnforget_RefusesWithoutVerifiedOwner(t *testing.T) {
+	cfg := coreBIngestInitCfg(t)
+	entry, err := appendGovernanceEntry(cfg, govEntry{
+		Kind: govKindForget, Action: govActionSuppress,
+		Atom: govAtom{Provider: "imessage", Kind: atomHandle, Value: "+14155550123"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withUnavailableOwnerVerifier(t)
+	if err := cmdUnforget(testCtx(t), []string{entry.ID, "--yes"}, ioDiscard{}, ioDiscard{}); !errors.Is(err, errOwnerVerificationUnavailable) {
+		t.Fatalf("unforget without verifier = %v", err)
+	}
+	g, err := loadGovernance(cfg)
+	if err != nil || len(g.activeSuppress()) != 1 {
+		t.Fatalf("denied unforget changed suppression: %+v, %v", g, err)
+	}
+	if ops := mustListOps(t, cfg); len(ops) != 0 {
+		t.Fatalf("denied unforget marked the index dirty: %+v", ops)
+	}
+}
+
 func TestForget_ListShowsActiveEntries(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	if err := writeMappedMemory(cfg, imsgMM("solo", "+14155550123")); err != nil {
 		t.Fatal(err)
