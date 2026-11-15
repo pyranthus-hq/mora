@@ -983,17 +983,33 @@ type syncStatusReceiptSource struct {
 	NextScheduledAt         string `json:"next_scheduled_at"`
 	ConsecutiveFailureCount int    `json:"consecutive_failure_count"`
 	CorrelationID           string `json:"correlation_id,omitempty"`
+	// Diagnostic marks a row with no matching configured source (orphaned state).
+	Diagnostic string `json:"diagnostic,omitempty"`
+}
+
+func sameAnyFile(seen []os.FileInfo, fi os.FileInfo) bool {
+	for _, s := range seen {
+		if os.SameFile(s, fi) {
+			return true
+		}
+	}
+	return false
 }
 
 func syncStatusReceiptSources(configured []Source, entries []os.DirEntry, dir string, now time.Time) []syncStatusReceiptSource {
 	sources := make([]syncStatusReceiptSource, 0, len(configured)+len(entries))
-	seenPaths := make(map[string]bool, len(configured))
+	var seen []os.FileInfo
 	for _, source := range configured {
 		path := syncStatusPathFor(Config{StateDir: filepath.Dir(dir)}, source)
 		if path == "" {
 			continue
 		}
-		seenPaths[path] = true
+		// Record the file's identity, not its spelling: on a case-insensitive
+		// filesystem "filesystem-Pyranthus.json" and "filesystem-pyranthus.json"
+		// are one file, and a string compare listed it twice (#516).
+		if fi, err := os.Stat(path); err == nil {
+			seen = append(seen, fi)
+		}
 		st, _ := memory.InspectStatusRecord(dir, filepath.Base(path))
 		if st == nil {
 			st = &memory.SyncStatus{}
@@ -1002,7 +1018,7 @@ func syncStatusReceiptSources(configured []Source, entries []os.DirEntry, dir st
 	}
 	for _, entry := range entries {
 		path := filepath.Join(dir, entry.Name())
-		if seenPaths[path] {
+		if fi, err := os.Stat(path); err == nil && sameAnyFile(seen, fi) {
 			continue
 		}
 		st, _ := memory.InspectStatusRecord(dir, entry.Name())
@@ -1013,7 +1029,9 @@ func syncStatusReceiptSources(configured []Source, entries []os.DirEntry, dir st
 		if instanceID == "" {
 			instanceID = statusFilenameIdentity(entry.Name())
 		}
-		sources = append(sources, syncStatusReceiptRow(st, instanceID, "", "", true, false, entry.Name(), now))
+		row := syncStatusReceiptRow(st, instanceID, "", "", true, false, entry.Name(), now)
+		row.Diagnostic = "unconfigured_status"
+		sources = append(sources, row)
 	}
 	sort.Slice(sources, func(i, j int) bool { return sources[i].InstanceID < sources[j].InstanceID })
 	return sources
