@@ -22,6 +22,7 @@ import (
 
 	"github.com/pyranthus-hq/mora/internal/atomicio"
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
+	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
 // Agent profiles (#539) bind one MCP client to a policy Mora enforces, so the
@@ -262,6 +263,45 @@ func (p agentProfile) allowsRow(row map[string]any) bool {
 	return true
 }
 
+// allowsMemory is allowsRow for a record that has not been projected to JSON
+// yet: the same decision, made before any handler touches it.
+func (p agentProfile) allowsMemory(m Memory) bool {
+	if !p.allowsScope(m.Scope) {
+		return false
+	}
+	return p.RawSources || (m.Provider == "" && memory.DeriveProvenance(m) == memory.ProvenanceAuthored)
+}
+
+// authorize narrows a search filter to the profile's grant. Retrieval applies
+// it inside every arm before ranking and before any limit, so rows the profile
+// cannot read never take a slot that an allowed row needed. filterAgentResult
+// still checks every row that comes back.
+func (p agentProfile) authorize(f searchFilters) searchFilters {
+	f.Authorize = true
+	f.AuthoredOnly = !p.RawSources
+	if len(p.ReadScopes) != 1 || p.ReadScopes[0] != agentScopesAll {
+		f.Scopes = append([]string(nil), p.ReadScopes...)
+	}
+	return f
+}
+
+// authorizeAgentRead decides a read by id before the handler runs. A record the
+// profile may not read, and an id that does not exist, give the same answer, so
+// no handler error ("not current", evidence_ref, shared fallback) can tell them apart.
+func authorizeAgentRead(cfg Config, p agentProfile, id string) error {
+	m, err := findMemoryRaw(cfg, id)
+	if err != nil {
+		var ok bool
+		if m, ok = findSharedMemory(cfg, id); !ok {
+			return err
+		}
+	}
+	if !p.allowsMemory(m) {
+		return fmt.Errorf("memory not found: %s", id)
+	}
+	return nil
+}
+
 type agentProfileKey struct{}
 
 func withAgentProfile(ctx context.Context, p agentProfile) context.Context {
@@ -348,7 +388,7 @@ func filterAgentResult(p agentProfile, name string, args map[string]any, value a
 			if name == "write_memory" {
 				return nil, nil, fmt.Errorf("agent profile %q: write result is outside the profile", p.Name)
 			}
-			return nil, nil, fmt.Errorf("memory %q not found", strArg(args, "id", ""))
+			return nil, nil, fmt.Errorf("memory not found: %s", strArg(args, "id", ""))
 		}
 		scrubAgentRow(mem)
 		kept = append(kept, rowRef(mem))
@@ -751,12 +791,14 @@ func agentsRotate(cfg Config, args []string, stdout io.Writer) error {
 	if !ok {
 		return fmt.Errorf("no agent profile %q", args[0])
 	}
+	if s.Profiles[i].RevokedAt != "" {
+		return fmt.Errorf("agent profile %q is revoked and rotate does not restore it; add a new profile with `mora agents add <new-name> ...`", args[0])
+	}
 	token, hash, err := newAgentToken()
 	if err != nil {
 		return err
 	}
 	s.Profiles[i].TokenSHA256 = hash
-	s.Profiles[i].RevokedAt = ""
 	if err := saveAgentsStore(cfg, s); err != nil {
 		return err
 	}
@@ -851,7 +893,7 @@ func agentNow() string { return time.Now().UTC().Format(time.RFC3339) }
 // agentQueryOf records what the agent asked for, bounded. It is the agent's
 // own request, not memory content.
 func agentQueryOf(args map[string]any) string {
-	for _, k := range []string{"query", "id", "title"} {
+	for _, k := range []string{"query", "id"} {
 		if s, _ := args[k].(string); s != "" {
 			return truncateRunes(s, agentQueryReceipt)
 		}

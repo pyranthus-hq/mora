@@ -47,6 +47,14 @@ type Filter struct {
 	// Like every other predicate they run in the SQL WHERE clause of each arm.
 	Scopes          []string
 	NoProjectScopes bool
+	// Authorize marks Scopes and AuthoredOnly as an authorization boundary (an
+	// agent profile's grant) rather than a recall preference: every arm and
+	// every Go-side pass enforces them before ranking and before any limit.
+	// AuthoredOnly drops every connector row (any non-empty provider). It is a
+	// subset of what the profile's post-filter drops, so the post-filter stays
+	// the authority. Both are trusted values, never parsed from arguments.
+	Authorize    bool
+	AuthoredOnly bool
 	// Now is the reference instant SinceHours is computed against. It is
 	// captured ONCE per MCP call (mcp.go handlers) and threaded down, so a
 	// single call sees one consistent clock across every retrieval arm —
@@ -76,12 +84,9 @@ func (f Filter) ScopeAllowed(scope string) bool {
 	return len(f.Scopes) == 0 || slices.Contains(f.Scopes, scope)
 }
 func (f Filter) Active() bool {
-	return f.Source != "" || f.SinceHours > 0 || f.EventSinceHours > 0 || len(f.ExcludeDispositions) > 0
+	return f.Source != "" || f.SinceHours > 0 || f.EventSinceHours > 0 || len(f.ExcludeDispositions) > 0 || f.Authorize
 }
 func (f Filter) Receipt() map[string]any {
-	if !f.Active() {
-		return nil
-	}
 	out := map[string]any{}
 	if f.Source != "" {
 		out["source"] = f.Source
@@ -94,6 +99,9 @@ func (f Filter) Receipt() map[string]any {
 	}
 	if len(f.ExcludeDispositions) > 0 {
 		out["exclude_dispositions"] = f.ExcludeDispositions
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
@@ -137,6 +145,9 @@ func (f Filter) SQLPredicate() (clause string, args []any) {
 	}
 	if f.NoProjectScopes {
 		parts = append(parts, "substr(m.scope, 1, 8) <> 'project:'")
+	}
+	if f.AuthoredOnly {
+		parts = append(parts, "COALESCE(m.provider, '') = ''")
 	}
 	if len(parts) == 0 {
 		return "", nil

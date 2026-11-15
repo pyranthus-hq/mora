@@ -75,3 +75,35 @@ func TestSyncStatusWhitespaceSourceUsesNamedLegacyIdentity(t *testing.T) {
 		}
 	}
 }
+
+// A status file whose name differs from the configured source only by case is
+// one file on a case-insensitive filesystem; it must yield one row (#516).
+func TestSyncStatusCaseVariantFileIsNotDuplicated(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sync")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "filesystem-Notes.json"), []byte(`{"source":"notes","item_count":5}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "filesystem-notes.json")); err != nil {
+		t.Skip("case-sensitive filesystem")
+	}
+	entries, _ := os.ReadDir(dir)
+	rows := syncStatusReceiptSources([]Source{{Name: "notes", Type: "filesystem"}}, entries, dir, time.Now())
+	if len(rows) != 1 || !rows[0].Configured {
+		t.Fatalf("want one configured row, got %+v", rows)
+	}
+}
+
+func TestSyncStatusOrphanRowIsDiagnosed(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "filesystem-gone.json"), []byte(`{"source":"gone","item_count":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := os.ReadDir(dir)
+	rows := syncStatusReceiptSources(nil, entries, dir, time.Now())
+	if len(rows) != 1 || rows[0].Configured || rows[0].Diagnostic != "unconfigured_status" {
+		t.Fatalf("orphan not diagnosed: %+v", rows)
+	}
+}
