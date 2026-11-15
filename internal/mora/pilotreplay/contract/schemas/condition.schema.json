@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/pyranthus-hq/mora/schemas/pilotreplay/mora.pilotreplay.condition.json",
+  "title": "mora.pilotreplay.condition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "condition_id",
+    "case_id",
+    "kind",
+    "harness_unchanged",
+    "retrieval_unchanged",
+    "declared_confounds"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "condition_id": {
+      "type": "string"
+    },
+    "case_id": {
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "original_memory",
+        "no_memory",
+        "reviewed_memory_edit"
+      ]
+    },
+    "memory_edit_ref": {
+      "type": "string"
+    },
+    "edit_reviewed_by": {
+      "type": "string"
+    },
+    "harness_unchanged": {
+      "type": "boolean"
+    },
+    "retrieval_unchanged": {
+      "type": "boolean"
+    },
+    "declared_confounds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "notes": {
+      "type": "string"
+    }
+  }
+}
