@@ -476,3 +476,78 @@ func TestDoctorRetirementPlanScopeAndRebuildOrder(t *testing.T) {
 		})
 	}
 }
+
+// Part of #498: the Doctor path (not the same-kind-writer prune) fails closed on
+// a live slow owner, a recent death, and a malformed receipt, and after an
+// approved retirement a separate new ingest starts without erasing or
+// completing the retained uncovered receipt.
+func TestDoctorRetirementFailsClosedThenNewIngestKeepsEvidence(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	setDoctorClock(t, now)
+	oldAlive := operationProcessAlive
+	t.Cleanup(func() { operationProcessAlive = oldAlive })
+	operationProcessAlive = func(pid int) bool { return pid == 1111 }
+
+	mk := func(id string, pid int, hb time.Time) string {
+		rec := operationRecord{SchemaVersion: operationSchemaVersion, Kind: operationKindIngest, State: operationRunning, RunID: id, OwnerPID: pid, StartedAt: now.Add(-time.Hour).Format(time.RFC3339Nano), HeartbeatAt: hb.Format(time.RFC3339Nano), Phase: "awaiting_rebuild", Counts: operationCounts{Items: 5}}
+		p := operation.Path(cfg, operationKindIngest, id)
+		if err := saveOperationRecord(p, rec); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	expired := now.Add(-operationHeartbeatTTL - time.Second)
+	mk("op_live_slow", 1111, expired)
+	mk("op_recent_death", 2222, now.Add(-time.Second))
+	bad := operation.Path(cfg, operationKindIngest, "op_malformed")
+	if err := os.WriteFile(bad, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dead := mk("op_dead", 3333, expired)
+	published := filepath.Join(t.TempDir(), "published.md")
+	if err := os.WriteFile(published, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	journal := filepath.Join(cfg.StateDir, "ingest", "filesystem", "journal.log")
+	if err := os.MkdirAll(filepath.Dir(journal), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(journal, []byte("run op_dead now\n"+published+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	plan := planDoctorRepairs(nil, cfg, "", now)
+	if len(plan) == 0 || plan[0].ID != "retire_abandoned_ingest" || plan[0].Target != "op_dead=failed_uncovered" {
+		t.Fatalf("plan must name only the dead expired owner: %+v", plan)
+	}
+	if _, err := applyDoctorRepairs(context.Background(), cfg, plan[:1]); err != nil {
+		t.Fatal(err)
+	}
+	got, err := operation.LoadRecord(dead)
+	if err != nil || got.State != operationFailed || got.FailureCode != operation.FailureOwnerAbandoned || got.Counts.Items != 5 {
+		t.Fatalf("dead receipt = %+v, %v", got, err)
+	}
+	for _, id := range []string{"op_live_slow", "op_recent_death"} {
+		if r, err := operation.LoadRecord(operation.Path(cfg, operationKindIngest, id)); err != nil || r.State != operationRunning {
+			t.Fatalf("%s mutated: %+v, %v", id, r, err)
+		}
+	}
+	if b, _ := os.ReadFile(bad); string(b) != "{not json" {
+		t.Fatalf("malformed receipt changed: %q", b)
+	}
+
+	// A separate new ingest must not erase or complete the retained evidence.
+	if _, err := beginIngestOperation(cfg, "starting", now); err != nil {
+		t.Fatal(err)
+	}
+	got, err = operation.LoadRecord(dead)
+	if err != nil || got.State != operationFailed || got.FailureCode != operation.FailureOwnerAbandoned {
+		t.Fatalf("new ingest disturbed retained receipt: %+v, %v", got, err)
+	}
+	if _, err := os.Stat(journal); err != nil {
+		t.Fatalf("journal erased: %v", err)
+	}
+}
