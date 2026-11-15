@@ -75,6 +75,14 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 		policy = profile.Write
 	}
 	policyHandled := false
+	if profiled && name == "read_memory" {
+		// Authorize before the handler so a denied record and a missing id are
+		// indistinguishable, whatever other argument rides along.
+		if authErr := authorizeAgentRead(cfg, profile, strArg(args, "id", "")); authErr != nil {
+			inv.err = authErr
+			policyHandled = true
+		}
+	}
 	proposed := false
 	action, policyErr := mcppkg.MutationAction(policy, name)
 	switch action {

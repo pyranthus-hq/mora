@@ -57,29 +57,38 @@ func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin 
 	return errors.New("usage: mora mcp serve [--profile NAME] [--project-dir DIR] | mora mcp serve-http [--port N] [--allow-host HOST] | mora mcp proposals <list|show ID|approve ID|reject ID>")
 }
 
-// serveMCPProfile is `mora mcp serve --profile NAME`: stdio MCP bound to one
-// agent profile for the whole session (#539). The profile is resolved once at
-// start; a revoked or unknown profile refuses to serve rather than falling
-// back to the unprofiled server.
-func serveMCPProfile(ctx context.Context, name string, stdout io.Writer, stdin io.Reader) error {
+// activeAgentProfile reads the store and returns the unrevoked profile `name`.
+func activeAgentProfile(ctx context.Context, name string) (agentProfile, error) {
 	cfg, err := loadConfigFor(ctx)
 	if err != nil {
-		return err
+		return agentProfile{}, err
 	}
 	store, err := loadAgentsStore(cfg)
 	if err != nil {
+		return agentProfile{}, err
+	}
+	return store.active(name)
+}
+
+// serveMCPProfile is `mora mcp serve --profile NAME`: stdio MCP bound to one
+// agent profile for the whole session (#539). A revoked or unknown profile
+// refuses to start rather than falling back to the unprofiled server, and the
+// profile is read again for every request, so revocation is immediate.
+func serveMCPProfile(ctx context.Context, name string, stdout io.Writer, stdin io.Reader) error {
+	if _, err := activeAgentProfile(ctx, name); err != nil {
 		return err
 	}
-	profile, err := store.active(name)
-	if err != nil {
-		return err
-	}
-	ctx = withAgentProfile(ctx, profile)
 	// Same lifecycle as serveMCP: exit when the client dies, and let a rebuild
 	// the session triggered finish first.
 	defer watchParent(os.Stderr)()
-	err = mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, func(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
-		return handleAgentMCP(ctx, profile, req)
+	err := mcppkg.Serve(ctx, stdout, stdin, mcpMaxRequestBytes, func(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
+		// The store is read again for every request, as serve-http does, so a
+		// revoke or an update reaches a live session on its next call.
+		current, err := activeAgentProfile(ctx, name)
+		if err != nil {
+			return jsonRPCError(req.ID, -32001, err.Error())
+		}
+		return handleAgentMCP(withAgentProfile(ctx, current), current, req)
 	})
 	waitForAuthoredReconciles(5 * time.Minute)
 	return err
@@ -524,6 +533,9 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	if ferr != nil {
 		return nil, ferr
 	}
+	if p, ok := agentProfileFrom(ctx); ok {
+		filters = p.authorize(filters)
+	}
 	// #238: defaultSearchForMCP (not the plain defaultSearch every other call
 	// site uses) so the confidence envelope below can consume the ACTUAL
 	// routing decision + retrieval trace this call already computed, instead
@@ -663,6 +675,9 @@ func mcpListMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 	filter, err := parseSearchFilters(filterArgs, now)
 	if err != nil {
 		return nil, err
+	}
+	if p, ok := agentProfileFrom(ctx); ok {
+		filter = p.authorize(filter)
 	}
 	limit := intArg(args, "limit", 10)
 	if hours > 0 {

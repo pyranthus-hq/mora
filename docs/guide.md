@@ -828,7 +828,7 @@ mora agents revoke grok
 
 `add` and `rotate` print a new token once. Mora keeps only the token's SHA-256
 hash, in `<config_dir>/agents.json` with file mode `0600`. `update` keeps the
-current token. `revoke` stops the profile at once.
+current token. `revoke` stops the profile at once, including a local agent that is already connected, and `update` applies on that agent's next call.
 
 Run a local agent under a profile:
 
@@ -843,8 +843,7 @@ marked with the agent's name, and an approved memory gets the source
 `agent:<name>`.
 
 Each call adds one line to `<state_dir>/agents/<name>.jsonl`: the tool, what
-the agent asked for (its query, the ID it read, or the title it wrote, cut to
-200 characters), the result (`read`, `proposed`, `wrote`, or `refused`), and
+the agent asked for (its query or the ID it read, cut to 200 characters), the result (`read`, `proposed`, `wrote`, or `refused`), and
 the IDs and scopes of the records the agent received. The line never contains
 the text of a record the agent received. `mora agents log` prints these lines.
 
