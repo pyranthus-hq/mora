@@ -809,8 +809,12 @@ enforces the limits at its tool gate, not in the agent's prompt:
 - `--raw-sources`: show connector evidence (mail, messages, calendar entries,
   copied files). It is off by default, so the agent sees only memories that you
   or your agents wrote.
-- `--write`: `propose` (the default), `readonly`, or `open`. This replaces the
-  vault-wide policy for this agent only. A profile cannot use `tentative`.
+- `--write`: `propose` (the default), `readonly`, or `open`. The stricter mode
+  wins: the agent gets the stricter of this setting and the vault's
+  `mcp_write_policy`, in the order `readonly` < `propose` < `tentative` < `open`
+  (`readonly` is strictest). So `--write open` never overrides a vault set to
+  `readonly` or `propose`. The `initialize` reply and the tool gate both use this
+  effective mode. A profile cannot use `tentative`.
 - `--tools`: the tools the agent can call. The default is `search_memory`,
   `read_memory`, `list_memory`, and `write_memory`. Mora can filter the results
   of these four record by record. Any other tool, `delete_memory` included,
@@ -826,7 +830,9 @@ mora agents rotate grok
 mora agents revoke grok
 ```
 
-`add` and `rotate` print a new token once. Mora keeps only the token's SHA-256
+`add` and `rotate` print a new token once. `rotate` refuses a revoked profile
+with an error: a revoked profile stays revoked, so add a new profile with
+`mora agents add`. Mora keeps only the token's SHA-256
 hash, in `<config_dir>/agents.json` with file mode `0600`. `update` keeps the
 current token. `revoke` stops the profile at once, including a local agent that is already connected, and `update` applies on that agent's next call.
 

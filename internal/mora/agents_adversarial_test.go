@@ -492,6 +492,9 @@ func TestAgentInitializeTextMatchesDispatchedWritePolicy(t *testing.T) {
 		for _, write := range []string{mcpWritePolicyOpen, mcpWritePolicyPropose, mcpWritePolicyReadonly} {
 			subRun(t, vault+"/"+write, func(t *testing.T) {
 				cfg.MCPWritePolicy = vault
+				if err := writeConfig(cfg); err != nil { // dispatch and initialize read the stored config
+					t.Fatal(err)
+				}
 				p := museProfile()
 				p.Write = write
 				ctx := withAgentProfile(testCtx(t), p)
@@ -502,18 +505,25 @@ func TestAgentInitializeTextMatchesDispatchedWritePolicy(t *testing.T) {
 				after, _ := allMemoryFiles(cfg)
 				proposed := err == nil && proposalIDOf(got) != ""
 				wrote := len(after) > len(before)
-				switch write {
+				// Owner decision: the stricter of vault and profile wins
+				// (readonly < propose < open); the expectation is stated
+				// here independently of agentWritePolicy.
+				effective := write
+				if vault == mcpWritePolicyReadonly || (vault == mcpWritePolicyPropose && write == mcpWritePolicyOpen) {
+					effective = vault
+				}
+				switch effective {
 				case mcpWritePolicyOpen:
 					if !strings.Contains(instr, "you do not need to ask permission") || !wrote || proposed {
-						t.Fatalf("open profile: text says open=%v, wrote=%v proposed=%v err=%v", strings.Contains(instr, "you do not need to ask permission"), wrote, proposed, err)
+						t.Fatalf("effective open: text says open=%v, wrote=%v proposed=%v err=%v", strings.Contains(instr, "you do not need to ask permission"), wrote, proposed, err)
 					}
 				case mcpWritePolicyPropose:
 					if !strings.Contains(instr, "pending proposal queue") || wrote || !proposed {
-						t.Fatalf("propose profile: wrote=%v proposed=%v err=%v", wrote, proposed, err)
+						t.Fatalf("effective propose: wrote=%v proposed=%v err=%v", wrote, proposed, err)
 					}
 				case mcpWritePolicyReadonly:
 					if !strings.Contains(instr, "read-only") || wrote || proposed || err == nil {
-						t.Fatalf("readonly profile: wrote=%v proposed=%v err=%v", wrote, proposed, err)
+						t.Fatalf("effective readonly: wrote=%v proposed=%v err=%v", wrote, proposed, err)
 					}
 				}
 				for _, other := range []string{"tentative", "tool outside"} {
@@ -659,5 +669,30 @@ func TestAgentGrantAppliesInsideVectorAndGraphArms(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("%q: %s was crowded out of the arm's pool by denied rows: %s", query, want, body)
 		}
+	}
+}
+
+// Owner decision: rotate never un-revokes. A revoked profile stays revoked and
+// the user is told to add a new one.
+func TestAgentsRotateRefusesRevokedProfile(t *testing.T) {
+	cfg := seedRichFixture(t)
+	var out bytes.Buffer
+	for _, args := range [][]string{{"add", "muse", "--read-scopes", "project:widget"}, {"revoke", "muse"}} {
+		if err := cmdAgents(testCtx(t), args, &out, &out); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, _ := loadAgentsStore(cfg)
+	out.Reset()
+	err := cmdAgents(testCtx(t), []string{"rotate", "muse"}, &out, &out)
+	if err == nil || !strings.Contains(err.Error(), "revoked") || !strings.Contains(err.Error(), "agents add") {
+		t.Fatalf("rotate of a revoked profile error = %v", err)
+	}
+	if strings.Contains(out.String(), agentTokenPrefix) {
+		t.Fatalf("rotate printed a token for a revoked profile: %s", out.String())
+	}
+	after, _ := loadAgentsStore(cfg)
+	if after.Profiles[0].RevokedAt == "" || after.Profiles[0].TokenSHA256 != before.Profiles[0].TokenSHA256 {
+		t.Fatalf("rotate changed a revoked profile: %+v", after.Profiles[0])
 	}
 }

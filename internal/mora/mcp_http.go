@@ -236,11 +236,15 @@ func handleAgentMCP(ctx context.Context, p agentProfile, req jsonRPCRequest) jso
 	}
 	return mcppkg.Dispatch(ctx, req,
 		func() any {
-			_, err := loadConfigFor(ctx)
-			result := mcppkg.InitializeResult(BuildVersion, p.Write, err == nil)
+			cfg, err := loadConfigFor(ctx)
+			policy := mcpWritePolicyReadonly // no config: say the strictest
+			if err == nil {
+				policy = agentWritePolicy(configMCPWritePolicy(cfg), p.Write)
+			}
+			result := mcppkg.InitializeResult(BuildVersion, policy, err == nil)
 			result["protocolVersion"] = negotiateMCPVersion(req.Params)
 			if instr, ok := result["instructions"].(string); ok && err == nil {
-				result["instructions"] = agentInstructions(p, instr)
+				result["instructions"] = agentInstructions(p, policy, instr)
 			}
 			return withProjectInstruction(ctx, result, err == nil)
 		},
@@ -265,7 +269,7 @@ func negotiateMCPVersion(params json.RawMessage) string {
 // agentInstructions prefixes the standard server instructions with the
 // profile's boundary, so the agent knows what it cannot see before it
 // concludes the vault lacks something.
-func agentInstructions(p agentProfile, base string) string {
+func agentInstructions(p agentProfile, policy, base string) string {
 	scopes := strings.Join(p.ReadScopes, ", ")
 	raw := "Connector evidence (mail, messages, calendar, files) is NOT visible to this connection; only authored memories are."
 	if p.RawSources {
@@ -275,7 +279,7 @@ func agentInstructions(p agentProfile, base string) string {
 	// live agent scheduled a check every five minutes and called the gateway
 	// about 240 times in three hours looking for its own approval.
 	propose := ""
-	if p.Write == mcpWritePolicyPropose {
+	if policy == mcpWritePolicyPropose {
 		propose = " A proposed write is finished once it is queued: do not retry it, and do not read, search, list, or schedule checks to see whether it was approved; the owner reviews the queue."
 	}
 	return fmt.Sprintf("This connection is the %q agent profile. It can read scopes: %s. %s Tools outside this profile do not exist for it. An empty result means nothing matched inside this boundary, not that the owner's memory is empty.%s\n\n%s",

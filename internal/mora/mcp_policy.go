@@ -35,6 +35,24 @@ func configMCPWritePolicy(c Config) string {
 	return mcppkg.NormalizeWritePolicy(c.MCPWritePolicy)
 }
 
+// agentWritePolicy is the write mode a profile-bound call really gets: the
+// stricter of the vault's mcp_write_policy and the profile's own write
+// setting (readonly < propose < tentative < open). A profile can narrow the
+// vault but never widen it. The handshake and dispatch both call this, so the
+// text and the authority agree (AGENTS.md rule 3).
+func agentWritePolicy(vault, profile string) string {
+	rank := map[string]int{mcpWritePolicyReadonly: 0, mcpWritePolicyPropose: 1, mcppkg.WritePolicyTentative: 2, mcpWritePolicyOpen: 3}
+	v, vok := rank[mcppkg.NormalizeWritePolicy(vault)]
+	p, pok := rank[profile]
+	if !vok || !pok {
+		return mcpWritePolicyReadonly // unknown value: fail closed
+	}
+	if v < p {
+		return mcppkg.NormalizeWritePolicy(vault)
+	}
+	return profile
+}
+
 type mcpWriteProposal = mcppkg.Proposal
 
 func mcpProposalDir(cfg Config) string { return mcppkg.ProposalDir(cfg) }

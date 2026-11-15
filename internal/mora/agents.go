@@ -791,12 +791,14 @@ func agentsRotate(cfg Config, args []string, stdout io.Writer) error {
 	if !ok {
 		return fmt.Errorf("no agent profile %q", args[0])
 	}
+	if s.Profiles[i].RevokedAt != "" {
+		return fmt.Errorf("agent profile %q is revoked and rotate does not restore it; add a new profile with `mora agents add <new-name> ...`", args[0])
+	}
 	token, hash, err := newAgentToken()
 	if err != nil {
 		return err
 	}
 	s.Profiles[i].TokenSHA256 = hash
-	s.Profiles[i].RevokedAt = ""
 	if err := saveAgentsStore(cfg, s); err != nil {
 		return err
 	}

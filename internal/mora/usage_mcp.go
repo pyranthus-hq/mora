@@ -57,8 +57,8 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 	traced := context.WithValue(ctx, mcpUsageTraceKey{}, trace)
 	// Agent profiles (#539): the transport bound this call to a profile, so the
 	// profile, not the caller, decides the tool, the scope, raw-source
-	// visibility and how a write lands. The vault-wide write policy only
-	// applies to unprofiled clients.
+	// visibility and how a write lands. The write mode is the stricter of the
+	// vault policy and the profile's setting.
 	profile, profiled := agentProfileFrom(ctx)
 	policy := configMCPWritePolicy(cfg)
 	if profiled {
@@ -72,7 +72,7 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 			return inv
 		}
 		args = shaped
-		policy = profile.Write
+		policy = agentWritePolicy(policy, profile.Write)
 	}
 	policyHandled := false
 	if profiled && name == "read_memory" {
@@ -98,8 +98,8 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 		policyHandled = true
 		proposed = true
 	case mcppkg.ActionTentative:
-		// Only unprofiled clients reach this: a profile's write is open,
-		// propose or readonly (agentProfile.validate).
+		// Reached by unprofiled clients and by profiles whose open write is
+		// narrowed to the vault's tentative policy.
 		inv.value, inv.err = mcpWriteTentative(traced, cfg, args)
 		policyHandled = true
 	}
