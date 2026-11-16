@@ -1,0 +1,29 @@
+{
+  "version": "1.4.0",
+  "integration_state_schema": 1,
+  "installed_integrations": [
+    "codex",
+    "claude"
+  ],
+  "integration_settings": {
+    "codex": {
+      "script": "sh",
+      "raw_options": "--events false",
+      "parsed_options": {
+        "events": "false"
+      },
+      "invoke_separator": "-"
+    },
+    "claude": {
+      "script": "sh",
+      "raw_options": "--events false --no-model-invocation",
+      "parsed_options": {
+        "events": "false",
+        "no_model_invocation": true
+      },
+      "invoke_separator": "-"
+    }
+  },
+  "integration": "codex",
+  "default_integration": "codex"
+}
