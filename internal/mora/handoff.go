@@ -43,6 +43,7 @@ type handoffFile struct {
 type sessionEndHookInput struct {
 	CWD            string `json:"cwd"`
 	TranscriptPath string `json:"transcript_path"`
+	SessionID      string `json:"session_id"`
 }
 
 func handoffPath(cfg Config, scope string) string {
@@ -227,7 +228,24 @@ func hookSessionEnd(ctx context.Context, args []string, stdin io.Reader) error {
 		return nil
 	}
 	scope, root, found, lerr := lookupProject(cfg, in.CWD)
-	if lerr != nil || !found || !handoffTranscriptOK(cfg, in.TranscriptPath) {
+	if lerr != nil || !found {
+		return nil
+	}
+	if sid := sessionEndID(in); handoffSessionValidID(sid) {
+		path := handoffSessionPath(cfg, "claude", sid, root)
+		receipt, rerr := loadHandoffSession(path)
+		if rerr != nil {
+			return nil // a stable ID with no trustworthy receipt never borrows legacy fallback
+		}
+		transcript, validTranscript := handoffSessionResolvedTranscript(cfg, in.TranscriptPath)
+		if !validTranscript || receipt.Scope != scope || receipt.Root != root || receipt.TranscriptPath != transcript {
+			markHandoffSessionUnattributed(cfg, path)
+			return nil // H3 preserves the old fallback file; it never refreshes it here.
+		}
+		_ = handoffSessionCapture(ctx, cfg, receipt)
+		return nil
+	}
+	if !handoffTranscriptOK(cfg, in.TranscriptPath) {
 		return nil
 	}
 	raw, ok := transcriptRequests(in.TranscriptPath, root, handoffMaxRequests)

@@ -56,6 +56,7 @@ type sessionStartHookInput struct {
 	TranscriptPath      string   `json:"transcript_path"`
 	TranscriptPathCamel string   `json:"transcriptPath"`
 	ConversationID      string   `json:"conversationId"`
+	SessionID           string   `json:"session_id"`
 }
 
 type recallHookInput struct {
@@ -283,6 +284,13 @@ func hookSessionStart(ctx context.Context, args []string, stdout io.Writer, stdi
 			if text, emitted, perr = buildProjectBrief(cfg, scope, root, hookNow()); perr != nil {
 				text = fmt.Sprintf(`Mora: the brief for %s could not be built. Run "mora doctor".`, clipProjectScope(scope))
 				emitted = nil
+			}
+			if !isAntigravity {
+				if transcript, ok := handoffSessionResolvedTranscript(cfg, in.TranscriptPath); ok {
+					if receipt, serr := startHandoffSession(cfg, "claude", sessionID(in), root, scope, transcript); serr == nil {
+						text = strings.TrimSpace(text + "\n" + handoffSessionContext(receipt.Token))
+					}
+				}
 			}
 		}
 		if text != "" {
@@ -775,9 +783,11 @@ type hookStatusPayload struct {
 	// Global and Project list the three hooks of each level. Project is
 	// omitted when this folder cannot hold project hooks. BoundScope is the
 	// project the current folder is bound to, or empty.
-	Global     hookLevelStatus  `json:"global"`
-	Project    *hookLevelStatus `json:"project,omitempty"`
-	BoundScope string           `json:"bound_scope"`
+	Global               hookLevelStatus        `json:"global"`
+	Project              *hookLevelStatus       `json:"project,omitempty"`
+	BoundScope           string                 `json:"bound_scope"`
+	HandoffSessions      []handoffSessionStatus `json:"handoff_sessions,omitempty"`
+	HandoffSessionsState string                 `json:"handoff_sessions_state,omitempty"`
 }
 
 type hookLevelStatus struct {
@@ -865,6 +875,15 @@ func hookStatus(ctx context.Context, stdout io.Writer, jsonOutput ...bool) error
 			bound, _, _, _ = lookupProject(cfg, wd)
 		}
 	}
+	var sessions []handoffSessionStatus
+	sessionsState := ""
+	if cfg, cerr := loadConfigFor(ctx); cerr == nil {
+		if rows, complete := handoffSessionStatuses(cfg); complete {
+			sessions = rows
+		} else {
+			sessionsState = "partial"
+		}
+	}
 	if jsonOut {
 		events := make([]string, 0, 3)
 		for i, v := range states.list() {
@@ -876,7 +895,7 @@ func hookStatus(ctx context.Context, stdout io.Writer, jsonOutput ...bool) error
 		harnesses = append(harnesses, hookStatusHarness{Name: "claude", Installed: len(events) > 0, Events: events})
 		return emitReceipt(stdout, "mora.hook.status", 1, hookStatusPayload{
 			Installed: len(events) > 0, Path: path, Harnesses: harnesses, PreToolUse: preTool,
-			Global: global, Project: projectStates, BoundScope: bound,
+			Global: global, Project: projectStates, BoundScope: bound, HandoffSessions: sessions, HandoffSessionsState: sessionsState,
 		})
 	}
 	for i, v := range states.list() {
@@ -886,6 +905,13 @@ func hookStatus(ctx context.Context, stdout io.Writer, jsonOutput ...bool) error
 		fmt.Fprintln(stdout, "Folder: not bound to a project")
 	} else {
 		fmt.Fprintf(stdout, "Folder: bound to %s\n", clipProjectScope(bound))
+	}
+	if sessionsState != "" {
+		fmt.Fprintln(stdout, "Handoff sessions: partial")
+	} else {
+		for _, row := range sessions {
+			fmt.Fprintf(stdout, "Handoff session: %s %s (%s)\n", row.Root, row.Outcome, row.UpdatedAt)
+		}
 	}
 	if preToolErr != nil {
 		fmt.Fprintf(stdout, "PreToolUse: unknown (%v)\n", preToolErr)
