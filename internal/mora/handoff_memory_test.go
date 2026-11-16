@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	"github.com/pyranthus-hq/mora/internal/memory"
@@ -553,11 +554,11 @@ func TestProjectBriefShowsLastHandoffMemory(t *testing.T) {
 		"Direction: finish the importer\nWhy: sync needs it\nTurns: many\nWhere it stands: parser passes\nNext step: add the retry test", 8)
 	pbSeed(t, cfg, "mem_hg", "global", "handoff", "Global handoff", "Direction: not for this project", 9)
 	text, ids := pbBuild(t, cfg)
-	if !strings.Contains(text, "Last handoff (unconfirmed): [2026-11-08] Importer handoff. Direction: finish the importer; Where it stands: parser passes; Next step: add the retry test (mem_h2)") {
+	if !strings.Contains(text, "Last handoff (unconfirmed): [2026-11-08] Importer handoff (mem_h2)\nNext step: add the retry test\nWhere it stands: parser passes\nDirection: finish the importer") {
 		t.Fatalf("brief:\n%s", text)
 	}
-	if strings.Contains(text, "stale step") || strings.Contains(text, "not for this project") || strings.Contains(text, "sync needs it") {
-		t.Fatalf("brief shows an older, global or non-condensed handoff:\n%s", text)
+	if strings.Contains(text, "stale step") || strings.Contains(text, "not for this project") {
+		t.Fatalf("brief shows an older or global handoff:\n%s", text)
 	}
 	if strings.Join(ids, ",") != "mem_rule,mem_h2" || len(text) > projectBriefMaxChars {
 		t.Fatalf("ids = %v, len = %d", ids, len(text))
@@ -593,7 +594,7 @@ func TestProjectBriefHandoffFitsAlongsideTranscriptFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	text, _ := pbBuild(t, cfg)
-	if !strings.Contains(text, "Last handoff (unconfirmed): [2026-11-08] Handoff. Next step: ship it (mem_h)") || !strings.Contains(text, `- "fix the parser"`) {
+	if !strings.Contains(text, "Last handoff (unconfirmed): [2026-11-08] Handoff (mem_h)\nNext step: ship it") || !strings.Contains(text, `- "fix the parser"`) {
 		t.Fatalf("brief:\n%s", text)
 	}
 	if strings.Index(text, "Last handoff") > strings.Index(text, "Recent requests") {
@@ -610,14 +611,66 @@ func TestProjectBriefHandoffStaysInsideTheCap(t *testing.T) {
 	for i := 1; i <= 60; i++ {
 		pbOwner(t, cfg, fmt.Sprintf("mem_r%02d", i), pbScope, "decision", fmt.Sprintf("Rule %02d", i), long, i%28+1)
 	}
-	want, wantIDs := pbBuild(t, cfg)
 	pbSeed(t, cfg, "mem_h", pbScope, "handoff", "Handoff", strings.Repeat("Next step: go. ", 80), 8)
 	got, gotIDs := pbBuild(t, cfg)
-	if len(got) > projectBriefMaxChars || strings.Join(gotIDs, ",") != strings.Join(wantIDs, ",") {
-		t.Fatalf("handoff displaced rules or broke the cap (%d chars)", len(got))
+	if len(got) > projectBriefMaxChars || !strings.Contains(got, "Last handoff") || !strings.Contains(strings.Join(gotIDs, ","), "mem_h") {
+		t.Fatalf("handoff was not reserved inside the cap (%d chars):\n%s", len(got), got)
 	}
-	if strings.Contains(got, "Last handoff") && got != want && !strings.HasPrefix(got, strings.Split(want, "\nLast handoff")[0]) {
-		t.Fatalf("handoff changed the rules block:\n%s", got)
+	if !strings.Contains(got, "Only ") || !strings.Contains(got, "Texts are shortened") {
+		t.Fatalf("crowded owner-rule notices were lost:\n%s", got)
+	}
+}
+
+func TestProjectBriefHandoffReservesActionableUnicodeBlock(t *testing.T) {
+	cfg := projectBriefSetup(t)
+	for i := 1; i <= 60; i++ {
+		pbOwner(t, cfg, fmt.Sprintf("mem_r%02d", i), pbScope, "decision", fmt.Sprintf("Rule %02d", i), strings.Repeat("rule words ", 40), i%28+1)
+	}
+	id := "mem_" + strings.Repeat("x", 76)
+	pbConfirm(t, pbSeed(t, cfg, id, pbScope, "handoff", strings.Repeat("界", 120), strings.Join([]string{
+		"Next: " + strings.Repeat("次の作業 ", 80),
+		"Not done or not verified: " + strings.Repeat("未確認 ", 80),
+		"Direction: " + strings.Repeat("方向 ", 80),
+	}, "\n"), 6))
+	pbSeed(t, cfg, "mem_new", pbScope, "handoff", "Newer", "Next step: hidden", 9, func(m *Memory) { m.Tags = []string{memory.TentativeTag} })
+
+	text, ids := pbBuild(t, cfg)
+	if len(text) > projectBriefMaxChars || !utf8.ValidString(text) {
+		t.Fatalf("brief must be valid UTF-8 inside cap: %d bytes", len(text))
+	}
+	start := strings.Index(text, projectBriefDataFrame)
+	if start < 0 || len(text[start:]) > projectBriefHandoffCap {
+		t.Fatalf("handoff block did not receive its 700-byte reservation (%d bytes):\n%s", len(text[start:]), text)
+	}
+	for _, want := range []string{id, "Next step: ", "Not done or not verified: ", "Direction: ", "A newer unconfirmed handoff exists"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "hidden") || strings.Join(ids, ",") == "" || !strings.Contains(strings.Join(ids, ","), id) {
+		t.Fatalf("selection or emitted ids changed: %v\n%s", ids, text)
+	}
+}
+
+func TestProjectBriefHandoffFreeformStaysExcerpt(t *testing.T) {
+	cfg := projectBriefSetup(t)
+	pbSeed(t, cfg, "mem_h", pbScope, "handoff", "Free", "ordinary handoff prose without fields", 8)
+	text, _ := pbBuild(t, cfg)
+	if !strings.Contains(text, "Excerpt: ordinary handoff prose without fields") || strings.Contains(text, "Next step:") {
+		t.Fatalf("free-form handoff invented a field:\n%s", text)
+	}
+}
+
+func TestProjectHandoffMissingMiddleKeepsOptionalOrderHonest(t *testing.T) {
+	block := renderProjectHandoffBlock(&Memory{
+		ID: "mem_h", Title: "Handoff", CreatedAt: "2026-11-08T10:00:00Z",
+		Text: "Next step: run the focused test\nDirection: preserve the selection rule\nDecisions: " + strings.Repeat("long ", 200) + "\nPlan: short-plan.md",
+	}, "", "", false)
+	if len(block) > projectBriefHandoffCap || !strings.Contains(block, "Next step: run the focused test") || !strings.Contains(block, "Direction: preserve the selection rule") {
+		t.Fatalf("mandatory fields missing or over budget:\n%s", block)
+	}
+	if strings.Contains(block, "Not done or not verified:") || strings.Contains(block, "Decisions:") || !strings.Contains(block, "Plan: short-plan.md") {
+		t.Fatalf("missing field promoted or later optional skipped:\n%s", block)
 	}
 }
 
