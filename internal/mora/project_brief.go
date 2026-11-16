@@ -383,13 +383,28 @@ func renderProjectHandoffBlock(m *Memory, pointer, notice string, framed bool) s
 	if pointer != "" {
 		fixed += len(pointer) + 1
 	}
-	titleBudget := max(0, projectBriefHandoffCap-fixed-24*len(mandatory))
+	titleBudget := min(120, max(0, projectBriefHandoffCap-fixed-24*len(mandatory)))
 	title := clipProjectBriefBytes(flatProjectBrief(m.Title), titleBudget)
 	fixed += len(title)
-	valueBudget := max(0, (projectBriefHandoffCap-fixed)/len(mandatory))
+	values := make([]string, len(mandatory))
+	budgets := make([]int, len(mandatory))
+	remaining := max(0, projectBriefHandoffCap-fixed)
+	for i, field := range mandatory {
+		values[i] = flatProjectBrief(field.value)
+		share := remaining / (len(mandatory) - i)
+		budgets[i] = min(len(values[i]), share)
+		remaining -= budgets[i]
+	}
+	// Fair shares protect each field first; give unused short-field shares to
+	// earlier actionable fields before considering optional details.
+	for i, value := range values {
+		extra := min(len(value)-budgets[i], remaining)
+		budgets[i] += extra
+		remaining -= extra
+	}
 	lines := []string{head + title + foot}
-	for _, field := range mandatory {
-		lines = append(lines, field.label+": "+clipProjectBriefBytes(flatProjectBrief(field.value), valueBudget))
+	for i, field := range mandatory {
+		lines = append(lines, field.label+": "+clipProjectBriefBytes(values[i], budgets[i]))
 	}
 	used := strings.Join(lines, "\n")
 	if pointer != "" {
