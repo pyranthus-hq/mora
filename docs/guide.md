@@ -1059,7 +1059,22 @@ change for that server, and only then:
    `brief` first and names the project scope. The sentence never holds the
    folder path or any note text. A scope that is not a plain name
    (`project:` and up to 64 letters, digits, `.`, `_` or `-`) is left out and the
-   sentence says "one bound project folder" instead.
+   sentence says "one bound project folder" instead. After that sentence,
+   initialize includes the current project brief between fixed `MORA:BEGIN`
+   and `MORA:END` markers. The brief itself is capped at 2,000 bytes; mandatory
+   server instructions are separate. Its owner rules and unconfirmed handoff
+   labels are the same as an explicit `brief` call for the same snapshot.
+
+For an agent profile, startup includes brief content only when the profile may
+call `brief` and has unrestricted read access. Restricted profiles receive no
+brief content through initialize. A binding change or render failure yields a
+short unavailable notice, with no fallback to another project's notes.
+
+Initialize is a snapshot: a later `brief` call can return newer content. When
+initialize includes memory IDs, `mora given` records them under `mcp:initialize`.
+This independent local audit stores IDs, not note text, and still runs when
+usage tracking is off. It records assembly of the response, not proof that the
+client received or used it.
 
 When the folder is not bound, is not an absolute path, is not an existing
 directory (a missing path or a file counts), or the bindings file cannot be read, the server starts and behaves exactly like

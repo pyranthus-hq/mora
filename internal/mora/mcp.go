@@ -194,7 +194,7 @@ func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
 	return mcppkg.Dispatch(ctx, req,
 		func() any {
 			cfg, err := loadConfigFor(ctx)
-			return withProjectInstruction(ctx, mcppkg.InitializeResult(BuildVersion, configMCPWritePolicy(cfg), err == nil), err == nil)
+			return withProjectInstruction(ctx, mcppkg.InitializeResult(BuildVersion, configMCPWritePolicy(cfg), err == nil), cfg, err == nil, briefClock(), nil)
 		},
 		func() any { return map[string]any{"tools": mcppkg.RenderTools(mcppkg.ToolCatalog())} },
 		func(ctx context.Context, name string, args map[string]any) any {

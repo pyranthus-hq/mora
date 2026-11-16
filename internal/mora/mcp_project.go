@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 )
@@ -82,16 +83,53 @@ func withMCPServeProject(ctx context.Context, dir string, stderr io.Writer) cont
 	return context.WithValue(ctx, mcpProjectKey{}, mcpProject{scope: scope, root: root})
 }
 
-// withProjectInstruction appends the project sentence to the handshake
-// instructions. Only the scope can appear, and only when it is a plain name.
-func withProjectInstruction(ctx context.Context, result map[string]any, configOK bool) map[string]any {
-	p, ok := mcpProjectFrom(ctx)
+const (
+	projectBriefFrameBegin = "\n\n<MORA:BEGIN project brief>\n"
+	projectBriefFrameEnd   = "\n<MORA:END project brief>"
+)
+
+// withProjectInstruction appends the project sentence and, when the frozen
+// binding remains valid, its rendered brief to the handshake instructions.
+func withProjectInstruction(ctx context.Context, result map[string]any, cfg Config, configOK bool, now time.Time, profile *agentProfile) map[string]any {
+	project, ok := mcpProjectFrom(ctx)
 	instr, isStr := result["instructions"].(string)
-	if !ok || !configOK || !isStr {
+	if !ok || !isStr {
 		return result
 	}
-	result["instructions"] = instr + " " + mcppkg.ProjectInstruction(p.scope)
+	instr += " " + mcppkg.ProjectInstruction(project.scope)
+	if profile != nil && (!profile.allowsTool("brief") || !profile.unrestricted()) {
+		result["instructions"] = instr
+		return result
+	}
+	if !configOK {
+		result["instructions"] = instr + projectBriefUnavailable(project.scope)
+		return result
+	}
+	scope, root, found, err := lookupProject(cfg, project.root)
+	if err != nil || !found || scope != project.scope || root != project.root {
+		result["instructions"] = instr + projectBriefUnavailable(project.scope)
+		return result
+	}
+	text, ids, err := buildProjectBrief(cfg, project.scope, project.root, now)
+	if err != nil {
+		result["instructions"] = instr + projectBriefUnavailable(project.scope)
+		return result
+	}
+	result["instructions"] = instr + projectBriefFrameBegin + text + projectBriefFrameEnd
+	if len(ids) != 0 {
+		_ = appendGiven(cfg, givenLine{
+			Surface: "mcp:initialize", Kind: "project-brief", Caller: agentCallerFrom(ctx),
+			Dir: project.root, Scope: givenScope(project.scope),
+		}, ids, len(ids))
+	}
 	return result
+}
+
+func projectBriefUnavailable(scope string) string {
+	if validProjectScope(scope) != nil {
+		scope = "this project"
+	}
+	return "\n\nMora project brief unavailable for " + scope + "."
 }
 
 // withProjectScope gives a write_memory call whose arguments have no scope key
