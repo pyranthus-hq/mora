@@ -482,28 +482,22 @@ func TestMCPProjectInitializeHandoffSnapshotMatchesBrief(t *testing.T) {
 func TestMCPProjectInitializeFailureAndEmptyReceiptTable(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
-		breakIt  func(t *testing.T, cfg Config)
+		breakIt  func(t *testing.T, cfg *Config)
 		configOK bool
 	}{
-		{"config", func(*testing.T, Config) {}, false},
-		{"bindings", func(t *testing.T, cfg Config) {
-			if err := os.WriteFile(projectBindingsPath(cfg), []byte("{"), 0o600); err != nil {
+		{"config", func(*testing.T, *Config) {}, false},
+		{"bindings", func(t *testing.T, cfg *Config) {
+			if err := os.WriteFile(projectBindingsPath(*cfg), []byte("{"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}, true},
-		{"renderer", func(t *testing.T, cfg Config) {
-			if err := os.RemoveAll(cfg.VaultDir); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(cfg.VaultDir, []byte("blocked"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}, true},
+		// A NUL path is rejected by Go's filesystem calls on every supported OS.
+		{"renderer", func(_ *testing.T, cfg *Config) { cfg.VaultDir = "\x00" }, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := mcpProjectSetup(t)
 			_, root := mcpProjectBind(t, "project:wink")
-			tc.breakIt(t, cfg)
+			tc.breakIt(t, &cfg)
 			ctx := context.WithValue(testCtx(t), mcpProjectKey{}, mcpProject{scope: "project:wink", root: root})
 			got := withProjectInstruction(ctx, map[string]any{"instructions": "base"}, cfg, tc.configOK, freezeMCPProjectClock(t), nil)["instructions"].(string)
 			if !strings.HasSuffix(got, projectBriefUnavailable("project:wink")) || strings.Contains(got, projectBriefFrameBegin) || len(givenLinesOf(t, cfg)) != 0 {
