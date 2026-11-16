@@ -1158,6 +1158,24 @@ Recent requests in this folder, outcomes unknown (2026-11-09, claude-code):
 - Delete it: remove that file (`rm "<state dir>/handoff/project_NAME.json"`).
   `mora project unbind` and `mora hook uninstall` leave it in place.
 
+### Claude session association
+
+For a bound Claude Code session that supplies its documented `session_id` and a
+valid transcript path, Mora stores a local state-dir receipt keyed by that ID
+and the canonical bound root. SessionStart adds one correlation-only instruction
+to its existing `additionalContext`: an agent handoff written through MCP
+`write_memory` may use `type: handoff` and the supplied `source` value. The
+token does not grant write authority. SessionEnd rechecks the binding, transcript
+path, current write policy, and persisted handoff/proposal before it creates a
+governed machine fallback. `readonly` refuses; `propose` remains pending; a
+saved-but-unindexed result is reported as index lag rather than searchable.
+
+If association cannot be completed within the hook deadline, Mora records an
+opaque `association_unknown` or `timeout` outcome and does not write another
+handoff. `mora hook status --json` reports only the latest outcome per bound
+root—never request bodies, transcript paths, session IDs, or correlation tokens.
+Antigravity remains on the legacy hook path and has no session receipt.
+
 ### Claude Code and Antigravity hooks
 
 ```bash
