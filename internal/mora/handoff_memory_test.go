@@ -675,7 +675,7 @@ func TestProjectHandoffMissingMiddleKeepsOptionalOrderHonest(t *testing.T) {
 }
 
 func TestProjectHandoffRedistributesUnusedMandatoryShare(t *testing.T) {
-	next := strings.Repeat("next action ", 27)
+	next := strings.TrimSpace(strings.Repeat("next action ", 27))
 	block := renderProjectHandoffBlock(&Memory{
 		ID: "mem_h", Title: "Handoff", CreatedAt: "2026-11-08T10:00:00Z",
 		Text: "Next step: " + next + "\nNot done or not verified: review\nDirection: keep scope",
