@@ -68,6 +68,7 @@ type LiveFetcher struct {
 	db           *sql.DB
 	denyContacts map[string]bool // normalized handles (sole-counterparty 1:1 skip, D-08)
 	denyConvos   map[string]bool // lowercased conversation names (thread skip, D-08)
+	chatGUIDs    map[string]bool
 	hasItemType  bool
 	hasRetracted bool
 }
@@ -86,7 +87,12 @@ func NewLiveFetcher(path string, deny DenyList) (*LiveFetcher, error) {
 		db.Close()
 		return nil, err
 	}
+	chatGUIDs := make(map[string]bool, len(deny.OnlyChatGUIDs))
+	for _, guid := range deny.OnlyChatGUIDs {
+		chatGUIDs[guid] = true
+	}
 	return &LiveFetcher{
+		chatGUIDs:    chatGUIDs,
 		db:           db,
 		denyContacts: normalizedContactSet(deny.Contacts),
 		denyConvos:   lowercasedSet(deny.Conversations),
@@ -233,6 +239,9 @@ func (f *LiveFetcher) FetchPageContext(ctx context.Context, kind ItemKind, w Fet
 	var lastROWID int64
 	for _, c := range chats {
 		lastROWID = c.rowid
+		if len(f.chatGUIDs) != 0 && !f.chatGUIDs[c.guid] {
+			continue
+		}
 		it, ok, err := f.assembleConversationContext(ctx, c.guid, c.display, c.identifier, c.rowid, sinceNanos)
 		if testHookChatReadErr != nil {
 			if herr := testHookChatReadErr(c.rowid); herr != nil {
