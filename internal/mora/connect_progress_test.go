@@ -496,6 +496,9 @@ func TestConnectIMessageChatSelection(t *testing.T) {
 	t.Cleanup(func() { newIMessageFetcher = orig })
 	newIMessageFetcher = func(_ string, filter imessage.DenyList) (iMessageFetcher, error) {
 		selected = strings.Join(filter.OnlyChatGUIDs, ",")
+		if selected == "missing" {
+			return nil, imessage.ErrSelectedChatMissing
+		}
 		return connectTestFetcher{imessage.NewSyntheticFetcher(0, 1), func(_ context.Context, _ memory.ItemKind, _ memory.FetchWindow, token string) (memory.Page, error) {
 			cursor = token
 			return memory.Page{}, nil
@@ -507,6 +510,12 @@ func TestConnectIMessageChatSelection(t *testing.T) {
 		t.Fatalf("selection = %q, checkpoint = %q", selected, cursor)
 	}
 	run(t, "read", legacy.StableID)
+	if _, err := connectIMessage(testCtx(t), []string{"--chat-guid", "missing"}, io.Discard, nil, false); !errors.Is(err, imessage.ErrSelectedChatMissing) {
+		t.Fatalf("invalid selection: %v", err)
+	}
+	if _, err := ingestIMessageDetailed(testCtx(t), cfg, Source{ChatGUIDs: []string{"missing"}}, io.Discard); !errors.Is(err, imessage.ErrSelectedChatMissing) {
+		t.Fatalf("invalid saved selection: %v", err)
+	}
 	run(t, "connect", "imessage")
 	if selected != "first,second" {
 		t.Fatalf("plain connect changed selection to %q", selected)

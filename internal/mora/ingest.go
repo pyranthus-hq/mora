@@ -2414,6 +2414,15 @@ func connectIMessage(ctx context.Context, args []string, stdout io.Writer, sink 
 	if err != nil {
 		return receipt, err
 	}
+	if len(chatGUIDs) > 0 {
+		fetcher, err := newIMessageFetcher(chatDBPath(cfg), imessage.DenyList{OnlyChatGUIDs: chatGUIDs})
+		if err != nil {
+			return receipt, fmt.Errorf("check iMessage chat selection: %w", err)
+		}
+		if err := fetcher.Close(); err != nil {
+			return receipt, err
+		}
+	}
 	if err := mutateSources(cfg, func(sources []Source) ([]Source, error) {
 		found := false
 		for i := range sources {
