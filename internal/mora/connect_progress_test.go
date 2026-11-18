@@ -486,6 +486,11 @@ func TestConnectIMessageChatSelection(t *testing.T) {
 	if err := memory.SaveStatus(statusPath, &memory.SyncStatus{Checkpoint: "42"}); err != nil {
 		t.Fatal(err)
 	}
+	legacy := imessage.MapConversationFn(nil)(imessage.SyntheticConversationItem(1), "personal", connectorBodyBudget)
+	if err := writeMappedMemory(cfg, legacy); err != nil {
+		t.Fatal(err)
+	}
+
 	var selected, cursor string
 	orig := newIMessageFetcher
 	t.Cleanup(func() { newIMessageFetcher = orig })
@@ -501,6 +506,7 @@ func TestConnectIMessageChatSelection(t *testing.T) {
 	if selected != "first,second" || cursor != "" {
 		t.Fatalf("selection = %q, checkpoint = %q", selected, cursor)
 	}
+	run(t, "read", legacy.StableID)
 	run(t, "connect", "imessage")
 	if selected != "first,second" {
 		t.Fatalf("plain connect changed selection to %q", selected)
