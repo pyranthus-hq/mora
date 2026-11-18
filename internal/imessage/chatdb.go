@@ -16,6 +16,8 @@ import (
 // cursor for the next page (the cursor is the next chat ROWID).
 const chatPageSize = 50
 
+var ErrSelectedChatMissing = errors.New("selected iMessage chat GUID was not found")
+
 // requiredMessageColumns are the message columns the conversation query depends on.
 // They are probed at construction (schema-defensive, Pitfall 9) so a chat.db on an
 // unsupported macOS version fails with a clear error instead of returning wrong rows.
@@ -68,6 +70,7 @@ type LiveFetcher struct {
 	db           *sql.DB
 	denyContacts map[string]bool // normalized handles (sole-counterparty 1:1 skip, D-08)
 	denyConvos   map[string]bool // lowercased conversation names (thread skip, D-08)
+	chatGUIDs    map[string]bool
 	hasItemType  bool
 	hasRetracted bool
 }
@@ -86,7 +89,24 @@ func NewLiveFetcher(path string, deny DenyList) (*LiveFetcher, error) {
 		db.Close()
 		return nil, err
 	}
+	chatGUIDs := make(map[string]bool, len(deny.OnlyChatGUIDs))
+	for i, guid := range deny.OnlyChatGUIDs {
+		if chatGUIDs[guid] {
+			continue
+		}
+		var found bool
+		err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM chat WHERE guid = ? COLLATE BINARY)`, guid).Scan(&found)
+		if err != nil || !found {
+			db.Close()
+			if err != nil {
+				return nil, fmt.Errorf("check selected iMessage chat: %w", err)
+			}
+			return nil, fmt.Errorf("%w (selection entry %d)", ErrSelectedChatMissing, i+1)
+		}
+		chatGUIDs[guid] = true
+	}
 	return &LiveFetcher{
+		chatGUIDs:    chatGUIDs,
 		db:           db,
 		denyContacts: normalizedContactSet(deny.Contacts),
 		denyConvos:   lowercasedSet(deny.Conversations),
@@ -233,6 +253,9 @@ func (f *LiveFetcher) FetchPageContext(ctx context.Context, kind ItemKind, w Fet
 	var lastROWID int64
 	for _, c := range chats {
 		lastROWID = c.rowid
+		if len(f.chatGUIDs) != 0 && !f.chatGUIDs[c.guid] {
+			continue
+		}
 		it, ok, err := f.assembleConversationContext(ctx, c.guid, c.display, c.identifier, c.rowid, sinceNanos)
 		if testHookChatReadErr != nil {
 			if herr := testHookChatReadErr(c.rowid); herr != nil {

@@ -472,3 +472,67 @@ func TestConnectProgressTickerWiredDuringIdleConnect(t *testing.T) {
 		t.Fatal("receipt must be last")
 	}
 }
+
+func TestConnectIMessageChatSelection(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	defer stubIMessageReadiness(t, true)()
+
+	cfg, err := loadConfigFor(testCtx(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusPath := imessageStatusPath(cfg, "imessage")
+	if err := memory.SaveStatus(statusPath, &memory.SyncStatus{Checkpoint: "42"}); err != nil {
+		t.Fatal(err)
+	}
+	legacy := imessage.MapConversationFn(nil)(imessage.SyntheticConversationItem(1), "personal", connectorBodyBudget)
+	if err := writeMappedMemory(cfg, legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	var selected, cursor string
+	orig := newIMessageFetcher
+	t.Cleanup(func() { newIMessageFetcher = orig })
+	newIMessageFetcher = func(_ string, filter imessage.DenyList) (iMessageFetcher, error) {
+		selected = strings.Join(filter.OnlyChatGUIDs, ",")
+		if selected == "missing" {
+			return nil, imessage.ErrSelectedChatMissing
+		}
+		return connectTestFetcher{imessage.NewSyntheticFetcher(0, 1), func(_ context.Context, _ memory.ItemKind, _ memory.FetchWindow, token string) (memory.Page, error) {
+			cursor = token
+			return memory.Page{}, nil
+		}}, nil
+	}
+
+	run(t, "connect", "imessage", "--chat-guid", "imessage_chat/first", "--chat-guid", "second")
+	if selected != "first,second" || cursor != "" {
+		t.Fatalf("selection = %q, checkpoint = %q", selected, cursor)
+	}
+	run(t, "read", legacy.StableID)
+	if _, err := connectIMessage(testCtx(t), []string{"--chat-guid", "missing"}, io.Discard, nil, false); !errors.Is(err, imessage.ErrSelectedChatMissing) {
+		t.Fatalf("invalid selection: %v", err)
+	}
+	if _, err := ingestIMessageDetailed(testCtx(t), cfg, Source{ChatGUIDs: []string{"missing"}}, io.Discard); !errors.Is(err, imessage.ErrSelectedChatMissing) {
+		t.Fatalf("invalid saved selection: %v", err)
+	}
+	run(t, "connect", "imessage")
+	if selected != "first,second" {
+		t.Fatalf("plain connect changed selection to %q", selected)
+	}
+	if _, err := connectIMessage(testCtx(t), []string{"--all-chats", "--chat-guid", "third"}, io.Discard, nil, false); err == nil {
+		t.Fatal("conflicting chat flags succeeded")
+	}
+	status, err := memory.LoadStatus(statusPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status.Checkpoint = "99"
+	if err := memory.SaveStatus(statusPath, status); err != nil {
+		t.Fatal(err)
+	}
+	run(t, "connect", "imessage", "--all-chats")
+	if selected != "" || cursor != "" {
+		t.Fatalf("cleared selection = %q, checkpoint = %q", selected, cursor)
+	}
+}

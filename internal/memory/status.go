@@ -46,6 +46,8 @@ type SyncStatus struct {
 	// AccountEmail binds Google cursors to the live mailbox that issued them.
 	// Legacy/unbound cursors must not be reused after credential replacement.
 	AccountEmail string `json:"account_email,omitempty"`
+	// ChatSelection binds iMessage paging checkpoints to the configured chat GUIDs.
+	ChatSelection string `json:"chat_selection,omitempty"`
 
 	// Last-attempt health (M-3). Health is the LAST attempt's outcome, not a
 	// sticky lifetime tally: a clean sync resets ErrorCount/LastError and stamps

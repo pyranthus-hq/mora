@@ -3,6 +3,7 @@ package mora
 import (
 	"archive/zip"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -1901,8 +1902,11 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	}
 
 	path := chatDBPath(cfg)
-	deny := imessage.DenyList{Contacts: s.DenyContacts, Conversations: s.DenyConversations}
+	deny := imessage.DenyList{Contacts: s.DenyContacts, Conversations: s.DenyConversations, OnlyChatGUIDs: s.ChatGUIDs}
 	fetcher, err := newIMessageFetcher(path, deny)
+	if errors.Is(err, imessage.ErrSelectedChatMissing) {
+		return sourceIngestResult{}, err
+	}
 	if err != nil {
 		// A present-but-unreadable chat.db is the FDA-denied case — point the user at
 		// the doctor guidance rather than dumping a raw sqlite error.
@@ -1930,6 +1934,15 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 		return sourceIngestResult{}, err
 	}
 	st.Source = s.Name
+	selection := ""
+	if len(s.ChatGUIDs) > 0 {
+		encoded, _ := json.Marshal(s.ChatGUIDs)
+		selection = fmt.Sprintf("%x", sha256.Sum256(encoded))
+	}
+	if st.ChatSelection != selection {
+		st.Checkpoint = ""
+		st.ChatSelection = selection
+	}
 	win := windowForIMessage(s)
 
 	if out != nil {
@@ -2377,8 +2390,21 @@ func connectIMessage(ctx context.Context, args []string, stdout io.Writer, sink 
 	fs := flag.NewFlagSet("connect imessage", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	sinceDays := fs.Int("since-days", 0, "iMessage backlog window in days (default 365; negative = all-time)")
+	allChats := fs.Bool("all-chats", false, "clear the chat selection")
+	var chatGUIDs []string
+	fs.Func("chat-guid", "restrict iMessage sync to this exact chat GUID (repeatable)", func(value string) error {
+		guid := strings.TrimPrefix(strings.TrimSpace(value), "imessage_chat/")
+		if strings.TrimSpace(guid) == "" {
+			return errors.New("chat GUID must be non-empty")
+		}
+		chatGUIDs = append(chatGUIDs, guid)
+		return nil
+	})
 	if err := fs.Parse(args); err != nil {
 		return receipt, err
+	}
+	if *allChats && len(chatGUIDs) > 0 {
+		return receipt, errors.New("--all-chats cannot be combined with --chat-guid")
 	}
 	if runtimeGOOS() == "windows" {
 		fmt.Fprintln(stdout, "iMessage is macOS-only and cannot be enabled on Windows.")
@@ -2388,15 +2414,43 @@ func connectIMessage(ctx context.Context, args []string, stdout io.Writer, sink 
 	if err != nil {
 		return receipt, err
 	}
-	if err := setSourceEnabled(cfg, "imessage", true); err != nil {
-		return receipt, err
-	}
-	receipt.Connected = true
-	if *sinceDays != 0 {
-		if err := setSourceSinceDays(cfg, "imessage", *sinceDays); err != nil {
+	if len(chatGUIDs) > 0 {
+		fetcher, err := newIMessageFetcher(chatDBPath(cfg), imessage.DenyList{OnlyChatGUIDs: chatGUIDs})
+		if err != nil {
+			return receipt, fmt.Errorf("check iMessage chat selection: %w", err)
+		}
+		if err := fetcher.Close(); err != nil {
 			return receipt, err
 		}
 	}
+	if err := mutateSources(cfg, func(sources []Source) ([]Source, error) {
+		found := false
+		for i := range sources {
+			source := &sources[i]
+			if source.Type != "imessage" {
+				continue
+			}
+			found = true
+			source.Enabled = genericutil.Ptr(true)
+			if *allChats || len(chatGUIDs) > 0 {
+				source.ChatGUIDs = chatGUIDs
+			}
+			if *sinceDays != 0 {
+				source.SinceDays = *sinceDays
+			}
+		}
+		if !found {
+			sources = append(sources, Source{
+				Name: "imessage", Type: "imessage", Scope: "personal",
+				Enabled: genericutil.Ptr(true), CreatedAt: time.Now().Format(time.RFC3339),
+				SinceDays: *sinceDays, ChatGUIDs: chatGUIDs,
+			})
+		}
+		return sources, nil
+	}); err != nil {
+		return receipt, err
+	}
+	receipt.Connected = true
 	okf(stdout, "enabled imessage. iMessage reads your local Messages database — no login needed.")
 	if *sinceDays < 0 {
 		fmt.Fprintln(stdout, "iMessage will ingest all available history.")

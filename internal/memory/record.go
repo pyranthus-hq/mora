@@ -178,6 +178,7 @@ type Source struct {
 	// matching Phase 1's no-new-file precedent. Empty = include everyone.
 	DenyContacts      []string `json:"deny_contacts,omitempty"`
 	DenyConversations []string `json:"deny_conversations,omitempty"`
+	ChatGUIDs         []string `json:"chat_guids,omitempty"`   // iMessage: exact chat GUIDs; empty uses all chats
 	Repositories      []string `json:"repositories,omitempty"` // github: explicit owner/repo allowlist
 	// Eywa holds the company-memory connector's endpoints and identity. It never
 	// holds the client secret, which is read from the environment at run time.

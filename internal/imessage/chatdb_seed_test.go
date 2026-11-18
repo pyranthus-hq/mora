@@ -2,6 +2,7 @@ package imessage
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -460,5 +461,50 @@ func TestSeededStructuredRender(t *testing.T) {
 	}
 	if strings.Contains(body, "Me: thanks") {
 		t.Fatalf("tapback should have been filtered out:\n%s", body)
+	}
+}
+
+func TestSelectedChatGUIDsSkipUnselectedAssembly(t *testing.T) {
+	var chats []seedChat
+	for i := int64(1); i <= chatPageSize+2; i++ {
+		chats = append(chats, seedChat{rowid: i, guid: fmt.Sprintf("seed;%d", i), display: "Same title"})
+	}
+	chats[chatPageSize+1].display = "Denied"
+	selected := chats[chatPageSize]
+	denied := chats[chatPageSize+1]
+	path := seedChatDB(t, chats, []seedMsg{
+		{chatID: 1, date: localDate(2026, 5, 10, 9, 0), fromMe: true, text: "exclude"},
+		{chatID: selected.rowid, date: localDate(2026, 5, 10, 9, 0), fromMe: true, text: "include"},
+		{chatID: denied.rowid, date: localDate(2026, 5, 10, 9, 0), fromMe: true, text: "deny"},
+	})
+	filter := DenyList{Conversations: []string{"denied"}, OnlyChatGUIDs: []string{selected.guid, denied.guid}}
+	f, err := NewLiveFetcher(path, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	old := testHookChatReadErr
+	t.Cleanup(func() { testHookChatReadErr = old })
+	testHookChatReadErr = func(rowID int64) error {
+		if rowID != selected.rowid && rowID != denied.rowid {
+			t.Fatalf("unselected chat reached assembly: %d", rowID)
+		}
+		return nil
+	}
+	items := fetchAll(t, f, FetchWindow{})
+	if len(items) != 1 || items[0].ProviderID != selected.guid {
+		t.Fatalf("selected result = %+v", items)
+	}
+}
+
+func TestSelectedChatGUIDsReportMissingGUID(t *testing.T) {
+	path := seedChatDB(t, []seedChat{{rowid: 1, guid: "existing"}}, nil)
+	f, err := NewLiveFetcher(path, DenyList{OnlyChatGUIDs: []string{"existing", "missing"}})
+	if f != nil {
+		f.Close()
+	}
+	if !errors.Is(err, ErrSelectedChatMissing) {
+		t.Fatalf("missing selected chat: %v", err)
 	}
 }
