@@ -2,6 +2,7 @@ package imessage
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -494,5 +495,16 @@ func TestSelectedChatGUIDsSkipUnselectedAssembly(t *testing.T) {
 	items := fetchAll(t, f, FetchWindow{})
 	if len(items) != 1 || items[0].ProviderID != selected.guid {
 		t.Fatalf("selected result = %+v", items)
+	}
+}
+
+func TestSelectedChatGUIDsReportMissingGUID(t *testing.T) {
+	path := seedChatDB(t, []seedChat{{rowid: 1, guid: "existing"}}, nil)
+	f, err := NewLiveFetcher(path, DenyList{OnlyChatGUIDs: []string{"existing", "missing"}})
+	if f != nil {
+		f.Close()
+	}
+	if !errors.Is(err, ErrSelectedChatMissing) {
+		t.Fatalf("missing selected chat: %v", err)
 	}
 }

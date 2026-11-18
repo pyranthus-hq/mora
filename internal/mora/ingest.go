@@ -1886,6 +1886,9 @@ func ingestIMessageDetailed(ctx context.Context, cfg Config, s Source, out io.Wr
 	path := chatDBPath(cfg)
 	deny := imessage.DenyList{Contacts: s.DenyContacts, Conversations: s.DenyConversations, OnlyChatGUIDs: s.ChatGUIDs}
 	fetcher, err := newIMessageFetcher(path, deny)
+	if errors.Is(err, imessage.ErrSelectedChatMissing) {
+		return sourceIngestResult{}, err
+	}
 	if err != nil {
 		// A present-but-unreadable chat.db is the FDA-denied case — point the user at
 		// the doctor guidance rather than dumping a raw sqlite error.
