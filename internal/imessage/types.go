@@ -43,4 +43,6 @@ const KindIMessageChat ItemKind = "imessage_chat"
 type DenyList struct {
 	Contacts      []string
 	Conversations []string
+	// OnlyChatGUIDs limits which chats can be fetched. Empty selects all chats.
+	OnlyChatGUIDs []string
 }

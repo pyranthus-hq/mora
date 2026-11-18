@@ -432,6 +432,17 @@ all available history, which can be large.
 Mora reads one conversation into one memory. It uses Address Book locally to
 map handles to names. It sends no message data.
 
+To sync only selected chats, use their exact conversation IDs from previously
+imported iMessage memories. Repeat `--chat-guid` to set the complete list.
+
+```bash
+mora connect imessage --chat-guid 'imessage_chat/<guid>' --chat-guid 'imessage_chat/<another-guid>'
+```
+
+Manual and scheduled syncs use the saved selection. Existing deny rules still
+apply. Previously imported conversations stay in the vault. Use
+`mora connect imessage --all-chats` to resume syncing every eligible chat.
+
 If setup reports a permission error, complete the
 [Full Disk Access steps](#full-disk-access-on-macos), then run:
 
