@@ -230,6 +230,11 @@ func cmdFriction(ctx context.Context, argv []string, stdout, stderr io.Writer, s
 		return err
 	}
 	cmd := argv[0]
+	switch cmd {
+	case "log", "recover", "import", "recall":
+	default:
+		return errors.New(usage)
+	}
 	flags := flag.NewFlagSet("friction "+cmd, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	explicit := flags.String("scope", "", "project scope (required outside a bound project)")
@@ -261,7 +266,7 @@ func cmdFriction(ctx context.Context, argv []string, stdout, stderr io.Writer, s
 		}
 		return json.NewEncoder(stdout).Encode(result)
 	}
-	if flags.NArg() != 0 || (cmd != "log" && cmd != "recover" && cmd != "import") {
+	if cmd == "recall" || flags.NArg() != 0 {
 		return errors.New(usage)
 	}
 	policy := configMCPWritePolicy(cfg)

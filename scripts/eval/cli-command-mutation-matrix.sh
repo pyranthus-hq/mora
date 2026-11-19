@@ -49,6 +49,7 @@ registry = json.load(open(sys.argv[1], encoding="utf-8"))
 families = {
     "brief": ("internal/mora/mora.go", "cmdBrief"),
     "config": ("internal/mora/config.go", "cmdConfig"),
+    "friction": ("internal/mora/friction.go", "cmdFriction"),
     "index": ("internal/mora/index.go", "cmdIndex"),
     "forget": ("internal/mora/governance_cmd.go", "cmdForget"),
     "merge": ("internal/mora/merge_cmd.go", "cmdMerge"),
