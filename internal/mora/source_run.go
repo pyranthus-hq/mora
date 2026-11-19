@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pyranthus-hq/mora/internal/google"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
@@ -79,6 +80,7 @@ const (
 )
 
 type sourceRunOutcome struct {
+	GmailRun                *google.GmailRunStats
 	Key                     string
 	Items                   int
 	Examined                int

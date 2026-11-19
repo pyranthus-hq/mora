@@ -387,6 +387,19 @@ Calendar uses a fixed window of about six months back and three months ahead.
 Refresh the accounts with `mora sync google`. Remove local Google tokens with
 `mora disconnect google`. That command does not delete Gmail or Calendar data.
 
+`mora sync google --json` includes `gmail_runs` when Gmail run measurements are
+available, one entry per source instance. The matching ingest operation receipt
+also records them when possible. Counts for history, thread list, and thread get
+are request attempts, including retries; each source run uses a fresh fetcher.
+`delta_class` is `initial_backfill`, `expired_history`, `empty_delta`,
+`label_churn`, or `new_threads`. Despite its name, `new_threads` means a typed
+message addition affected a thread; it does not establish that a thread was
+created. Typed additions take precedence over other history. Deletion-only,
+label-and-deletion, ambiguous untyped, and incomplete history are unclassified
+and use an empty string. Missing run data is absent, not a zero-count run. If
+the optional operation receipt metrics cannot be saved, Mora warns; the sync
+outcome and freshness still reflect the connector result.
+
 On WSL, Mora may print the OAuth URL instead of opening it. Open the URL in the
 Windows browser. Keep the command running while the browser returns to the
 loopback address at `127.0.0.1`.

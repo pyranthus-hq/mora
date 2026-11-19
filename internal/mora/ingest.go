@@ -31,6 +31,7 @@ import (
 	"github.com/pyranthus-hq/mora/internal/imessage"
 	ingestpkg "github.com/pyranthus-hq/mora/internal/ingest"
 	"github.com/pyranthus-hq/mora/internal/memory"
+	"github.com/pyranthus-hq/mora/internal/operation"
 	"github.com/pyranthus-hq/mora/internal/whatsapp"
 )
 
@@ -126,7 +127,10 @@ func curatedExtractExt(ext string) bool    { return ingestpkg.CuratedExtractExt(
 func curatedMetadataFile(name string) bool { return ingestpkg.CuratedMetadataFile(name) }
 
 func backfillEnabledGoogle(ctx context.Context, cfg Config, stdout io.Writer) (int, error) {
-	return runEnabledSourceBackfill(ctx, cfg, stdout, func(s Source) bool {
+	return backfillEnabledGoogleWithStats(ctx, cfg, stdout, nil)
+}
+func backfillEnabledGoogleWithStats(ctx context.Context, cfg Config, stdout io.Writer, runs *[]gmailRunReceipt) (int, error) {
+	return runEnabledSourceBackfillWithStats(ctx, cfg, stdout, func(s Source) bool {
 		return s.Type == "gmail" || s.Type == "calendar"
 	}, func(s Source, e error) {
 		if isGoogleAuthError(e) {
@@ -137,7 +141,7 @@ func backfillEnabledGoogle(ctx context.Context, cfg Config, stdout io.Writer) (i
 		} else {
 			warnf(stdout, "%s sync incomplete (resumable): %v", s.Name, e)
 		}
-	})
+	}, runs)
 }
 
 // backfillEnabledFilesystem re-walks every enabled filesystem source, then
@@ -158,6 +162,9 @@ func backfillEnabledGitHub(ctx context.Context, cfg Config, stdout io.Writer) (i
 }
 
 func runEnabledSourceBackfill(ctx context.Context, cfg Config, stdout io.Writer, selected func(Source) bool, report func(Source, error)) (int, error) {
+	return runEnabledSourceBackfillWithStats(ctx, cfg, stdout, selected, report, nil)
+}
+func runEnabledSourceBackfillWithStats(ctx context.Context, cfg Config, stdout io.Writer, selected func(Source) bool, report func(Source, error), gmailRuns *[]gmailRunReceipt) (int, error) {
 	sources, err := loadSources(cfg)
 	if err != nil {
 		return 0, fmt.Errorf("load sources: %w", err)
@@ -172,9 +179,12 @@ func runEnabledSourceBackfill(ctx context.Context, cfg Config, stdout io.Writer,
 	output := io.Writer(&synchronizedWriter{w: stdout})
 	outcomes := runSourcePlan(ctx, plans, sourceRunOptions{Run: func(runCtx context.Context, plan sourceRunPlan) sourceRunOutcome {
 		result, runErr := ingestSourceFn(runCtx, cfg, plan.Source, output)
-		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Skipped: result.Skipped, Err: runErr}
+		return sourceRunOutcome{Key: plan.Key, Items: result.Materialized, Examined: result.Examined, Materialized: result.Materialized, Failed: result.Failed, Unchanged: result.Unchanged, Missing: result.Missing, Stages: result.Stages, Incremental: result.Incremental, Skipped: result.Skipped, GmailRun: result.GmailRun, Err: runErr}
 	}})
 	for i, outcome := range outcomes {
+		if gmailRuns != nil && outcome.GmailRun != nil {
+			*gmailRuns = append(*gmailRuns, gmailRunReceipt{Source: outcome.Key, GmailRunStats: *outcome.GmailRun})
+		}
 		if outcome.Err != nil && !outcome.Cancelled && report != nil {
 			report(plans[i].Source, outcome.Err)
 		}
@@ -872,8 +882,9 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return err
 	}
 	if args[0] == "google" {
-		total, err := backfillEnabledGoogle(ctx, cfg, sourceProgress)
-		if rerr := emitSyncSourceResult(cfg, stdout, "google", sourceJSON, total, "synced %d item(s)\n"); rerr != nil {
+		var runs []gmailRunReceipt
+		total, err := backfillEnabledGoogleWithStats(ctx, cfg, sourceProgress, &runs)
+		if rerr := emitSyncSourceResultWithGmail(cfg, stdout, "google", sourceJSON, total, "synced %d item(s)\n", runs); rerr != nil {
 			return rerr
 		}
 		return err
@@ -883,25 +894,33 @@ func cmdSync(ctx context.Context, args []string, stdout, stderr io.Writer) error
 
 // syncSourceReceipt is the per-source re-sync outcome. Phase 2 (ISO-02) adds
 // the typed failure fields here; additions are minor, removals need a bump.
+type gmailRunReceipt struct {
+	Source string `json:"source"`
+	google.GmailRunStats
+}
 type syncSourceReceipt struct {
-	Source                  string `json:"source"`
-	Items                   int    `json:"items"`
-	ObservedAt              string `json:"observed_at"`
-	LastSuccessAt           string `json:"last_success_at"`
-	LastAttemptAt           string `json:"last_attempt_at"`
-	NextScheduledAt         string `json:"next_scheduled_at"`
-	DurationMS              int64  `json:"duration_ms"`
-	FreshnessBudgetSeconds  int64  `json:"freshness_budget_seconds"`
-	ConsecutiveFailureCount int    `json:"consecutive_failure_count"`
-	CorrelationID           string `json:"correlation_id,omitempty"`
+	GmailRuns               []gmailRunReceipt `json:"gmail_runs,omitempty"`
+	Source                  string            `json:"source"`
+	Items                   int               `json:"items"`
+	ObservedAt              string            `json:"observed_at"`
+	LastSuccessAt           string            `json:"last_success_at"`
+	LastAttemptAt           string            `json:"last_attempt_at"`
+	NextScheduledAt         string            `json:"next_scheduled_at"`
+	DurationMS              int64             `json:"duration_ms"`
+	FreshnessBudgetSeconds  int64             `json:"freshness_budget_seconds"`
+	ConsecutiveFailureCount int               `json:"consecutive_failure_count"`
+	CorrelationID           string            `json:"correlation_id,omitempty"`
 }
 
 // emitSyncSourceResult writes the outcome of one per-source re-sync: a receipt
 // under --json, the shipped human line otherwise. It runs on the error path too,
 // because a partial sync still reports what it managed to pull.
 func emitSyncSourceResult(cfg Config, stdout io.Writer, source string, jsonOut bool, total int, humanFormat string) error {
+	return emitSyncSourceResultWithGmail(cfg, stdout, source, jsonOut, total, humanFormat, nil)
+}
+func emitSyncSourceResultWithGmail(cfg Config, stdout io.Writer, source string, jsonOut bool, total int, humanFormat string, runs []gmailRunReceipt) error {
 	if jsonOut {
-		receipt := syncSourceReceipt{Source: source, Items: total, ObservedAt: time.Now().UTC().Format(time.RFC3339)}
+		receipt := syncSourceReceipt{Source: source, Items: total, ObservedAt: time.Now().UTC().Format(time.RFC3339), GmailRuns: runs}
 		dir := filepath.Join(cfg.StateDir, "sync")
 		if entries, err := os.ReadDir(dir); err == nil {
 			configured, _ := loadSources(cfg)
@@ -1212,7 +1231,8 @@ type sourceIngestResult struct {
 	Stages       memory.IngestStages
 	Incremental  bool
 	// Skipped: another live process holds this source's lease, nothing ran.
-	Skipped bool
+	Skipped  bool
+	GmailRun *google.GmailRunStats
 }
 
 func sourceIngestResultFromMemory(result memory.IngestResult) sourceIngestResult {
@@ -1298,6 +1318,12 @@ func ingestSourceDetailed(ctx context.Context, cfg Config, s Source, out io.Writ
 		testHookIngestActivityStarted(cfg, s, h)
 	}
 	result, dispatchErr := ingestSourceDispatchFn(ctx, cfg, s, out)
+	if result.GmailRun != nil {
+		st := result.GmailRun
+		if statsErr := operation.SetGmailRun(cfg, h, operation.GmailRun{Source: healthInstanceKeyForSource(s), HistoryCalls: st.HistoryCalls, ThreadListCalls: st.ThreadListCalls, ThreadGetCalls: st.ThreadGetCalls, DeltaClass: st.DeltaClass}); statsErr != nil {
+			warnf(out, "%s Gmail run metrics missing from operation receipt: %v", healthInstanceKeyForSource(s), statsErr)
+		}
+	}
 	traceStatus := "completed"
 	if dispatchErr != nil {
 		traceStatus = "failed"
@@ -1692,7 +1718,12 @@ func ingestGoogleDetailed(ctx context.Context, cfg Config, s Source, kind google
 		Status: st, WriteResult: write, Checkpoint: func(status *memory.SyncStatus) error { return memory.SaveStatus(statusPath, status) },
 	})
 	prog.done()
-	return sourceIngestResultFromMemory(res), persistSyncStatus(out, statusPath, res.Status, ingErr)
+	result := sourceIngestResultFromMemory(res)
+	if kind == google.KindGmailThread {
+		stats := fetcher.GmailRunStats()
+		result.GmailRun = &stats
+	}
+	return result, persistSyncStatus(out, statusPath, res.Status, ingErr)
 }
 
 // persistSyncStatus writes a sync path's final SyncStatus to disk — the single
