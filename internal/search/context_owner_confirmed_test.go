@@ -14,8 +14,8 @@ func TestContextSaysTheOwnerConfirmedTheExactText(t *testing.T) {
 	m.Tags = []string{memory.OwnerConfirmedTagPrefix + memory.OwnerConfirmedDigest(m)}
 	got := BuildContext(cfg, []memory.Memory{m}, 4000, true)
 	for _, want := range []string{
-		`Provenance: agent-written (source "mcp"); the owner then confirmed this exact text in their own terminal.`,
-		"Adopted by user: the owner confirmed this exact text in their own terminal",
+		`Provenance: agent-written (source "mcp"); the owner then confirmed this exact text in their own terminal or in Mora's confirmation prompt.`,
+		"Adopted by user: the owner confirmed this exact text in their own terminal or in Mora's confirmation prompt",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in:\n%s", want, got)

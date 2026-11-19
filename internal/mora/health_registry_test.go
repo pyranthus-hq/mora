@@ -38,6 +38,9 @@ func mcpSurfaceArgs(name string) map[string]any {
 		return map[string]any{"id": "read-target"}
 	case "delete_memory":
 		return map[string]any{"id": "delete-target"}
+	case "confirm_memory":
+		// Already owner-confirmed, so it succeeds without an elicitation.
+		return map[string]any{"id": healthConfirmTargetID}
 	case "search_memory":
 		return map[string]any{"query": "surface"}
 	case "context_memory":
@@ -179,6 +182,7 @@ func TestEverySurfaceCarriesHealth(t *testing.T) {
 	cfg := mustConfig(t)
 	ctx := testCtx(t)
 
+	seedHealthConfirmTarget(t, cfg)
 	for _, id := range []string{"read-target", "delete-target"} {
 		if err := writeMemory(cfg, Memory{
 			ID: id, Scope: "global", Type: "note", Title: "Surface " + id,
@@ -209,6 +213,7 @@ func TestSixDayFreezeSurfacesOnEverySurface(t *testing.T) {
 	cfg := mustConfig(t)
 	ctx := testCtx(t)
 
+	seedHealthConfirmTarget(t, cfg)
 	for _, id := range []string{"read-target", "delete-target"} {
 		if err := writeMemory(cfg, Memory{
 			ID: id, Scope: "global", Type: "note", Title: "Surface " + id,
@@ -257,4 +262,21 @@ func TestSixDayFreezeSurfacesOnEverySurface(t *testing.T) {
 	t.Cleanup(func() { hookNow = origHookNow })
 
 	driveEverySurface(t, ctx, cfg)
+}
+
+// healthConfirmTargetID is an agent note seeded already owner-confirmed, so
+// confirm_memory answers through its real dispatcher without an elicitation.
+const healthConfirmTargetID = "mem_healthconfirmtarget"
+
+func seedHealthConfirmTarget(t *testing.T, cfg Config) {
+	t.Helper()
+	m := Memory{ID: healthConfirmTargetID, Scope: "global", Type: "insight", Title: "Surface confirm target",
+		Source: "mcp", CreatedAt: "2026-05-01T00:00:00Z", Text: "surface confirm body"}
+	m.Tags = []string{memory.OwnerConfirmedTagPrefix + memory.OwnerConfirmedDigest(m)}
+	if !memory.IsOwnerConfirmed(m) {
+		t.Fatal("seeded confirm target is not owner-confirmed")
+	}
+	if err := writeMemory(cfg, m); err != nil {
+		t.Fatalf("seed %s: %v", m.ID, err)
+	}
 }

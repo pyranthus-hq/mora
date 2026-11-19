@@ -23,6 +23,7 @@ const (
 var tentativeToolClass = map[string]string{
 	"write_memory":    surfaceWrites,
 	"delete_memory":   surfaceWrites,
+	"confirm_memory":  surfaceWrites,
 	"read_memory":     surfaceLabels,
 	"search_memory":   surfaceLabels,
 	"list_memory":     surfaceLabels,

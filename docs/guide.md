@@ -629,6 +629,10 @@ mora config mcp-write-policy readonly
   add them to the vault before approval. It refuses deletes.
 - `readonly` refuses writes and deletes.
 
+`confirm_memory`, which asks you to make a note your own rule (see
+[owner confirmation from chat](#make-a-note-your-own-rule-from-chat)), works
+under `tentative`, `open` and `propose`, and `readonly` refuses it.
+
 An explicit policy is never changed. v0.15.3 resolved an unset policy to
 `propose`. v0.15.2 and earlier resolved it to `open`. Writes still queued from
 v0.15.3 stay queued: `mora doctor` prints how many are pending, and
@@ -651,7 +655,7 @@ mora confirm --list            # tentative memories
 mora confirm <memory-id>       # remove the tag; the memory becomes normal
 ```
 
-`mora confirm` has no MCP tool, and it logs a `confirm` line. Both commands
+Plain `mora confirm` has no MCP tool, and it logs a `confirm` line. Both commands
 accept `--json`. Plain `mora confirm` never makes a note owner-confirmed. To do
 that, use `mora confirm <id> --mine` (see owner-confirmed below).
 
@@ -683,10 +687,68 @@ and disposition (the `meta` line), and the text. The digest is a SHA-256 of all
 of those fields (`OwnerConfirmedFields` and `OwnerConfirmedDigest` in
 `internal/memory/provenance.go`). Search, read, list and context then show
 `"trust":"owner-confirmed"`, and the context line says the owner confirmed this
-exact text in their own terminal. Agents are told to treat such a note as your
-own words. The keep logs an `owner-confirm` line.
+exact text in their own terminal or in Mora's confirmation prompt. Agents are
+told to treat such a note as your own words. The keep logs an `owner-confirm`
+line.
 
-Three actions set this status, each only in your own terminal:
+#### Make a note your own rule from chat
+
+The normal path: say "remember this as my rule" in chat, and confirm the prompt.
+
+The agent saves the note with `write_memory` and calls `confirm_memory` with its
+id. Mora then asks you directly through MCP elicitation (`elicitation/create`,
+form mode). Your client shows a Mora prompt with the note's id, scope, type,
+title, the other fields the digest binds, and the full text, and one box,
+`Yes, this is my rule`, unticked. The model never sees the prompt and cannot
+answer it. The note becomes owner-confirmed only when you tick the box and
+accept. Declining, cancelling, accepting with the box unticked, no answer within
+170 seconds, a client error, or a client that did not declare elicitation at
+`initialize` all leave the note as it was. The agent then gets one line saying
+why, and that you can run `mora confirm --mine <id>` instead. Mora never falls
+back to trusting the model.
+
+Your yes goes through the same code as `mora confirm --mine`: it binds the bytes
+that were shown, refuses if the file changed while the prompt was open, and logs
+an `owner-confirm` line with caller `mcp-elicitation`. Only agent-written notes
+can be confirmed, and an already confirmed note is left alone without a prompt.
+
+`confirm_memory` works under `tentative`, `open` and `propose`: your yes is the
+local approval `propose` asks for. Under `propose` it confirms notes already in
+the vault, because `write_memory` there only queues a proposal (keep it with
+`mora review`, which can confirm it too). `readonly` refuses it before any
+prompt. It is not on the loopback HTTP `/call` route, which cannot carry a
+prompt, and an agent profile gets it only if the profile names it and may read
+the whole vault (`--read-scopes all --raw-sources`).
+
+The prompt never cuts or rewrites a note to make it fit. Mora refuses to show,
+and so to confirm from chat, a note whose fields hold line breaks, control or
+invisible characters or repeated spaces, whose text holds tabs or control or
+invisible characters, or that is longer than 200 characters in a field (400 for
+`meta`) or 2,000 characters or 60 lines of text. It uses the brief's flattening
+and the terminal escaping of `mora read` and `mora review` as the test: a value
+either passes both unchanged or is refused. Text lines are indented, so a line
+of a note cannot pass for one of Mora's field lines. Use `mora confirm --mine
+<id>` for a note the prompt refuses.
+
+Which clients show the prompt (checked 2026-11-11; client support changes from
+release to release):
+
+| Client | Declares elicitation | Shows Mora's prompt |
+| --- | --- | --- |
+| Claude Code CLI 2.1.76 or later | Yes (form and url from 2.1.287) | Yes, as a dialog in the terminal |
+| Claude Code in VS Code | Yes | Reported to decline every request without showing it (anthropics/claude-code#41292, #79174) |
+| Claude Desktop (Chat tab) and Cowork | Yes (`elicitation: {}`) | Reported to return `cancelled`, at once or after about 180 seconds, without showing anything (anthropics/claude-code#56243, #94450, #88901, #106880) |
+| Antigravity (App, IDE, CLI) | Not documented | Not documented and not tested; a third-party report saw its runtime cancel MCP form requests (pingdotgg/t3code#19659) |
+
+Where the prompt does not appear, the agent hears that the prompt came back
+declined or was cancelled, or that the client has no elicitation, and is told
+the terminal command. Mora cannot tell your no from a client's automatic one,
+so it never says you declined.
+
+#### From your own terminal
+
+The fallback, and the path for clients that cannot show the prompt. Three
+actions set this status in your own terminal:
 
 ```bash
 mora review                       # the keep action
@@ -708,8 +770,9 @@ text it showed: if the file changes before the write, it refuses. Connector
 records, copied files and shared records are refused. A note that is already
 owner-confirmed is left alone.
 
-`mora mcp proposals approve`, `mora teach`, every MCP tool, the loopback HTTP
-routes and companion captures never set it. `mora write --tags` and
+`mora mcp proposals approve`, `mora teach`, every MCP tool except
+`confirm_memory` after your yes in its prompt, the loopback HTTP routes and
+companion captures never set it. `mora write --tags` and
 `mora teach memory --tags` refuse a tag that starts with
 `mora-owner-confirmed-`, and a `teach correct` or `teach supersede` revision
 does not keep the tag. Plain `mora confirm` on a tentative note drops any
@@ -733,6 +796,16 @@ set (`CLAUDECODE`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`,
 Cursor or Antigravity sessions. A program that runs Mora inside a fake terminal
 and types `y` passes, and a program that can write vault files can write the tag
 itself.
+
+The chat prompt trusts your client to show it to a person. Mora sees only the
+answer. Claude Code's `Elicitation` and `ElicitationResult` hooks can answer or
+change an elicitation without showing a dialog, so a client configured with a
+hook that accepts Mora's prompt confirms notes without you, and an agent that
+can edit that hook configuration can confirm its own notes. If you use those
+hooks, make sure none of them matches the `mora` server. A client that renders
+the prompt as Markdown may also style the note's text (bold, headings); Mora
+indents every line and refuses control and invisible characters, but it cannot
+stop a renderer from formatting plain characters.
 
 The hold filter is coarse. It does not stop a false claim written in plain
 words. An agent with a shell can run `mora confirm` or

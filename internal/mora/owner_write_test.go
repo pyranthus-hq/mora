@@ -104,7 +104,7 @@ func TestWriteMineSavesOwnerConfirmedAfterYes(t *testing.T) {
 		}
 	}
 	got := ownerCall(t, "context_memory", map[string]any{"query": "heron cache"})
-	for _, want := range []string{"the owner then confirmed this exact text in their own terminal", "Adopted by user: the owner confirmed this exact text"} {
+	for _, want := range []string{"the owner then confirmed this exact text in their own terminal or in Mora's confirmation prompt", "Adopted by user: the owner confirmed this exact text"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("context_memory lacks %q:\n%s", want, got)
 		}
