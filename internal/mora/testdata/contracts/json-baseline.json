@@ -224,6 +224,26 @@
     "status": "parses"
   },
   {
+    "path": "friction",
+    "status": "empty"
+  },
+  {
+    "path": "friction import",
+    "status": "empty"
+  },
+  {
+    "path": "friction log",
+    "status": "empty"
+  },
+  {
+    "path": "friction recall",
+    "status": "empty"
+  },
+  {
+    "path": "friction recover",
+    "status": "empty"
+  },
+  {
     "path": "given",
     "status": "parses"
   },

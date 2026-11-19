@@ -1,0 +1,11 @@
+{
+  "health": {
+    "index": "fresh",
+    "sources": "fresh",
+    "state": "healthy"
+  },
+  "results": [],
+  "schema": "mora.friction.recall",
+  "schema_version": 1,
+  "scope": "project:contract"
+}

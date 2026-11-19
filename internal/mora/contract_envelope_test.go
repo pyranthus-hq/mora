@@ -19,6 +19,7 @@ import (
 //
 // A row absent from this map is driven with `--json` alone.
 var contractEnvelopeArgs = map[string][]string{
+	"friction recall":         {"--scope", "project:contract", "contract seed"},
 	"doctor check":            {"imessage-access"},
 	"integrations list":       {"--binary", "/contract/mora"},
 	"write":                   {"--title", "envelope probe", "--text", "envelope probe body"},
@@ -65,6 +66,9 @@ var contractEnvelopeOrder = []string{
 // These rows still get the schema-shape assertion below — the
 // `contract.platform_policy` the registry prescribes.
 var contractEnvelopeNonExecutable = map[string]string{
+	"friction log":            "stdin fixture exercised by TestSpearheadFrictionAcceptance",
+	"friction recover":        "linked stdin fixture exercised by TestSpearheadFrictionAcceptance",
+	"friction import":         "reviewed stdin fixture exercised by TestSpearheadReviewedDronaImport",
 	"integrations connect":    "mutates host client configuration and requires an absolute binary path",
 	"integrations disconnect": "mutates host client configuration",
 	"delete":                  "destructive memory mutation",

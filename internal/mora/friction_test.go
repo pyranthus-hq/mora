@@ -108,7 +108,12 @@ func TestSpearheadFrictionAcceptance(t *testing.T) {
 		defer func() { listRebuildFiles = originalList }()
 		listRebuildFiles = func(cfg Config) ([]string, error) {
 			raw := ok(fresh, "", "friction", "recall", question)
-			if !bytes.Contains(raw, []byte(`"results":[]`)) || !bytes.Contains(raw, []byte(`"index":"refreshing"`)) {
+			var reply struct {
+				Results []frictionRecallRow
+				Health  struct{ Index string }
+			}
+			read(raw, &reply)
+			if len(reply.Results) != 0 || reply.Health.Index != "refreshing" {
 				t.Fatalf("wrong-project recall during rebuild: %s", raw)
 			}
 			return originalList(cfg)

@@ -230,15 +230,28 @@ func cmdFriction(ctx context.Context, argv []string, stdout, stderr io.Writer, s
 		return err
 	}
 	cmd := argv[0]
+	var schema string
 	switch cmd {
-	case "log", "recover", "import", "recall":
+	case "log":
+		schema = "mora.friction.log"
+	case "recover":
+		schema = "mora.friction.recover"
+	case "import":
+		schema = "mora.friction.import"
+	case "recall":
+		schema = "mora.friction.recall"
 	default:
 		return errors.New(usage)
 	}
 	flags := flag.NewFlagSet("friction "+cmd, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	explicit := flags.String("scope", "", "project scope (required outside a bound project)")
-	if err := flags.Parse(argv[1:]); err != nil {
+	flags.Bool("json", true, "emit versioned JSON")
+	argsList := argv[1:]
+	if len(argsList) != 0 && argsList[len(argsList)-1] == "--json" {
+		argsList = argsList[:len(argsList)-1]
+	}
+	if err := flags.Parse(argsList); err != nil {
 		return err
 	}
 	cfg, err := loadConfigFor(ctx)
@@ -264,7 +277,7 @@ func cmdFriction(ctx context.Context, argv []string, stdout, stderr io.Writer, s
 		if err != nil {
 			return err
 		}
-		return json.NewEncoder(stdout).Encode(result)
+		return emitReceipt(stdout, schema, 1, result)
 	}
 	if cmd == "recall" || flags.NArg() != 0 {
 		return errors.New(usage)
@@ -286,7 +299,7 @@ func cmdFriction(ctx context.Context, argv []string, stdout, stderr io.Writer, s
 		if err != nil {
 			return err
 		}
-		return json.NewEncoder(stdout).Encode(result)
+		return emitReceipt(stdout, schema, 1, result)
 	}
 	var record frictionRecord
 	if err := decodeFriction(stdin, &record); err != nil {
@@ -329,7 +342,7 @@ func cmdFriction(ctx context.Context, argv []string, stdout, stderr io.Writer, s
 	if id := proposalIDOf(result); id != "" {
 		result.(map[string]any)["memory_id"] = frictionID(scope, record.Kind, id)
 	}
-	return json.NewEncoder(stdout).Encode(result)
+	return emitReceipt(stdout, schema, 1, result)
 }
 
 func stageFrictionImport(cfg Config, packet frictionPacket) (any, error) {

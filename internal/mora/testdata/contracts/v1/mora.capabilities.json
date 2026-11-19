@@ -395,6 +395,14 @@
     {
       "json_contract": "exempt",
       "kind": "verb",
+      "path": "friction",
+      "payload": "",
+      "platform": "all",
+      "reason": "bare friction prints usage"
+    },
+    {
+      "json_contract": "exempt",
+      "kind": "verb",
       "path": "given",
       "payload": "",
       "platform": "all",
@@ -1283,6 +1291,38 @@
     {
       "json_contract": "result",
       "kind": "subcommand",
+      "path": "friction import",
+      "payload": "mora.friction.import",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "friction log",
+      "payload": "mora.friction.log",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "friction recall",
+      "payload": "mora.friction.recall",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
+      "path": "friction recover",
+      "payload": "mora.friction.recover",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "result",
+      "kind": "subcommand",
       "path": "hook status",
       "payload": "mora.hook.status",
       "platform": "native-seam",
@@ -2061,6 +2101,22 @@
     },
     {
       "name": "mora.forget.list",
+      "version": 1
+    },
+    {
+      "name": "mora.friction.import",
+      "version": 1
+    },
+    {
+      "name": "mora.friction.log",
+      "version": 1
+    },
+    {
+      "name": "mora.friction.recall",
+      "version": 1
+    },
+    {
+      "name": "mora.friction.recover",
       "version": 1
     },
     {
