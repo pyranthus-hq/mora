@@ -52,6 +52,10 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 		inv.err = unknownMCPToolError(name)
 		return inv
 	}
+	if _, reserved := args[frictionArg]; reserved && name == "write_memory" {
+		inv.err = errors.New("use the mora friction command for structured friction records")
+		return inv
+	}
 	inv.loggable = true
 	args = withProjectScope(ctx, name, args)
 	traced := context.WithValue(ctx, mcpUsageTraceKey{}, trace)

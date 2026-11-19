@@ -142,6 +142,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return cmdMerge(ctx, args[1:], stdout, stderr)
 	case "teach":
 		return cmdTeach(ctx, args[1:], stdout, stderr)
+	case "friction":
+		return cmdFriction(ctx, args[1:], stdout, stderr, stdin)
 	case "context":
 		return cmdContext(ctx, args[1:], stdout, stderr)
 	case "index":
@@ -355,6 +357,7 @@ AGENTS, HOOKS AND SERVERS:
   mora mcp serve
   mora mcp serve-http              # profile-bound Streamable HTTP MCP on 127.0.0.1 (tunnel separately)
   mora remote expose               # print tunnel commands; executes none
+  mora friction help               # record, recover, recall and review project friction
   mora mcp proposals list          # list writes staged by propose-mode MCP clients
   mora mcp proposals show <id>     # inspect full staged content before approving
   mora mcp proposals approve <id>...  # publish staged writes (one rebuild per call)

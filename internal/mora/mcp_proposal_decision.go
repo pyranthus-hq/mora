@@ -173,6 +173,20 @@ func decideMCPWriteProposalVia(ctx context.Context, cfg Config, id, action, via,
 				return err
 			}
 			memoryID = newIDFn()
+			if m.Meta[frictionArg] != nil {
+				if err := validateFrictionParent(cfg, m); err != nil {
+					return err
+				}
+				r, err := frictionFromMemory(m)
+				if err != nil {
+					return err
+				}
+				identity := r.SourceID
+				if identity == "" {
+					identity = id
+				}
+				memoryID = frictionID(m.Scope, r.Kind, identity)
+			}
 		}
 		d := &mcpProposalDecision{Version: 1, ProposalID: id, Action: action, Status: "attempted", MemoryID: memoryID, ArgumentsSHA256: digest, DecidedVia: via, AttemptedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 		// The guard can create the decisions directory on its first use. Sync
@@ -194,7 +208,16 @@ func decideMCPWriteProposalVia(ctx context.Context, cfg Config, id, action, via,
 				return fmt.Errorf("proposal decision remains unresolved for memory %s; do not retry approval: %w", memoryID, err)
 			}
 			if wrapped, ok := result.(map[string]any); ok && wrapped["already_published"] == true {
-				return fmt.Errorf("proposal decision remains unresolved: memory ID %s already exists; refusing collision", memoryID)
+				if strArg(p.Arguments, frictionArg, "") == "" {
+					return fmt.Errorf("proposal decision remains unresolved: memory ID %s already exists; refusing collision", memoryID)
+				}
+				found, exists, err := frictionAt(cfg, strArg(p.Arguments, "scope", ""), memoryID)
+				if err != nil {
+					return err
+				}
+				if !exists || sameProposalMemory(found, p.Arguments) != nil {
+					return fmt.Errorf("friction proposal differs from saved record %s", memoryID)
+				}
 			}
 			d.Status = "approved"
 		} else {

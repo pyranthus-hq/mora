@@ -974,6 +974,45 @@ project" when nothing matches.
 hook, the recall hook and `mora brief --project` read bindings (see "Project
 brief" and "Which notes appear on their own" below); search and save do not.
 
+### Project friction and recovery
+
+Run friction commands from a bound project. In an unbound folder, pass
+`--scope project:name` before the query or JSON input. A bound folder always
+uses its own scope. Commands return JSON.
+
+```sh
+mora friction log <<'JSON'
+{"author":"codex","source":"codex","symptom":"Pending spec reversed a criterion","expected":"Approval card matches the reviewed draft","evidence":"card:original"}
+JSON
+
+mora friction recover <<'JSON'
+{"report_id":"<saved report ID>","author":"codex","source":"codex","outcome":"worked","summary":"Relaunch restored a reviewable draft","applies_when":"The pending card cannot be edited","evidence":"card:comparison","run_unblocked":true,"defect_open":true}
+JSON
+
+mora friction recall "How do I fix a reversed criterion on a pending spec?"
+```
+
+Use short, opaque evidence labels. `at` is optional for native capture and
+accepts RFC 3339 timestamps. The recovery outcome is `worked`, `failed`, or
+`counterexample`. `defect_open` describes the underlying defect independently
+of whether the attempt unblocked the run. Capture honors the vault's MCP write
+policy. A pending proposal becomes visible to recall after approval. The
+`searchable` field on a write receipt describes the general search index.
+Project friction recall reads committed vault records and includes index health.
+
+To import Drona history, prepare a redacted JSON packet with `scope`, a
+`report`, and a `recoveries` array. Use the capture fields above, preserve the
+original scope, `at`, and author, set `source` to `drona`, and add each record's
+original Drona ID as `source_id`. Omit `report_id` on imported recoveries.
+Keep credentials, private client material, and raw traces on the source host.
+
+Run `mora friction import < packet.json` to stage the packet. Inspect each
+pending ID with `mora mcp proposals show ID` and approve reviewed proposals
+with `mora mcp proposals approve ID ...`, with the report first. Replaying
+the packet reuses matching pending proposals or saved records. A later packet
+can include additional recoveries for the same report. Conflicting content
+for an existing source ID is refused.
+
 ### Project brief
 
 When an agent session starts in a bound folder, the global `SessionStart` hook
