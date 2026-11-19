@@ -334,6 +334,20 @@ func mcpWriteMemoryWith(ctx context.Context, cfg Config, args map[string]any, op
 	if err := validateDispositionPublish(cfg, m); err != nil {
 		return nil, err
 	}
+	if m.Meta[frictionArg] != nil {
+		if err := validateFrictionParent(cfg, m); err != nil {
+			return nil, err
+		}
+		r, err := frictionFromMemory(m)
+		if err != nil {
+			return nil, err
+		}
+		identity := r.SourceID
+		if identity == "" {
+			identity = newID()
+		}
+		opts = append([]createOption{withExplicitMemoryID(frictionID(m.Scope, r.Kind, identity))}, opts...)
+	}
 	// Create-exclusive publish: concurrent write_memory calls that mint the
 	// same id never clobber each other (os.Link fails EEXIST → re-mint). This
 	// is the server's most concurrent write path — N agents writing at once.
@@ -415,6 +429,9 @@ func mcpWriteMemoryWith(ctx context.Context, cfg Config, args map[string]any, op
 // persists a pending candidate, so approval cannot reveal a second, looser
 // interpretation of the request.
 func mcpMemoryFromArgs(args map[string]any, now time.Time) (Memory, error) {
+	if raw := strArg(args, frictionArg, ""); raw != "" {
+		return frictionMemory(args, raw)
+	}
 	return mcppkg.MemoryFromArgs(args, now, decisionValidityFromFlags)
 }
 

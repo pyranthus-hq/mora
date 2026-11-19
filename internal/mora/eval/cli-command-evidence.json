@@ -213,6 +213,17 @@
       }
     },
     {
+      "name": "project friction",
+      "paths": ["friction", "friction log", "friction recover", "friction import", "friction recall"],
+      "evidence": {
+        "success": {"status": "test", "tests": ["TestSpearheadFrictionAcceptance", "TestSpearheadReviewedDronaImport"]},
+        "json": {"status": "test", "tests": ["TestSpearheadFrictionAcceptance", "TestSpearheadReviewedDronaImport"], "reason": "Subcommands use JSON. Bare friction prints usage."},
+        "state": {"status": "test", "tests": ["TestSpearheadFrictionAcceptance", "TestSpearheadReviewedDronaImport"]},
+        "error": {"status": "test", "tests": ["TestSpearheadFrictionAcceptance"]},
+        "refusal": {"status": "test", "tests": ["TestSpearheadFrictionAcceptance"]}
+      }
+    },
+    {
       "name": "context",
       "paths": ["context"],
       "evidence": {

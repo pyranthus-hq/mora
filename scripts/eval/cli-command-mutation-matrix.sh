@@ -40,7 +40,7 @@ cp -R "$BASE/." "$WORK/"
   "$GO" test ./internal/mora -run '^TestCLIRegistry' -count=1
 )
 
-python3 - "$BASE/internal/mora/eval/cli-command-registry.json" >"$ROWS" <<'PY'
+python3 - "$BASE/internal/mora/eval/cli-command-registry.json" "${ONLY_PATH:-}" >"$ROWS" <<'PY'
 import json
 import re
 import sys
@@ -49,6 +49,7 @@ registry = json.load(open(sys.argv[1], encoding="utf-8"))
 families = {
     "brief": ("internal/mora/mora.go", "cmdBrief"),
     "config": ("internal/mora/config.go", "cmdConfig"),
+    "friction": ("internal/mora/friction.go", "cmdFriction"),
     "index": ("internal/mora/index.go", "cmdIndex"),
     "forget": ("internal/mora/governance_cmd.go", "cmdForget"),
     "merge": ("internal/mora/merge_cmd.go", "cmdMerge"),
@@ -76,6 +77,8 @@ deep_families = {
     ("serve", "http"): ("internal/mora/serve_http.go", "cmdServe"),
 }
 for row in registry["commands"]:
+    if sys.argv[2] and row["path"] != sys.argv[2]:
+        continue
     fields = row["path"].split()
     if len(fields) == 1:
         source, function, token = "internal/mora/mora.go", "Run", fields[0]
@@ -164,8 +167,9 @@ if [[ "$selected" -eq 0 ]]; then
   echo "no registry row matched ONLY_PATH=${ONLY_PATH:-}" >&2
   exit 1
 fi
-if [[ -z "${ONLY_PATH:-}" && "$count" -ne 124 ]]; then
-  echo "CLI dispatch mutation matrix processed $count rows; want 124" >&2
+expected="$(wc -l < "$ROWS")"
+if [[ "$count" -ne "$expected" ]]; then
+  echo "CLI dispatch mutation matrix processed $count rows; want $expected" >&2
   exit 1
 fi
 echo "CLI dispatch mutation matrix: $count/$selected selected production tokens KILLED; zero selected registry holes"

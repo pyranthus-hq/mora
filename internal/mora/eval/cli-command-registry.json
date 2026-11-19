@@ -155,6 +155,41 @@
       "reason": "dispatch-only group; a bare invocation is a usage error"
     },
     {
+      "path": "friction",
+      "kind": "verb",
+      "platform": "all",
+      "json_contract": "exempt",
+      "reason": "bare friction prints usage"
+    },
+    {
+      "path": "friction log",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.friction.log"
+    },
+    {
+      "path": "friction recover",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.friction.recover"
+    },
+    {
+      "path": "friction import",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.friction.import"
+    },
+    {
+      "path": "friction recall",
+      "kind": "subcommand",
+      "platform": "all",
+      "json_contract": "result",
+      "payload": "mora.friction.recall"
+    },
+    {
       "path": "context",
       "kind": "verb",
       "platform": "all",
