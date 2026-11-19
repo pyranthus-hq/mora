@@ -165,8 +165,8 @@ if [[ "$selected" -eq 0 ]]; then
   echo "no registry row matched ONLY_PATH=${ONLY_PATH:-}" >&2
   exit 1
 fi
-if [[ -z "${ONLY_PATH:-}" && "$count" -ne 124 ]]; then
-  echo "CLI dispatch mutation matrix processed $count rows; want 124" >&2
+if [[ -z "${ONLY_PATH:-}" && "$count" -ne 129 ]]; then
+  echo "CLI dispatch mutation matrix processed $count rows; want 129" >&2
   exit 1
 fi
 echo "CLI dispatch mutation matrix: $count/$selected selected production tokens KILLED; zero selected registry holes"
