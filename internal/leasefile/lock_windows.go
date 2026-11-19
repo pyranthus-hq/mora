@@ -3,6 +3,7 @@
 package leasefile
 
 import (
+	"errors"
 	"os"
 
 	"golang.org/x/sys/windows"
@@ -21,4 +22,10 @@ func TryLock(f *os.File) error {
 func Unlock(f *os.File) error {
 	var ol windows.Overlapped
 	return windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, &ol)
+}
+
+// IsContended reports whether err from TryLock means another holder has the
+// lock, as opposed to locking failing outright.
+func IsContended(err error) bool {
+	return errors.Is(err, windows.ERROR_LOCK_VIOLATION)
 }

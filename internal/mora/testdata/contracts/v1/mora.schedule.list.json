@@ -25,6 +25,12 @@
       "next_run": "\u003ctimestamp\u003e"
     },
     {
+      "cadence": "every 15 minutes",
+      "installed": false,
+      "name": "share-sync",
+      "next_run": "\u003ctimestamp\u003e"
+    },
+    {
       "cadence": "hourly",
       "installed": false,
       "name": "index-hourly",
