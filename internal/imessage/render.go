@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // selfLabel is the stable prefix for the user's own sent messages (D-02 — short,
@@ -118,36 +119,24 @@ func renderBody(messages []renderMessage, r *Resolver, budget int) (string, rend
 	sort.SliceStable(msgs, func(i, j int) bool { return msgs[i].date.Before(msgs[j].date) })
 
 	full := renderTranscript(msgs, r)
-	orig := len([]rune(full)) // rune count: honest size in characters, not bytes
+	orig := utf8.RuneCountInString(full) // rune count: honest size in characters, not bytes
 
 	if budget <= 0 || orig <= budget {
 		return full, renderResult{Truncated: false, OriginalSize: orig, IngestedSize: orig, retained: msgs}
 	}
 
-	// Newest-first: drop whole messages from the FRONT (oldest) until the rendered
-	// body — including the marker blockquote — fits the budget. Dropping whole
-	// messages keeps every retained line rune-intact (no mid-emoji slice).
-	start := 0
-	var body string
-	for start < len(msgs) {
-		kept := msgs[start:]
-		body = withMarker(renderTranscript(kept, r))
-		if len([]rune(body)) <= budget {
-			break
-		}
-		start++
-	}
-	if start >= len(msgs) {
-		// Even the single newest message + marker exceeds the budget: keep just the
-		// newest message under the marker (never emit an empty body for a non-empty
-		// conversation; the marker still honestly flags the drop).
-		body = withMarker(renderTranscript(msgs[len(msgs)-1:], r))
+	// Removing an oldest message cannot grow the transcript. Find the first
+	// suffix that fits without rendering every intermediate suffix.
+	start := sort.Search(len(msgs), func(i int) bool {
+		return utf8.RuneCountInString(withMarker(renderTranscript(msgs[i:], r))) <= budget
+	})
+	if start == len(msgs) {
+		// Keep the newest message even when it cannot fit with the marker.
+		start--
 	}
 	retained := msgs[start:]
-	if start >= len(msgs) {
-		retained = msgs[len(msgs)-1:]
-	}
-	return body, renderResult{Truncated: true, OriginalSize: orig, IngestedSize: len([]rune(body)), retained: retained}
+	body := withMarker(renderTranscript(retained, r))
+	return body, renderResult{Truncated: true, OriginalSize: orig, IngestedSize: utf8.RuneCountInString(body), retained: retained}
 }
 
 // withMarker prefixes the truncation blockquote ABOVE the transcript (D-03 — marker
