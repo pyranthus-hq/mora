@@ -1,0 +1,61 @@
+amends "package://github.com/jdx/hk/releases/download/v2.11.1/hk@2.11.1#/Config.pkl"
+import "package://github.com/jdx/hk/releases/download/v2.11.1/hk@2.11.1#/Builtins.pkl"
+
+// Git hooks (https://hk.jdx.dev). Install once per clone: `hk install`.
+// A hook, not a line in AGENTS.md, because a hook cannot be skipped by forgetting.
+//
+// pre-commit fixes formatting on the staged Go files and lints.
+// pre-push runs the same fast checks as CI's `test` and `lint` jobs:
+// gofmt (exactly CI's `gofmt -l`, no -s), go vet, golangci-lint (.golangci.yml).
+// Tests stay in CI: the full race suite does not fit a hook.
+
+local gofmt = new Config.Step {
+  glob = "**/*.go"
+  // CI runs `gofmt -l .` (no -s); match it exactly so a hook can never pass
+  // what CI fails, or fail what CI passes.
+  check_list_files = new Config.CommandSpec {
+    command =
+      """
+      FILES=$(gofmt -l {{files}})
+      if [ -n "$FILES" ]; then
+      echo "$FILES"
+      exit 1
+      fi
+      """
+    effect = "read"
+  }
+  fix = new Config.CommandSpec {
+    command = "gofmt -w {{files}}"
+    effect = "write"
+  }
+}
+
+local checks = new Mapping<String, Config.Step> {
+  ["gofmt"] = gofmt
+  ["go-vet"] = (Builtins.go_vet) {
+    depends = List("gofmt")
+  }
+  ["golangci-lint"] = (Builtins.golangci_lint) {
+    depends = List("gofmt")
+    // Lint reports; it never rewrites code behind the author's back.
+    fix = null
+  }
+}
+
+hooks {
+  ["pre-commit"] {
+    fix = true
+    stash = "git"
+    steps = checks
+  }
+  ["pre-push"] {
+    steps = checks
+  }
+  ["check"] {
+    steps = checks
+  }
+  ["fix"] {
+    fix = true
+    steps = checks
+  }
+}
