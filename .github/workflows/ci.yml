@@ -133,13 +133,29 @@ jobs:
       fail-fast: false
       matrix:
         shard: [run, skip, rest]
+    env:
+      # setup-go keeps ONE cache per go.sum, saved by whichever job finishes
+      # first, so race-instrumented packages were never in it and every shard
+      # recompiled them (56-82 s). This job keeps its own build cache instead:
+      # main saves it, PRs restore main's newest. The internal/mora shards
+      # build the same binary, so they share one; `rest` builds the others.
+      RACE_CACHE: go-race-${{ runner.os }}-${{ matrix.shard == 'rest' && 'rest' || 'mora' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
-          cache-dependency-path: go.sum
+          cache: false
+      - name: Restore race build cache (seeded by main)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ env.RACE_CACHE }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ env.RACE_CACHE }}-${{ hashFiles('go.sum') }}-
+            ${{ env.RACE_CACHE }}-
       - name: go test (race + cover)
         # The race detector needs CGO. Enable it ONLY for the test run —
         # every build/release step stays CGO_ENABLED=0 (the product's thesis).
@@ -163,6 +179,16 @@ jobs:
             echo "::error::CI test shards do not cover exactly 'go list ./...'"; exit 1
           fi
           go test -race -vet=off -count=1 -timeout=20m -covermode=atomic "${rest[@]}"
+      - name: Save race build cache (main only)
+        # One writer per cache: the first internal/mora shard and `rest`. A
+        # failed test still leaves a valid build cache, so save unless cancelled.
+        if: ${{ !cancelled() && github.event_name == 'push' && matrix.shard != 'skip' && matrix.shard != '1' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ env.RACE_CACHE }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
 
   # Windows portability gate (#56 Phase 2 exit criterion): the FULL `go test ./...`
   # now runs on a real windows-latest runner (the `test-windows` shards below),
