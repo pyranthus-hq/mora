@@ -118,21 +118,23 @@ jobs:
       - name: go vet
         run: go vet ./...
 
-  # The full race + cover suite, split in three so no job waits ~8 min on
-  # internal/mora alone. `run` and `skip` take the SAME pattern, so they are
-  # exact complements: every internal/mora test runs in exactly one of them.
-  # `^Test[A-F]` held about half of internal/mora's test time on 2026-11-09;
-  # move the letter if one half grows. `rest` is every other package, and its
-  # guard fails if the three shards stop covering exactly `go list ./...`.
-  # `needs: test` keeps the stage order above: nothing here runs until the
-  # exam ground truth is proven intact.
+  # The full race + cover suite. internal/mora (~2,300 tests, almost all serial
+  # because t.Setenv/t.Chdir forbid t.Parallel) used to run on ONE core per job.
+  # scripts/ci/gotest_shard.py compiles its test binary once and runs one worker
+  # PROCESS per core, each on a disjoint slice of `-test.list`, balanced by the
+  # per-test times in scripts/ci/test-timings/. Every shard computes the same
+  # plan from the checked-out commit, proves it is an exact partition of the
+  # listed tests, and proves every test it was assigned reported a result.
+  # `rest` is every other package (`go test` already runs packages in
+  # parallel); its guard fails if the shards stop covering `go list ./...`.
+  # No `needs:`: these start with everything else. Every job is still required,
+  # so a broken exam ground truth (the `test` job) still blocks the merge.
   test-race:
-    needs: test
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: [run, skip, rest]
+        shard: ["0", "1", rest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -153,7 +155,11 @@ jobs:
         run: |
           mora=github.com/pyranthus-hq/mora/internal/mora
           if [ "$SHARD" != rest ]; then
-            go test -race -vet=off -count=1 -timeout=20m -covermode=atomic -"$SHARD" '^Test[A-F]' ./internal/mora
+            python3 scripts/ci/gotest_shard.py --pkg ./internal/mora \
+              --shard "$SHARD" --shards 2 --timeout 20m \
+              --build-flag=-race --build-flag=-covermode=atomic \
+              --seed scripts/ci/test-timings/linux-race.tsv \
+              --record "test-timings/linux-race-$SHARD.tsv"
             exit
           fi
           all=$(go list ./...)
@@ -163,6 +169,15 @@ jobs:
             echo "::error::CI test shards do not cover exactly 'go list ./...'"; exit 1
           fi
           go test -race -vet=off -count=1 -timeout=20m -covermode=atomic "${rest[@]}"
+      - name: Record per-test times from main
+        # Main's full run keeps the times that rebalance the shards:
+        # scripts/ci/refresh-test-timings.sh <run-id> rewrites the seed from them.
+        if: always() && github.event_name == 'push' && matrix.shard != 'rest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-timings-linux-race-${{ matrix.shard }}
+          path: test-timings/
+          if-no-files-found: error
 
   # Windows portability gate (#56 Phase 2 exit criterion): the FULL `go test ./...`
   # now runs on a real windows-latest runner (the `test-windows` shards below),
@@ -203,14 +218,14 @@ jobs:
         run: go test -vet=off -count=5 -timeout=10m ./internal/atomicio/
 
   # The FULL Windows `go test ./...`, split in three the same way as the Linux
-  # `test-race` job: `run` and `skip` share one pattern, so every internal/mora
-  # test runs in exactly one of them; `rest` is every other package, guarded.
+  # `test-race` job: internal/mora in two per-core, time-balanced shards that
+  # prove their own coverage; `rest` is every other package, guarded.
   test-windows:
     runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: [run, skip, rest]
+        shard: ["0", "1", rest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -218,12 +233,28 @@ jobs:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
-      - name: go test internal/mora (${{ matrix.shard }})
+      - name: go test internal/mora (shard ${{ matrix.shard }})
         if: matrix.shard != 'rest'
         env:
           CGO_ENABLED: "0"
+          SHARD: ${{ matrix.shard }}
         # The `build-windows` job runs native Windows vet.
-        run: go test -vet=off -count=1 -timeout=20m -${{ matrix.shard }} '^Test[A-F]' ./internal/mora
+        shell: bash
+        run: |
+          # Falls back to the Linux weights until Windows times are committed;
+          # relative test cost is what balances, and it carries across.
+          python scripts/ci/gotest_shard.py --pkg ./internal/mora \
+            --shard "$SHARD" --shards 2 --timeout 20m \
+            --seed scripts/ci/test-timings/windows.tsv \
+            --seed scripts/ci/test-timings/linux-race.tsv \
+            --record "test-timings/windows-$SHARD.tsv"
+      - name: Record per-test times from main
+        if: always() && github.event_name == 'push' && matrix.shard != 'rest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-timings-windows-${{ matrix.shard }}
+          path: test-timings/
+          if-no-files-found: error
       - name: go test (every other package)
         if: matrix.shard == 'rest'
         env:
