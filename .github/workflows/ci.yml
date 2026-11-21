@@ -175,6 +175,15 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
+      - name: Put temp on the runner's local disk
+        # t.TempDir() and go's build temp default to C:, the runner's
+        # network-attached OS disk, where every FlushFileBuffers is slow.
+        # RUNNER_TEMP is on D:, the VM's local disk. Measured on the atomicio
+        # repeat step: 257 s on C:, 94 s on D:, tests unchanged.
+        shell: bash
+        run: |
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
@@ -199,16 +208,11 @@ jobs:
         run: go test -vet=off -count=3 -timeout=20m ./internal/mora -run 'TestConcurrencyContractStress|TestConcurrentRebuildsDoNotCorrupt'
       - name: Repeat atomicio fallback regression tests
         # Unchanged test, five sequential passes as before; -v prints each
-        # test's duration. The step is IO-bound: each pass of the single-winner
-        # race tests makes ~3,200 durable creates, i.e. ~3,200 FlushFileBuffers.
-        # t.TempDir() defaults to C: (the runner's network-attached OS disk);
-        # RUNNER_TEMP is on D:, the VM's local disk, where a flush is cheap.
-        shell: bash
+        # test's duration. IO-bound: each pass of the single-winner race tests
+        # makes ~3,200 durable creates, i.e. ~3,200 FlushFileBuffers.
         env:
           CGO_ENABLED: "0"
-        run: |
-          export TMP="$RUNNER_TEMP" TEMP="$RUNNER_TEMP"
-          go test -vet=off -v -count=5 -timeout=10m ./internal/atomicio/
+        run: go test -vet=off -v -count=5 -timeout=10m ./internal/atomicio/
 
   # The FULL Windows `go test ./...`, split in three the same way as the Linux
   # `test-race` job: `run` and `skip` share one pattern, so every internal/mora
@@ -220,6 +224,15 @@ jobs:
       matrix:
         shard: [run, skip, rest]
     steps:
+      - name: Put temp on the runner's local disk
+        # t.TempDir() and go's build temp default to C:, the runner's
+        # network-attached OS disk, where every FlushFileBuffers is slow.
+        # RUNNER_TEMP is on D:, the VM's local disk. Measured on the atomicio
+        # repeat step: 257 s on C:, 94 s on D:, tests unchanged.
+        shell: bash
+        run: |
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
