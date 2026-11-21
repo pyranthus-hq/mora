@@ -198,13 +198,24 @@ def main() -> int:
     if a.plan_only:
         return 0
 
+    # A coverage build: give each worker the GOCOVERDIR `go test -cover` would,
+    # so re-exec'd child test binaries do not warn about it on stderr.
+    cover = any(f.startswith(("-cover", "-coverpkg")) for f in a.build_flag)
     base_env = dict(os.environ)
     threads = []
+    covdirs = []
     for i, s in enumerate(slices):
         tmp = work / f"w{i}"
         tmp.mkdir()
         env = dict(base_env, TMPDIR=str(tmp), TMP=str(tmp), TEMP=str(tmp))
-        threads.append(Worker(i, binary, pkg_dir, s, a.timeout, a.test_flag, env))
+        extra = list(a.test_flag)
+        if cover:
+            cov = work / f"cover{i}"
+            cov.mkdir()
+            covdirs.append(str(cov))
+            env["GOCOVERDIR"] = str(cov)
+            extra.append(f"-test.gocoverdir={cov}")
+        threads.append(Worker(i, binary, pkg_dir, s, a.timeout, extra, env))
     t1 = time.monotonic()
     for w in threads:
         w.start()
@@ -244,6 +255,12 @@ def main() -> int:
     log("slowest: " + ", ".join(f"{n} {s:.1f}s" for n, s in slow))
     log(f"shard {a.shard}: build {build_s:.1f}s, run {run_s:.1f}s, "
         f"{len(failed)} failed, {len(missing)} without a result")
+
+    if covdirs:
+        pct = subprocess.run(["go", "tool", "covdata", "percent", "-i=" + ",".join(covdirs)],
+                             text=True, capture_output=True)
+        log("coverage (this shard, merged across workers): "
+            + (pct.stdout.strip() or pct.stderr.strip()))
 
     if a.record:
         Path(a.record).parent.mkdir(parents=True, exist_ok=True)
