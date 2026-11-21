@@ -175,13 +175,6 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - name: Exclude Go's toolchain and caches from Defender scanning
-        # Only the module cache, build cache and toolchain (tens of thousands of
-        # files restored and compiled every run) are excluded. Test files and
-        # temp dirs stay scanned, as on a user's machine: the product's Windows
-        # sharing-violation retries exist for exactly that.
-        shell: pwsh
-        run: Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\go-build","$env:USERPROFILE\go","$env:RUNNER_TOOL_CACHE\go"
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
@@ -207,9 +200,33 @@ jobs:
       - name: Repeat atomicio fallback regression tests
         env:
           CGO_ENABLED: "0"
-        # -v prints each test's duration: this step is the critical path of
-        # the whole workflow (~455 s at p50) and the next fix needs to know why.
-        run: go test -vet=off -v -count=5 -timeout=10m ./internal/atomicio/
+        # Five full passes, as -count=5, but as five concurrent processes of one
+        # compiled binary. Sequential, this step was the workflow's critical
+        # path (~455 s at p50): each pass of the single-winner race tests makes
+        # ~3,200 durable creates, and FlushFileBuffers costs milliseconds on
+        # Windows. Concurrent passes only add contention; every pass must pass.
+        shell: bash
+        run: |
+          go test -c -vet=off -o "$RUNNER_TEMP/atomicio.test.exe" ./internal/atomicio/
+          cd internal/atomicio
+          pids=()
+          for pass in 1 2 3 4 5; do
+            "$RUNNER_TEMP/atomicio.test.exe" -test.v -test.count=1 -test.timeout=10m \
+              > "$RUNNER_TEMP/atomicio-pass-$pass.log" 2>&1 &
+            pids+=("$!")
+          done
+          failed=0
+          for pass in 1 2 3 4 5; do
+            if wait "${pids[$((pass-1))]}"; then
+              echo "pass $pass: ok ($(grep -c '^--- PASS' "$RUNNER_TEMP/atomicio-pass-$pass.log") tests passed)"
+            else
+              failed=1
+              echo "::error::atomicio pass $pass failed"
+              cat "$RUNNER_TEMP/atomicio-pass-$pass.log"
+            fi
+          done
+          grep -h '^--- PASS' "$RUNNER_TEMP"/atomicio-pass-*.log | sort -t'(' -k2 -rn | head -5
+          exit "$failed"
 
   # The FULL Windows `go test ./...`, split in three the same way as the Linux
   # `test-race` job: `run` and `skip` share one pattern, so every internal/mora
@@ -221,13 +238,6 @@ jobs:
       matrix:
         shard: [run, skip, rest]
     steps:
-      - name: Exclude Go's toolchain and caches from Defender scanning
-        # Only the module cache, build cache and toolchain (tens of thousands of
-        # files restored and compiled every run) are excluded. Test files and
-        # temp dirs stay scanned, as on a user's machine: the product's Windows
-        # sharing-violation retries exist for exactly that.
-        shell: pwsh
-        run: Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\go-build","$env:USERPROFILE\go","$env:RUNNER_TOOL_CACHE\go"
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
