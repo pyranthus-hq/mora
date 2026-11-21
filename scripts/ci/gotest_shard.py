@@ -43,6 +43,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import statistics
 import subprocess
@@ -53,6 +54,10 @@ import time
 from pathlib import Path
 
 DEFAULT_WEIGHT = 1.0
+# An exclusive test occupies the whole machine, so it costs a shard this many
+# worker-seconds per second. A constant, not os.cpu_count(): the cross-shard plan
+# must not depend on the machine that computes it.
+EXCLUSIVE_FACTOR = 4
 
 
 def log(msg: str) -> None:
@@ -147,6 +152,9 @@ def main() -> int:
     ap.add_argument("--seed", action="append", default=[],
                     help="committed timings TSV; the first that exists is used")
     ap.add_argument("--record", help="write this shard's per-test durations here")
+    ap.add_argument("--exclusive", default="",
+                    help="regex (full match) of tests that run alone on the machine, "
+                         "one at a time, after the parallel phase")
     ap.add_argument("--plan-only", action="store_true",
                     help="print and verify the plan, run nothing")
     a = ap.parse_args()
@@ -180,7 +188,12 @@ def main() -> int:
     weight = {n: max(timings.get(n, fallback), 0.001) for n in names}
     unknown = sum(1 for n in names if n not in timings)
 
-    plan = lpt(names, weight, a.shards)
+    exclusive_re = re.compile(a.exclusive) if a.exclusive else None
+    exclusive = {n for n in names if exclusive_re and exclusive_re.fullmatch(n)}
+    if exclusive_re and not exclusive:
+        raise SystemExit(f"::error::--exclusive {a.exclusive!r} matches no listed test")
+    plan_weight = {n: weight[n] * (EXCLUSIVE_FACTOR if n in exclusive else 1) for n in names}
+    plan = lpt(names, plan_weight, a.shards)
     # Proof 1: the plan is a partition of the listed tests.
     flat = [n for s in plan for n in s]
     if sorted(flat) != names or len(set(flat)) != len(flat):
@@ -190,10 +203,13 @@ def main() -> int:
     log(f"package {a.pkg}: {len(names)} tests, weights from {source} "
         f"({unknown} without a recorded time, weighted {fallback:.2f}s)")
     log(f"plan {fp}: " + ", ".join(
-        f"shard {i}={len(s)} tests/{sum(weight[n] for n in s):.0f}s" for i, s in enumerate(plan)))
+        f"shard {i}={len(s)} tests/{sum(plan_weight[n] for n in s):.0f}s" for i, s in enumerate(plan)))
     mine = plan[a.shard]
-    slices = [s for s in lpt(mine, weight, min(workers, len(mine))) if s]
-    log(f"shard {a.shard}: {len(mine)} tests on {len(slices)} worker processes; "
+    parallel = [n for n in mine if n not in exclusive]
+    alone = [n for n in mine if n in exclusive]
+    slices = [s for s in lpt(parallel, weight, min(workers, len(parallel) or 1)) if s]
+    log(f"shard {a.shard}: {len(parallel)} tests on {len(slices)} worker processes, "
+        f"then {len(alone)} alone ({' '.join(alone) or 'none'}); "
         f"test binary built in {build_s:.1f}s")
     if a.plan_only:
         return 0
@@ -204,7 +220,8 @@ def main() -> int:
     base_env = dict(os.environ)
     threads = []
     covdirs = []
-    for i, s in enumerate(slices):
+    # The exclusive slice is the last worker; it starts after the others finish.
+    for i, s in enumerate(slices + ([alone] if alone else [])):
         # Same environment `go test` gives the binary. TMPDIR is deliberately
         # NOT moved: t.TempDir() names are already unique per process, and some
         # tests' payloads embed the temp path (MCP budget ceilings count bytes),
@@ -219,9 +236,15 @@ def main() -> int:
             extra.append(f"-test.gocoverdir={cov}")
         threads.append(Worker(i, binary, pkg_dir, s, a.timeout, extra, env))
     t1 = time.monotonic()
-    for w in threads:
+    par = threads[:len(slices)]
+    for w in par:
         w.start()
-    for w in threads:
+    for w in par:
+        w.join()
+    for w in threads[len(slices):]:
+        # Contention tests whose contract is "a fixed busy_timeout absorbs every
+        # collision" assume a machine of their own, as they had under `go test`.
+        w.start()
         w.join()
     run_s = time.monotonic() - t1
 

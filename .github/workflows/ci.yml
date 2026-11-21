@@ -125,6 +125,9 @@ jobs:
   # per-test times in scripts/ci/test-timings/. Every shard computes the same
   # plan from the checked-out commit, proves it is an exact partition of the
   # listed tests, and proves every test it was assigned reported a result.
+  # --exclusive tests assert that a fixed SQLite busy_timeout absorbs every
+  # collision; they assume a machine of their own (as under `go test`), so they
+  # run alone, one at a time, after the parallel phase.
   # `rest` is every other package (`go test` already runs packages in
   # parallel); its guard fails if the shards stop covering `go list ./...`.
   # No `needs:`: these start with everything else. Every job is still required,
@@ -158,6 +161,7 @@ jobs:
             python3 scripts/ci/gotest_shard.py --pkg ./internal/mora \
               --shard "$SHARD" --shards 2 --timeout 20m \
               --build-flag=-race --build-flag=-covermode=atomic \
+              --exclusive '(TestConcurrencyContractStress|TestNoUserVisibleSQLITEBUSY|TestShareIndexNoSQLITEBUSYAcrossProcesses|TestRetryWhileIndexBusy)' \
               --seed scripts/ci/test-timings/linux-race.tsv \
               --record "test-timings/linux-race-$SHARD.tsv"
             exit
@@ -245,6 +249,7 @@ jobs:
           # relative test cost is what balances, and it carries across.
           python scripts/ci/gotest_shard.py --pkg ./internal/mora \
             --shard "$SHARD" --shards 2 --timeout 20m \
+            --exclusive '(TestConcurrencyContractStress|TestNoUserVisibleSQLITEBUSY|TestShareIndexNoSQLITEBUSYAcrossProcesses|TestRetryWhileIndexBusy)' \
             --seed scripts/ci/test-timings/windows.tsv \
             --seed scripts/ci/test-timings/linux-race.tsv \
             --record "test-timings/windows-$SHARD.tsv"
