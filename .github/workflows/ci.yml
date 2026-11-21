@@ -139,7 +139,8 @@ jobs:
       # recompiled them (56-82 s). This job keeps its own build cache instead:
       # main saves it, PRs restore main's newest. The internal/mora shards
       # build the same binary, so they share one; `rest` builds the others.
-      RACE_CACHE: go-race-${{ runner.os }}-${{ matrix.shard == 'rest' && 'rest' || 'mora' }}
+      # (Job-level env cannot read the runner context, hence the literal OS.)
+      RACE_CACHE: go-race-Linux-${{ matrix.shard == 'rest' && 'rest' || 'mora' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
