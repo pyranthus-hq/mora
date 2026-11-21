@@ -175,6 +175,13 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
+      - name: Exclude Go's toolchain and caches from Defender scanning
+        # Only the module cache, build cache and toolchain (tens of thousands of
+        # files restored and compiled every run) are excluded. Test files and
+        # temp dirs stay scanned, as on a user's machine: the product's Windows
+        # sharing-violation retries exist for exactly that.
+        shell: pwsh
+        run: Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\go-build","$env:USERPROFILE\go","$env:RUNNER_TOOL_CACHE\go"
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
@@ -200,7 +207,9 @@ jobs:
       - name: Repeat atomicio fallback regression tests
         env:
           CGO_ENABLED: "0"
-        run: go test -vet=off -count=5 -timeout=10m ./internal/atomicio/
+        # -v prints each test's duration: this step is the critical path of
+        # the whole workflow (~455 s at p50) and the next fix needs to know why.
+        run: go test -vet=off -v -count=5 -timeout=10m ./internal/atomicio/
 
   # The FULL Windows `go test ./...`, split in three the same way as the Linux
   # `test-race` job: `run` and `skip` share one pattern, so every internal/mora
@@ -212,6 +221,13 @@ jobs:
       matrix:
         shard: [run, skip, rest]
     steps:
+      - name: Exclude Go's toolchain and caches from Defender scanning
+        # Only the module cache, build cache and toolchain (tens of thousands of
+        # files restored and compiled every run) are excluded. Test files and
+        # temp dirs stay scanned, as on a user's machine: the product's Windows
+        # sharing-violation retries exist for exactly that.
+        shell: pwsh
+        run: Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\go-build","$env:USERPROFILE\go","$env:RUNNER_TOOL_CACHE\go"
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
