@@ -6,7 +6,7 @@ calls t.Parallel(). internal/mora has ~2,300 tests and almost none can be
 parallel (t.Setenv / t.Chdir forbid it), so a 4-core runner spent ~6 minutes
 on one core. This script compiles the test binary once and runs it as N
 worker PROCESSES, one per core, each on a disjoint slice of the top-level
-tests, each with its own temp dir. Process isolation keeps every test exactly
+tests. Process isolation keeps every test exactly
 as hermetic as it is under `go test` (one process, serial), just not alone on
 the machine.
 
@@ -205,9 +205,11 @@ def main() -> int:
     threads = []
     covdirs = []
     for i, s in enumerate(slices):
-        tmp = work / f"w{i}"
-        tmp.mkdir()
-        env = dict(base_env, TMPDIR=str(tmp), TMP=str(tmp), TEMP=str(tmp))
+        # Same environment `go test` gives the binary. TMPDIR is deliberately
+        # NOT moved: t.TempDir() names are already unique per process, and some
+        # tests' payloads embed the temp path (MCP budget ceilings count bytes),
+        # so a longer TMPDIR would change what they measure.
+        env = dict(base_env)
         extra = list(a.test_flag)
         if cover:
             cov = work / f"cover{i}"
