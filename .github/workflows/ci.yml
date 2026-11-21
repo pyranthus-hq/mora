@@ -198,35 +198,17 @@ jobs:
           CGO_ENABLED: "0"
         run: go test -vet=off -count=3 -timeout=20m ./internal/mora -run 'TestConcurrencyContractStress|TestConcurrentRebuildsDoNotCorrupt'
       - name: Repeat atomicio fallback regression tests
+        # Unchanged test, five sequential passes as before; -v prints each
+        # test's duration. The step is IO-bound: each pass of the single-winner
+        # race tests makes ~3,200 durable creates, i.e. ~3,200 FlushFileBuffers.
+        # t.TempDir() defaults to C: (the runner's network-attached OS disk);
+        # RUNNER_TEMP is on D:, the VM's local disk, where a flush is cheap.
+        shell: bash
         env:
           CGO_ENABLED: "0"
-        # Five full passes, as -count=5, but as five concurrent processes of one
-        # compiled binary. Sequential, this step was the workflow's critical
-        # path (~455 s at p50): each pass of the single-winner race tests makes
-        # ~3,200 durable creates, and FlushFileBuffers costs milliseconds on
-        # Windows. Concurrent passes only add contention; every pass must pass.
-        shell: bash
         run: |
-          go test -c -vet=off -o "$RUNNER_TEMP/atomicio.test.exe" ./internal/atomicio/
-          cd internal/atomicio
-          pids=()
-          for pass in 1 2 3 4 5; do
-            "$RUNNER_TEMP/atomicio.test.exe" -test.v -test.count=1 -test.timeout=10m \
-              > "$RUNNER_TEMP/atomicio-pass-$pass.log" 2>&1 &
-            pids+=("$!")
-          done
-          failed=0
-          for pass in 1 2 3 4 5; do
-            if wait "${pids[$((pass-1))]}"; then
-              echo "pass $pass: ok ($(grep -c '^--- PASS' "$RUNNER_TEMP/atomicio-pass-$pass.log") tests passed)"
-            else
-              failed=1
-              echo "::error::atomicio pass $pass failed"
-              cat "$RUNNER_TEMP/atomicio-pass-$pass.log"
-            fi
-          done
-          grep -h '^--- PASS' "$RUNNER_TEMP"/atomicio-pass-*.log | sort -t'(' -k2 -rn | head -5
-          exit "$failed"
+          export TMP="$RUNNER_TEMP" TEMP="$RUNNER_TEMP"
+          go test -vet=off -v -count=5 -timeout=10m ./internal/atomicio/
 
   # The FULL Windows `go test ./...`, split in three the same way as the Linux
   # `test-race` job: `run` and `skip` share one pattern, so every internal/mora
