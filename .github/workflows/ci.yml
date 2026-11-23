@@ -46,6 +46,8 @@ jobs:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
+      - name: Native Mac review models
+        run: bash apps/mora-menubar/test.sh
       - name: Mora.app release contract
         run: bash scripts/regress/app-bundle-contract.sh
       - name: Homebrew release contracts
@@ -176,6 +178,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Native Windows review build and self-test
+        shell: powershell
+        run: ./apps/mora-review/windows/build.ps1
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod

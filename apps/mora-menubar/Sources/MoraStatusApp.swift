@@ -8,7 +8,10 @@ struct MoraStatusApp: App {
     @StateObject private var model: StatusModel
     @NSApplicationDelegateAdaptor(PreviewWindowDelegate.self) private var appDelegate
 
-    init() { _model = StateObject(wrappedValue: StatusModel(preview: CommandLine.arguments.contains("--preview"))) }
+    init() {
+        signal(SIGPIPE, SIG_IGN)
+        _model = StateObject(wrappedValue: StatusModel(preview: CommandLine.arguments.contains("--preview")))
+    }
 
     private var needsAttention: Bool {
         guard model.error == nil, let snapshot = model.snapshot else { return true }
@@ -42,6 +45,12 @@ private struct MoraMark: View {
 final class PreviewWindowDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Finder/login launches intentionally open review; --preview remains fixture-only.
+        if CommandLine.arguments.contains("--review") || !CommandLine.arguments.contains("--preview") {
+            let directory = Bundle.main.executableURL!.deletingLastPathComponent()
+            ReviewWindowController.shared.show(mora: directory.appendingPathComponent("mora"), preview: CommandLine.arguments.contains("--preview"))
+            return
+        }
         guard CommandLine.arguments.contains("--preview") else { return }
         let view = StatusPanel(model: StatusModel(preview: true), isPreview: true)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 300), styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -65,11 +74,13 @@ final class StatusModel: ObservableObject {
 
     private var timer: Timer?
     let collector: URL
+    let reviewBinary: URL
     private let preview: Bool
 
     init(preview: Bool = false) {
         self.preview = preview
         collector = Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("mora-tentacles")
+        reviewBinary = Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("mora")
         if preview {
             snapshot = try? StatusSnapshot.decode(Data(#"{"generated_at":"2026-11-08T08:00:00Z","devices":[{"id":"mac","name":"This Mac","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked.","last_success":"2026-11-08T07:45:00Z"},{"name":"Personal archive","state":"stale","detail":"Fixture data — displayed to demonstrate a stale channel.","last_success":"2026-11-07T07:45:00Z"}]},{"id":"devbox","name":"Devbox","connection":"connected","channels":[{"name":"Work shares","state":"healthy","detail":"Fixture data — no sync was checked."}]},{"id":"windows","name":"Windows (WSL)","connection":"connected","channels":[{"name":"Windows → Mac","state":"unknown","detail":"Fixture data — return path not configured."}]}],"review":{"saved":3,"held":1},"given":{"at":"2026-11-08T07:30:00Z","surface":"hook-session-start","count":3},"sources":[{"key":"gmail:work","state":"fresh","last_success_at":"2026-11-08T07:45:00Z","detail":"Fixture data — no source content was read."},{"key":"calendar","state":"stale","last_success_at":"2026-11-07T07:45:00Z","detail":"Fixture data — stale connector example."},{"key":"imessage","state":"provider-paused","detail":"Fixture data — unknown state example."}]}"#.utf8))
             lastUpdated = Date()
@@ -170,18 +181,17 @@ struct StatusPanel: View {
                 .accessibilityLabel("Refresh status").help("Refresh status")
             }
 
-            if let text = model.snapshot?.review?.rowText {
-                Button {
-                    ReviewWindowController.shared.show(collector: model.collector, preview: isPreview) { Task { await model.refresh() } }
-                } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(text).font(.system(size: 12))
-                        Text("Click to review.").font(.system(size: 11)).foregroundStyle(.secondary)
-                    }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityHint("Open the agent notes that wait for review")
+            Button {
+                ReviewWindowController.shared.show(mora: model.reviewBinary, preview: isPreview)
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.snapshot?.review?.rowText ?? "Review agent notes").font(.system(size: 12))
+                    Text("Open the read-only saved and held queues.").font(.system(size: 11)).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Review agent notes")
+            .accessibilityHint("Open the read-only saved and held queues")
 
             if let given = model.snapshot?.given, let text = given.rowText(now: Date(), timeZone: .current) {
                 VStack(alignment: .leading, spacing: 2) {

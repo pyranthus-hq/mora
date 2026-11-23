@@ -1,0 +1,28 @@
+{
+  "preview": {
+    "id": "mem_20261113_175431_63ddb64f",
+    "kind": "saved",
+    "title": "Synthetic review note",
+    "text": "UI fixture only. The sample project uses a blue notebook.",
+    "scope": "project:ui-demo",
+    "type": "fact",
+    "source": "mcp",
+    "provenance": "authored",
+    "state": "tentative",
+    "details": [
+      {
+        "label": "created at",
+        "value": "2026-11-13T17:54:31-08:00"
+      }
+    ],
+    "complete": true,
+    "redacted": false,
+    "truncated": false,
+    "escaped": false,
+    "omitted_arguments": false,
+    "canonical_revision": "bfb7ee65204e3880cc262100b9e45453e3df0a38a68e2eaf99c0fa54b284f982",
+    "display_digest": "c57ff4d56830553c6955211b864ab34acf539fe18317c63c1d7334628bb03bd9"
+  },
+  "schema": "mora.review.preview",
+  "schema_version": 1
+}
