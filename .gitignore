@@ -41,3 +41,6 @@ testdata/rapid/
 # Private operator docs that live only in local checkouts. Never publish.
 /docs/handoffs/2026-07-30-buzz-vps-deployment.md
 /docs/audits/2026-09-22-backlog/
+
+# Python bytecode from CI helper scripts
+__pycache__/
