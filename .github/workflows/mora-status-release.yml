@@ -1,0 +1,251 @@
+name: Mora Status release
+
+# Builds the Mora Status menu bar app (Apple silicon), signs it with the same
+# Developer ID as Mora, notarizes, staples, and checks it.
+#
+#   workflow_dispatch     → signed zip as a workflow artifact only (for the
+#                           clean-Mac test). No release is created.
+#   tag mora-status-vX.Y.Z → the same, plus a DRAFT GitHub release that is
+#                           never marked latest. A person publishes it.
+#
+# The draft is never "latest", so /releases/latest still names the Mora CLI.
+# `mora upgrade` skips it: go-selfupdate needs a darwin_<arch> asset, and the
+# Mora.app updater needs a canonical vX.Y.Z tag. Secrets match release.yml.
+
+on:
+  push:
+    tags: ["mora-status-v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp on the test build (X.Y.Z)"
+        required: true
+        default: "1.0.0"
+
+permissions:
+  contents: write # create the DRAFT release on tag pushes
+  id-token: write # cosign keyless signing (OIDC)
+
+concurrency:
+  group: mora-status-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  status:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            VERSION="${GITHUB_REF_NAME#mora-status-v}"
+          else
+            VERSION="$INPUT_VERSION"
+          fi
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::version must be X.Y.Z, got '$VERSION'"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Test Mora Status and its collector
+        run: |
+          set -euo pipefail
+          sh apps/mora-menubar/test.sh
+          go test ./cmd/mora-tentacles ./cmd/gencask ./internal/appbundle
+
+      # Import the Developer ID identity into a one-job keychain. Keep the
+      # original keychain search list so the always() cleanup can restore it.
+      # The notary credential is validated before the expensive cross-build,
+      # and no secret bytes are printed or persisted outside RUNNER_TEMP.
+      - name: Prepare Apple signing credentials
+        env:
+          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+
+          missing=0
+          for name in \
+            APPLE_CERT_P12_BASE64 \
+            APPLE_CERT_PASSWORD \
+            APPLE_API_KEY_P8 \
+            APPLE_API_KEY_ID \
+            APPLE_API_ISSUER_ID \
+            APPLE_TEAM_ID; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name secret is not set"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+          case "$APPLE_TEAM_ID" in
+            (*[!A-Z0-9]*|'')
+              echo "::error::APPLE_TEAM_ID must contain only uppercase letters and digits"
+              exit 1
+              ;;
+          esac
+          if [ "${#APPLE_TEAM_ID}" -ne 10 ]; then
+            echo "::error::APPLE_TEAM_ID must be exactly 10 characters"
+            exit 1
+          fi
+          if [ "$APPLE_TEAM_ID" != "VS8M5VJBZ5" ]; then
+            echo "::error::APPLE_TEAM_ID does not match Mora's pinned Developer ID team"
+            exit 1
+          fi
+          case "$APPLE_API_KEY_ID" in
+            (*[!A-Za-z0-9]*|'')
+              echo "::error::APPLE_API_KEY_ID must be alphanumeric"
+              exit 1
+              ;;
+          esac
+          if ! printf '%s' "$APPLE_API_ISSUER_ID" \
+            | grep -Eq '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'; then
+            echo "::error::APPLE_API_ISSUER_ID must be a UUID"
+            exit 1
+          fi
+
+          umask 077
+          CREDENTIAL_DIR="$RUNNER_TEMP/mora-apple-credentials"
+          P12_PATH="$CREDENTIAL_DIR/developer-id.p12"
+          NOTARY_KEY_PATH="$CREDENTIAL_DIR/AuthKey.p8"
+          KEYCHAIN_PATH="$RUNNER_TEMP/mora-signing.keychain-db"
+          ORIGINAL_KEYCHAINS="$RUNNER_TEMP/mora-original-keychains.txt"
+          mkdir -p "$CREDENTIAL_DIR"
+
+          security list-keychains -d user > "$ORIGINAL_KEYCHAINS"
+          if ! printf '%s' "$APPLE_CERT_P12_BASE64" | /usr/bin/base64 --decode > "$P12_PATH"; then
+            echo "::error::APPLE_CERT_P12_BASE64 is not valid base64"
+            exit 1
+          fi
+          printf '%s' "$APPLE_API_KEY_P8" > "$NOTARY_KEY_PATH"
+          chmod 600 "$P12_PATH" "$NOTARY_KEY_PATH"
+          PEM_LABEL="PRIVATE KEY"
+          if ! grep -q "^-----BEGIN ${PEM_LABEL}-----$" "$NOTARY_KEY_PATH" \
+            || ! grep -q "^-----END ${PEM_LABEL}-----$" "$NOTARY_KEY_PATH"; then
+            echo "::error::APPLE_API_KEY_P8 must contain the raw PEM private key, not a base64 encoding"
+            exit 1
+          fi
+
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$P12_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -f pkcs12 \
+            -P "$APPLE_CERT_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+          EXPECTED_IDENTITY="Developer ID Application: ADIT ABHIJIT KARODE (VS8M5VJBZ5)"
+          identities="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH")"
+          if ! printf '%s\n' "$identities" | grep -Fq "\"$EXPECTED_IDENTITY\""; then
+            echo "::error::P12 does not contain the expected Mora Developer ID Application identity"
+            exit 1
+          fi
+
+          # Authenticate now so an invalid/expired API key cannot create a
+          # draft and consume a full build before failing notarization.
+          xcrun notarytool history \
+            --key "$NOTARY_KEY_PATH" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --output-format json >/dev/null
+          rm -f "$P12_PATH"
+
+      - name: Build, sign, and notarize Mora Status
+        env:
+          APPLE_SIGNING_IDENTITY: "Developer ID Application: ADIT ABHIJIT KARODE (VS8M5VJBZ5)"
+          APPLE_TEAM_ID: VS8M5VJBZ5
+          APPLE_NOTARY_KEY_PATH: ${{ runner.temp }}/mora-apple-credentials/AuthKey.p8
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: bash scripts/mora-status-darwin-release.sh dist/status "${{ steps.version.outputs.version }}"
+
+      - name: Sign checksums and render the Cask
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cosign sign-blob \
+            --output-signature=dist/status/checksums-status.txt.cosign.sig \
+            --output-certificate=dist/status/checksums-status.txt.cosign.pem \
+            --yes \
+            dist/status/checksums-status.txt
+          go run ./cmd/gencask --app status --tag "mora-status-v$VERSION" \
+            --checksums dist/status/checksums-status.txt --out dist/status/mora-status.rb
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mora-status-${{ steps.version.outputs.version }}
+          path: dist/status/
+          if-no-files-found: error
+
+      - name: Create the draft release
+        if: ${{ github.event_name == 'push' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --draft --latest=false --verify-tag \
+            --title "Mora Status $VERSION" \
+            --notes "Mora Status $VERSION for Apple silicon. Signed with Developer ID, notarized, and stapled. Install: brew install --cask pyranthus-hq/tap/mora-status" \
+            "dist/status/mora-status_${VERSION}_arm64.zip" \
+            dist/status/checksums-status.txt \
+            dist/status/checksums-status.txt.cosign.sig \
+            dist/status/checksums-status.txt.cosign.pem
+
+      # Runs after success or failure. Restore the runner's prior search list,
+      # delete the temporary keychain, and erase the API private key. The paths
+      # are explicit job-owned RUNNER_TEMP children; no user keychain is touched.
+      - name: Remove Apple signing credentials
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/mora-signing.keychain-db"
+          ORIGINAL_KEYCHAINS="$RUNNER_TEMP/mora-original-keychains.txt"
+          CREDENTIAL_DIR="$RUNNER_TEMP/mora-apple-credentials"
+
+          if [ -f "$ORIGINAL_KEYCHAINS" ]; then
+            original=()
+            while IFS= read -r line; do
+              keychain="${line#*\"}"
+              keychain="${keychain%\"*}"
+              [ -n "$keychain" ] && original+=("$keychain")
+            done < "$ORIGINAL_KEYCHAINS"
+            if [ "${#original[@]}" -gt 0 ]; then
+              security list-keychains -d user -s "${original[@]}" || true
+            fi
+          fi
+
+          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          rm -f \
+            "$CREDENTIAL_DIR/developer-id.p12" \
+            "$CREDENTIAL_DIR/AuthKey.p8" \
+            "$ORIGINAL_KEYCHAINS"
+          rmdir "$CREDENTIAL_DIR" 2>/dev/null || true

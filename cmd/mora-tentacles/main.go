@@ -179,10 +179,7 @@ func run(args []string) error {
 // --pulse path, which advances producer state and can notify on unhealthy data.
 func sourceHealth() ([]SourceHealth, string, Channel, *Review, *Given) {
 	unknownIndex := Channel{Name: "Search index", State: "unknown", Detail: "Search index health is unavailable."}
-	bin := os.Getenv("MORA_BIN")
-	if bin == "" {
-		bin = filepath.Join(home(), ".local/bin/mora")
-	}
+	bin := moraBin()
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	b, err := command(ctx, bin, "doctor", "--json")
@@ -682,12 +679,9 @@ func syncShares(job string) (ret error) {
 			ret = fmt.Errorf("sync receipt could not be committed: %w", e)
 		}
 	}()
-	bin := os.Getenv("MORA_BIN")
-	if bin == "" {
-		bin = filepath.Join(home(), ".local/bin/mora")
-		if job == "windows-gateway" {
-			bin = filepath.Join(home(), "opt/mora/bin/mora")
-		}
+	bin := moraBin()
+	if os.Getenv("MORA_BIN") == "" && job == "windows-gateway" {
+		bin = filepath.Join(home(), "opt/mora/bin/mora")
 	}
 	// Preserve the gateway's isolated config; never point remote agents at the personal replica.
 	if job == "windows-gateway" {

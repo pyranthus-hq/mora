@@ -1,4 +1,5 @@
-// gencask deterministically renders the dormant signed-Mora.app Homebrew Cask.
+// gencask deterministically renders the dormant signed-Mora.app Homebrew Cask,
+// or with --app status the Mora Status Cask.
 // It does not publish or modify a tap.
 package main
 
@@ -21,11 +22,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	checksums := fs.String("checksums", "", "path to checksums-app.txt")
 	out := fs.String("out", "", "output Cask path, or - for stdout")
 	autoUpdates := fs.Bool("auto-updates", false, "declare auto_updates true (refused until #294 acceptance)")
+	app := fs.String("app", "mora", "which Cask: mora (Mora.app) or status (Mora Status)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() != 0 || *tag == "" || *checksums == "" || *out == "" {
+	if fs.NArg() != 0 || *tag == "" || *checksums == "" || *out == "" || (*app != "mora" && *app != "status") || (*app == "status" && *autoUpdates) {
 		fmt.Fprintln(stderr, "usage: gencask --tag vMAJOR.MINOR.PATCH --checksums checksums-app.txt --out Casks/mora.rb [--auto-updates]")
+		fmt.Fprintln(stderr, "       gencask --app status --tag mora-status-vMAJOR.MINOR.PATCH --checksums checksums-status.txt --out Casks/mora-status.rb")
 		return 2
 	}
 	manifest, err := os.Open(*checksums)
@@ -34,7 +37,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer manifest.Close()
-	body, err := appbundle.GenerateCask(*tag, manifest, *autoUpdates)
+	var body []byte
+	if *app == "status" {
+		body, err = appbundle.GenerateStatusCask(*tag, manifest)
+	} else {
+		body, err = appbundle.GenerateCask(*tag, manifest, *autoUpdates)
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "gencask: %v\n", err)
 		return 1

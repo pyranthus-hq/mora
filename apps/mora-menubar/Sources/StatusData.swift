@@ -352,3 +352,16 @@ enum StatusError: LocalizedError {
         switch self { case .malformed(let message), .collector(let message): message }
     }
 }
+
+/// Settings a Finder-launched app cannot get from a shell. Set them with
+/// `defaults write com.pyranthus.mora-status vault /absolute/path` (or `moraBin`).
+/// Only absolute paths pass; anything else is ignored so mora uses its own default.
+func collectorEnvironment(_ base: [String: String], defaults: UserDefaults) -> [String: String] {
+    var env = base
+    for (key, name) in [("vault", "MORA_VAULT"), ("moraBin", "MORA_BIN")] {
+        if let value = defaults.string(forKey: key)?.trimmingCharacters(in: .whitespacesAndNewlines), value.hasPrefix("/") {
+            env[name] = value
+        }
+    }
+    return env
+}
