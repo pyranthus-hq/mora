@@ -70,7 +70,7 @@ func GenerateStatusCask(tag string, checksums io.Reader) ([]byte, error) {
 	fmt.Fprintln(&out, `  homepage "https://github.com/pyranthus-hq/mora"`)
 	fmt.Fprintln(&out)
 	fmt.Fprintln(&out, `  depends_on arch: :arm64`)
-	fmt.Fprintln(&out, `  depends_on macos: ">= :ventura"`)
+	fmt.Fprintln(&out, `  depends_on macos: :ventura`)
 	fmt.Fprintln(&out)
 	fmt.Fprintln(&out, `  app "Mora Status.app"`)
 	fmt.Fprintln(&out)

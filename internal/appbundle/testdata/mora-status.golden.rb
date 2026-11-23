@@ -11,7 +11,7 @@ cask "mora-status" do
   homepage "https://github.com/pyranthus-hq/mora"
 
   depends_on arch: :arm64
-  depends_on macos: ">= :ventura"
+  depends_on macos: :ventura
 
   app "Mora Status.app"
 
