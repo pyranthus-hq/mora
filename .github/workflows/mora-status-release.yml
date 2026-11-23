@@ -33,6 +33,10 @@ concurrency:
 jobs:
   status:
     runs-on: macos-15
+    # Signing secrets reach this job only after the environment's protection
+    # rules pass. Before the first run, an admin must add required reviewers
+    # (and limit it to protected tags and main) in Settings > Environments.
+    environment: mora-status-release
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
