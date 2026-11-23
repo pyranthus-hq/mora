@@ -8,6 +8,8 @@ import (
 	"syscall"
 )
 
+const readFlags = 0
+
 func unsafeReparse(path string, _ os.FileInfo) (bool, error) {
 	attrs, err := syscall.GetFileAttributes(syscall.StringToUTF16Ptr(path))
 	if err != nil {

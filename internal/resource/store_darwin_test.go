@@ -21,7 +21,7 @@ func TestResourceMacTemporaryAncestorsPreserveLinkBoundary(t *testing.T) {
 	if _, _, err := ReadRevision(root, r.StableID, v.RevisionDigest); err != nil {
 		t.Fatal(err)
 	}
-	if err := plainExistingDir("/tmp"); err == nil {
+	if err := CheckPlainDirectory("/tmp"); err == nil {
 		t.Fatal("selected root symlink was accepted")
 	}
 	link := filepath.Join(root, "arbitrary-alias")
@@ -33,7 +33,7 @@ func TestResourceMacTemporaryAncestorsPreserveLinkBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{link, filepath.Join(link, "child")} {
-		if err := plainExistingDir(path); err == nil {
+		if err := CheckPlainDirectory(path); err == nil {
 			t.Fatalf("accepted uncontrolled alias: %s", path)
 		}
 	}

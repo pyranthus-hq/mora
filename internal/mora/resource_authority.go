@@ -189,7 +189,7 @@ func (a *resourceDecisionAuthority) begin(action resourceDecisionAction, project
 		if found {
 			receipt, err := readResourceReceipt(a.cfg, d)
 			if err != nil {
-				return resourceDecisionChallenge{}, errDesktopReviewUnavailable
+				return resourceDecisionChallenge{}, errResourceMaterialization
 			}
 			priorRevision = d.RevisionDigest
 			priorManifest = receipt.ManifestDigest
@@ -256,24 +256,38 @@ func (a *resourceDecisionAuthority) complete(ctx context.Context, nonce string, 
 			if err != nil || p.DisplayDigest != c.DisplayDigest || destination != c.Destination || binding.Scope != c.Scope || string(record.Kind) != c.ResourceKind || rev.TreeDigest != c.TreeDigest || resourceSourceIdentityDigest(record, rev) != c.SourceIdentityDigest {
 				return errDesktopReviewUnavailable
 			}
+			if got, err := resourceRootSetDigest(a.cfg, c.Scope, c.Client); err != nil || got != c.RootSetDigest {
+				return errDesktopReviewUnavailable
+			}
+			// Check the signed predecessor under the binding lock, before the new
+			// history row becomes the latest decision for this destination.
+			old, found, err := latestResourceDecision(a.cfg, c.InstallationID, c.ResourceID, c.Scope, c.Client, c.ProjectRoot)
+			if err != nil {
+				return errResourceMaterialization
+			}
+			active := found && (old.Action == "activate" || old.Action == "rollback")
+			if active != (c.PriorRevision != "") || (!active && (c.Action != resourceActivate || c.PriorManifestDigest != "")) {
+				return errResourceMaterialization
+			}
+			var prior *managedtree.Manifest
+			var receipt resourceMaterializationReceipt
+			if active {
+				receipt, err = readResourceReceipt(a.cfg, old)
+				if err != nil || old.RevisionDigest != c.PriorRevision || receipt.ManifestDigest != c.PriorManifestDigest {
+					return errResourceMaterialization
+				}
+				prior = &receipt.Manifest
+			}
 			c.Consumed = true
 			c.State = "applying"
 			if err := writeResourceChallenge(path, c); err != nil {
 				return err
 			}
-			if got, err := resourceRootSetDigest(a.cfg, c.Scope, c.Client); err != nil || got != c.RootSetDigest {
-				return errDesktopReviewUnavailable
-			}
 			if err := appendResourceDecision(a.cfg, d); err != nil {
 				return err
 			}
 			if c.Action == resourceDetach || c.Action == resourceRetire {
-				old, found, err := latestResourceDecision(a.cfg, c.InstallationID, c.ResourceID, c.Scope, c.Client, c.ProjectRoot)
-				if err != nil || !found {
-					return errDesktopReviewUnavailable
-				}
-				_ = old
-				if err := detachResource(a.cfg, d); err != nil {
+				if err := detachResource(a.cfg, d, receipt); err != nil {
 					c.State = "retired_loader_conflict"
 					_ = writeResourceChallenge(path, c)
 					outcome = desktopReviewOutcome{Status: "retired_loader_conflict", Applied: desktopReviewBool(true), IndexVisibility: "not_checked"}
@@ -283,16 +297,6 @@ func (a *resourceDecisionAuthority) complete(ctx context.Context, nonce string, 
 				_ = writeResourceChallenge(path, c)
 				outcome = desktopReviewOutcome{Status: c.State, Applied: desktopReviewBool(true), IndexVisibility: "not_checked"}
 				return nil
-			}
-			var prior *managedtree.Manifest
-			if c.PriorRevision != "" {
-				old, found, _ := latestResourceDecision(a.cfg, c.InstallationID, c.ResourceID, c.Scope, c.Client, c.ProjectRoot)
-				if found {
-					r, err := readResourceReceipt(a.cfg, old)
-					if err == nil {
-						prior = &r.Manifest
-					}
-				}
 			}
 			_, err = materializeResource(a.cfg, d, prior)
 			if err != nil {

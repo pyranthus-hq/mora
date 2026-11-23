@@ -141,7 +141,7 @@ func prepareCandidate(c Candidate) (Candidate, string, bool, managedtree.Revisio
 }
 
 func validateTree(root string) error {
-	if err := plainExistingDir(root); err != nil {
+	if err := CheckPlainDirectory(root); err != nil {
 		return fmt.Errorf("%w: source root: %v", ErrUnsafeSource, err)
 	}
 	info, err := os.Lstat(root)
@@ -194,9 +194,9 @@ func validateTree(root string) error {
 	})
 }
 
-// Only the standard macOS temporary ancestors may alias /private; the selected
+// CheckPlainDirectory allows only the standard macOS temporary aliases to /private. The selected
 // root and every application-controlled child must themselves be plain directories.
-func plainExistingDir(dir string) error {
+func CheckPlainDirectory(dir string) error {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return err
@@ -215,7 +215,7 @@ func plainExistingDir(dir string) error {
 			}
 			return fmt.Errorf("not a plain directory: %s", current)
 		}
-		if info.Mode().Type() != os.ModeDir {
+		if !managedtree.PlainDirectory(current, info) {
 			return fmt.Errorf("not a plain directory: %s", current)
 		}
 		parent := filepath.Dir(current)

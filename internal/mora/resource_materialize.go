@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -64,17 +65,17 @@ func resourceDestination(root, client, id string) (string, error) {
 // reparse point cannot redirect a native approval outside the signed root.
 func prepareResourceDestination(destination string) error {
 	parent := filepath.Dir(destination)
-	if err := os.MkdirAll(parent, 0o700); err != nil {
-		return err
+	clientDir := filepath.Dir(parent)
+	project := filepath.Dir(clientDir)
+	if !mcpRootDirectoryChain(project) {
+		return errResourceMaterialization
 	}
-	for current := parent; ; current = filepath.Dir(current) {
-		info, err := os.Lstat(current)
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return errors.New("unsafe resource destination ancestry")
+	for _, dir := range []string{clientDir, parent} {
+		if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+			return errResourceMaterialization
 		}
-		up := filepath.Dir(current)
-		if up == current {
-			break
+		if !mcpRootDirectoryChain(dir) {
+			return errResourceMaterialization
 		}
 	}
 	return nil
@@ -158,14 +159,41 @@ func writeResourceReceipt(cfg Config, d resourceBindingDecision, receipt resourc
 	}
 	return atomicio.WriteDurable(resourceMaterializationPath(cfg, d), append(b, '\n'), 0o600)
 }
+
+var errResourceMaterialization = errors.New("resource materialization conflicted or unavailable")
+
 func readResourceReceipt(cfg Config, d resourceBindingDecision) (resourceMaterializationReceipt, error) {
-	b, err := os.ReadFile(resourceMaterializationPath(cfg, d))
-	if err != nil {
-		return resourceMaterializationReceipt{}, err
+	var zero resourceMaterializationReceipt
+	if !validResourceDecision(d) || (d.Action != "activate" && d.Action != "rollback") {
+		return zero, errResourceMaterialization
 	}
+	dest, err := resourceDestination(d.ProjectRoot, d.Client, d.ResourceID)
+	if err != nil || d.ProjectRoot != filepath.Clean(d.ProjectRoot) || d.Destination != dest || !mcpRootDirectoryChain(dest) {
+		return zero, errResourceMaterialization
+	}
+	path := resourceMaterializationPath(cfg, d)
+	if resource.CheckPlainDirectory(filepath.Dir(path)) != nil {
+		return zero, errResourceMaterialization
+	}
+	b, err := managedtree.ReadPlainFile(path, 4<<20)
 	var r resourceMaterializationReceipt
-	if json.Unmarshal(b, &r) != nil || r.Schema != resourceDecisionSchema || r.Destination != d.Destination {
-		return resourceMaterializationReceipt{}, errors.New("invalid resource materialization receipt")
+	if err != nil || json.Unmarshal(b, &r) != nil || r.Schema != resourceDecisionSchema || r.Status != "active" ||
+		r.ResourceID != d.ResourceID || r.RevisionDigest != d.RevisionDigest || r.Scope != d.Scope ||
+		r.Client != d.Client || r.ProjectRoot != d.ProjectRoot || r.Destination != dest ||
+		r.Manifest.Destination != dest || r.ManifestDigest != resourceManifestDigest(r.Manifest) {
+		return zero, errResourceMaterialization
+	}
+
+	record, rev, err := resource.ReadRevision(cfg.VaultDir, d.ResourceID, d.RevisionDigest)
+	if err != nil || !rev.Complete || rev.EffectiveScope != d.Scope || string(rev.Kind) != d.ResourceKind ||
+		rev.TreeDigest != d.TreeDigest || resourceSourceIdentityDigest(record, rev) != d.SourceIdentityDigest || rev.Reference.Version != d.SourceRevision {
+		return zero, errResourceMaterialization
+	}
+	source, err := filepath.Abs(filepath.Join(cfg.VaultDir, "resources", d.ResourceID, "revisions", d.RevisionDigest, "tree"))
+	m := r.Manifest.Revision
+	if err != nil || m.Source != source || m.Digest != d.TreeDigest || !slices.Equal(m.Files, rev.Files) ||
+		resource.VerifyRevisionTree(dest, rev) != nil {
+		return zero, errResourceMaterialization
 	}
 	return r, nil
 }
@@ -173,14 +201,17 @@ func readResourceReceipt(cfg Config, d resourceBindingDecision) (resourceMateria
 // activeResourceBindings performs scope suppression before resource discovery
 // ranking and treats any absent/corrupt local receipt as inactive. Lost local
 // state therefore cannot recreate authority from vault content.
-func activeResourceBindings(cfg Config, p mcpProject) ([]resource.Binding, error) {
+func activeResourceBindings(cfg Config, p mcpProject) ([]resource.Binding, bool, error) {
 	installation, enrolled, err := existingNativeOwnerInstallationID(cfg)
-	if err != nil || !enrolled {
-		return []resource.Binding{}, nil
+	if err != nil {
+		return nil, false, errResourceMaterialization
+	}
+	if !enrolled {
+		return []resource.Binding{}, false, nil
 	}
 	rows, err := resourceDecisionRows(cfg)
 	if err != nil {
-		return nil, err
+		return nil, false, errResourceMaterialization
 	}
 	latest := map[string]resourceBindingDecision{}
 	for _, d := range rows {
@@ -190,16 +221,14 @@ func activeResourceBindings(cfg Config, p mcpProject) ([]resource.Binding, error
 		key := d.ResourceID + "\x00" + d.Scope
 		latest[key] = d
 	}
+	conflicted := false
 	out := make([]resource.Binding, 0, len(latest))
 	for _, d := range latest {
 		if d.Action == "retire" || d.Action == "detach" {
 			continue
 		}
 		if _, err := readResourceReceipt(cfg, d); err != nil {
-			continue
-		}
-		_, rev, err := resource.ReadRevision(cfg.VaultDir, d.ResourceID, d.RevisionDigest)
-		if err != nil || !rev.Complete {
+			conflicted = true
 			continue
 		}
 		out = append(out, resource.Binding{ResourceID: d.ResourceID, RevisionDigest: d.RevisionDigest, Scope: d.Scope, Eligible: true, Active: true})
@@ -210,7 +239,7 @@ func activeResourceBindings(cfg Config, p mcpProject) ([]resource.Binding, error
 		}
 		return out[i].ResourceID < out[j].ResourceID
 	})
-	return out, nil
+	return out, conflicted, nil
 }
 
 func materializeResource(cfg Config, d resourceBindingDecision, prior *managedtree.Manifest) (resourceMaterializationReceipt, error) {
@@ -219,8 +248,9 @@ func materializeResource(cfg Config, d resourceBindingDecision, prior *managedtr
 		return resourceMaterializationReceipt{}, errors.New("resource revision unavailable")
 	}
 	source := filepath.Join(cfg.VaultDir, "resources", d.ResourceID, "revisions", d.RevisionDigest, "tree")
-	tree, err := managedtree.DigestTree(source)
-	if err != nil || tree.Digest != d.TreeDigest {
+	source, err = filepath.Abs(source)
+	tree := managedtree.Revision{Source: source, Digest: rev.TreeDigest, Files: rev.Files}
+	if err != nil || rev.TreeDigest != d.TreeDigest {
 		return resourceMaterializationReceipt{}, errors.New("resource tree changed")
 	}
 	if err := prepareResourceDestination(d.Destination); err != nil {
@@ -228,6 +258,9 @@ func materializeResource(cfg Config, d resourceBindingDecision, prior *managedtr
 	}
 	manifest, installErr := managedtree.InstallTree(tree, d.Destination, prior)
 	receipt := resourceMaterializationReceipt{Schema: resourceDecisionSchema, ResourceID: d.ResourceID, RevisionDigest: d.RevisionDigest, Scope: d.Scope, Client: d.Client, ProjectRoot: d.ProjectRoot, Destination: d.Destination, Manifest: manifest, ManifestDigest: resourceManifestDigest(manifest), Status: "active"}
+	if installErr != nil {
+		receipt.Status = "conflict"
+	}
 	if manifest.Destination != "" {
 		if err := writeResourceReceipt(cfg, d, receipt); err != nil {
 			return receipt, err
@@ -238,12 +271,8 @@ func materializeResource(cfg Config, d resourceBindingDecision, prior *managedtr
 	}
 	return receipt, nil
 }
-func detachResource(cfg Config, d resourceBindingDecision) error {
-	receipt, err := readResourceReceipt(cfg, d)
-	if err != nil {
-		return err
-	}
-	removed, err := managedtree.DetachTree(d.Destination, receipt.Manifest)
+func detachResource(cfg Config, d resourceBindingDecision, receipt resourceMaterializationReceipt) error {
+	_, err := managedtree.DetachTree(d.Destination, receipt.Manifest)
 	receipt.Status = "detached"
 	receipt.ManifestDigest = resourceManifestDigest(receipt.Manifest)
 	if err != nil {
@@ -252,7 +281,6 @@ func detachResource(cfg Config, d resourceBindingDecision) error {
 	if writeErr := writeResourceReceipt(cfg, d, receipt); writeErr != nil {
 		return writeErr
 	}
-	_ = removed
 	return err
 }
 
