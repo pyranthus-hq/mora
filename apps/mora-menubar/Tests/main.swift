@@ -142,3 +142,13 @@ check(gate.generation == 1, "successful action increments the generation")
 check(!gate.finishFetch(stale), "fetch started before an action is dropped")
 check(gate.beginFetch() == 1 && gate.finishFetch(1), "the new fetch is accepted")
 print("Review gate checks passed")
+
+let settings = UserDefaults(suiteName: "mora-status-tests-\(UUID().uuidString)")!
+check(collectorEnvironment(["MORA_VAULT": "/keep"], defaults: settings)["MORA_VAULT"] == "/keep", "no setting keeps the environment")
+settings.set("relative/vault", forKey: "vault")
+settings.set(" /opt/homebrew/bin/mora ", forKey: "moraBin")
+let env = collectorEnvironment(["HOME": "/Users/x"], defaults: settings)
+check(env["MORA_VAULT"] == nil && env["MORA_BIN"] == "/opt/homebrew/bin/mora" && env["HOME"] == "/Users/x", "only absolute settings pass, trimmed")
+settings.set("/Users/x/vault", forKey: "vault")
+check(collectorEnvironment([:], defaults: settings)["MORA_VAULT"] == "/Users/x/vault", "vault setting reaches the collector")
+print("Collector settings checks passed")
