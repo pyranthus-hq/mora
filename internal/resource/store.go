@@ -119,7 +119,7 @@ func Import(root string, candidate Candidate) (Record, Revision, ImportOutcome, 
 }
 
 func ensureResourceLayout(root, id string) (string, error) {
-	if err := plainExistingDir(root); err != nil {
+	if err := CheckPlainDirectory(root); err != nil {
 		return "", err
 	}
 	resources, err := plainChild(root, "resources", true)
@@ -137,7 +137,7 @@ func ensureResourceLayout(root, id string) (string, error) {
 }
 
 func checkResourceLayout(root, id string) (string, error) {
-	if err := plainExistingDir(root); err != nil {
+	if err := CheckPlainDirectory(root); err != nil {
 		return "", err
 	}
 	resources, err := plainChild(root, "resources", false)
@@ -179,7 +179,7 @@ func plainChild(parent, name string, create bool) (string, error) {
 }
 
 func existingID(root string, kind Kind, identity string) (string, error) {
-	if err := plainExistingDir(root); err != nil {
+	if err := CheckPlainDirectory(root); err != nil {
 		return "", err
 	}
 	resources, err := plainChild(root, "resources", false)
@@ -271,12 +271,19 @@ func ReadRevision(root, resourceID, revisionDigest string) (Record, Revision, er
 		return Record{}, Revision{}, ErrNotFound
 	}
 	if revision.TreeDigest != "" {
-		actual, err := managedtree.DigestTree(filepath.Join(resourceRoot, "revisions", revisionDigest, "tree"))
-		if err != nil || !treeMatches(revision, actual) {
+		if err := VerifyRevisionTree(filepath.Join(revisionRoot, "tree"), revision); err != nil {
 			return Record{}, Revision{}, ErrNotFound
 		}
 	}
 	return record, revision, nil
+}
+
+// VerifyRevisionTree checks persisted resource files using the original intake limits.
+func VerifyRevisionTree(path string, revision Revision) error {
+	if len(revision.Files) > maxFiles || CheckPlainDirectory(path) != nil {
+		return ErrCorrupt
+	}
+	return managedtree.VerifyTree(path, revision.Files, maxFileBytes, maxTotalBytes)
 }
 
 func validStoredRevision(r Revision, resourceID, digest string) bool {
@@ -504,39 +511,7 @@ func readRecord(path string) (Record, bool, error) {
 }
 
 func readRegular(path string, max int64) ([]byte, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > max {
-		return nil, ErrCorrupt
-	}
-	root, err := os.OpenRoot(filepath.Dir(path))
-	if err != nil {
-		return nil, err
-	}
-	defer root.Close()
-	f, err := root.Open(filepath.Base(path))
-	if err != nil {
-		return nil, err
-	}
-	opened, err := f.Stat()
-	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
-		f.Close()
-		return nil, ErrCorrupt
-	}
-	body, readErr := io.ReadAll(io.LimitReader(f, max+1))
-	closeErr := f.Close()
-	if readErr != nil {
-		return nil, readErr
-	}
-	if closeErr != nil {
-		return nil, closeErr
-	}
-	if int64(len(body)) > max {
-		return nil, ErrCorrupt
-	}
-	return body, nil
+	return managedtree.ReadPlainFile(path, max)
 }
 
 // Hard-link publication never exposes an empty record or replaces foreign bytes.

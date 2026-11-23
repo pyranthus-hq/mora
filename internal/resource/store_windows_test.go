@@ -29,7 +29,7 @@ func TestResourceWindowsJunctionRefused(t *testing.T) {
 	if _, _, _, err := Import(root, skill("", "# One")); err == nil {
 		t.Fatal("duplicate followed junction revision")
 	}
-	if err := plainExistingDir(path); err == nil {
+	if err := CheckPlainDirectory(path); err == nil {
 		t.Fatal("accepted selected junction root")
 	}
 }

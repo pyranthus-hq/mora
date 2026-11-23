@@ -114,7 +114,7 @@ func mcpDiscoverResources(ctx context.Context, cfg Config, args map[string]any) 
 	if !bound || !mcpWorkspaceManaged(ctx) {
 		return nil, errMCPWorkspaceUnavailable
 	}
-	bindings, err := activeResourceBindings(cfg, p)
+	bindings, conflicted, err := activeResourceBindings(cfg, p)
 	if err != nil {
 		return nil, err
 	}
@@ -122,5 +122,9 @@ func mcpDiscoverResources(ctx context.Context, cfg Config, args map[string]any) 
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"resources": rows, "health": compactHealthOf(cfg, time.Now())}, nil
+	result := map[string]any{"resources": rows, "health": compactHealthOf(cfg, time.Now())}
+	if conflicted {
+		result["materialization_status"] = "conflicted_or_unavailable"
+	}
+	return result, nil
 }
