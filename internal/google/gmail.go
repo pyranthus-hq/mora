@@ -18,6 +18,21 @@ import (
 
 const gmailPageSize = 50
 
+// GmailRunStats contains request attempts for one fetcher/source run. An empty
+// DeltaClass means the history scan is incomplete or cannot be classified.
+type GmailRunStats struct {
+	HistoryCalls    int    `json:"history_calls"`
+	ThreadListCalls int    `json:"thread_list_calls"`
+	ThreadGetCalls  int    `json:"thread_get_calls"`
+	DeltaClass      string `json:"delta_class"`
+}
+
+func (f *LiveFetcher) GmailRunStats() GmailRunStats {
+	f.gmailStatsMu.Lock()
+	defer f.gmailStatsMu.Unlock()
+	return f.gmailStats
+}
+
 // gmailMessageEvidence is the ordered, per-message substrate retained alongside
 // the legacy thread-level identity union. The array order is Gmail thread order;
 // recipient lists are normalized and sorted for deterministic frontmatter.
@@ -40,6 +55,11 @@ func (f *LiveFetcher) fetchGmailPageContext(ctx context.Context, w FetchWindow, 
 	if w.SyncCursor != "" {
 		return f.fetchGmailHistoryPage(ctx, w, cursor)
 	}
+	f.gmailStatsMu.Lock()
+	if f.gmailStats.DeltaClass != "expired_history" {
+		f.gmailStats.DeltaClass = "initial_backfill"
+	}
+	f.gmailStatsMu.Unlock()
 	syncCursor := ""
 	if cursor == "" {
 		// Capture BEFORE the initial snapshot. Changes racing pagination then
@@ -60,7 +80,12 @@ func (f *LiveFetcher) fetchGmailPageContext(ctx context.Context, w FetchWindow, 
 	if cursor != "" {
 		call = call.PageToken(cursor)
 	}
-	res, err := gmailRequest(ctx, f.gmailWait, call.Do)
+	res, err := gmailRequest(ctx, f.gmailWait, func(opts ...googleapi.CallOption) (*gmail.ListThreadsResponse, error) {
+		f.gmailStatsMu.Lock()
+		f.gmailStats.ThreadListCalls++
+		f.gmailStatsMu.Unlock()
+		return call.Do(opts...)
+	})
 	if err != nil {
 		return Page{}, err
 	}
@@ -95,16 +120,49 @@ func (f *LiveFetcher) fetchGmailHistoryPage(ctx context.Context, w FetchWindow, 
 	if cursor != "" {
 		call = call.PageToken(cursor)
 	}
-	res, err := gmailRequest(ctx, f.gmailWait, call.Do)
+	res, err := gmailRequest(ctx, f.gmailWait, func(opts ...googleapi.CallOption) (*gmail.ListHistoryResponse, error) {
+		f.gmailStatsMu.Lock()
+		f.gmailStats.HistoryCalls++
+		f.gmailStatsMu.Unlock()
+		return call.Do(opts...)
+	})
 	if err != nil {
 		var apiErr *googleapi.Error
 		if errors.As(err, &apiErr) && apiErr.Code == 404 {
+			f.gmailStatsMu.Lock()
+			f.gmailStats.DeltaClass = "expired_history"
+			f.gmailStatsMu.Unlock()
 			return Page{}, fmt.Errorf("%w: gmail history %s", memory.ErrIncrementalCursorExpired, w.SyncCursor)
 		}
 		return Page{}, err
 	}
 	changed := map[string]bool{}
 	deleted := map[string]bool{}
+	f.gmailStatsMu.Lock()
+	// Typed additions take precedence. Deletions and untyped-only history are
+	// unclassified; generic messages can accompany otherwise typed label events.
+	for _, h := range res.History {
+		if len(h.MessagesAdded) > 0 {
+			f.gmailHistoryChanges = true
+		}
+		if len(h.LabelsAdded) > 0 || len(h.LabelsRemoved) > 0 {
+			f.gmailHistoryLabels = true
+		}
+		if len(h.MessagesDeleted) > 0 || (len(h.MessagesAdded) == 0 && len(h.LabelsAdded) == 0 && len(h.LabelsRemoved) == 0) {
+			f.gmailHistoryUnknown = true
+		}
+	}
+	if res.NextPageToken == "" {
+		switch {
+		case f.gmailHistoryChanges:
+			f.gmailStats.DeltaClass = "new_threads"
+		case f.gmailHistoryLabels && !f.gmailHistoryUnknown:
+			f.gmailStats.DeltaClass = "label_churn"
+		case !f.gmailHistoryUnknown:
+			f.gmailStats.DeltaClass = "empty_delta"
+		}
+	}
+	f.gmailStatsMu.Unlock()
 	for _, history := range res.History {
 		for _, message := range history.Messages {
 			if message.ThreadId != "" {
@@ -223,6 +281,9 @@ func (f *LiveFetcher) getGmailThread(ctx context.Context, id string) (*gmail.Thr
 		if err != nil {
 			return nil, err
 		}
+		f.gmailStatsMu.Lock()
+		f.gmailStats.ThreadGetCalls++
+		f.gmailStatsMu.Unlock()
 		return call.Do(opts...)
 	})
 }

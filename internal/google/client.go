@@ -16,10 +16,15 @@ import (
 
 // LiveFetcher implements Fetcher against real Google services.
 type LiveFetcher struct {
-	gmail           *gmail.Service
-	cal             *calendar.Service
-	gmailWait       func(context.Context, time.Duration) error
-	gmailThreadPace sync.Mutex
+	gmail               *gmail.Service
+	cal                 *calendar.Service
+	gmailWait           func(context.Context, time.Duration) error
+	gmailThreadPace     sync.Mutex
+	gmailStatsMu        sync.Mutex
+	gmailStats          GmailRunStats
+	gmailHistoryChanges bool
+	gmailHistoryLabels  bool
+	gmailHistoryUnknown bool
 }
 
 // NewLiveFetcher builds authed Gmail+Calendar services from a stored token.

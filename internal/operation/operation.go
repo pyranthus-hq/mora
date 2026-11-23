@@ -64,20 +64,49 @@ func validCounts(counts Counts) bool {
 		counts.Examined >= 0 && counts.Materialized >= 0 && counts.Missing >= 0
 }
 
+// GmailRun is a bounded, content-free measurement of one Gmail source run.
+type GmailRun struct {
+	Source          string `json:"source"`
+	HistoryCalls    int    `json:"history_calls"`
+	ThreadListCalls int    `json:"thread_list_calls"`
+	ThreadGetCalls  int    `json:"thread_get_calls"`
+	DeltaClass      string `json:"delta_class"`
+}
+
+// SetGmailRun attaches source-local measurements before the terminal transition.
+func SetGmailRun(cfg config.Config, h Handle, stats GmailRun) error {
+	if h.Kind != KindIngest || (stats.Source != "gmail" && !strings.HasPrefix(stats.Source, "gmail:")) || stats.HistoryCalls < 0 || stats.ThreadListCalls < 0 || stats.ThreadGetCalls < 0 {
+		return errors.New("invalid Gmail run stats")
+	}
+	switch stats.DeltaClass {
+	case "", "empty_delta", "label_churn", "new_threads", "initial_backfill", "expired_history":
+	default:
+		return errors.New("invalid Gmail delta class")
+	}
+	return mutateOperation(cfg, h, func(rec *Record) error {
+		if rec.State != Running {
+			return errors.New("operation is not running")
+		}
+		rec.GmailRun = &stats
+		return nil
+	})
+}
+
 // Record is the durable writer-owned shape. OwnerPID is used only as
 // liveness corroboration and is never exposed in health JSON.
 type Record struct {
-	SchemaVersion int    `json:"schema_version"`
-	Kind          Kind   `json:"kind"`
-	State         State  `json:"state"`
-	RunID         string `json:"run_id"`
-	OwnerPID      int    `json:"owner_pid"`
-	StartedAt     string `json:"started_at"`
-	HeartbeatAt   string `json:"heartbeat_at"`
-	FinishedAt    string `json:"finished_at,omitempty"`
-	Phase         string `json:"phase"`
-	Counts        Counts `json:"counts"`
-	FailureCode   string `json:"failure_code,omitempty"`
+	SchemaVersion int       `json:"schema_version"`
+	Kind          Kind      `json:"kind"`
+	State         State     `json:"state"`
+	RunID         string    `json:"run_id"`
+	OwnerPID      int       `json:"owner_pid"`
+	StartedAt     string    `json:"started_at"`
+	HeartbeatAt   string    `json:"heartbeat_at"`
+	FinishedAt    string    `json:"finished_at,omitempty"`
+	Phase         string    `json:"phase"`
+	Counts        Counts    `json:"counts"`
+	GmailRun      *GmailRun `json:"gmail_run,omitempty"`
+	FailureCode   string    `json:"failure_code,omitempty"`
 	// AcknowledgedAt records an operator's explicit review of a terminal
 	// owner_abandoned receipt (#498). It is never written by a writer, never
 	// inferred from age, and never turns a failure into a success: State stays
