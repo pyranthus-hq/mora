@@ -61,6 +61,7 @@ absolute paths; anything else is ignored:
 ```sh
 defaults write com.pyranthus.mora-status moraBin /path/to/mora   # sets MORA_BIN
 defaults write com.pyranthus.mora-status vault /path/to/vault    # sets MORA_VAULT
+defaults write com.pyranthus.mora-status configDir /path/to/dir  # sets MORA_CONFIG_DIR (a second Mora)
 ```
 
 ## Run
@@ -106,8 +107,22 @@ with the id as a single argument and no shell:
 
 The list comes from `mora review --list --json`, `mora read <id> --json` and
 `mora mcp proposals show <id>` (`mora-tentacles review-list`). Keep never marks a
-note as your own statement: that stays a terminal action,
-`mora confirm <id> --mine`. The window never edits a note and runs no other command.
+note as your own statement. The window never edits a note and runs no other command.
+
+**Keep as my own words** is a separate button at the right of a card, never the
+default. It appears only when Keep is allowed and Mora sent the note's
+owner-confirmed digest and the fields it binds; the card then lists those fields
+(scope, type, title, source and the decision fields) under the text. Pressing it
+signs Mora's config directory and vault (shown on the card as "goes to vault"),
+the note's kind, id, digest and the time with a Secure Enclave key, and
+macOS asks for Touch ID or your login password for that one signature. The
+collector then runs `mora review app-keep <saved|held> <id> <digest> <time>
+<signature>` (`mora-tentacles review-act mine ...`). Mora checks the signature
+against the key you trusted with `mora review trust-app` (run it once in
+Terminal; the window shows the fingerprint to compare), that it is fresh, that
+the note still has the digest shown, and that the callers are this app's signed
+collector and app. Otherwise it changes nothing. A cancelled prompt shows
+"Not approved. Nothing was changed."
 
 When Mora reports `last_given` in its doctor report, the panel shows one row
 under the review row, such as "Last hand-over to an agent: 14:02, 3 notes",

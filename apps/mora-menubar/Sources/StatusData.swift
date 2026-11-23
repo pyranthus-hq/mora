@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 struct StatusSnapshot: Decodable {
@@ -115,11 +116,16 @@ struct ReviewNote: Decodable, Identifiable, Equatable {
     let truncated: Bool
     let hiddenChars: Int
     let unreadable: Bool
+    /// Mora's owner-confirmed digest of this note, and the fields other than the
+    /// text that it binds. Both are empty from an older Mora.
+    let confirm: String
+    let fields: [[String]]
 
-    enum CodingKeys: String, CodingKey { case id, kind, scope, type, title, text, redacted, truncated, hiddenChars = "hidden_chars", unreadable }
-    init(id: String, kind: String, scope: String, type: String, title: String, text: String, redacted: Bool = false, truncated: Bool = false, hiddenChars: Int = 0, unreadable: Bool = false) {
+    enum CodingKeys: String, CodingKey { case id, kind, scope, type, title, text, redacted, truncated, hiddenChars = "hidden_chars", unreadable, confirm, fields }
+    init(id: String, kind: String, scope: String, type: String, title: String, text: String, redacted: Bool = false, truncated: Bool = false, hiddenChars: Int = 0, unreadable: Bool = false, confirm: String = "", fields: [[String]] = []) {
         self.id = id; self.kind = kind; self.scope = scope; self.type = type; self.title = title; self.text = text
         self.redacted = redacted; self.truncated = truncated; self.hiddenChars = hiddenChars; self.unreadable = unreadable
+        self.confirm = confirm; self.fields = fields
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -129,11 +135,23 @@ struct ReviewNote: Decodable, Identifiable, Equatable {
                   redacted: try c.decodeIfPresent(Bool.self, forKey: .redacted) ?? false,
                   truncated: try c.decodeIfPresent(Bool.self, forKey: .truncated) ?? false,
                   hiddenChars: max(0, try c.decodeIfPresent(Int.self, forKey: .hiddenChars) ?? 0),
-                  unreadable: try c.decodeIfPresent(Bool.self, forKey: .unreadable) ?? false)
+                  unreadable: try c.decodeIfPresent(Bool.self, forKey: .unreadable) ?? false,
+                  confirm: try c.decodeIfPresent(String.self, forKey: .confirm) ?? "",
+                  fields: try c.decodeIfPresent([[String]].self, forKey: .fields) ?? [])
     }
 
     /// Keep is allowed only when the window shows the whole text that would be saved. Discard is always allowed.
     var canKeep: Bool { !redacted && !truncated && !unreadable }
+
+    /// Keep as my own words needs everything Keep needs, plus the digest and
+    /// every field it binds, so the window shows exactly what the owner confirms.
+    var canKeepAsMine: Bool {
+        canKeep && !fields.isEmpty && fields.allSatisfy { $0.count == 2 }
+            && confirm.count == 64 && confirm.allSatisfy { "0123456789abcdef".contains($0) }
+    }
+
+    /// One "name: value" line per bound field, in Mora's order.
+    var fieldLines: [String] { fields.filter { $0.count == 2 }.map { "\($0[0]): \($0[1])" } }
 
     /// Why Keep is missing; nil when Keep is allowed.
     var keepWarning: String? {
@@ -160,11 +178,16 @@ struct ReviewList: Decodable {
     let notes: [ReviewNote]
     let more: Int
     let error: String?
+    /// Mora's config directory and vault: where a kept note goes. Empty from an older Mora.
+    let configDir: String
+    let vault: String
 
-    enum CodingKeys: String, CodingKey { case notes, more, error }
+    enum CodingKeys: String, CodingKey { case notes, more, error, configDir = "config_dir", vault }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         error = try c.decodeIfPresent(String.self, forKey: .error)
+        configDir = try c.decodeIfPresent(String.self, forKey: .configDir) ?? ""
+        vault = try c.decodeIfPresent(String.self, forKey: .vault) ?? ""
         notes = try c.decodeIfPresent([ReviewNote].self, forKey: .notes) ?? []
         more = max(0, try c.decodeIfPresent(Int.self, forKey: .more) ?? 0)
     }
@@ -354,14 +377,29 @@ enum StatusError: LocalizedError {
 }
 
 /// Settings a Finder-launched app cannot get from a shell. Set them with
-/// `defaults write com.pyranthus.mora-status vault /absolute/path` (or `moraBin`).
+/// `defaults write com.pyranthus.mora-status configDir /absolute/path` (also
+/// `vault` and `moraBin`). configDir opens a second Mora: its own config, vault and state.
 /// Only absolute paths pass; anything else is ignored so mora uses its own default.
 func collectorEnvironment(_ base: [String: String], defaults: UserDefaults) -> [String: String] {
     var env = base
-    for (key, name) in [("vault", "MORA_VAULT"), ("moraBin", "MORA_BIN")] {
+    for (key, name) in [("configDir", "MORA_CONFIG_DIR"), ("vault", "MORA_VAULT"), ("moraBin", "MORA_BIN")] {
         if let value = defaults.string(forKey: key)?.trimmingCharacters(in: .whitespacesAndNewlines), value.hasPrefix("/") {
             env[name] = value
         }
     }
     return env
+}
+
+/// The bytes the approval key signs; `mora review app-keep` rebuilds the same string.
+func approvalMessage(configDir: String, vault: String, kind: String, id: String, digest: String, unix: String) -> Data {
+    Data("mora-status-keep-mine/v1\n\(configDir)\n\(vault)\n\(kind)\n\(id)\n\(digest)\n\(unix)\n".utf8)
+}
+
+/// First 16 bytes of SHA-256 over the key's SPKI DER, hex in groups of four, as Mora prints it.
+func approvalFingerprint(_ der: Data) -> String {
+    let hex = SHA256.hash(data: der).prefix(16).map { String(format: "%02x", $0) }.joined()
+    return stride(from: 0, to: hex.count, by: 4).map { i in
+        let start = hex.index(hex.startIndex, offsetBy: i)
+        return String(hex[start..<hex.index(start, offsetBy: 4)])
+    }.joined(separator: " ")
 }

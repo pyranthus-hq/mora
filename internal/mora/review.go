@@ -51,10 +51,16 @@ type reviewRow struct {
 	Scope string `json:"scope"`
 	Type  string `json:"type"`
 	Title string `json:"title"`
+	// Confirm and Fields let Mora Status show every field the owner-confirmed
+	// digest binds, and pass that digest back to `mora review app-keep`.
+	Confirm string      `json:"confirm,omitempty"`
+	Fields  [][2]string `json:"fields,omitempty"`
 }
 
 type reviewReceipt struct {
-	Notes []reviewRow `json:"notes"`
+	Notes     []reviewRow `json:"notes"`
+	ConfigDir string      `json:"config_dir,omitempty"`
+	Vault     string      `json:"vault,omitempty"`
 }
 
 // same reports whether the owner would still see what was printed.
@@ -284,6 +290,12 @@ func reviewWarnings(w io.Writer, buf *bytes.Buffer) {
 }
 
 func cmdReview(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
+	if len(args) > 0 && args[0] == "app-keep" {
+		return cmdReviewAppKeep(ctx, args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "trust-app" {
+		return cmdReviewTrustApp(ctx, args[1:], stdout, stderr, stdin)
+	}
 	fs := flag.NewFlagSet("review", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	list := fs.Bool("list", false, "list agent notes that wait for review")
@@ -308,7 +320,7 @@ func cmdReview(ctx context.Context, args []string, stdout, stderr io.Writer, std
 		return err
 	}
 	if *list {
-		return printReviewList(notes, *jsonOut, stdout)
+		return printReviewList(cfg, notes, *jsonOut, stdout)
 	}
 	if len(notes) == 0 {
 		fmt.Fprintln(stdout, "No agent notes wait for review.")
@@ -319,13 +331,37 @@ func cmdReview(ctx context.Context, args []string, stdout, stderr io.Writer, std
 	return walkReviewNotes(ctx, cfg, notes, bufio.NewReader(stdin), stdout, stderr)
 }
 
-func printReviewList(notes []reviewNote, jsonOut bool, stdout io.Writer) error {
+func printReviewList(cfg Config, notes []reviewNote, jsonOut bool, stdout io.Writer) error {
 	rows := make([]reviewRow, 0, len(notes))
 	for _, n := range notes {
-		rows = append(rows, reviewRow{ID: n.ID, Kind: n.Kind, Scope: n.Scope, Type: n.Type, Title: n.Title})
+		// The text is left out: list output never carried it, and a held note's
+		// arguments are unredacted. Readers get it from read or proposals show.
+		// A credential-like value is masked, as proposals show does, and the
+		// digest is then left out: the app offers Keep as my own words only
+		// when it can show every bound field as it is.
+		fields, confirm := [][2]string{}, n.Confirm
+		for _, f := range n.Fields {
+			if f[0] == "text" {
+				continue
+			}
+			if v, masked := redactProposalText(f[1]); masked {
+				f[1], confirm = v, ""
+			}
+			fields = append(fields, f)
+		}
+		mask := func(v string) string {
+			if safe, masked := redactProposalText(v); masked {
+				confirm = ""
+				return safe
+			}
+			return v
+		}
+		scope, typ, title := mask(n.Scope), mask(n.Type), mask(n.Title)
+		rows = append(rows, reviewRow{ID: n.ID, Kind: n.Kind, Scope: scope, Type: typ, Title: title, Confirm: confirm, Fields: fields})
 	}
 	if jsonOut {
-		return emitReceipt(stdout, "mora.review", 1, reviewReceipt{Notes: rows})
+		// The app shows where a kept note goes and signs these two paths.
+		return emitReceipt(stdout, "mora.review", 1, reviewReceipt{Notes: rows, ConfigDir: cfg.ConfigDir, Vault: cfg.VaultDir})
 	}
 	if len(rows) == 0 {
 		fmt.Fprintln(stdout, "No agent notes wait for review.")

@@ -707,6 +707,42 @@ mora write --mine ...             # a new note, saved as your own statement
 mora confirm <memory-id> --mine   # an existing agent note
 ```
 
+One more action sets it outside a terminal: **Keep as my own words** in the
+Mora Status menu bar app. It is a separate button, never the default, shown only
+when the window shows the whole text and every other field the digest binds.
+Pressing it makes the app sign `(config dir, vault, saved|held, id, digest,
+time)` with a Secure
+Enclave key; macOS asks for Touch ID or your login password for that one
+signature, and the key never leaves the chip. The app then calls
+`mora review app-keep <saved|held> <id> <digest> <unix-time> <signature>`.
+Mora accepts it only when the signature verifies against the key you trusted
+and is under five minutes old, names Mora's own config directory and vault (the
+window shows the vault, so an approval cannot be moved to another Mora), the
+note's digest still matches, no agent session
+variable is set, and the calling processes are the app's signed collector and
+the signed app (Developer ID team VS8M5VJBZ5, checked by process id). The
+signature is the proof; the process check is an extra fence. Trust the key once
+per Mora, in your own terminal:
+
+```bash
+mora review trust-app             # shows the key fingerprint, asks y/N
+```
+
+The app shows the same fingerprint in its review window. The key's public half
+is at `~/Library/Application Support/Mora Status/approval-key.pem`; the trusted
+copy is `mora-status-approval.pem` in Mora's config directory, so a second Mora
+(`MORA_CONFIG_DIR`) needs its own `trust-app`. `mora review --list --json`
+carries each note's digest (`confirm`), the fields it binds other than the
+text (`fields`), and `config_dir` and `vault`. A credential-like value is masked there, as in
+`mora mcp proposals show`, and that note then has no `confirm`, so the app
+offers no Keep as my own words for it. Residual limit: any program running as
+you can ask the Secure Enclave key for a signature, which makes macOS show the
+Touch ID prompt; approve only prompts that Mora Status opened after your click.
+`trust-app` has the same limit as every terminal-only action: a program inside
+a fake terminal passes it, and Mora cannot tell a Secure Enclave key from a
+software key. It is no weaker than `mora confirm --mine`, which such a program
+can already run.
+
 Plain `mora write` and plain `mora confirm` never set it, in any terminal (inside an agent session a plain `mora write` saves tentative).
 `--mine` needs your own terminal: it refuses, saves nothing and exits non-zero
 when stdin is not a terminal or an agent session variable is set. In your own
