@@ -259,14 +259,18 @@ func TestRulesImportNeedsAPersonWhenSignersAreWritable(t *testing.T) {
 	withTempHome(t)
 	cfg := mustConfig(t)
 	stubSignersTrusted(t, false)
-	t.Setenv("CLAUDECODE", "1")
+	if err := os.Setenv("CLAUDECODE", "1"); err != nil {
+		t.Fatal(err)
+	}
 	_, err := runErr(t, "rules", "import", grant, "--signers", signers, "--scope", "factory:aeth-forge")
-	if err == nil || !strings.Contains(err.Error(), "a person must confirm") {
+	os.Unsetenv("CLAUDECODE")
+	if err == nil || !strings.Contains(err.Error(), "inside an agent session") {
 		t.Fatalf("err = %v", err)
 	}
 	if _, err := os.Stat(rules.RulePath(cfg.VaultDir, "no-sudo")); !os.IsNotExist(err) {
 		t.Fatalf("rule file written: %v", err)
 	}
+	withTestVerifiedOwnerAction(t)
 	stubRulesTerminal(t, "no-sudo")
 	run(t, "rules", "import", grant, "--signers", signers, "--scope", "factory:aeth-forge")
 	if ids := rulesActiveIDs(t, cfg); strings.Join(ids, ",") != "no-sudo" {

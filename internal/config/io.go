@@ -297,6 +297,8 @@ func resolve(ctx context.Context, cfg Config, injected bool) (Config, error) {
 			cfg.SelfEmails = splitCommaList(val)
 		case "mmr":
 			cfg.MMR = val == "true" || val == "1"
+		case "hook_unbound_brief":
+			cfg.HookUnboundBrief = val == "true"
 		case "mcp_write_policy":
 			p, e := ParseMCPWritePolicy(val)
 			if e != nil {
@@ -327,7 +329,21 @@ func Write(cfg Config) error {
 	if cfg.MMR {
 		mmr = "true"
 	}
-	owned := []struct{ key, val string }{{"vault_dir", cfg.PersistVaultDir()}, {"data_dir", cfg.DataDir}, {"state_dir", cfg.StateDir}, {"embedder", cfg.Embedder}, {"context", cfg.ContextProfile}, {"mmr", mmr}, {"mcp_write_policy", cfg.MCPWritePolicy}, {"update_policy", cfg.UpdatePolicy}}
+	hookUnboundBrief := ""
+	if cfg.HookUnboundBrief {
+		hookUnboundBrief = "true"
+	}
+	owned := []struct{ key, val string }{
+		{"vault_dir", cfg.PersistVaultDir()},
+		{"data_dir", cfg.DataDir},
+		{"state_dir", cfg.StateDir},
+		{"embedder", cfg.Embedder},
+		{"context", cfg.ContextProfile},
+		{"mmr", mmr},
+		{"hook_unbound_brief", hookUnboundBrief},
+		{"mcp_write_policy", cfg.MCPWritePolicy},
+		{"update_policy", cfg.UpdatePolicy},
+	}
 	ownedVal := func(key string) (string, bool) {
 		for _, kv := range owned {
 			if kv.key == key {
@@ -365,7 +381,7 @@ func Write(cfg Config) error {
 		}
 		written[key] = true
 		if val == "" {
-			if key == "embedder" || key == "context" || key == "mmr" || key == "mcp_write_policy" || key == "update_policy" {
+			if key == "embedder" || key == "context" || key == "mmr" || key == "hook_unbound_brief" || key == "mcp_write_policy" || key == "update_policy" {
 				continue
 			}
 			out = append(out, line)

@@ -835,6 +835,14 @@
     {
       "json_contract": "receipt",
       "kind": "subcommand",
+      "path": "review desktop",
+      "payload": "mora.review.desktop",
+      "platform": "all",
+      "reason": ""
+    },
+    {
+      "json_contract": "receipt",
+      "kind": "subcommand",
       "path": "schedule run",
       "payload": "mora.schedule.run",
       "platform": "all",
@@ -1914,6 +1922,10 @@
         "version": 1
       },
       {
+        "name": "mora.mcp.discover_resources",
+        "version": 1
+      },
+      {
         "name": "mora.mcp.get_entity",
         "version": 1
       },
@@ -1938,6 +1950,10 @@
         "version": 1
       },
       {
+        "name": "mora.mcp.submit_resource",
+        "version": 1
+      },
+      {
         "name": "mora.mcp.think",
         "version": 1
       },
@@ -1952,12 +1968,14 @@
       "context_memory",
       "delete_memory",
       "digest",
+      "discover_resources",
       "get_entity",
       "list_entities",
       "list_memory",
       "meeting_prep",
       "read_memory",
       "search_memory",
+      "submit_resource",
       "think",
       "write_memory"
     ],
@@ -2245,6 +2263,10 @@
     },
     {
       "name": "mora.review",
+      "version": 1
+    },
+    {
+      "name": "mora.review.desktop",
       "version": 1
     },
     {

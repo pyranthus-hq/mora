@@ -43,32 +43,86 @@ type mcpProposalInspection struct {
 	MemoryID   string         `json:"memory_id,omitempty"`
 }
 
-func showMCPWriteProposal(cfg Config, id string, stdout io.Writer) error {
+func readMCPProposalForInspection(cfg Config, id string) (mcpWriteProposal, time.Time, error) {
 	if len(id) > 128 || !proposalInspectionID.MatchString(id) {
-		return errors.New("invalid MCP proposal ID; use an ID from mora mcp proposals list")
+		return mcpWriteProposal{}, time.Time{}, errors.New("invalid MCP proposal ID; use an ID from mora mcp proposals list")
 	}
 	path, err := mcppkg.ProposalPath(cfg, id)
 	if err != nil {
-		return errors.New("invalid MCP proposal ID")
+		return mcpWriteProposal{}, time.Time{}, errors.New("invalid MCP proposal ID")
 	}
 	dir, err := os.Lstat(mcpProposalDir(cfg))
 	if err != nil || !dir.IsDir() {
-		return errors.New("pending proposal directory is missing or is not a regular directory")
+		return mcpWriteProposal{}, time.Time{}, errors.New("pending proposal directory is missing or is not a regular directory")
 	}
 	file, err := os.Lstat(path)
 	if err != nil || !file.Mode().IsRegular() {
-		return errors.New("pending proposal is missing or is not a regular file")
+		return mcpWriteProposal{}, time.Time{}, errors.New("pending proposal is missing or is not a regular file")
 	}
 	if file.Size() > maxProposalInspectionBytes {
-		return errors.New("proposal exceeds the inspection size limit")
+		return mcpWriteProposal{}, time.Time{}, errors.New("proposal exceeds the inspection size limit")
 	}
-	p, _, err := readMCPWriteProposal(cfg, id)
+	root, err := os.OpenRoot(mcpProposalDir(cfg))
 	if err != nil {
-		return errors.New("cannot inspect invalid or unreadable MCP proposal")
+		return mcpWriteProposal{}, time.Time{}, errors.New("pending proposal directory is missing or is not a regular directory")
+	}
+	defer root.Close()
+	openedDir, err := root.Stat(".")
+	if err != nil || !os.SameFile(dir, openedDir) {
+		return mcpWriteProposal{}, time.Time{}, errors.New("pending proposal directory is missing or is not a regular directory")
+	}
+	opened, err := root.Open(id + ".json")
+	if err != nil {
+		return mcpWriteProposal{}, time.Time{}, errors.New("cannot inspect invalid or unreadable MCP proposal")
+	}
+	defer opened.Close()
+	body, err := readReviewSnapshot(opened, file, maxProposalInspectionBytes)
+	if errors.Is(err, errReviewSnapshotTooLarge) {
+		return mcpWriteProposal{}, time.Time{}, errors.New("proposal exceeds the inspection size limit")
+	}
+	if err != nil {
+		return mcpWriteProposal{}, time.Time{}, errors.New("cannot inspect invalid or unreadable MCP proposal")
+	}
+	p, err := mcppkg.ParseProposal(id, body)
+	if err != nil {
+		return mcpWriteProposal{}, time.Time{}, errors.New("cannot inspect invalid or unreadable MCP proposal")
 	}
 	proposedAt, err := time.Parse(time.RFC3339, p.ProposedAt)
 	if err != nil {
-		return errors.New("cannot inspect proposal with an invalid timestamp")
+		return mcpWriteProposal{}, time.Time{}, errors.New("cannot inspect proposal with an invalid timestamp")
+	}
+	return p, proposedAt, nil
+}
+
+var errReviewSnapshotTooLarge = errors.New("review record exceeds its size limit")
+
+// readReviewSnapshot verifies the opened file and caps the read even if the
+// file grows after stat. The caller owns the handle.
+func readReviewSnapshot(file *os.File, expected os.FileInfo, limit int64) ([]byte, error) {
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || !os.SameFile(expected, info) {
+		return nil, errors.New("review record changed before inspection")
+	}
+	if info.Size() > limit {
+		return nil, errReviewSnapshotTooLarge
+	}
+	body, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, errReviewSnapshotTooLarge
+	}
+	return body, nil
+}
+
+func showMCPWriteProposal(cfg Config, id string, stdout io.Writer) error {
+	p, proposedAt, err := readMCPProposalForInspection(cfg, id)
+	if err != nil {
+		return err
 	}
 	memory, err := mcpMemoryFromArgs(p.Arguments, proposedAt)
 	if err != nil {

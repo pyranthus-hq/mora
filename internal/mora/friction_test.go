@@ -12,6 +12,7 @@ import (
 )
 
 func TestSpearheadFrictionAcceptance(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	t.Setenv("MORA_AGENT_SESSION", "")
 	t.Setenv("MORA_EMBEDDER", "")
@@ -130,6 +131,7 @@ func TestSpearheadFrictionAcceptance(t *testing.T) {
 }
 
 func TestSpearheadReviewedDronaImport(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	t.Setenv("MORA_AGENT_SESSION", "")
 	ctx := testCtx(t)

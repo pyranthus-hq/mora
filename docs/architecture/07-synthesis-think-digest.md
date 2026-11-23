@@ -410,7 +410,7 @@ The brief surface is the last piece of a five-phase habit (see the [guide's sess
 | 13 | dated artifact + `pulse-daily` | the scheduled job writes `briefs/<date>-brief.md` each day (`internal/briefartifact`, `scheduleCommands["pulse-daily"]` `mora.go:3441-3442`) |
 | 14 | salience ordering | *what matters most, first* (`capRecency`, same kernel as `mora graph`) |
 | 15 | synthesis envelope (opt-in) | a cited, model-free `synthesis_prompt` (`digest_envelope.go`) |
-| 16 | `mora brief` / MCP `brief` / SessionStart | reads today's brief (or generates on demand) at session start — the default |
+| 16 | `mora brief` / MCP `brief` / SessionStart | exposes the brief on demand. SessionStart emits the project brief in bound folders and the daily brief in unbound folders only with `hook_unbound_brief = true`. |
 
 The WRITE side (`pulse-daily`, the only `--advance` committer) persists today's brief. The READ side (`resolveBrief`) reads it at session start, generating on demand when none exists yet. The two halves never cross: persisting a brief does not advance the watermark (Phase 13 decoupling), and reading one never advances it either (Phase 16, `advance:false` everywhere).
 

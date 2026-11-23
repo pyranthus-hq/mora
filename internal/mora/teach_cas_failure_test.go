@@ -14,6 +14,7 @@ func teachCASFixture(t *testing.T) (Config, string) {
 	t.Helper()
 	withTempHome(t)
 	run(t, "init")
+	legacyOpenPolicy(t)
 	cfg := mustConfig(t)
 	var original writeReceipt
 	body := run(t, "write", "--scope", "project:cas", "--type", "note", "--title", "Package manager", "--text", "Original instructions", "--json")

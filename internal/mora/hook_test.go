@@ -15,9 +15,49 @@ import (
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
-func TestHookSessionStart(t *testing.T) {
+func TestHookSessionStartUnboundIsQuietByDefault(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
+	cfg := mustConfig(t)
+	dailyCalls := 0
+	previousResolve := hookResolveBrief
+	hookResolveBrief = func(Config, time.Time, briefOpts) (string, bool, error) {
+		dailyCalls++
+		return "fixture daily brief", false, nil
+	}
+	t.Cleanup(func() { hookResolveBrief = previousResolve })
+
+	unbound := t.TempDir()
+	for _, tc := range []struct {
+		name, input, want string
+	}{
+		{"unbound folder", `{"cwd":` + quoteJSON(unbound) + `}`, ""},
+		{"no folder", `{}`, ""},
+		{"relative folder", `{"cwd":"relative"}`, ""},
+		{"antigravity", `{"workspacePaths":[` + quoteJSON(unbound) + `]}`, "{}"},
+	} {
+		subRun(t, tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := cmdHook(testCtx(t), []string{"session-start"}, &out, testStderr, strings.NewReader(tc.input)); err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.TrimSpace(out.String()); got != tc.want {
+				t.Fatalf("session-start output = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	if dailyCalls != 0 {
+		t.Fatalf("quiet session start resolved the daily brief %d times", dailyCalls)
+	}
+	if lines := givenLinesOf(t, cfg); len(lines) != 0 {
+		t.Fatalf("quiet session start logged a delivery: %+v", lines)
+	}
+}
+
+func TestHookSessionStartDailyBriefOptIn(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	enableUnboundSessionBrief(t)
 	restore := stubHookBrief(t, "today's local brief")
 	defer restore()
 
@@ -47,6 +87,7 @@ func TestHookSessionStartCompactEmitsNothing(t *testing.T) {
 func TestHookSessionStartFailOpen(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
+	enableUnboundSessionBrief(t)
 	prev := hookResolveBrief
 	hookResolveBrief = func(Config, time.Time, briefOpts) (string, bool, error) {
 		return "", false, errors.New("boom")
@@ -215,6 +256,15 @@ func TestHookInstallUninstallBinaryNameIndependent(t *testing.T) {
 	out := run(t, "hook", "status")
 	if !strings.Contains(out, "SessionStart: not installed") || !strings.Contains(out, "UserPromptSubmit: not installed") {
 		t.Fatalf("status after uninstall = %q", out)
+	}
+}
+
+func enableUnboundSessionBrief(t *testing.T) {
+	t.Helper()
+	cfg := mustConfig(t)
+	cfg.HookUnboundBrief = true
+	if err := writeConfig(cfg); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -536,6 +586,7 @@ func TestHookRecallBannerOnlyHasNoSteppedInLine(t *testing.T) {
 func TestHookSessionStartHasNoSteppedInLine(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
+	enableUnboundSessionBrief(t)
 	restore := stubHookBrief(t, "today's local brief")
 	defer restore()
 

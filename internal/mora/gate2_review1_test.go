@@ -160,6 +160,7 @@ func TestConcurrentRebuildKeepsLiveIngestHeader(t *testing.T) {
 // / cmdBriefCorrect returned without marking or rebuilding at all.
 func TestGovernanceMutationReindexes(t *testing.T) {
 	subRun(t, "unforget_leaves_index_fresh", func(t *testing.T) {
+		withTestVerifiedOwnerAction(t)
 		cfg := gate2Vault(t)
 		seed, err := appendGovernanceEntry(cfg, govEntry{Kind: govKindForget, Action: govActionSuppress, Atom: govAtom{Kind: atomStableID, Value: "gmail_thread_z"}, Reason: "seed"})
 		if err != nil {

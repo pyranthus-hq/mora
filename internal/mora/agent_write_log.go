@@ -175,6 +175,9 @@ func cmdUndo(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if err != nil {
 		return err
 	}
+	if err := cliDestructiveMutationAllowed(cfg, "undo"); err != nil {
+		return err
+	}
 	m, err := findMemory(cfg, fs.Arg(0))
 	if err != nil {
 		return err
@@ -198,42 +201,44 @@ func cmdUndo(ctx context.Context, args []string, stdout, stderr io.Writer) error
 }
 
 // undoMemory deletes one memory and appends the undo line. A non-empty
-// expectSHA is the content hash of the file the owner saw: the core refuses if
-// the file it reads differs, and deletes after that same read. A file system
-// has no compare-and-swap, so the window left is the time between that read and
-// the delete.
+// expectSHA is the content hash of the file the owner saw: the core checks it
+// and deletes while holding the shared saved-memory mutation guard.
 func undoMemory(ctx context.Context, cfg Config, m Memory, force bool, expectSHA string, stderr io.Writer) (agent, logged, reconcile bool, err error) {
-	if expectSHA != "" {
-		raw, rerr := os.ReadFile(m.Path)
-		if rerr != nil {
-			return false, false, false, rerr
+	err = withMemoryMutationGuard(cfg, m.ID, func() error {
+		if expectSHA != "" {
+			raw, rerr := os.ReadFile(m.Path)
+			if rerr != nil {
+				return rerr
+			}
+			if indexstore.ContentSHA256(raw) != expectSHA {
+				return fmt.Errorf("memory %s changed after it was shown; nothing was done", m.ID)
+			}
 		}
-		if indexstore.ContentSHA256(raw) != expectSHA {
-			return false, false, false, fmt.Errorf("memory %s changed after it was shown; nothing was done", m.ID)
+		var agentErr error
+		agent, agentErr = isAgentWrittenMemory(cfg, m)
+		if agentErr != nil {
+			return agentErr
 		}
-	}
-	agent, err = isAgentWrittenMemory(cfg, m)
-	if err != nil {
-		return false, false, false, err
-	}
-	if !agent && !force {
-		return false, false, false, fmt.Errorf("refusing to undo %s: it was not written by an agent (source: %s); pass --force to remove it anyway", m.ID, m.Source)
-	}
-	reconcile, err = deleteMemoryFile(ctx, cfg, m)
-	if err != nil {
-		if _, statErr := os.Stat(m.Path); errors.Is(statErr, os.ErrNotExist) {
-			// The file is gone even though the index update failed: the undo
-			// happened, so the audit log must say so.
-			_ = appendAgentWriteLog(cfg, time.Now(), "undo", m, "cli")
+		if !agent && !force {
+			return fmt.Errorf("refusing to undo %s: it was not written by an agent (source: %s); pass --force to remove it anyway", m.ID, m.Source)
 		}
-		return agent, false, false, err
-	}
-	logged = true
-	if lerr := appendAgentWriteLog(cfg, time.Now(), "undo", m, "cli"); lerr != nil {
-		logged = false
-		fmt.Fprintf(stderr, "warning: memory %s removed, but the undo could not be recorded in %s: %v\n", m.ID, agentWriteLogName, lerr)
-	}
-	return agent, logged, reconcile, nil
+		reconcile, err = deleteMemoryFileLocked(ctx, cfg, m)
+		if err != nil {
+			if _, statErr := os.Stat(m.Path); errors.Is(statErr, os.ErrNotExist) {
+				// The file is gone even though the index update failed: the undo
+				// happened, so the audit log must say so.
+				_ = appendAgentWriteLog(cfg, time.Now(), "undo", m, "cli")
+			}
+			return err
+		}
+		logged = true
+		if lerr := appendAgentWriteLog(cfg, time.Now(), "undo", m, "cli"); lerr != nil {
+			logged = false
+			fmt.Fprintf(stderr, "warning: memory %s removed, but the undo could not be recorded in %s: %v\n", m.ID, agentWriteLogName, lerr)
+		}
+		return nil
+	})
+	return agent, logged, reconcile, err
 }
 
 // pendingMCPProposalCount counts staged propose-mode writes with no recorded

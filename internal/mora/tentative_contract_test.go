@@ -2,6 +2,7 @@ package mora
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"regexp"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/pyranthus-hq/mora/internal/companion"
+	"github.com/pyranthus-hq/mora/internal/resource"
 )
 
 // Every read surface either hides a tentative memory or labels it. A tool in
@@ -21,19 +23,21 @@ const (
 )
 
 var tentativeToolClass = map[string]string{
-	"write_memory":    surfaceWrites,
-	"delete_memory":   surfaceWrites,
-	"read_memory":     surfaceLabels,
-	"search_memory":   surfaceLabels,
-	"list_memory":     surfaceLabels,
-	"context_memory":  surfaceLabels,
-	"think":           surfaceHides,
-	"list_entities":   surfaceHides,
-	"get_entity":      surfaceHides,
-	"digest":          surfaceHides,
-	"brief":           surfaceHides,
-	"meeting_prep":    surfaceHides,
-	"calendar_events": surfaceHides,
+	"discover_resources": surfaceHides,
+	"submit_resource":    surfaceWrites,
+	"write_memory":       surfaceWrites,
+	"delete_memory":      surfaceWrites,
+	"read_memory":        surfaceLabels,
+	"search_memory":      surfaceLabels,
+	"list_memory":        surfaceLabels,
+	"context_memory":     surfaceLabels,
+	"think":              surfaceHides,
+	"list_entities":      surfaceHides,
+	"get_entity":         surfaceHides,
+	"digest":             surfaceHides,
+	"brief":              surfaceHides,
+	"meeting_prep":       surfaceHides,
+	"calendar_events":    surfaceHides,
 }
 
 // echo is an entity name the caller sent: a hides surface may repeat it back.
@@ -116,12 +120,14 @@ func (o surfaceOut) reaches(entity string) bool {
 // unreachableByNote lists hides surfaces that no agent note of these types can
 // ever reach, even when confirmed, so they cannot have a positive control.
 var unreachableByNote = map[string]string{
+	"mcp discover_resources": "resource discovery does not return agent notes",
 	"mcp calendar_events":    "lists type event rows only, and write_memory cannot save that type",
 	"mcp meeting_prep":       "briefs an upcoming calendar event and its attendees, and no agent note is one",
 	"companion meeting_prep": "same as mcp meeting_prep",
 }
 
 func runTentativeSurfaceContract(t *testing.T, typ, scope string) {
+	withTestVerifiedOwnerAction(t)
 	useShippedWritePolicyDefault(t)
 	withTempHome(t)
 	run(t, "init")
@@ -151,13 +157,18 @@ func runTentativeSurfaceContract(t *testing.T, typ, scope string) {
 		"meeting_prep":    {},
 		"calendar_events": {"start": "2019-01-01", "end": "2030-01-01"},
 	}
+	resourceCtx := resourceSurfaceContext(t, testCtx(t))
 	sweep := func() []surfaceOut {
 		var outs []surfaceOut
 		for name, class := range tentativeToolClass {
 			if class == surfaceWrites {
 				continue
 			}
-			res, err := mcpToolHandlers[name](testCtx(t), cfg, args[name])
+			ctx := testCtx(t)
+			if name == "discover_resources" {
+				ctx = resourceCtx
+			}
+			res, err := mcpToolHandlers[name](ctx, cfg, args[name])
 			if err != nil {
 				t.Fatalf("mcp %s errored: %v", name, err)
 			}
@@ -220,6 +231,68 @@ func runTentativeSurfaceContract(t *testing.T, typ, scope string) {
 	}
 }
 
+// Submission alone must not grant discovery; a verified owner activation is
+// the positive control for the same resource and project.
+func TestResourceSubmissionRequiresOwnerActivationForDiscovery(t *testing.T) {
+	useShippedWritePolicyDefault(t)
+	cfg, binding, _, _ := resourceIntegrationSetup(t)
+	ctx := withMCPWorkspace(context.WithValue(testCtx(t), mcpProjectKey{}, mcpProject{scope: binding.Scope, root: binding.Dir}))
+	out, err := callMCPTool(ctx, "submit_resource", map[string]any{"kind": "skill", "purpose": "canary deployment helper", "pasted": "# Canary helper\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("submission response = %#v", out)
+	}
+	row, ok := response["resource"].(map[string]any)
+	if !ok || row["review_state"] != "unreviewed" || response["activation"] != "native owner decision required" {
+		t.Fatalf("submission response = %#v", out)
+	}
+	id, idOK := row["id"].(string)
+	revision, revOK := row["revision"].(string)
+	if !idOK || !revOK {
+		t.Fatalf("missing submission identity: %#v", row)
+	}
+	discover := func() []resource.Result {
+		t.Helper()
+		result, err := mcpDiscoverResources(ctx, cfg, map[string]any{"task": "canary deployment"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, ok := result.(map[string]any)["resources"].([]resource.Result)
+		if !ok {
+			t.Fatalf("discovery response = %#v", result)
+		}
+		return rows
+	}
+	if rows := discover(); len(rows) != 0 {
+		t.Fatalf("unapproved resource visible: %#v", rows)
+	}
+	verifier := newDesktopReviewTestVerifier(t)
+	installation, err := nativeOwnerInstallationID(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier.installationID = installation
+	authority := newResourceDecisionAuthority(cfg, verifier)
+	preview, _, _, _, _, err := resourcePreview(cfg, binding.Dir, "codex", id, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	challenge, err := authority.begin(resourceActivate, binding.Dir, "codex", id, revision, preview.DisplayDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := authority.complete(context.Background(), challenge.Nonce, resourceProof(t, verifier, challenge), false)
+	if err != nil || !desktopReviewApplied(outcome) {
+		t.Fatalf("activation outcome=%+v err=%v", outcome, err)
+	}
+	if rows := discover(); len(rows) != 1 || rows[0].ResourceID != id || rows[0].ReviewState != "approved" {
+		t.Fatalf("activated resource discovery = %#v", rows)
+	}
+}
+
 // CLI `context --json` receipts name the memory without its body, so each one
 // carries the trust itself. A small budget can drop the labelled blob and keep
 // the receipts.
@@ -260,11 +333,17 @@ func TestTentativeContextReceiptsCarryTrust(t *testing.T) {
 // Filtering must come before the limit: newer tentative notes may not push a
 // confirmed memory out of the default list.
 func TestTentativeDoesNotCrowdOutListMemory(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	useShippedWritePolicyDefault(t)
 	withTempHome(t)
 	run(t, "init")
+	legacyOpenPolicy(t)
 	run(t, "write", "--scope", "project:demo", "--type", "fact", "--title", "Confirmed baseline", "--text", "Confirmed note.")
 	cfg := mustConfig(t)
+	cfg.MCPWritePolicy = ""
+	if err := writeConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
 	rows, err := listMemories(cfg, "project:demo", 0)
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("baseline rows = %v, %v", rows, err)

@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/activity"
@@ -43,6 +45,9 @@ func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin 
 		if a.hasDir {
 			ctx = withMCPServeProject(ctx, a.dir, stderr)
 		}
+		if a.workspace {
+			ctx = withMCPWorkspace(ctx)
+		}
 		if !a.hasProfile {
 			return serveMCP(ctx, stdout, stdin)
 		}
@@ -54,7 +59,7 @@ func cmdMCP(ctx context.Context, args []string, stdout, stderr io.Writer, stdin 
 	if len(args) >= 2 && args[0] == "proposals" {
 		return cmdMCPProposals(ctx, args[1:], stdout, stderr)
 	}
-	return errors.New("usage: mora mcp serve [--profile NAME] [--project-dir DIR] | mora mcp serve-http [--port N] [--allow-host HOST] | mora mcp proposals <list|show ID|approve ID|reject ID>")
+	return errors.New("usage: mora mcp serve [--profile NAME] [--project-dir DIR] [--workspace] | mora mcp serve-http [--port N] [--allow-host HOST] | mora mcp proposals <list|show ID|approve ID|reject ID>")
 }
 
 // activeAgentProfile reads the store and returns the unrevoked profile `name`.
@@ -191,16 +196,56 @@ const budgetUnitTokens = "tokens"
 // (what the T0 gate measures) respects the ceiling while the knob still scales
 // (a 20k request yields a strictly larger compact budget than the 6k default).
 func handleMCP(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
+	var err error
+	// Roots are a post-initialization client request. A strict client may refuse
+	// roots/list until it receives a complete handshake, so initialize must stay
+	// valid even when a managed workspace has no usable roots yet.
+	if req.Method != "initialize" {
+		if ctx, err = withMCPWorkspaceProject(ctx); err != nil {
+			return mcpWorkspaceUnavailableResponse(ctx, req)
+		}
+	}
 	return mcppkg.Dispatch(ctx, req,
 		func() any {
 			cfg, err := loadConfigFor(ctx)
 			return withProjectInstruction(ctx, mcppkg.InitializeResult(BuildVersion, configMCPWritePolicy(cfg), err == nil), err == nil)
 		},
-		func() any { return map[string]any{"tools": mcppkg.RenderTools(mcppkg.ToolCatalog())} },
+		func() any { return map[string]any{"tools": mcppkg.RenderTools(mcpSessionToolCatalog(ctx))} },
 		func(ctx context.Context, name string, args map[string]any) any {
 			return invokeMCPTool(ctx, name, args).result()
 		},
 	)
+}
+
+func mcpWorkspaceUnavailableResponse(ctx context.Context, req jsonRPCRequest) jsonRPCResponse {
+	return mcppkg.Dispatch(ctx, req,
+		func() any {
+			cfg, err := loadConfigFor(ctx)
+			return mcppkg.InitializeResult(BuildVersion, configMCPWritePolicy(cfg), err == nil)
+		},
+		func() any { return map[string]any{"tools": []any{}} },
+		func(context.Context, string, map[string]any) any {
+			return toCallToolResult(nil, errMCPWorkspaceUnavailable)
+		},
+	)
+}
+
+func mcpSessionToolCatalog(ctx context.Context) []mcppkg.ToolDefinition {
+	catalog := mcppkg.ToolCatalog()
+	profile, profiled := agentProfileFrom(ctx)
+	out := make([]mcppkg.ToolDefinition, 0, len(catalog))
+	for _, tool := range catalog {
+		if !mcpProjectAllowsTool(ctx, tool.Name) || (profiled && !profile.allowsTool(tool.Name)) {
+			continue
+		}
+		out = append(out, tool)
+	}
+	if _, project := mcpProjectFrom(ctx); project && mcpWorkspaceManaged(ctx) {
+		// Project sessions deliberately present a bounded, governed subset.
+		order := map[string]int{"search_memory": 0, "read_memory": 1, "context_memory": 2, "write_memory": 3, "brief": 4, "discover_resources": 5, "submit_resource": 6}
+		sort.SliceStable(out, func(i, j int) bool { return order[out[i].Name] < order[out[j].Name] })
+	}
+	return out
 }
 
 // toCallToolResult wraps a tool's native return value in a spec-compliant MCP
@@ -230,19 +275,21 @@ type mcpToolDef struct {
 // preserved in tools/list for readability; callMCPTool derives its dispatch map
 // from this slice (mcpToolIndex), so a tool added here needs no second edit.
 var mcpToolHandlers = map[string]func(context.Context, Config, map[string]any) (any, error){
-	"write_memory":    mcpWriteMemory,
-	"read_memory":     mcpReadMemory,
-	"search_memory":   mcpSearchMemory,
-	"calendar_events": mcpCalendarEvents,
-	"list_memory":     mcpListMemory,
-	"delete_memory":   mcpDeleteMemory,
-	"context_memory":  mcpContextMemory,
-	"think":           mcpThink,
-	"list_entities":   mcpListEntities,
-	"get_entity":      mcpGetEntity,
-	"digest":          mcpDigest,
-	"brief":           mcpBrief,
-	"meeting_prep":    mcpMeetingPrep,
+	"write_memory":       mcpWriteMemory,
+	"read_memory":        mcpReadMemory,
+	"search_memory":      mcpSearchMemory,
+	"calendar_events":    mcpCalendarEvents,
+	"list_memory":        mcpListMemory,
+	"delete_memory":      mcpDeleteMemory,
+	"context_memory":     mcpContextMemory,
+	"think":              mcpThink,
+	"list_entities":      mcpListEntities,
+	"get_entity":         mcpGetEntity,
+	"digest":             mcpDigest,
+	"brief":              mcpBrief,
+	"meeting_prep":       mcpMeetingPrep,
+	"discover_resources": mcpDiscoverResources,
+	"submit_resource":    mcpSubmitResource,
 }
 
 // mcpToolRegistry binds package-owned public metadata to Mora-owned handlers.
@@ -310,6 +357,15 @@ var mcpWriteClock = time.Now
 
 func mcpWriteMemory(ctx context.Context, cfg Config, args map[string]any) (any, error) {
 	return mcpWriteMemoryWith(ctx, cfg, args)
+}
+
+// mcpWriteDisplayMemory keeps the persisted absolute path private and makes
+// the bounded MCP response independent of the caller's vault-root length.
+func mcpWriteDisplayMemory(cfg Config, m Memory) Memory {
+	if rel, err := filepath.Rel(cfg.VaultDir, m.Path); err == nil && filepath.IsLocal(rel) {
+		m.Path = filepath.ToSlash(rel)
+	}
+	return m
 }
 
 // mcpWriteMemoryWith is mcpWriteMemory with the governed create's options.
@@ -439,6 +495,11 @@ func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 	retrievalStarted := time.Now()
 	m, err := findMemory(cfg, strArg(args, "id", ""))
 	if err != nil {
+		if mcpWorkspaceManaged(ctx) {
+			recordMCPPhases(ctx, time.Since(retrievalStarted), 0)
+			recordMCPUsage(ctx, cfg, readUsageEvent(args, nil, false))
+			return nil, fmt.Errorf("memory %q not found", strArg(args, "id", ""))
+		}
 		// Same read-only shared-corpus fallback as `mora read`: search
 		// returns shared ids with 240-rune snippets, so read_memory is the
 		// documented expansion path for them too.
@@ -465,6 +526,11 @@ func mcpReadMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 		recordMCPPhases(ctx, time.Since(retrievalStarted), 0)
 		recordMCPUsage(ctx, cfg, readUsageEvent(args, nil, false))
 		return nil, err
+	}
+	if !mcpProjectAllowsMemory(ctx, m) {
+		recordMCPPhases(ctx, time.Since(retrievalStarted), 0)
+		recordMCPUsage(ctx, cfg, readUsageEvent(args, nil, false))
+		return nil, fmt.Errorf("memory %q not found", strArg(args, "id", ""))
 	}
 	if decorated, derr := decorateDispositions(cfg, []Memory{m}, time.Now()); derr != nil {
 		return nil, derr
@@ -552,6 +618,10 @@ func mcpSearchMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	}
 	if p, ok := agentProfileFrom(ctx); ok {
 		filters = p.authorize(filters)
+	}
+	filters, ferr = mcpProjectFilter(ctx, scope, filters)
+	if ferr != nil {
+		return nil, ferr
 	}
 	// #238: defaultSearchForMCP (not the plain defaultSearch every other call
 	// site uses) so the confidence envelope below can consume the ACTUAL
@@ -696,6 +766,10 @@ func mcpListMemory(ctx context.Context, cfg Config, args map[string]any) (any, e
 	if p, ok := agentProfileFrom(ctx); ok {
 		filter = p.authorize(filter)
 	}
+	filter, err = mcpProjectFilter(ctx, strArg(args, "scope", ""), filter)
+	if err != nil {
+		return nil, err
+	}
 	limit := intArg(args, "limit", 10)
 	if hours > 0 {
 		if value, ok := args["limit"]; ok {
@@ -758,6 +832,10 @@ func mcpContextMemory(ctx context.Context, cfg Config, args map[string]any) (any
 	query := strArg(args, "query", "")
 	tokenBudget, charBudget := resolveContextBudgetTokens(cfg, intArg(args, "max_tokens", 0))
 	filters, ferr := parseSearchFilters(args, now)
+	if ferr != nil {
+		return nil, ferr
+	}
+	filters, ferr = mcpProjectFilter(ctx, scope, filters)
 	if ferr != nil {
 		return nil, ferr
 	}
@@ -950,12 +1028,28 @@ func mcpBrief(ctx context.Context, cfg Config, args map[string]any) (any, error)
 	// path is the human CLI's; the agent reads the STRUCTURED, budgeted projection
 	// (like the digest tool), not a render string.
 	if dir := strArg(args, "project_dir", ""); dir != "" {
-		return projectBriefForDir(cfg, dir, briefClock())
+		if mcpWorkspaceManaged(ctx) {
+			return nil, errMCPWorkspaceUnavailable
+		}
+		return projectBriefForDir(cfg, dir, strings.TrimPrefix(agentCallerFrom(ctx), "mcp-stdio/"), briefClock())
+	}
+	// Managed project sessions never fall through to a vault-wide daily digest.
+	// A legacy explicit --project-dir server retains its administrator behavior.
+	if mcpWorkspaceManaged(ctx) && boolArg(args, "daily", false) {
+		return nil, errMCPWorkspaceUnavailable
 	}
 	// A server started with --project-dir for a bound folder answers a bare
 	// brief with that project's rules; daily:true asks for the daily brief.
 	if p, ok := mcpProjectFrom(ctx); ok && !boolArg(args, "daily", false) {
-		text, ids, err := buildProjectBrief(cfg, p.scope, p.root, briefClock())
+		if mcpWorkspaceManaged(ctx) {
+			filter, ferr := mcpProjectFilter(ctx, "", searchFilters{})
+			if ferr != nil {
+				return nil, ferr
+			}
+			text, ids, err := buildProjectBriefFiltered(cfg, p.scope, p.root, strings.TrimPrefix(agentCallerFrom(ctx), "mcp-stdio/"), briefClock(), filter)
+			return projectBriefResult{Scope: p.scope, Root: p.root, Text: text, IDs: ids}, err
+		}
+		text, ids, err := buildProjectBriefWithin(cfg, p.scope, p.root, strings.TrimPrefix(agentCallerFrom(ctx), "mcp-stdio/"), briefClock(), projectBriefMaxChars)
 		return projectBriefResult{Scope: p.scope, Root: p.root, Text: text, IDs: ids}, err
 	}
 	start := time.Now()
@@ -1085,28 +1179,11 @@ func mcpDeleteMemory(ctx context.Context, cfg Config, args map[string]any) (any,
 	if err := refuseConnectorDelete(m); err != nil {
 		return nil, err
 	}
-	// Mark the delete BEFORE removing the file (A5 row 5). A rebuild that fails
-	// after the file is gone would keep serving the deleted content; the pending
-	// op both reddens the index and suppresses the id on every read path (B4),
-	// so serving-deleted-content is impossible even while the rebuild is broken.
-	op, merr := markIndexDirty(ctx, cfg, deleteOp(m))
-	if merr != nil {
-		return nil, merr
-	}
-	if err := os.Remove(m.Path); err != nil {
-		_ = unmarkIndexDirty(cfg, op.OpID)
+	// The shared core holds the same saved-memory guard as CLI delete, undo,
+	// and desktop review, keeping the checked revision and mutation atomic.
+	reconcile, err := deleteMemoryFile(ctx, cfg, m)
+	if err != nil {
 		return nil, err
-	}
-	markDeleteUnlinked(cfg, op)
-	// A failed index update after a delete is worse than after a write: search
-	// keeps SERVING the deleted content as if it still existed. Delete is the
-	// privacy path, so the failure stays a LOUD error and the pending-delete
-	// marker stays (reads keep suppressing the id). The update is one targeted
-	// transaction, not a whole-vault rebuild: that rebuild held the writer lock
-	// 30-75s on a real vault, past MCP client timeouts (V3).
-	reconcile, rerr := reflectDeleteInIndex(ctx, cfg, m.ID)
-	if rerr != nil {
-		return nil, fmt.Errorf("memory %s deleted, but the search index could not be updated and may still serve it: %w — run `mora index rebuild`", id, rerr)
 	}
 	if reconcile {
 		scheduleAuthoredReconciliation(cfg)

@@ -69,11 +69,9 @@ func TestMain(m *testing.M) {
 	runScheduleCommand = func(name string, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("%s: no external command runs in package tests", name)
 	}
-	// An unset mcp_write_policy resolves to propose in production
-	// (mcppkg.DefaultWritePolicy). Most tests here run `mora init` in a fresh
-	// sandbox and then exercise the open-mode write path, so they resolve an
-	// unset policy to open instead. write_policy_default_test.go restores the
-	// shipped value and tests the real default end to end.
+	// Production resolves an unset mcp_write_policy to tentative. Keep the
+	// pre-existing open fixture for legacy mutation tests; default-policy tests
+	// call useShippedWritePolicyDefault to restore the shipped resolver locally.
 	shippedUnsetMCPWritePolicy = unsetMCPWritePolicy
 	unsetMCPWritePolicy = mcpWritePolicyOpen
 	// The PreToolUse hook prints nothing once its 1.5 s budget runs out. A

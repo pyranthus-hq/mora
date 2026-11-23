@@ -236,7 +236,7 @@ func TestAgentToolSurfaceNeverWidensByDefault(t *testing.T) {
 			}
 		}
 	}
-	for _, def := range agentToolDefs(p) {
+	for _, def := range mcpSessionToolCatalog(ctx) {
 		if !allowed[def.Name] {
 			t.Fatalf("tools/list shows %s, which is not on the allowlist", def.Name)
 		}

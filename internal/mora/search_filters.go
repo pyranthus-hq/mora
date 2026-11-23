@@ -95,11 +95,13 @@ type searchFilters = searchpkg.Filter
 // NOT the raw f.Source — see normalizedSource's doc comment for why the raw
 // string is unsafe to compare with for an aliased family:instance selector.
 func searchFilterPasses(f searchFilters, m Memory) bool {
-	if f.Authorize {
-		if !f.ScopeAllowed(m.Scope) || (f.AuthoredOnly && (m.Provider != "" || memory.DeriveProvenance(m) != memory.ProvenanceAuthored)) {
-			return false
-		}
+	if !f.ScopeAllowed(m.Scope) {
+		return false
 	}
+	if f.AuthoredOnly && (memory.DeriveProvenance(m) != memory.ProvenanceAuthored || (m.Provider != "" && (f.ProfileAuthoredOnly || !memory.IsAgentNoteMirror(m)))) {
+		return false
+	}
+
 	if f.SourceFamily != "" {
 		key, ok := sourceInstanceKey(m)
 		if !ok || !digestSourceMatches(key, f.NormalizedSource()) {

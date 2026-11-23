@@ -110,6 +110,35 @@ func TestDefaultConfigHonorsMoraConfigDir(t *testing.T) {
 // pointing elsewhere is a destructive repoint (the old vault is orphaned from
 // Mora's view). Non-interactively it must refuse with an actionable error; the
 // config must be untouched.
+func TestHookUnboundBriefConfig(t *testing.T) {
+	dir := isolate(t)
+	path := filepath.Join(dir, "config.toml")
+	for _, tc := range []struct {
+		line string
+		want bool
+	}{
+		{"", false},
+		{"hook_unbound_brief = false", false},
+		{"hook_unbound_brief = yes", false},
+		{"hook_unbound_brief = true # include the daily brief", true},
+	} {
+		if err := os.WriteFile(path, []byte(tc.line+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load()
+		if err != nil || cfg.HookUnboundBrief != tc.want {
+			t.Fatalf("%q loaded hook_unbound_brief=%v (%v), want %v", tc.line, cfg.HookUnboundBrief, err, tc.want)
+		}
+		if err := Write(cfg); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err = Load()
+		if err != nil || cfg.HookUnboundBrief != tc.want {
+			t.Fatalf("%q after rewrite has hook_unbound_brief=%v (%v), want %v", tc.line, cfg.HookUnboundBrief, err, tc.want)
+		}
+	}
+}
+
 func TestWriteConfigPreservesUnknownKeysAndComments(t *testing.T) {
 	home := t.TempDir()
 	setTestHome(t, home)

@@ -276,6 +276,7 @@ func TestAgentProfileProposesUnderTheTentativeDefault(t *testing.T) {
 }
 
 func TestAgentProfileProposesEvenWhenVaultPolicyIsOpen(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := seedAgentFixture(t)
 	if configMCPWritePolicy(cfg) != mcpWritePolicyOpen {
 		t.Fatalf("fixture policy = %q, want open", configMCPWritePolicy(cfg))

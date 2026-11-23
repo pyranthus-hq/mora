@@ -75,6 +75,11 @@ func cmdTasks(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		if err != nil {
 			return err
 		}
+		if *write {
+			if err := cliTaskMutationAllowed(cfg); err != nil {
+				return err
+			}
+		}
 		added, err := syncTasks(cfg, *write)
 		if err != nil {
 			return err
@@ -132,6 +137,9 @@ func cmdTasks(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		}
 		cfg, err := loadConfigFor(ctx)
 		if err != nil {
+			return err
+		}
+		if err := cliTaskMutationAllowed(cfg); err != nil {
 			return err
 		}
 		added, err := addTask(cfg, LiveTask{Task: name, Domain: *domain, Owner: *owner, Pri: *pri, Horizon: *horizon, Blocker: *blocker})
@@ -203,6 +211,9 @@ func cmdTasks(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		}
 		cfg, err := loadConfigFor(ctx)
 		if err != nil {
+			return err
+		}
+		if err := cliTaskMutationAllowed(cfg); err != nil {
 			return err
 		}
 		updated, err := markTaskDone(cfg, name)
