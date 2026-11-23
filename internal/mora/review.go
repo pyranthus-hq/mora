@@ -27,14 +27,19 @@ const (
 // reviewNote is one agent note that waits for the owner. Digest binds a held
 // note to the exact arguments the owner saw.
 type reviewNote struct {
-	Kind    string
-	ID      string
-	Scope   string
-	Type    string
-	Title   string
-	Text    string
-	Reasons []string
-	Digest  string
+	Kind       string
+	ID         string
+	Scope      string
+	Type       string
+	Title      string
+	Text       string
+	Source     string
+	Provenance string // Derived by memory.DeriveProvenance: evidence, document, or authored.
+	Truncated  bool
+	Deleted    bool
+	Meta       map[string]any
+	Reasons    []string
+	Digest     string
 	// SHA is the content hash of the memory file the owner saw (saved notes).
 	SHA string
 	// Confirm is memory.OwnerConfirmedDigest of the shown note; keep binds the
@@ -78,7 +83,12 @@ func reviewTitle(m Memory) string {
 }
 
 func reviewNoteFromMemory(m Memory) reviewNote {
-	return reviewNote{Kind: reviewKindSaved, ID: m.ID, Scope: m.Scope, Type: m.Type, Title: reviewTitle(m), Text: m.Text, Confirm: memory.OwnerConfirmedDigest(m), Fields: memory.OwnerConfirmedFields(m)}
+	return reviewNote{
+		Kind: reviewKindSaved, ID: m.ID, Scope: m.Scope, Type: m.Type,
+		Title: reviewTitle(m), Text: m.Text, Source: m.Source,
+		Provenance: memory.DeriveProvenance(m), Truncated: m.Truncated, Deleted: m.DeletedAt != "", Meta: m.Meta,
+		Confirm: memory.OwnerConfirmedDigest(m), Fields: memory.OwnerConfirmedFields(m),
+	}
 }
 
 const reviewNoReason = "held under an earlier rule or write mode"
