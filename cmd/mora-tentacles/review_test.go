@@ -200,6 +200,9 @@ func TestReviewActKeepStillWorksFromTheCommandLine(t *testing.T) {
 }
 
 func TestMoraBinFindsInstallPlaces(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("install places and the executable bit are Unix; Windows home is USERPROFILE")
+	}
 	h := t.TempDir()
 	t.Setenv("HOME", h)
 	t.Setenv("MORA_BIN", "")
