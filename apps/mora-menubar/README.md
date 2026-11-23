@@ -83,18 +83,18 @@ Click the row ("Click to review.") to open one window, "Agent notes to review".
 The count does not change the health state or the icon, and no row appears when
 the counts are zero or the doctor report is unavailable.
 
-Keep is allowed only when the window showed the whole text that will be saved;
-Discard is always allowed. A note whose text Mora hid as credential-like, was cut
+The window enables Keep only when it showed the whole text that will be saved.
+A note whose text Mora hid as credential-like, was cut
 (over 20,000 characters, or a title over 200), or could not be read shows a
 warning and has no Keep button. The window locks Keep, Discard and Refresh while
 a fetch or an action runs, and drops a fetch that an action made stale. The
-collector does not know what the window showed, so `review-act keep` still works
-from the command line.
+collector does not know what the window showed; Mora still enforces its own
+authorization on each action.
 
 The window lists up to 50 notes with their text, shown as plain text (no
 markdown, no links opened). Each note has Keep and Discard. Discard asks once.
-After an action the note leaves the list and the panel count refreshes. A failed
-action shows a short error and keeps the note.
+After a successful action the note leaves the list and the panel count refreshes.
+A failed action shows a short error; refresh to check its outcome.
 The buttons run these four commands through the collector
 (`mora-tentacles review-act <keep|discard> <saved|held> <id>`), one per click,
 with the id as a single argument and no shell:
@@ -104,10 +104,17 @@ with the id as a single argument and no shell:
 | Keep | `mora confirm <id>` | `mora mcp proposals approve <id>` |
 | Discard | `mora undo <id>` | `mora mcp proposals reject <id>` |
 
+With the current Mora CLI, Status 1.0 cannot provide the native owner verification
+required for `confirm` or proposal approval and rejection. `undo` also requires
+destructive-write authority. Consequently Keep and Discard may be refused; the
+buttons do not provide a way around those checks. Listing and reading notes, and
+status checks, remain available. A future qualified native desktop review client
+in PR 721 is intended to provide the owner-proof path. Generic terminal or agent
+calls do not provide that proof.
+
 The list comes from `mora review --list --json`, `mora read <id> --json` and
 `mora mcp proposals show <id>` (`mora-tentacles review-list`). Keep never marks a
-note as your own statement: that stays a terminal action,
-`mora confirm <id> --mine`. The window never edits a note and runs no other command.
+note as your own statement. The window never edits a note and runs no other command.
 
 When Mora reports `last_given` in its doctor report, the panel shows one row
 under the review row, such as "Last hand-over to an agent: 14:02, 3 notes",

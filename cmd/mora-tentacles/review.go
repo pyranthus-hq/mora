@@ -152,7 +152,7 @@ func reviewText(ctx context.Context, bin string, n ReviewNote) (text string, red
 }
 
 // reviewActArgs maps one owner action to exactly one mora command. Keep never
-// sets owner-confirmed: that stays a terminal action (confirm --mine).
+// sets owner-confirmed; owner verification remains a separate requirement.
 func reviewActArgs(action, kind, id string) ([]string, bool) {
 	if !reviewID.MatchString(id) {
 		return nil, false
@@ -188,7 +188,7 @@ func reviewAct(args []string) error {
 		if ctx.Err() != nil {
 			return fail("Mora took too long. Refresh to see what changed.")
 		}
-		return fail("Mora could not complete the action.")
+		return fail("Mora could not complete the action. This version of Status may lack the owner verification or write authority required by Mora. Refresh to see what changed.")
 	}
 	return emit(map[string]any{"ok": true})
 }

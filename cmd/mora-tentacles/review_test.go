@@ -155,11 +155,25 @@ func TestReviewActRefusesBadInputBeforeRunning(t *testing.T) {
 func TestReviewActFailureGivesFixedText(t *testing.T) {
 	fakeMora(t, "echo 'raw failure detail' >&2\necho 'raw stdout'\nexit 1\n")
 	out, stderr, err := capture(t, func() error { return reviewAct([]string{"discard", "saved", "mem_1"}) })
-	if err == nil || !strings.Contains(out, `"ok":false`) || !strings.Contains(out, `"error":"Mora could not complete the action."`) {
+	if err == nil || strings.TrimSpace(out) != `{"error":"Mora could not complete the action. This version of Status may lack the owner verification or write authority required by Mora. Refresh to see what changed.","ok":false}` {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
 	if strings.Contains(out+stderr, "raw") {
 		t.Fatalf("mora text passed through: %q %q", out, stderr)
+	}
+}
+
+func TestReviewActOwnerRefusalExplainsCompatibilityWithoutLeaking(t *testing.T) {
+	log := fakeMora(t, "echo 'ERR_OWNER_VERIFICATION_UNAVAILABLE secret /private/path' >&2\necho 'secret stdout'\nexit 1\n")
+	out, stderr, err := capture(t, func() error { return reviewAct([]string{"keep", "held", "p_1"}) })
+	if err == nil || !strings.Contains(out, "owner verification or write authority") || !strings.Contains(out, "Refresh to see what changed") {
+		t.Fatalf("out=%q err=%v", out, err)
+	}
+	if strings.Contains(out+stderr, "secret") || strings.Contains(out+stderr, "/private/path") || strings.Contains(out+stderr, "ERR_OWNER") {
+		t.Fatalf("child output leaked: %q %q", out, stderr)
+	}
+	if c := calls(t, log); len(c) != 1 || c[0] != "mcp proposals approve p_1" {
+		t.Fatalf("calls=%q", c)
 	}
 }
 
