@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 struct StatusSnapshot: Decodable {
@@ -177,11 +178,16 @@ struct ReviewList: Decodable {
     let notes: [ReviewNote]
     let more: Int
     let error: String?
+    /// Mora's config directory and vault: where a kept note goes. Empty from an older Mora.
+    let configDir: String
+    let vault: String
 
-    enum CodingKeys: String, CodingKey { case notes, more, error }
+    enum CodingKeys: String, CodingKey { case notes, more, error, configDir = "config_dir", vault }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         error = try c.decodeIfPresent(String.self, forKey: .error)
+        configDir = try c.decodeIfPresent(String.self, forKey: .configDir) ?? ""
+        vault = try c.decodeIfPresent(String.self, forKey: .vault) ?? ""
         notes = try c.decodeIfPresent([ReviewNote].self, forKey: .notes) ?? []
         more = max(0, try c.decodeIfPresent(Int.self, forKey: .more) ?? 0)
     }
@@ -382,4 +388,18 @@ func collectorEnvironment(_ base: [String: String], defaults: UserDefaults) -> [
         }
     }
     return env
+}
+
+/// The bytes the approval key signs; `mora review app-keep` rebuilds the same string.
+func approvalMessage(configDir: String, vault: String, kind: String, id: String, digest: String, unix: String) -> Data {
+    Data("mora-status-keep-mine/v1\n\(configDir)\n\(vault)\n\(kind)\n\(id)\n\(digest)\n\(unix)\n".utf8)
+}
+
+/// First 16 bytes of SHA-256 over the key's SPKI DER, hex in groups of four, as Mora prints it.
+func approvalFingerprint(_ der: Data) -> String {
+    let hex = SHA256.hash(data: der).prefix(16).map { String(format: "%02x", $0) }.joined()
+    return stride(from: 0, to: hex.count, by: 4).map { i in
+        let start = hex.index(hex.startIndex, offsetBy: i)
+        return String(hex[start..<hex.index(start, offsetBy: 4)])
+    }.joined(separator: " ")
 }

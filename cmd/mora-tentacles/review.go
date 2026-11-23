@@ -21,6 +21,8 @@ const (
 // A leading dash is refused so an id can never read as a flag.
 var reviewID = regexp.MustCompile(`^[A-Za-z0-9_.:][A-Za-z0-9_.:-]{0,79}$`)
 var reviewDigest = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var reviewUnix = regexp.MustCompile(`^[0-9]{1,12}$`)
+var reviewSig = regexp.MustCompile(`^[A-Za-z0-9+/]{16,200}={0,2}$`)
 
 type ReviewNote struct {
 	ID    string `json:"id"`
@@ -43,6 +45,9 @@ type ReviewNote struct {
 type ReviewList struct {
 	Notes []ReviewNote `json:"notes"`
 	More  int          `json:"more"`
+	// Where a kept note goes; the app shows both and signs them.
+	ConfigDir string `json:"config_dir,omitempty"`
+	Vault     string `json:"vault,omitempty"`
 }
 
 // moraBin finds the mora command. A Finder-launched app has no shell PATH, so
@@ -92,7 +97,9 @@ func reviewList() error {
 		return fail("Mora could not list the agent notes.")
 	}
 	var raw struct {
-		Notes []ReviewNote `json:"notes"`
+		Notes     []ReviewNote `json:"notes"`
+		ConfigDir string       `json:"config_dir"`
+		Vault     string       `json:"vault"`
 	}
 	if json.Unmarshal(b, &raw) != nil {
 		return fail("Mora returned an invalid note list.")
@@ -103,7 +110,7 @@ func reviewList() error {
 			rows = append(rows, n)
 		}
 	}
-	out := ReviewList{Notes: rows, More: 0}
+	out := ReviewList{Notes: rows, More: 0, ConfigDir: raw.ConfigDir, Vault: raw.Vault}
 	if len(rows) > reviewMaxNotes {
 		out.Notes, out.More = rows[:reviewMaxNotes], len(rows)-reviewMaxNotes
 	}
@@ -165,17 +172,19 @@ func reviewText(ctx context.Context, bin string, n ReviewNote) (text string, red
 // reviewActArgs maps one owner action to exactly one mora command. Keep never
 // sets owner-confirmed. Only mine does, through `mora review app-keep`, which
 // itself checks that this collector runs inside the signed Mora Status app.
-func reviewActArgs(action, kind, id string, digest ...string) ([]string, bool) {
+// approval is the app's signed approval: owner digest, unix time, signature.
+func reviewActArgs(action, kind, id string, approval ...string) ([]string, bool) {
 	if !reviewID.MatchString(id) {
 		return nil, false
 	}
 	if action == "mine" {
-		if len(digest) != 1 || !reviewDigest.MatchString(digest[0]) || (kind != "saved" && kind != "held") {
+		if len(approval) != 3 || !reviewDigest.MatchString(approval[0]) || !reviewUnix.MatchString(approval[1]) ||
+			!reviewSig.MatchString(approval[2]) || (kind != "saved" && kind != "held") {
 			return nil, false
 		}
-		return []string{"review", "app-keep", kind, id, digest[0]}, true
+		return append([]string{"review", "app-keep", kind, id}, approval...), true
 	}
-	if len(digest) != 0 {
+	if len(approval) != 0 {
 		return nil, false
 	}
 	switch action + " " + kind {
@@ -196,8 +205,8 @@ func reviewAct(args []string) error {
 		_ = emit(map[string]any{"ok": false, "error": msg})
 		return errors.New(msg)
 	}
-	if len(args) != 3 && !(len(args) == 4 && args[0] == "mine") {
-		return fail("Usage: review-act <keep|discard> <saved|held> <id>, or review-act mine <saved|held> <id> <digest>.")
+	if len(args) != 3 && !(len(args) == 6 && args[0] == "mine") {
+		return fail("Usage: review-act <keep|discard> <saved|held> <id>, or review-act mine <saved|held> <id> <digest> <time> <signature>.")
 	}
 	cmd, ok := reviewActArgs(args[0], args[1], args[2], args[3:]...)
 	if !ok {
@@ -208,6 +217,9 @@ func reviewAct(args []string) error {
 	if _, err := command(ctx, moraBin(), cmd...); err != nil {
 		if ctx.Err() != nil {
 			return fail("Mora took too long. Refresh to see what changed.")
+		}
+		if args[0] == "mine" {
+			return fail("Mora did not keep it as your own words. The first time, run mora review trust-app in Terminal. Otherwise refresh and try again.")
 		}
 		return fail("Mora could not complete the action.")
 	}

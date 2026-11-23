@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 func check(_ condition: @autoclosure () -> Bool, _ message: String) {
@@ -159,3 +160,15 @@ check(!ReviewNote(id: "mem_1", kind: "saved", scope: "g", type: "f", title: "T",
 check(!ReviewNote(id: "mem_1", kind: "saved", scope: "g", type: "f", title: "T", text: "x", truncated: true, confirm: String(repeating: "a", count: 64), fields: [["scope", "g"]]).canKeepAsMine, "a cut note gets no Keep as my own words")
 check(!ReviewNote(id: "mem_1", kind: "saved", scope: "g", type: "f", title: "T", text: "x", confirm: String(repeating: "A", count: 64), fields: [["scope", "g"]]).canKeepAsMine, "a malformed digest gets no Keep as my own words")
 print("Collector settings checks passed")
+
+check(String(decoding: approvalMessage(configDir: "/c", vault: "/v", kind: "saved", id: "mem_1", digest: "ab", unix: "17"), as: UTF8.self) == "mora-status-keep-mine/v1\n/c\n/v\nsaved\nmem_1\nab\n17\n", "approval message matches mora's")
+let approvalSample = P256.Signing.PrivateKey()
+let approvalSig = try! approvalSample.signature(for: approvalMessage(configDir: "/c", vault: "/v", kind: "held", id: "p_1", digest: "cd", unix: "18"))
+check(approvalSample.publicKey.isValidSignature(approvalSig, for: approvalMessage(configDir: "/c", vault: "/v", kind: "held", id: "p_1", digest: "cd", unix: "18")), "approval signature verifies")
+check(approvalFingerprint(approvalSample.publicKey.derRepresentation).split(separator: " ").count == 8, "fingerprint has eight groups")
+if CommandLine.arguments.count > 1 {
+    // Writes a cross-language fixture: mora's Go test verifies it.
+    let fixture = ["pem": approvalSample.publicKey.pemRepresentation, "signature": approvalSig.derRepresentation.base64EncodedString(), "fingerprint": approvalFingerprint(approvalSample.publicKey.derRepresentation)]
+    try! JSONSerialization.data(withJSONObject: fixture, options: [.sortedKeys, .prettyPrinted]).write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
+}
+print("Approval checks passed")
