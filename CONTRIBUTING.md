@@ -34,6 +34,19 @@ go test ./...                    # run the suite
 
 ## Match CI before you push
 
+Install the git hooks once per clone with [hk](https://hk.jdx.dev) (config in
+`hk.pkl`), plus golangci-lint v2.12.2 to match CI:
+
+```bash
+hk install
+```
+
+`pre-commit` fixes gofmt on staged Go files, then runs go vet and golangci-lint;
+`pre-push` runs gofmt, go vet and golangci-lint exactly as CI's `test` and
+`lint` jobs do. Warm, a hook takes about 4-5 s. After editing `internal/mora`,
+or a package everything imports, vet and lint re-analyse it, which takes about
+30-40 s on a 4-core machine. The race tests below stay in CI.
+
 CI runs five jobs. You can reproduce all of the blocking ones locally:
 
 ```bash
