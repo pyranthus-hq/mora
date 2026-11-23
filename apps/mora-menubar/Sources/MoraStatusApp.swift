@@ -105,6 +105,7 @@ final class StatusModel: ObservableObject {
         let process = Process()
         process.executableURL = url
         process.arguments = arguments ?? ["--config", NSString(string: "~/.config/mora-tentacles/config.json").expandingTildeInPath]
+        process.environment = collectorEnvironment(ProcessInfo.processInfo.environment, defaults: .standard)
         // File-backed output avoids a full pipe blocking the collector before exit.
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])

@@ -39,11 +39,28 @@ type ReviewList struct {
 	More  int          `json:"more"`
 }
 
+// moraBin finds the mora command. A Finder-launched app has no shell PATH, so
+// it checks the known install places in order: MORA_BIN, the script install
+// (~/.local/bin), Homebrew (Apple silicon, then Intel), then Mora.app in
+// /Applications and ~/Applications. If none exists it returns the script path,
+// so the error names the usual place.
 func moraBin() string {
 	if bin := os.Getenv("MORA_BIN"); bin != "" {
 		return bin
 	}
-	return filepath.Join(home(), ".local/bin/mora")
+	h := home()
+	for _, bin := range []string{
+		filepath.Join(h, ".local/bin/mora"),
+		"/opt/homebrew/bin/mora",
+		"/usr/local/bin/mora",
+		"/Applications/Mora.app/Contents/MacOS/mora",
+		filepath.Join(h, "Applications/Mora.app/Contents/MacOS/mora"),
+	} {
+		if fi, err := os.Stat(bin); err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0 {
+			return bin
+		}
+	}
+	return filepath.Join(h, ".local/bin/mora")
 }
 
 // cut returns s cut to n characters and how many characters it dropped.

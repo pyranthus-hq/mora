@@ -198,3 +198,49 @@ func TestReviewActKeepStillWorksFromTheCommandLine(t *testing.T) {
 		t.Fatalf("calls=%q", c)
 	}
 }
+
+func TestMoraBinFindsInstallPlaces(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("install places and the executable bit are Unix; Windows home is USERPROFILE")
+	}
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	t.Setenv("MORA_BIN", "")
+	script := filepath.Join(h, ".local/bin/mora")
+	put := func(p string, mode os.FileMode) {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	userApp := filepath.Join(h, "Applications/Mora.app/Contents/MacOS/mora")
+	put(userApp, 0o644)
+	globalFound := ""
+	for _, p := range []string{"/opt/homebrew/bin/mora", "/usr/local/bin/mora", "/Applications/Mora.app/Contents/MacOS/mora"} {
+		if _, err := os.Stat(p); err == nil && globalFound == "" {
+			globalFound = p
+		}
+	}
+	// This host's own Homebrew or /Applications install outranks the test's user app.
+	if globalFound == "" {
+		if got := moraBin(); got != script {
+			t.Fatalf("non-executable app binary was chosen: %q", got)
+		}
+		if err := os.Chmod(userApp, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if got := moraBin(); got != userApp {
+			t.Fatalf("got %q, want the user Mora.app", got)
+		}
+	}
+	put(script, 0o755)
+	if got := moraBin(); got != script {
+		t.Fatalf("got %q, want the script install first", got)
+	}
+	t.Setenv("MORA_BIN", "/custom/mora")
+	if got := moraBin(); got != "/custom/mora" {
+		t.Fatalf("MORA_BIN ignored: %q", got)
+	}
+}
