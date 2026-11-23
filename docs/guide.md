@@ -707,6 +707,20 @@ mora write --mine ...             # a new note, saved as your own statement
 mora confirm <memory-id> --mine   # an existing agent note
 ```
 
+One more action sets it outside a terminal: **Keep as my own words** in the
+Mora Status menu bar app. It is a separate button, never the default, shown only
+when the window shows the whole text and every other field the digest binds.
+macOS then asks for Touch ID or your login password for that one note. The app
+calls `mora review app-keep <saved|held> <id> <digest>`, which refuses unless
+its parent is the app's own signed collector and that collector's parent is the
+signed Mora Status app (Developer ID team VS8M5VJBZ5, checked by process id, not
+by path), refuses inside an agent session, and refuses if the note's digest no
+longer matches the one the app showed. Run from a shell, or by an agent that
+runs the collector directly, it refuses. Mora cannot see the Touch ID prompt
+itself; it trusts the signed app to have asked. `mora review --list --json`
+carries each note's digest (`confirm`) and the fields it binds other than the
+text (`fields`), so the app can show them.
+
 Plain `mora write` and plain `mora confirm` never set it, in any terminal (inside an agent session a plain `mora write` saves tentative).
 `--mine` needs your own terminal: it refuses, saves nothing and exits non-zero
 when stdin is not a terminal or an agent session variable is set. In your own

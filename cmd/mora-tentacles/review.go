@@ -20,6 +20,7 @@ const (
 
 // A leading dash is refused so an id can never read as a flag.
 var reviewID = regexp.MustCompile(`^[A-Za-z0-9_.:][A-Za-z0-9_.:-]{0,79}$`)
+var reviewDigest = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 type ReviewNote struct {
 	ID    string `json:"id"`
@@ -28,6 +29,11 @@ type ReviewNote struct {
 	Type  string `json:"type"`
 	Title string `json:"title"`
 	Text  string `json:"text"`
+	// Confirm is mora's owner-confirmed digest; Fields are the other fields it
+	// binds (mora leaves out the text, which is shown as Text). Keep as my own
+	// words sends Confirm back, so the app shows exactly what the digest covers.
+	Confirm string      `json:"confirm,omitempty"`
+	Fields  [][2]string `json:"fields,omitempty"`
 	// The window allows Keep only when it showed the whole text that will be saved.
 	Redacted    bool `json:"redacted"`
 	Truncated   bool `json:"truncated"`
@@ -114,6 +120,11 @@ func reviewList() error {
 			n.Title, th = cut(n.Title, reviewMaxTitle)
 			n.Text, xh = cut(n.Text, reviewMaxText)
 			n.HiddenChars = th + xh
+			for j := range n.Fields {
+				var fh int
+				n.Fields[j][1], fh = cut(n.Fields[j][1], reviewMaxTitle)
+				n.HiddenChars += fh
+			}
 			n.Truncated = n.HiddenChars > 0
 		}(&out.Notes[i])
 	}
@@ -152,9 +163,19 @@ func reviewText(ctx context.Context, bin string, n ReviewNote) (text string, red
 }
 
 // reviewActArgs maps one owner action to exactly one mora command. Keep never
-// sets owner-confirmed: that stays a terminal action (confirm --mine).
-func reviewActArgs(action, kind, id string) ([]string, bool) {
+// sets owner-confirmed. Only mine does, through `mora review app-keep`, which
+// itself checks that this collector runs inside the signed Mora Status app.
+func reviewActArgs(action, kind, id string, digest ...string) ([]string, bool) {
 	if !reviewID.MatchString(id) {
+		return nil, false
+	}
+	if action == "mine" {
+		if len(digest) != 1 || !reviewDigest.MatchString(digest[0]) || (kind != "saved" && kind != "held") {
+			return nil, false
+		}
+		return []string{"review", "app-keep", kind, id, digest[0]}, true
+	}
+	if len(digest) != 0 {
 		return nil, false
 	}
 	switch action + " " + kind {
@@ -175,10 +196,10 @@ func reviewAct(args []string) error {
 		_ = emit(map[string]any{"ok": false, "error": msg})
 		return errors.New(msg)
 	}
-	if len(args) != 3 {
-		return fail("Usage: review-act <keep|discard> <saved|held> <id>.")
+	if len(args) != 3 && !(len(args) == 4 && args[0] == "mine") {
+		return fail("Usage: review-act <keep|discard> <saved|held> <id>, or review-act mine <saved|held> <id> <digest>.")
 	}
-	cmd, ok := reviewActArgs(args[0], args[1], args[2])
+	cmd, ok := reviewActArgs(args[0], args[1], args[2], args[3:]...)
 	if !ok {
 		return fail("That action was refused.")
 	}

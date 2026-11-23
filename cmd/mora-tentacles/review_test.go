@@ -135,12 +135,29 @@ func TestReviewActRunsExactlyOneCommand(t *testing.T) {
 	}
 }
 
+func TestReviewActMineRunsAppKeep(t *testing.T) {
+	d := strings.Repeat("ab", 32)
+	for _, kind := range []string{"saved", "held"} {
+		log := fakeMora(t, "exit 0\n")
+		out, _, err := capture(t, func() error { return reviewAct([]string{"mine", kind, "mem_1", d}) })
+		if err != nil || strings.TrimSpace(out) != `{"ok":true}` {
+			t.Fatalf("%s: err=%v out=%q", kind, err, out)
+		}
+		if c := calls(t, log); len(c) != 1 || c[0] != "review app-keep "+kind+" mem_1 "+d {
+			t.Fatalf("%s: calls=%q", kind, c)
+		}
+	}
+}
+
 func TestReviewActRefusesBadInputBeforeRunning(t *testing.T) {
 	log := fakeMora(t, "exit 0\n")
 	for _, a := range [][]string{
 		{"keep", "saved", "x; rm -rf /"}, {"keep", "saved", "--force"}, {"discard", "held", "a b"},
 		{"keep", "saved", ""}, {"keep", "saved", strings.Repeat("a", 81)},
 		{"approve", "saved", "mem_1"}, {"keep", "mine", "mem_1"}, {"keep", "saved"}, {"keep", "saved", "mem_1", "--mine"},
+		{"mine", "saved", "mem_1"}, {"mine", "saved", "mem_1", "abc"}, {"mine", "other", "mem_1", strings.Repeat("a", 64)},
+		{"mine", "saved", "--x", strings.Repeat("a", 64)}, {"mine", "saved", "mem_1", strings.Repeat("A", 64)},
+		{"keep", "saved", "mem_1", strings.Repeat("a", 64)},
 	} {
 		out, _, err := capture(t, func() error { return reviewAct(a) })
 		if err == nil || !strings.Contains(out, `"ok":false`) {

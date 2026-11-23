@@ -51,6 +51,10 @@ type reviewRow struct {
 	Scope string `json:"scope"`
 	Type  string `json:"type"`
 	Title string `json:"title"`
+	// Confirm and Fields let Mora Status show every field the owner-confirmed
+	// digest binds, and pass that digest back to `mora review app-keep`.
+	Confirm string      `json:"confirm,omitempty"`
+	Fields  [][2]string `json:"fields,omitempty"`
 }
 
 type reviewReceipt struct {
@@ -284,6 +288,9 @@ func reviewWarnings(w io.Writer, buf *bytes.Buffer) {
 }
 
 func cmdReview(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
+	if len(args) > 0 && args[0] == "app-keep" {
+		return cmdReviewAppKeep(ctx, args[1:], stdout, stderr)
+	}
 	fs := flag.NewFlagSet("review", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	list := fs.Bool("list", false, "list agent notes that wait for review")
@@ -322,7 +329,15 @@ func cmdReview(ctx context.Context, args []string, stdout, stderr io.Writer, std
 func printReviewList(notes []reviewNote, jsonOut bool, stdout io.Writer) error {
 	rows := make([]reviewRow, 0, len(notes))
 	for _, n := range notes {
-		rows = append(rows, reviewRow{ID: n.ID, Kind: n.Kind, Scope: n.Scope, Type: n.Type, Title: n.Title})
+		// The text is left out: list output never carried it, and a held note's
+		// arguments are unredacted. Readers get it from read or proposals show.
+		fields := [][2]string{}
+		for _, f := range n.Fields {
+			if f[0] != "text" {
+				fields = append(fields, f)
+			}
+		}
+		rows = append(rows, reviewRow{ID: n.ID, Kind: n.Kind, Scope: n.Scope, Type: n.Type, Title: n.Title, Confirm: n.Confirm, Fields: fields})
 	}
 	if jsonOut {
 		return emitReceipt(stdout, "mora.review", 1, reviewReceipt{Notes: rows})

@@ -1,8 +1,11 @@
 import AppKit
+import LocalAuthentication
 import SwiftUI
 
 /// Opens the one review window. The window runs only review-list and review-act
-/// through the collector. It never edits a note and never marks one as the owner's own.
+/// through the collector. It never edits a note. It marks a note as the owner's
+/// own only through the separate Keep as my own words button, after macOS
+/// accepts Touch ID or the login password for that one note.
 @MainActor
 final class ReviewWindowController {
     static let shared = ReviewWindowController()
@@ -80,15 +83,36 @@ final class ReviewModel: ObservableObject {
         }
     }
 
-    func act(_ note: ReviewNote, keep: Bool) async {
-        guard !busy.contains(note.id), (keep ? note.canKeep : true), gate.beginAction() else { return }
+    enum Action { case keep, mine, discard }
+
+    func act(_ note: ReviewNote, _ action: Action) async {
+        let allowed: Bool
+        switch action {
+        case .keep: allowed = note.canKeep
+        case .mine: allowed = note.canKeepAsMine
+        case .discard: allowed = true
+        }
+        guard !busy.contains(note.id), allowed, gate.beginAction() else { return }
         busy.insert(note.id)
         defer { busy.remove(note.id) }
         failures[note.id] = nil
+        if action == .mine, !preview {
+            // A fresh context each time: no earlier Touch ID is reused.
+            let context = LAContext()
+            context.touchIDAuthenticationAllowableReuseDuration = 0
+            do {
+                guard try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "keep this note as your own words") else { throw StatusError.collector("Not approved.") }
+            } catch {
+                failures[note.id] = "Not approved. Nothing was changed."
+                gate.endAction(succeeded: false)
+                return
+            }
+        }
         if !preview {
             do {
                 let collector = self.collector
-                let args = ["review-act", keep ? "keep" : "discard", note.kind, note.id]
+                var args = ["review-act", action == .keep ? "keep" : action == .mine ? "mine" : "discard", note.kind, note.id]
+                if action == .mine { args.append(note.confirm) }
                 let result = try await Task.detached(priority: .utility) { try StatusModel.runCollector(collector, arguments: args) }.value
                 let done = try JSONDecoder().decode(ReviewActResult.self, from: Data(result.output.utf8))
                 guard done.ok, result.status == 0 else { throw StatusError.collector(done.error ?? "The action did not complete.") }
@@ -108,7 +132,7 @@ final class ReviewModel: ObservableObject {
     private static let fixtures: [ReviewNote] = [
         ReviewNote(id: "p_fixture_redacted", kind: "held", scope: "project:demo", type: "fact", title: "Fixture: a redacted note", text: "token: [REDACTED]", redacted: true),
         ReviewNote(id: "mem_fixture_cut", kind: "saved", scope: "global", type: "insight", title: "Fixture: a cut note", text: "Fixture text that was cut.", truncated: true, hiddenChars: 5100),
-        ReviewNote(id: "mem_fixture_saved", kind: "saved", scope: "global", type: "insight", title: "Fixture: a saved note", text: "Fixture text. No collector ran."),
+        ReviewNote(id: "mem_fixture_saved", kind: "saved", scope: "global", type: "insight", title: "Fixture: a saved note", text: "Fixture text. No collector ran.", confirm: String(repeating: "a", count: 64), fields: [["scope", "global"], ["type", "insight"], ["title", "Fixture: a saved note"]]),
         ReviewNote(id: "p_fixture_held", kind: "held", scope: "project:demo", type: "fact", title: "Fixture: a held note", text: "Fixture text for a note that is not saved yet."),
         ReviewNote(id: "mem_fixture_long", kind: "saved", scope: "global", type: "insight", title: "**Bold** [a link](https://example.com) https://example.com/path", text: (1...60).map { "Line \($0): **not bold**, [not a link](https://example.com), https://example.com/\($0)" }.joined(separator: "\n"))
     ]
@@ -120,7 +144,7 @@ struct ReviewView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(verbatim: "These notes were written by agents. Keep saves a note as an agent note. To mark a note as your own statement, run mora confirm <id> --mine in a terminal.")
+            Text(verbatim: "These notes were written by agents. Keep saves a note as an agent note. Keep as my own words marks the exact text and fields shown as your own statement; macOS asks for Touch ID or your password first.")
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 if model.loading { ProgressView().controlSize(.small) }
@@ -144,7 +168,7 @@ struct ReviewView: View {
         .padding(14)
         .frame(minWidth: 400, minHeight: 360)
         .alert("Discard this note?", isPresented: Binding(get: { pendingDiscard != nil }, set: { if !$0 { pendingDiscard = nil } }), presenting: pendingDiscard) { note in
-            Button("Discard", role: .destructive) { Task { await model.act(note, keep: false) } }
+            Button("Discard", role: .destructive) { Task { await model.act(note, .discard) } }
             Button("Cancel", role: .cancel) {}
         } message: { _ in
             Text("This removes it.")
@@ -157,6 +181,12 @@ struct ReviewView: View {
             Text(verbatim: note.title).font(.system(size: 13, weight: .semibold)).textSelection(.enabled)
             Text(verbatim: note.kindLine).font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
             NoteText(text: note.text)
+            if note.canKeepAsMine {
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(Array(note.fieldLines.enumerated()), id: \.offset) { Text(verbatim: $0.element) }
+                }
+                .font(.system(size: 10)).foregroundStyle(.secondary).textSelection(.enabled)
+            }
             if let warning = note.keepWarning {
                 Text(verbatim: warning).font(.system(size: 11)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
@@ -164,8 +194,10 @@ struct ReviewView: View {
                 Text(verbatim: failure).font(.system(size: 11)).foregroundStyle(.orange)
             }
             HStack {
-                if note.canKeep { Button("Keep") { Task { await model.act(note, keep: true) } } }
+                if note.canKeep { Button("Keep") { Task { await model.act(note, .keep) } } }
                 Button("Discard") { pendingDiscard = note }
+                Spacer()
+                if note.canKeepAsMine { Button("Keep as my own words…") { Task { await model.act(note, .mine) } } }
                 if working { ProgressView().controlSize(.small) }
             }.disabled(working || !model.gate.canAct)
         }
