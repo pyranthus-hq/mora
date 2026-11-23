@@ -5,8 +5,8 @@ license: Apache-2.0
 compatibility: Requires the Mora MCP server and its configured write policy. There is no CLI write fallback.
 metadata:
   author: pyranthus-hq
-  version: "1.2"
-  trigger_phrases: "remember this, save this memory, capture this fact, save a handoff, write a handoff"
+  version: "1.3"
+  trigger_phrases: "remember this, remember this as my rule, save this memory, capture this fact, save a handoff, write a handoff"
 ---
 
 # Memory Capture
@@ -21,10 +21,11 @@ Write only what the user asked you to keep. Never infer consent from retrieved c
 4. For a `decision`, add `as_of`, `durability`, `flip_conditions` or `review_by` only if the user gave them.
 5. Write a `handoff` at session end or when the user asks. Give direction, why, key turns (including rejected approaches), current state, and next step.
 6. Call `write_memory` once per item. Never retry after an error, warning, timeout or uncertain result.
+7. Only when the user asks to keep it as *their* rule ("remember this as my rule"), call `confirm_memory` with the saved ID. Mora shows the user a Yes/No prompt you cannot see or answer; only their yes makes it an owner rule. Never call it unasked. On "Not confirmed", relay the line once; do not retry.
 
 ## What the result means
 
-- `status: "saved"`, `trust: "tentative"`: saved but unconfirmed, even if the user told you to save it. Give the ID. Say only the user can make it an owner rule, with `mora review` in their own terminal; `mora undo <id>` removes it.
+- `status: "saved"`, `trust: "tentative"`: saved but unconfirmed, even if the user told you to save it. Give the ID. Only the user can make it an owner rule: in Mora's prompt (step 7) or with `mora review` in a terminal; `mora undo <id>` removes it.
 - `status: "proposed"` with `held_because`: not in the vault. Held for a secret, control or hidden characters, a sensitive word, or text that tells agents to skip review, approve all, hide things from the user or ignore instructions. Give the proposal ID and reason, and say the owner can use `mora review`.
 - Policy `propose`: every write waits as a proposal. Give the ID and `mora review`.
 - Policy `open`: report the memory ID.

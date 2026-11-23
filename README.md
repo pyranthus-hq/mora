@@ -99,6 +99,10 @@ codex mcp add mora -- mora mcp serve --project-dir "$PWD"
 
 ### 2. Record an owner rule and see what your agent gets
 
+In chat, say **"remember this as my rule"** and confirm the prompt. The agent saves the note with `write_memory` and calls `confirm_memory`; Mora then shows you the exact scope, type, title and text in a prompt from your client (MCP elicitation) with an unticked `Yes, this is my rule` box. The model cannot see or answer that prompt, and only your yes makes the note an owner rule. Claude Code's CLI shows the prompt; some clients cannot yet (see [which clients show it](docs/guide.md#make-a-note-your-own-rule-from-chat)), and there the agent tells you to use the terminal instead.
+
+From a terminal (the fallback, and for clients that cannot show the prompt):
+
 ```bash
 # Save an owner-confirmed decision. It asks "Save this as your own statement? [y/N]"
 # and refuses outside your own terminal (a pipe, a script, or an agent session).
@@ -110,7 +114,7 @@ mora write --mine --scope project:my-app --type decision \
 mora brief --project .
 ```
 
-`--mine` (and `mora review` below) ask a question at a real terminal and refuse inside an agent session or an IDE-agent terminal, so run them in a plain terminal window.
+`--mine`, `mora confirm <id> --mine` and `mora review` below ask a question at a real terminal and refuse inside an agent session or an IDE-agent terminal, so run them in a plain terminal window.
 
 Without `--mine`, `mora write` saves the note but the brief lists it under `Notes, not instructions`, not under `Owner rules`. At a terminal, outside an agent session, it prints one extra stderr line saying so and pointing at `--mine`. Run from inside an agent session (`CLAUDECODE`, `CODEX_SANDBOX` and the other session variables `--mine` refuses on), it saves the note as an unreviewed agent note instead, tagged `mora-tentative`: it waits in `mora review`, stays out of the prompt-recall hook (a project decision can still show in the session brief under `Notes, not instructions`), and prints one stderr line saying so. `mora confirm <id>` and `mora mcp proposals approve` refuse inside an agent session too. Run inside a bound folder, `mora write` defaults to that project's scope and says so on stderr; `--scope` overrides it.
 
@@ -154,7 +158,7 @@ A `handoff` is a vault memory (`type: handoff`) that carries direction, why, key
    - `Notes, not instructions`: up to three recent project decisions you have not confirmed (agent notes, and anything saved without `--mine`), the count of notes waiting for review, and the latest session `handoff`.
    - Notes from `personal` or other `project:*` scopes never appear on their own in a bound project.
 2. **Scoped recall on prompts (`UserPromptSubmit` / Antigravity `PreInvocation`):** Searches only the bound project scope and `global` using stemmed full-text search (`porter unicode61`) and metadata reranking, adding up to three short matches within 0.7 seconds. A note is added only if it shares two content words with the prompt, or one word that is in its title or rare in the index. Tentative notes are never added. It skips slash commands and prompts under 12 characters.
-3. **Project-aware MCP tools (`mora mcp serve --project-dir "$PWD"`):** Exposes `brief`, `search_memory`, `context_memory`, `read_memory`, `write_memory`, `list_memory`, `think`, `calendar_events`, `list_entities`, `get_entity`, `digest`, `meeting_prep`, and `delete_memory`. With `--project-dir`, `write_memory` defaults an omitted scope to the bound project and `brief` returns the project brief.
+3. **Project-aware MCP tools (`mora mcp serve --project-dir "$PWD"`):** Exposes `brief`, `search_memory`, `context_memory`, `read_memory`, `write_memory`, `confirm_memory`, `list_memory`, `think`, `calendar_events`, `list_entities`, `get_entity`, `digest`, `meeting_prep`, and `delete_memory`. With `--project-dir`, `write_memory` defaults an omitted scope to the bound project and `brief` returns the project brief.
 4. **Opt-in Bash warning rules (`mora rules`):** Checks Bash tool calls in Claude Code against regex patterns you approved in your own terminal:
    ```bash
    mora rules add --id no-sudo --match '^\s*sudo\b' --message "Do not use sudo here."
@@ -178,7 +182,7 @@ What Mora does **not** do:
 
 ## Agent write policy
 
-This policy governs the MCP `write_memory` and `delete_memory` tools, the loopback HTTP `/call` route, and paired companion captures. It does not gate connectors, tasks, or `mora teach` in your terminal, and `mora write` only inside an agent session (see the table):
+This policy governs the MCP `write_memory`, `delete_memory` and `confirm_memory` tools, the loopback HTTP `/call` route, and paired companion captures. It does not gate connectors, tasks, or `mora teach` in your terminal, and `mora write` only inside an agent session (see the table):
 
 | How it is saved | Waits for your approval? |
 | --- | --- |
@@ -187,6 +191,7 @@ This policy governs the MCP `write_memory` and `delete_memory` tools, the loopba
 | Connectors (files, mail, calendar, messages, GitHub) | No. Saved at once as read-only source evidence. |
 | `mora teach ... --yes` corrections | No. Saved at once, and reversible with `mora teach undo`. |
 | An agent's `write_memory` call over MCP | **Default (`tentative`):** low-risk notes save at once with a `mora-tentative` tag (`save now, review later` via `mora review`). High-risk notes wait in the proposal queue. Under `propose`, all agent writes wait for approval. |
+| An agent's `confirm_memory` call over MCP | Yes, always: Mora asks you in a prompt your client shows, and only your explicit yes makes the note owner-confirmed. `readonly` refuses it. |
 | Lifecycle hooks (`SessionStart`, `UserPromptSubmit`, `SessionEnd`) | Hooks never write vault memories (`SessionEnd` updates only the per-project handoff state). |
 
 ### How `tentative` ("save now, review later") works
@@ -198,13 +203,14 @@ By default (`mcp_write_policy = "tentative"`), an agent's `write_memory` call is
 
 A tentative memory appears in `search`, `read`, `list`, and `context` with `"trust":"tentative"`, and tentative decisions and handoffs appear in the Project Brief's `Notes, not instructions` section. They do not enter `Owner rules`, the prompt recall hook, the daily brief, `think`, or `mora share` until confirmed, and a tentative `correction` does not change how other notes are shown.
 
-Run `mora review` in your own terminal to step through saved tentative notes and held proposals (`[k]eep [r]eject [s]kip [q]uit`). Keeping a note removes `mora-tentative` and binds `"trust":"owner-confirmed"` to the exact fields shown. You can also mark a note owner-confirmed in your terminal with `mora write --mine` or `mora confirm <id> --mine`. Plain `mora confirm <id>` only removes the tentative tag; the note becomes ordinary, not owner-confirmed.
+Run `mora review` in your own terminal to step through saved tentative notes and held proposals (`[k]eep [r]eject [s]kip [q]uit`). Keeping a note removes `mora-tentative` and binds `"trust":"owner-confirmed"` to the exact fields shown. You can also make a note owner-confirmed from chat (say "remember this as my rule" and confirm Mora's prompt), or in your terminal with `mora write --mine` or `mora confirm <id> --mine`. Plain `mora confirm <id>` only removes the tentative tag; the note becomes ordinary, not owner-confirmed.
 
 **Honest limits:**
 
 - The deterministic hold filter is coarse. It does not catch a false claim written in plain words.
 - An agent that can run shell commands can invoke `mora write`, `mora confirm`, or `mora mcp proposals approve` directly, so MCP write policy is not a sandbox against a shell-capable agent.
 - `mora review` and `--mine` check stdin and known Claude Code / Codex session variables, not every IDE harness, and a process using a pseudo-terminal or writing vault files directly can forge the owner-confirmed tag. It is a review record, not a cryptographic signature.
+- The chat prompt trusts your client to show it to you. Claude Code's `Elicitation` hooks can answer a prompt without showing it, so a client configured to auto-accept Mora's prompt confirms notes without you. See the guide's trust notes.
 - `mora teach memory retract` and `mora teach undo` hide a memory from current retrieval and keep history; `mora undo <id>` deletes an agent-written file and logs the undo. Neither erases text from agents or shared peers that already read it.
 
 ### Switching policy (`tentative`, `propose`, `open`, `readonly`)

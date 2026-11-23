@@ -219,8 +219,8 @@ func TestCoreB_McpHandleToolsList(t *testing.T) {
 	if !ok {
 		t.Fatalf("tools must be a slice of maps, got %T", res["tools"])
 	}
-	if len(tools) != 13 {
-		t.Fatalf("expected 13 published tools, got %d", len(tools))
+	if len(tools) != 14 {
+		t.Fatalf("expected 14 published tools, got %d", len(tools))
 	}
 	names := map[string]bool{}
 	for _, tl := range tools {
