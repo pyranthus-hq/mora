@@ -57,3 +57,24 @@ func TestRunUsage(t *testing.T) {
 		t.Fatalf("stderr=%q", stderr.String())
 	}
 }
+
+func TestRunWritesStatusCask(t *testing.T) {
+	dir := t.TempDir()
+	manifest := filepath.Join(dir, "checksums-status.txt")
+	if err := os.WriteFile(manifest, []byte("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc  mora-status_1.0.0_arm64.zip\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--app", "status", "--tag", "mora-status-v1.0.0", "--checksums", manifest, "--out", "-"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `cask "mora-status" do`) {
+		t.Fatalf("wrong output: %s", stdout.String())
+	}
+	if code := run([]string{"--app", "status", "--auto-updates", "--tag", "mora-status-v1.0.0", "--checksums", manifest, "--out", "-"}, &stdout, &stderr); code != 2 {
+		t.Fatalf("status + auto-updates code=%d, want 2", code)
+	}
+	if code := run([]string{"--app", "other", "--tag", "v1.0.0", "--checksums", manifest, "--out", "-"}, &stdout, &stderr); code != 2 {
+		t.Fatalf("unknown app code=%d, want 2", code)
+	}
+}

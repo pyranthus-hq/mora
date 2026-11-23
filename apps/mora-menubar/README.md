@@ -27,7 +27,41 @@ Requires macOS Swift command-line tools and iconutil. The bundle icon is rendere
 
 The result is `apps/mora-menubar/build/Mora Status.app`. You can also pass the
 collector path through `MORA_TENTACLES=/path/to/mora-tentacles`. The build is
-local and unsigned; it does not install or launch the app.
+arm64 only, local, and unsigned; it does not install or launch the app. Set
+`MORA_STATUS_VERSION=X.Y.Z` to stamp the bundle version (default `0.0.0`).
+
+## Install
+
+Signed releases are for Apple silicon Macs with macOS 13 or later:
+
+```sh
+brew install --cask pyranthus-hq/tap/mora-status
+```
+
+The release lane is `scripts/mora-status-darwin-release.sh`, run by the
+`Mora Status release` workflow. It builds the collector and the app, signs the
+nested collector and then the bundle with Mora's Developer ID (team
+VS8M5VJBZ5, hardened runtime, secure timestamp), notarizes, staples, checks
+Gatekeeper on the final zip, and writes `checksums-status.txt` (cosign-signed in
+CI). A manual run gives a signed test zip as a workflow artifact; a
+`mora-status-vX.Y.Z` tag also creates a draft release that is never marked
+latest. The asset is `mora-status_<version>_arm64.zip`, a name that the old
+`mora upgrade` matcher and the Mora.app updater both ignore. The Cask comes from
+`go run ./cmd/gencask --app status`.
+
+## Finding mora
+
+An app opened from Finder has no shell `PATH`. The collector runs the first
+`mora` it finds in this order: `MORA_BIN`, `~/.local/bin/mora`,
+`/opt/homebrew/bin/mora`, `/usr/local/bin/mora`,
+`/Applications/Mora.app/Contents/MacOS/mora`, then
+`~/Applications/Mora.app/Contents/MacOS/mora`. Two optional settings take
+absolute paths; anything else is ignored:
+
+```sh
+defaults write com.pyranthus.mora-status moraBin /path/to/mora   # sets MORA_BIN
+defaults write com.pyranthus.mora-status vault /path/to/vault    # sets MORA_VAULT
+```
 
 ## Run
 
@@ -60,7 +94,7 @@ from the command line.
 The window lists up to 50 notes with their text, shown as plain text (no
 markdown, no links opened). Each note has Keep and Discard. Discard asks once.
 After an action the note leaves the list and the panel count refreshes. A failed
-action shows a short error and keeps the note. The app is unsigned and local.
+action shows a short error and keeps the note.
 The buttons run these four commands through the collector
 (`mora-tentacles review-act <keep|discard> <saved|held> <id>`), one per click,
 with the id as a single argument and no shell:
