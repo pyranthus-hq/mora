@@ -47,14 +47,13 @@ type Filter struct {
 	// Like every other predicate they run in the SQL WHERE clause of each arm.
 	Scopes          []string
 	NoProjectScopes bool
-	// Authorize marks Scopes and AuthoredOnly as an authorization boundary (an
-	// agent profile's grant) rather than a recall preference: every arm and
-	// every Go-side pass enforces them before ranking and before any limit.
-	// AuthoredOnly drops every connector row (any non-empty provider). It is a
-	// subset of what the profile's post-filter drops, so the post-filter stays
-	// the authority. Both are trusted values, never parsed from arguments.
-	Authorize    bool
+	// Authorize marks a profile grant; profiles exclude all provider rows.
+	Authorize           bool
+	ProfileAuthoredOnly bool
+	// AuthoredOnly and NoShares enforce trusted workspace isolation.
 	AuthoredOnly bool
+	NoShares     bool
+
 	// Now is the reference instant SinceHours is computed against. It is
 	// captured ONCE per MCP call (mcp.go handlers) and threaded down, so a
 	// single call sees one consistent clock across every retrieval arm —
@@ -84,7 +83,7 @@ func (f Filter) ScopeAllowed(scope string) bool {
 	return len(f.Scopes) == 0 || slices.Contains(f.Scopes, scope)
 }
 func (f Filter) Active() bool {
-	return f.Source != "" || f.SinceHours > 0 || f.EventSinceHours > 0 || len(f.ExcludeDispositions) > 0 || f.Authorize
+	return f.Source != "" || f.SinceHours > 0 || f.EventSinceHours > 0 || len(f.ExcludeDispositions) > 0 || len(f.Scopes) > 0 || f.NoProjectScopes || f.AuthoredOnly || f.Authorize || f.NoShares
 }
 func (f Filter) Receipt() map[string]any {
 	out := map[string]any{}
@@ -147,10 +146,50 @@ func (f Filter) SQLPredicate() (clause string, args []any) {
 		parts = append(parts, "substr(m.scope, 1, 8) <> 'project:'")
 	}
 	if f.AuthoredOnly {
-		parts = append(parts, "COALESCE(m.provider, '') = ''")
+		if f.ProfileAuthoredOnly {
+			parts = append(parts, "COALESCE(m.provider, '') = ''")
+		} else {
+			parts = append(parts, authoredOnlySQL)
+		}
 	}
 	if len(parts) == 0 {
 		return "", nil
 	}
 	return " AND " + strings.Join(parts, " AND "), args
 }
+
+// authoredOnlySQL is the indexed counterpart to memory.DeriveProvenance's
+// authored branch. Managed project retrieval must apply it before ORDER BY and
+// LIMIT: filesystem records intentionally have no provider, so provider alone
+// is not an authorship boundary. The index already stores every field needed
+// to recognize connector IDs, filesystem documents, and agent-note mirrors.
+const authoredOnlySQL = `(
+ m.id NOT LIKE 'gmail\_thread/%' ESCAPE '\'
+ AND m.id NOT LIKE 'imessage\_chat/%' ESCAPE '\'
+ AND m.id NOT LIKE 'calendar\_event/%' ESCAPE '\'
+ AND m.id NOT LIKE 'applecal\_event/%' ESCAPE '\'
+ AND m.id NOT LIKE 'whatsapp\_conversation/%' ESCAPE '\'
+ AND m.id NOT LIKE 'github:%'
+ AND m.id NOT LIKE 'eywa\_fact/%' ESCAPE '\'
+ AND (
+  instr('/' || replace(COALESCE(m.path, ''), '\', '/'), '/sources/filesystem/claude-memory/') > 0
+  OR instr('/' || replace(COALESCE(m.path, ''), '\', '/'), '/sources/filesystem/claude-project-memory/') > 0
+  OR instr('/' || replace(COALESCE(m.path, ''), '\', '/'), '/sources/filesystem/claude-remember/') > 0
+  OR instr('/' || replace(COALESCE(m.path, ''), '\', '/'), '/sources/filesystem/codex-memory/') > 0
+  OR (',' || lower(COALESCE(m.tags, '')) || ',') LIKE '%,claude-memory,%'
+  OR (',' || lower(COALESCE(m.tags, '')) || ',') LIKE '%,claude-project-memory,%'
+  OR (',' || lower(COALESCE(m.tags, '')) || ',') LIKE '%,claude-remember,%'
+  OR (',' || lower(COALESCE(m.tags, '')) || ',') LIKE '%,codex-memory,%'
+  OR (
+   COALESCE(m.provider, '') = ''
+   AND (
+    m.id LIKE 'mem\_%' ESCAPE '\'
+    OR instr('/' || replace(COALESCE(m.path, ''), '\', '/'), '/memories/') > 0
+    OR (
+     instr('/' || replace(COALESCE(m.path, ''), '\', '/'), '/sources/') = 0
+     AND (',' || lower(COALESCE(m.tags, '')) || ',') NOT LIKE '%,filesystem,%'
+    )
+   )
+  )
+ )
+)`

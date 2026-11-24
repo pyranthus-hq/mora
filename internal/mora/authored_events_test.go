@@ -147,8 +147,13 @@ func TestAuthoredEventsExcludeTentativeBeforeLimit(t *testing.T) {
 	useShippedWritePolicyDefault(t)
 	withTempHome(t)
 	run(t, "init")
+	legacyOpenPolicy(t)
 	run(t, "write", "--scope", "project:demo", "--type", "fact", "--title", "Confirmed event", "--text", "Confirmed note.")
 	cfg := mustConfig(t)
+	cfg.MCPWritePolicy = ""
+	if err := writeConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 3; i++ {
 		tentativeMemoryID(t, tentativeServe(t, map[string]any{
 			"title": "Draft " + strings.Repeat("x", i+1), "text": "agent draft", "type": "fact", "scope": "project:demo",

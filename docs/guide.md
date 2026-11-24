@@ -642,10 +642,17 @@ mora config mcp-write-policy readonly
   add them to the vault before approval. It refuses deletes.
 - `readonly` refuses writes and deletes.
 
+On a successful MCP `write_memory`, `memory.path` is a vault-relative,
+slash-delimited receipt path (for example, `memories/global/mem_x.md`), never an
+absolute machine path. It cannot escape the vault. Use `memory.id` with
+`read_memory` to retrieve the record; do not treat the receipt path as an
+arbitrary filesystem path.
+
 An explicit policy is never changed. v0.15.3 resolved an unset policy to
 `propose`. v0.15.2 and earlier resolved it to `open`. Writes still queued from
-v0.15.3 stay queued: `mora doctor` prints how many are pending, and
-`mora mcp proposals approve <id>` publishes one.
+v0.15.3 stay queued: `mora doctor` prints how many are pending. CLI approval
+currently fails closed with `ERR_OWNER_VERIFICATION_UNAVAILABLE`, so those
+proposals remain pending.
 
 A tentative memory shows in search, read, list and context with a
 `"trust":"tentative"` label. This holds for every type and scope. It does not
@@ -657,16 +664,20 @@ tentative `decision` in a bound project's scope can still appear there, under
 A tentative note is a vault file. `mora sync git` uploads vault files to your
 own git remote, tentative notes included, and the tag travels with the file.
 `mora backup` also archives them. `mora share` leaves tentative notes out.
-Run `mora confirm --list` before you sync if you want to review first. List them and keep one like this:
+Run `mora confirm --list` before you sync if you want to review first. Listing
+works today:
 
 ```bash
-mora confirm --list            # tentative memories
-mora confirm <memory-id>       # remove the tag; the memory becomes normal
+mora confirm --list            # list tentative memories
+mora confirm <memory-id>       # currently refused (see below)
 ```
 
-`mora confirm` has no MCP tool, and it logs a `confirm` line. Both commands
-accept `--json`. Plain `mora confirm` never makes a note owner-confirmed. To do
-that, use `mora confirm <id> --mine` (see owner-confirmed below).
+Confirming a note needs a trusted native owner verifier, and none is installed
+in this release. `mora confirm <memory-id>` therefore exits with
+`ERR_OWNER_VERIFICATION_UNAVAILABLE`, changes nothing, and the note stays
+tentative. `mora confirm` has no MCP tool. Both forms accept `--json`. Plain
+`mora confirm` never makes a note owner-confirmed; `mora confirm <id> --mine`
+(see owner-confirmed below) is refused the same way today.
 
 To see every agent note that waits for you, saved or held, and to keep or
 reject each one in a single pass:
@@ -674,13 +685,22 @@ reject each one in a single pass:
 ```bash
 mora review --list [--json]    # one row per note: id, saved|held, scope, type, title
 mora review                    # walk the notes: [k]eep [r]eject [s]kip [q]uit
+mora review --show saved ID --json  # read-only bounded desktop preview
+mora review --show held ID --json   # read-only bounded desktop preview
 ```
 
-`mora review` needs your own terminal. It refuses when stdin is not a terminal
-or an agent session variable is set. Keep and reject do what `mora confirm` or
-`mora mcp proposals approve` (keep), and `mora undo` or
-`mora mcp proposals reject` (reject), do. If a note changes after it is shown,
-the walk does not act on it and shows it again.
+`mora review --show` is a read-only inspection seam for a native desktop shell.
+It requires `--json` and returns the bounded, redacted preview plus
+`canonical_revision` and `display_digest`. Both digests identify what was read;
+neither authorizes a Keep or Discard decision. The command accepts only pending
+`saved` and `held` IDs, does not prompt, and makes no vault, state, index, or
+proposal-queue changes.
+
+`mora review --list` and `--show` are read-only. Keep and reject require a
+verified owner action bound to the shown revision and digest. No production
+owner verifier is installed yet, so the interactive decision path returns
+`ERR_OWNER_VERIFICATION_UNAVAILABLE`; a terminal, typed response, or cleared
+agent marker is not authority proof.
 
 While agent notes wait for review, Mora says so: the `write_memory` result
 (`review_notice`), `mora brief`, the MCP brief, the session-start hook and
@@ -699,7 +719,10 @@ of those fields (`OwnerConfirmedFields` and `OwnerConfirmedDigest` in
 exact text in their own terminal. Agents are told to treat such a note as your
 own words. The keep logs an `owner-confirm` line.
 
-Three actions set this status, each only in your own terminal:
+These actions need a trusted native owner verifier. None is installed in this
+release, so their mutating path fails closed with
+`ERR_OWNER_VERIFICATION_UNAVAILABLE`; a terminal, typed response, or cleared
+agent marker is not authority:
 
 ```bash
 mora review                       # the keep action
@@ -748,8 +771,9 @@ and types `y` passes, and a program that can write vault files can write the tag
 itself.
 
 The hold filter is coarse. It does not stop a false claim written in plain
-words. An agent with a shell can run `mora confirm` or
-`mora mcp proposals approve`, so tentative is a review aid, not a sandbox.
+words. An agent with a shell can invoke `mora confirm` or `mora mcp proposals
+approve`, but those owner actions currently fail closed without a trusted
+verifier. Tentative is a review aid, not a sandbox.
 
 Every agent write that reaches the vault (MCP stdio, the loopback HTTP
 `/call` route, companion captures, and approved proposals) appends one line to
@@ -763,17 +787,21 @@ mora undo --force <memory-id>  # any memory
 ```
 
 `mora undo` uses the same delete path as `mora delete`, updates the index, and
-appends an `undo` line to the log. It refuses a memory an agent did not write
-unless you pass `--force`.
+appends an `undo` line to the log. Both destructive CLI routes require an
+explicit `mcp_write_policy=open`; tentative, propose, and readonly refuse
+before mutation, and `--force` does not bypass that policy.
 
-Review staged writes locally:
+Inspect staged writes locally:
 
 ```bash
 mora mcp proposals list
 mora mcp proposals show <proposal-id>
-mora mcp proposals approve <proposal-id>
-mora mcp proposals reject <proposal-id>
 ```
+
+CLI `mora mcp proposals approve <proposal-id>` and `reject <proposal-id>`
+require a trusted owner verifier. No production verifier is installed yet, so
+both return `ERR_OWNER_VERIFICATION_UNAVAILABLE` and pending proposals remain
+pending.
 
 `mora mcp proposals show <proposal-id> [--json]` is a local, read-only inspection.
 Both forms print an indented `mora.mcp.proposals` v1 JSON receipt with an
@@ -1020,8 +1048,8 @@ original Drona ID as `source_id`. Omit `report_id` on imported recoveries.
 Keep credentials, private client material, and raw traces on the source host.
 
 Run `mora friction import < packet.json` to stage the packet. Inspect each
-pending ID with `mora mcp proposals show ID` and approve reviewed proposals
-with `mora mcp proposals approve ID ...`, with the report first. Replaying
+pending ID with `mora mcp proposals show ID`. CLI approval currently fails
+closed as described above, so imported proposals remain pending. Replaying
 the packet reuses matching pending proposals or saved records. A later packet
 can include additional recoveries for the same report. Conflicting content
 for an existing source ID is refused.
@@ -1030,7 +1058,8 @@ for an existing source ID is refused.
 
 When an agent session starts in a bound folder, the global `SessionStart` hook
 writes that project's owner rules instead of the daily mail and calendar brief.
-In a folder with no binding, nothing changes. See it yourself:
+In a folder with no binding, SessionStart stays quiet by default. See the
+project brief yourself:
 
 ```bash
 mora brief --project            # the bound folder, or DIR if you pass one
@@ -1067,7 +1096,8 @@ The session-start hook never falls back to the daily brief for a project folder
 it cannot serve. When `projects.json` exists but cannot be read, it writes one
 line telling you to run `mora project list`. When the folder is bound but the
 brief cannot be built, it writes one line telling you to run `mora doctor`. With
-no `projects.json`, or no binding for the folder, the daily brief is unchanged.
+no `projects.json` or no binding for the folder, SessionStart emits no context
+by default.
 
 ### Use Mora in one project
 
@@ -1215,17 +1245,28 @@ a `wsl.exe` command into that Windows file.
 
 The installer adds three commands to `~/.claude/settings.json`:
 
-- `SessionStart` adds the current brief when a session begins. In a bound
-  folder it adds that project's brief.
+- `SessionStart` adds the project brief when a session begins in a bound folder.
 - `UserPromptSubmit` adds up to three short related memories for a prompt.
 - `SessionEnd` keeps your last requests of the session in a bound folder (see
   "Handoff of the last session"). It writes nothing to the session.
 
 In the global install, `SessionStart` and `SessionEnd` check the folder Claude
-runs in: a bound folder gets its project brief and its handoff, any other
-folder gets the daily brief and no handoff. `UserPromptSubmit` recall follows the
-folder too (see "Which notes appear on their own"). Run `mora hook install` again to add a missing one; it never adds a
-second copy.
+runs in. A bound folder gets its project brief and handoff. An unbound
+folder gets no startup context or handoff by default, including on upgrades
+from older configs. To opt in to the daily brief at the start of unbound
+sessions, set this in your Mora `config.toml` (normally
+`~/.config/mora/config.toml`):
+
+```toml
+hook_unbound_brief = true
+```
+
+This allows the unbound daily brief, which can include personal mail and
+calendar summaries, to appear in the agent's context. Remove the setting
+or set it to `false` to restore the quiet default. Project-only hooks with
+`--project-dir` never fall back to the daily brief. `UserPromptSubmit` recall
+follows the folder (see "Which notes appear on their own"). Run
+`mora hook install` again to add a missing hook. It never adds a second copy.
 
 Mora keeps other valid settings and hooks. It refuses to change an unreadable
 or invalid JSON settings file. Remove only Mora's managed hooks with:
@@ -1301,7 +1342,7 @@ the brief at session start. Both follow the folder the session runs in:
 | --- | --- |
 | In a folder bound to `project:X` | `project:X` and `global` |
 | In a folder bound with `--owner-only` | `project:X`, `global` and `personal` in recall. The project brief never shows `personal` notes. |
-| In a folder with no binding | every scope except `project:*` (so `global`, `personal` and any other) |
+| In a folder with no binding | Recall searches every scope except `project:*`. SessionStart stays quiet unless `hook_unbound_brief` is enabled. |
 
 The binding of the folder the hook runs in decides, and the deepest binding wins:
 an owner-only parent gives no `personal` notes inside a nested binding that is not
@@ -1316,15 +1357,16 @@ of recall, as before.
 In a folder with a binding, the health banner is replaced by one fixed line,
 `Mora: memory health needs attention. Run "mora doctor".`, shown only when the
 detailed banner would not be empty, so a source error of another project cannot
-leak. Folders without a binding keep the detailed banner.
+leak. In unbound folders, prompt recall and an opted-in daily brief keep the
+detailed banner.
 
 The scope limit is applied inside every search arm before ranking, so a note of
 another project is never fetched and cannot push a matching note out of the
-result. At session start in a folder with no binding, the daily brief leaves out
-every record whose scope starts with `project:`, whatever its origin (authored
-notes, mail, messages, calendar). Records in other scopes are unchanged. That
-brief is built fresh each time, because the saved daily brief can hold project
-records. `mora brief` typed in your own terminal is unchanged.
+result. If you opt in to the daily brief for unbound sessions, that brief
+excludes every record whose scope starts with `project:`, including authored
+notes, mail, messages and calendar records. Mora builds it fresh each time
+because the saved daily brief can hold project records. You can still run
+`mora brief` from your terminal.
 
 A deliberate search is not limited by any of this: `mora search`, `search_memory`
 and `context_memory` still find other projects' notes.
@@ -1640,8 +1682,9 @@ note: it carries the `mora-tentative` tag like an MCP write under the default
 policy, appears in `mora review`, stays out of the prompt-recall hook (a
 decision can still show in the project brief as an unconfirmed note), and
 prints one stderr line saying so. An agent session cannot clear the tag: `mora
-confirm <id>` and `mora mcp proposals approve` refuse there, and the owner runs
-them from their own terminal. It does not run the hold checks an MCP write gets (credential-like or
+confirm <id>` and `mora mcp proposals approve` refuse there. These owner actions
+also currently fail closed outside an agent session because no production owner
+verifier is installed. It does not run the hold checks an MCP write gets (credential-like or
 hidden text), and piped stdin alone does not count as an agent session.
 
 Add `--mine` to save the note as your own statement, owner-confirmed. It needs
@@ -1873,8 +1916,11 @@ decision log lives under `entries`, and is `[]` when there is no history.
 
 ### Delete or forget
 
-`mora delete <id> --yes` removes one local memory. A connector can create it
-again on the next sync. Use `forget` for a lasting local block:
+`mora delete <id> --yes` removes one local memory only with explicit
+`mcp_write_policy=open`. A connector can create it again on the next sync.
+`forget --yes` changes durable governance and likewise needs a trusted owner
+verifier; list and `--dry-run` stay read-only. Use `forget` for a lasting local
+block:
 
 ```bash
 mora forget --chat imessage_chat/<guid> --dry-run

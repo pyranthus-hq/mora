@@ -17,24 +17,27 @@ import (
 )
 
 const (
-	reviewUsage      = "usage: mora review [--list [--json]]"
-	reviewRefusal    = "refusing to walk through agent notes from a non-interactive shell or from inside an agent session. Run `mora review` in your own terminal, or use `mora review --list`."
-	reviewAgentRefus = "refusing to walk through agent notes from inside an agent session (%s is set). Run `mora review` in your own terminal, or use `mora review --list`."
-	reviewKindSaved  = "saved"
-	reviewKindHeld   = "held"
+	reviewUsage     = "usage: mora review [--list [--json] | --show saved|held ID --json]"
+	reviewKindSaved = "saved"
+	reviewKindHeld  = "held"
 )
 
 // reviewNote is one agent note that waits for the owner. Digest binds a held
 // note to the exact arguments the owner saw.
 type reviewNote struct {
-	Kind    string
-	ID      string
-	Scope   string
-	Type    string
-	Title   string
-	Text    string
-	Reasons []string
-	Digest  string
+	Kind       string
+	ID         string
+	Scope      string
+	Type       string
+	Title      string
+	Text       string
+	Source     string
+	Provenance string // Derived by memory.DeriveProvenance: evidence, document, or authored.
+	Truncated  bool
+	Deleted    bool
+	Meta       map[string]any
+	Reasons    []string
+	Digest     string
 	// SHA is the content hash of the memory file the owner saw (saved notes).
 	SHA string
 	// Confirm is memory.OwnerConfirmedDigest of the shown note; keep binds the
@@ -55,6 +58,10 @@ type reviewRow struct {
 
 type reviewReceipt struct {
 	Notes []reviewRow `json:"notes"`
+}
+
+type reviewPreviewReceipt struct {
+	Preview desktopReviewPreview `json:"preview"`
 }
 
 // same reports whether the owner would still see what was printed.
@@ -78,7 +85,12 @@ func reviewTitle(m Memory) string {
 }
 
 func reviewNoteFromMemory(m Memory) reviewNote {
-	return reviewNote{Kind: reviewKindSaved, ID: m.ID, Scope: m.Scope, Type: m.Type, Title: reviewTitle(m), Text: m.Text, Confirm: memory.OwnerConfirmedDigest(m), Fields: memory.OwnerConfirmedFields(m)}
+	return reviewNote{
+		Kind: reviewKindSaved, ID: m.ID, Scope: m.Scope, Type: m.Type,
+		Title: reviewTitle(m), Text: m.Text, Source: m.Source,
+		Provenance: memory.DeriveProvenance(m), Truncated: m.Truncated, Deleted: m.DeletedAt != "", Meta: m.Meta,
+		Confirm: memory.OwnerConfirmedDigest(m), Fields: memory.OwnerConfirmedFields(m),
+	}
 }
 
 const reviewNoReason = "held under an earlier rule or write mode"
@@ -181,16 +193,6 @@ func listReviewNotes(cfg Config, stderr io.Writer) ([]reviewNote, error) {
 	return notes, nil
 }
 
-func requireReviewTerminal(stdin io.Reader) error {
-	if key := rulesAgentSession(); key != "" {
-		return fmt.Errorf(reviewAgentRefus, key)
-	}
-	if !rulesInteractive(stdin) {
-		return errors.New(reviewRefusal)
-	}
-	return nil
-}
-
 // reviewShowText escapes each line, so only newlines can move the cursor.
 func reviewShowText(s string) string {
 	lines := strings.Split(s, "\n")
@@ -284,18 +286,40 @@ func reviewWarnings(w io.Writer, buf *bytes.Buffer) {
 }
 
 func cmdReview(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) error {
+	if len(args) > 0 && args[0] == "desktop" {
+		return cmdReviewDesktop(ctx, args[1:], stdout, stdin)
+	}
 	fs := flag.NewFlagSet("review", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	list := fs.Bool("list", false, "list agent notes that wait for review")
+	show := fs.String("show", "", "show one saved or held note for a desktop preview")
 	jsonOut := fs.Bool("json", false, "json")
-	if err := fs.Parse(flagsFirst(args)); err != nil {
+	if err := fs.Parse(reviewFlagsFirst(args)); err != nil {
 		return err
+	}
+	showSet := false
+	fs.Visit(func(f *flag.Flag) {
+		showSet = showSet || f.Name == "show"
+	})
+	if showSet {
+		if *list || !*jsonOut || fs.NArg() != 1 || (*show != reviewKindSaved && *show != reviewKindHeld) {
+			return errors.New(reviewUsage)
+		}
+		cfg, err := loadConfigFor(ctx)
+		if err != nil {
+			return err
+		}
+		preview, err := loadDesktopReviewPreview(cfg, *show, fs.Arg(0))
+		if err != nil {
+			return errDesktopReviewUnavailable
+		}
+		return emitReceipt(stdout, "mora.review.preview", 1, reviewPreviewReceipt{Preview: preview})
 	}
 	if fs.NArg() != 0 || (*jsonOut && !*list) {
 		return errors.New(reviewUsage)
 	}
 	if !*list {
-		if err := requireReviewTerminal(stdin); err != nil {
+		if err := requireVerifiedOwnerAction(ownerAction{Kind: "review.decide"}); err != nil {
 			return err
 		}
 	}
@@ -317,6 +341,28 @@ func cmdReview(ctx context.Context, args []string, stdout, stderr io.Writer, std
 	// Approving a held note starts a rebuild that exit would kill.
 	defer drainReconcileOrWarn(stderr)
 	return walkReviewNotes(ctx, cfg, notes, bufio.NewReader(stdin), stdout, stderr)
+}
+
+// reviewFlagsFirst keeps --show's value attached while still accepting --json
+// after its two positional values.
+func reviewFlagsFirst(args []string) []string {
+	var flags, pos []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--show" || args[i] == "-show" {
+			flags = append(flags, args[i])
+			if i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+			continue
+		}
+		if strings.HasPrefix(args[i], "-") {
+			flags = append(flags, args[i])
+		} else {
+			pos = append(pos, args[i])
+		}
+	}
+	return append(flags, pos...)
 }
 
 func printReviewList(notes []reviewNote, jsonOut bool, stdout io.Writer) error {

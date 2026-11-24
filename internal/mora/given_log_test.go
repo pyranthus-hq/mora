@@ -85,6 +85,7 @@ func TestGivenSessionStartLogsExactEmittedIDs(t *testing.T) {
 		t.Fatalf("at = %q", g.At)
 	}
 	// An unbound folder with the daily brief logs a digest line: no notes.
+	enableUnboundSessionBrief(t)
 	defer stubHookBrief(t, "daily brief body")()
 	pbHook(t, t.TempDir())
 	lines = givenLinesOf(t, cfg)
@@ -337,6 +338,7 @@ func TestGivenUnwritableLogChangesNoResult(t *testing.T) {
 	if _, err := rebuildIndex(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
+	enableUnboundSessionBrief(t)
 	defer stubHookBrief(t, "daily brief body")()
 	hook := func() string {
 		var out bytes.Buffer
@@ -523,6 +525,7 @@ func TestGivenFreeTextDirNeverReachesLog(t *testing.T) {
 	if err := cmdHook(testCtx(t), []string{"recall"}, &out, testStderr, strings.NewReader(in)); err != nil || out.Len() == 0 {
 		t.Fatalf("recall: %v %q", err, out.String())
 	}
+	enableUnboundSessionBrief(t)
 	defer stubHookBrief(t, "daily brief body")()
 	for _, cwd := range []string{bad, "relative/DIRMARKERQX", "DIRMARKERQX"} {
 		_ = cmdHook(testCtx(t), []string{"session-start"}, &out, testStderr, strings.NewReader(fmt.Sprintf(`{"cwd":%q}`, cwd)))

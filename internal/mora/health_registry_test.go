@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/pyranthus-hq/mora/internal/memory"
+	"github.com/pyranthus-hq/mora/internal/resource"
 )
 
 // health_registry_test.go — Packet C3's completeness proof.
@@ -32,6 +34,10 @@ import (
 // vault seeded with a "read-target"/"delete-target" memory pair.
 func mcpSurfaceArgs(name string) map[string]any {
 	switch name {
+	case "discover_resources":
+		return map[string]any{"task": "surface"}
+	case "submit_resource":
+		return map[string]any{"kind": "skill", "purpose": "surface probe", "pasted": "# Surface probe\n"}
 	case "write_memory":
 		return map[string]any{"title": "Surface probe", "text": "surface probe body"}
 	case "read_memory":
@@ -104,6 +110,16 @@ func bannerWithinFirstLines(t *testing.T, label, out string) {
 	t.Fatalf("%s: banner is not within the first two lines:\n%s", label, out)
 }
 
+// resourceSurfaceContext binds only resource calls to an isolated managed project.
+func resourceSurfaceContext(t *testing.T, ctx context.Context) context.Context {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return withMCPWorkspace(context.WithValue(ctx, mcpProjectKey{}, mcpProject{scope: "project:surface", root: root}))
+}
+
 // driveEverySurface is the shared completeness loop both TestEverySurfaceCarriesHealth
 // and TestSixDayFreezeSurfacesOnEverySurface run over an already-seeded, already-
 // unhealthy vault: every MCP tool minus mcpHealthExemptTools, every HTTP route
@@ -113,11 +129,16 @@ func bannerWithinFirstLines(t *testing.T, label, out string) {
 func driveEverySurface(t *testing.T, ctx context.Context, cfg Config) {
 	t.Helper()
 
+	resourceCtx := resourceSurfaceContext(t, ctx)
 	for _, name := range mcpToolNames() {
 		if mcpHealthExemptTools[name] {
 			continue
 		}
-		res, err := callMCPTool(ctx, name, mcpSurfaceArgs(name))
+		callCtx := ctx
+		if name == "discover_resources" || name == "submit_resource" {
+			callCtx = resourceCtx
+		}
+		res, err := callMCPTool(callCtx, name, mcpSurfaceArgs(name))
 		if err != nil {
 			t.Fatalf("mcp %s: %v", name, err)
 		}
@@ -257,4 +278,41 @@ func TestSixDayFreezeSurfacesOnEverySurface(t *testing.T) {
 	t.Cleanup(func() { hookNow = origHookNow })
 
 	driveEverySurface(t, ctx, cfg)
+}
+
+// Resource responses carry health in every successful policy branch.
+func TestResourceHealthResponses(t *testing.T) {
+	withTempHome(t)
+	run(t, "init")
+	cfg := mustConfig(t)
+	ctx := resourceSurfaceContext(t, testCtx(t))
+	args := mcpSurfaceArgs("submit_resource")
+	for _, tc := range []struct {
+		name string
+		call func() (any, error)
+	}{
+		{"discover", func() (any, error) { return mcpDiscoverResources(ctx, cfg, mcpSurfaceArgs("discover_resources")) }},
+		{"pending", func() (any, error) { return stageMCPResourceProposalWith(ctx, cfg, args, "") }},
+		{"import", func() (any, error) { return mcpSubmitResourceTentative(ctx, cfg, args) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := tc.call()
+			if err != nil {
+				t.Fatal(err)
+			}
+			h, ok := mcpToolCompactHealth(out)
+			if !ok || h.State == "" {
+				t.Fatalf("missing health: %#v", out)
+			}
+			if tc.name == "pending" {
+				m := out.(map[string]any)
+				if m["proposal"].(map[string]any)["status"] != "pending" {
+					t.Fatalf("proposal: %#v", out)
+				}
+				if rows, err := mcpDiscoverResources(ctx, cfg, map[string]any{"task": "surface"}); err != nil || len(rows.(map[string]any)["resources"].([]resource.Result)) != 0 {
+					t.Fatalf("pending discovery: %#v %v", rows, err)
+				}
+			}
+		})
+	}
 }

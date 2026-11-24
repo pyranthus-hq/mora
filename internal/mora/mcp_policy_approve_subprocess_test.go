@@ -19,6 +19,7 @@ func TestApproveSubprocessWorker(t *testing.T) {
 	if home == "" {
 		t.Skip("not the subprocess worker")
 	}
+	withTestVerifiedOwnerAction(t)
 	parked, resume := os.Getenv("MORA_APPROVE_PARKED"), os.Getenv("MORA_APPROVE_RESUME")
 	ctx := configstore.WithHomeRoot(context.Background(), home)
 	ctx = configstore.WithAuthoredReconciler(ctx, func(_ context.Context, cfg Config) error {

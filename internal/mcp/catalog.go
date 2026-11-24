@@ -139,6 +139,26 @@ var toolCatalog = []ToolDefinition{
 			{"max_tokens", "integer", "Approximate token budget for the pack (default ~6000, max ~20000)", false},
 		},
 	},
+	{
+		Name: "discover_resources", Description: "Find up to five eligible, metadata-only project resources; discovery never loads, installs, executes, or approves content.",
+		Params: []Param{{"task", "string", "Task or problem to match against resource purpose and applicability", true}},
+	},
+	{
+		Name: "submit_resource", Description: "Submit a local pasted skill, verified project attachment, or unfetched HTTPS reference for owner review. Scope is a proposal, not authority; this never activates or fetches a resource.",
+		Params: []Param{
+			{"kind", "string", "Resource kind: skill|best_practice|repository|tool", true},
+			{"purpose", "string", "What the resource is for", true},
+			{"pasted", "string", "Pasted SKILL.md content (skill only); exactly one source form is required", false},
+			{"folder", "string", "Absolute local attachment beneath the bound project root", false},
+			{"url", "string", "Canonical HTTPS repository or tool reference; this is stored without fetching", false},
+			{"version", "string", "Pinned revision when submitting a repository reference", false},
+			{"subdirectory", "string", "Optional repository subdirectory", false},
+			{"scope", "string", "Proposed scope: project:<name> or global; does not grant activation", false},
+			{"scope_reason", "string", "Why the caller proposed this scope", false},
+			{"stable_id", "string", "Prior stable resource id when adding changed content as a revision", false},
+			{"canonical_source", "string", "Declared source identity or attribution", false},
+		},
+	},
 }
 
 // ToolCatalog returns the canonical ordered public MCP tool catalog.

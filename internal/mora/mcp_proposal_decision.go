@@ -50,7 +50,15 @@ func readMCPProposalDecision(cfg Config, id string) (*mcpProposalDecision, error
 	if !st.Mode().IsRegular() || st.Size() > 8192 {
 		return nil, errors.New("invalid MCP proposal decision record; refusing another decision")
 	}
-	body, err := os.ReadFile(path)
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	body, err := readReviewSnapshot(file, st, 8192)
+	if errors.Is(err, errReviewSnapshotTooLarge) {
+		return nil, errors.New("invalid MCP proposal decision record; refusing another decision")
+	}
 	if err != nil {
 		return nil, err
 	}

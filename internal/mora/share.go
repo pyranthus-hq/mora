@@ -1353,6 +1353,9 @@ func unionSharedResults(ctx context.Context, cfg Config, local []Memory, query, 
 // were rewritten onto the cross-corpus RRF domain. MCP confidence consumes
 // that observation instead of inferring a scale from the local retrieval path.
 func unionSharedResultsObserved(ctx context.Context, cfg Config, local []Memory, query, scope string, limit int, filters ...searchFilters) ([]Memory, bool, error) {
+	if oneFilter(filters).NoShares {
+		return local, false, nil
+	}
 	shared, err := searchSharedCorpora(ctx, cfg, query, scope, limit, filters...)
 	if err != nil {
 		return nil, false, err

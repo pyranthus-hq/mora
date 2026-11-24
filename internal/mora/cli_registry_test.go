@@ -179,6 +179,7 @@ func TestCLIRegistryMatchesProductionDispatch(t *testing.T) {
 		{"serve", "cmdServe", []string{"args[0]"}},
 		{"hook", "cmdHook", []string{"args[0]"}},
 		{"rules", "cmdRules", []string{"args[0]"}},
+		{"review", "cmdReview", []string{"args[0]"}},
 		{"loop", "cmdLoop", []string{"sub"}},
 		{"remote", "cmdRemote", []string{"args[0]"}},
 		{"handoff", "cmdHandoffIO", []string{"sub"}},
@@ -477,6 +478,7 @@ func setDiff(want, got map[string]bool) string {
 // deliberately invalid final flag keeps connector/network/native rows at their
 // parser or refusal boundary while still executing the real production route.
 func TestCLIRegistryRealRunDispatch(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	registry := loadCLIRegistry(t)
 	for _, row := range registry.Commands {
 		row := row
@@ -689,6 +691,7 @@ func TestCLIRegistryHookIOThroughRun(t *testing.T) {
 	subRun(t, "session start", func(t *testing.T) {
 		withTempHome(t)
 		run(t, "init")
+		enableUnboundSessionBrief(t)
 		restore := stubHookBrief(t, "today's local brief")
 		defer restore()
 		var out bytes.Buffer

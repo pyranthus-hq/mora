@@ -620,6 +620,7 @@ func TestExamServiceOnlyGateIsAssembled(t *testing.T) {
 // decision statement through the real event CLI. It is context, not a materialized
 // commitment, and must not become an event obligation.
 func TestExamIMessageSpeakerPrefixIsNotProductText(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg, event, at := seedExamHome(t)
 	pinExamSurfaceClocks(t, at)
 	m, err := findMemory(cfg, "imessage_chat/exam-flywheel")

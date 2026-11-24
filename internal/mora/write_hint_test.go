@@ -17,15 +17,17 @@ func writeHintRun(t *testing.T, stdin string, args ...string) (stdout, stderr st
 }
 
 // A person's own plain `mora write` is saved unconfirmed; at a real terminal
-// they are told once and told how to make it an owner rule. Agents, pipes and
-// --json never get the line.
+// they are told once and told how to make it an owner rule. Pipes and --json
+// never get the line; an agent marker does not override an explicit open policy.
 func TestWriteHintsThatAPlainNoteIsUnconfirmed(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
+	useShippedWritePolicyDefault(t)
 	projectBriefSetup(t)
 	args := []string{"--type", "decision", "--title", "Use pnpm", "--text", "Always use pnpm."}
 	const hint = "saved as unconfirmed"
 
 	reviewTerminal(t)
-	if _, errText := writeHintRun(t, "", args...); !strings.Contains(errText, hint) || !strings.Contains(errText, "--mine") {
+	if _, errText := writeHintRun(t, "", args...); !strings.Contains(errText, hint) || !strings.Contains(errText, "trusted native verifier") {
 		t.Fatalf("terminal: no hint on stderr: %q", errText)
 	}
 	if out, _ := writeHintRun(t, "", args...); strings.Contains(out, hint) {
@@ -46,10 +48,10 @@ func TestWriteHintsThatAPlainNoteIsUnconfirmed(t *testing.T) {
 	if _, errText := writeHintRun(t, "", args...); strings.Contains(errText, hint) {
 		t.Fatalf("pipe: %q", errText)
 	}
-	// An agent session, even with a terminal.
+	// An agent marker, even with a terminal, does not override the explicit open policy.
 	rulesInteractive = func(io.Reader) bool { return true }
 	t.Setenv(rulesAgentEnv[0], "1")
-	if _, errText := writeHintRun(t, "", args...); strings.Contains(errText, hint) {
+	if _, errText := writeHintRun(t, "", args...); !strings.Contains(errText, hint) {
 		t.Fatalf("agent session: %q", errText)
 	}
 }

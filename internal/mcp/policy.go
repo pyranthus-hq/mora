@@ -52,7 +52,7 @@ func InstructionsFor(policy string) string {
 
 // MutationAction returns the dispatch action and exact refusal for MCP mutation tools.
 func MutationAction(policy, tool string) (string, error) {
-	if tool != "write_memory" && tool != "delete_memory" {
+	if tool != "write_memory" && tool != "delete_memory" && tool != "submit_resource" {
 		return ActionExecute, nil
 	}
 	switch policy {

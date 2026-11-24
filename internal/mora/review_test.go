@@ -3,6 +3,7 @@ package mora
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -59,6 +60,7 @@ func reviewTentative(t *testing.T, cfg Config, id string) bool {
 
 func reviewSetup(t *testing.T) Config {
 	t.Helper()
+	withTestVerifiedOwnerAction(t)
 	useShippedWritePolicyDefault(t)
 	withTempHome(t)
 	run(t, "init")
@@ -156,17 +158,18 @@ func TestReviewWalkKeepsRejectsAndSkips(t *testing.T) {
 
 func TestReviewWalkRefusesOutsideOwnTerminal(t *testing.T) {
 	cfg := reviewSetup(t)
+	withUnavailableOwnerVerifier(t)
 	id := reviewSaved(t, "Stay put")
 	clearAgentEnv(t)
 
 	_, err := reviewWalk(t, strings.NewReader("k\n"))
-	if err == nil || !strings.Contains(err.Error(), "mora review") || !strings.Contains(err.Error(), "non-interactive") {
+	if !errors.Is(err, errOwnerVerificationUnavailable) {
 		t.Fatalf("non-terminal: %v", err)
 	}
 	reviewTerminal(t)
 	t.Setenv("CLAUDECODE", "1")
 	_, err = reviewWalk(t, strings.NewReader("k\n"))
-	if err == nil || !strings.Contains(err.Error(), "CLAUDECODE") || !strings.Contains(err.Error(), "mora review") {
+	if !errors.Is(err, errOwnerVerificationUnavailable) {
 		t.Fatalf("agent session: %v", err)
 	}
 	if !reviewTentative(t, cfg, id) {

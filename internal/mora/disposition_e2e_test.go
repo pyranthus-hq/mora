@@ -73,6 +73,7 @@ func TestDispositionCLIInvalidFieldsAreTypedUsageErrors(t *testing.T) {
 func TestDispositionMCPProposalAuthorityAndApprovalRevalidation(t *testing.T) {
 	for _, deleted := range []bool{false, true} {
 		t.Run(map[bool]string{false: "approve", true: "deleted-target"}[deleted], func(t *testing.T) {
+			withTestVerifiedOwnerAction(t)
 			withTempHome(t)
 			run(t, "init")
 			cfg := mustConfig(t)

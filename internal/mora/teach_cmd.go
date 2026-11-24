@@ -17,6 +17,11 @@ func cmdTeach(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	if len(args) == 0 {
 		return errors.New("usage: mora teach <identity|commitment|memory|undo|history|consent|examples>")
 	}
+	if teachMutates(args) {
+		if err := requireVerifiedOwnerAction(ownerAction{Kind: "teach." + args[0]}); err != nil {
+			return err
+		}
+	}
 	switch args[0] {
 	case "identity":
 		if len(args) == 1 {
@@ -41,6 +46,21 @@ func cmdTeach(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	default:
 		return fmt.Errorf("unknown teach subcommand %q", args[0])
 	}
+}
+
+func teachMutates(args []string) bool {
+	if len(args) < 1 {
+		return false
+	}
+	switch args[0] {
+	case "commitment", "memory", "undo":
+		return true
+	case "identity":
+		return len(args) > 1 && args[1] != "list"
+	case "consent":
+		return len(args) > 1 && (args[1] == "enable" || args[1] == "disable")
+	}
+	return false
 }
 
 func normalizeTeachDecision(raw string) string {
@@ -190,10 +210,17 @@ func appendTeachAndRebuild(ctx context.Context, cfg Config, entry govEntry) (gov
 		_ = unmarkIndexDirty(cfg, op.OpID)
 		return govEntry{}, err
 	}
-	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
-		return stored, err
+	_, rebuildErr := rebuildIndexWithPolicy(ctx, cfg, policyAllow)
+	var cleanupErr error
+	if entry.Kind == govKindTeachMemory {
+		if source, findErr := findMemoryRaw(cfg, entry.TargetID); findErr == nil {
+			cleanupErr = reconcileProjectRuleScope(cfg, source.Scope)
+			if cleanupErr != nil {
+				cleanupErr = fmt.Errorf("teach decision recorded, but project rule reconciliation failed: %w", cleanupErr)
+			}
+		}
 	}
-	return stored, nil
+	return stored, errors.Join(rebuildErr, cleanupErr)
 }
 
 func teachMemory(ctx context.Context, args []string, stdout io.Writer) error {
@@ -349,7 +376,12 @@ func teachMemory(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	// Rebuilding can take much longer than a ledger transaction. Release the
 	// governance lease first; currentness and publication have already committed.
-	if _, err := rebuildIndexWithPolicy(ctx, cfg, policyAllow); err != nil {
+	_, rebuildErr := rebuildIndexWithPolicy(ctx, cfg, policyAllow)
+	cleanupErr := reconcileProjectRuleScope(cfg, original.Scope)
+	if cleanupErr != nil {
+		cleanupErr = fmt.Errorf("teach decision recorded, but project rule reconciliation failed: %w", cleanupErr)
+	}
+	if err := errors.Join(rebuildErr, cleanupErr); err != nil {
 		return err
 	}
 

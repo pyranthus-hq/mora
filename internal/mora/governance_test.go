@@ -168,6 +168,7 @@ func TestGovernance_AttachmentInheritsParentSuppression(t *testing.T) {
 }
 
 func TestGovernance_ForgetCascadesToDerivedAttachmentAndBlocksReingest(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	dir := t.TempDir()
 	pdfPath := filepath.Join(dir, "private.pdf")
@@ -203,6 +204,7 @@ func TestGovernance_ForgetCascadesToPreUpgradeAttachmentWithoutParentMeta(t *tes
 		{name: "sole handle", selector: []string{"--handle", "+14155550123"}},
 	} {
 		subRun(t, tc.name, func(t *testing.T) {
+			withTestVerifiedOwnerAction(t)
 			cfg := coreBIngestInitCfg(t)
 			parent := imsgMM("legacy-parent", "+14155550123")
 			if err := writeMappedMemory(cfg, parent); err != nil {
@@ -236,6 +238,7 @@ func TestGovernance_ForgetCascadesToPreUpgradeAttachmentWithoutParentMeta(t *tes
 }
 
 func TestGovernance_ParentForgetAfterAttachmentPrecheckBlocksDerivedWrite(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	dir := t.TempDir()
 	pdfPath := filepath.Join(dir, "race.pdf")
@@ -260,6 +263,7 @@ func TestGovernance_ParentForgetAfterAttachmentPrecheckBlocksDerivedWrite(t *tes
 }
 
 func TestGovernance_ForgetScanAndAppendAreAtomicAgainstWriter(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	mm := imsgMM("scan-append-race", "+14155550123")
 	writerStarted := make(chan struct{})
@@ -419,6 +423,7 @@ func TestGovernance_FilesystemChatForgetNoResurrection(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGovernance_FilesystemForgetDuringWalkNoResurrection(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	cfg := coreBIngestInitCfg(t)
 	srcDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(srcDir, "note.md"), []byte("a private note"), 0o644); err != nil {

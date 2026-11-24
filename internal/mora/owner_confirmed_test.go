@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	mcppkg "github.com/pyranthus-hq/mora/internal/mcp"
 	"github.com/pyranthus-hq/mora/internal/memory"
 )
 
@@ -266,6 +267,7 @@ func TestOwnerConfirmedTagIsInertAfterForgeryOrDrift(t *testing.T) {
 		kept = append(kept, ownerSaved(t, title))
 	}
 	ownerKeepAll(t, len(kept))
+	legacyOpenPolicy(t)
 	edited, corrected, superseded := kept[0], kept[1], kept[2]
 	stolen := ownerTag(ownerMemory(t, cfg, edited))
 
@@ -306,6 +308,10 @@ func TestOwnerConfirmedTagIsInertAfterForgeryOrDrift(t *testing.T) {
 	supersededBy := revise("supersede", superseded)
 
 	// A tentative record that also carries a tag matching its own text.
+	cfg.MCPWritePolicy = mcppkg.WritePolicyTentative
+	if err := writeConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
 	tent := ownerSaved(t, "Drift tentative")
 	tm := ownerMemory(t, cfg, tent)
 	ownerAddTag(t, tm.Path, ownerTag(tm))
@@ -420,12 +426,17 @@ func TestReservedTagPrefixIsRefusedWhereverACommandTakesTags(t *testing.T) {
 // adoption line.
 func TestReviewShowsAndBindsGoverningFields(t *testing.T) {
 	cfg := reviewSetup(t)
+	legacyOpenPolicy(t)
 	var w bytes.Buffer
 	if err := Run(testCtx(t), []string{"write", "--scope", "project:demo", "--type", "fact", "--title", "Old plan", "--text", "The old plan.", "--json"}, &w, &w, nil); err != nil {
 		t.Fatal(err)
 	}
 	var target struct{ ID string }
 	if err := json.Unmarshal(w.Bytes(), &target); err != nil {
+		t.Fatal(err)
+	}
+	cfg.MCPWritePolicy = "tentative"
+	if err := writeConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
 	held := func(res map[string]any) string {

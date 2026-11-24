@@ -28,6 +28,7 @@ type mcpUsageTraceKey struct{}
 // serialized. callMCPTool still returns the native value to its internal/HTTP
 // callers; handleMCP returns invocation.result() directly to the MCP client.
 type mcpToolInvocation struct {
+	name     string
 	cfg      Config
 	started  time.Time
 	trace    *mcpUsageTrace
@@ -41,7 +42,7 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 	configStarted := time.Now()
 	cfg, err := loadConfigFor(ctx)
 	trace := &mcpUsageTrace{configMillis: time.Since(configStarted).Milliseconds()}
-	inv := mcpToolInvocation{cfg: cfg, started: started, trace: trace, err: err}
+	inv := mcpToolInvocation{name: name, cfg: cfg, started: started, trace: trace, err: err}
 	if err != nil {
 		// A failed config load does not establish a trustworthy state directory.
 		// Return the error envelope without guessing where an event belongs.
@@ -52,12 +53,20 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 		inv.err = unknownMCPToolError(name)
 		return inv
 	}
+	if !mcpProjectAllowsTool(ctx, name) {
+		inv.err = unknownMCPToolError(name)
+		return inv
+	}
 	if _, reserved := args[frictionArg]; reserved && name == "write_memory" {
 		inv.err = errors.New("use the mora friction command for structured friction records")
 		return inv
 	}
 	inv.loggable = true
 	args = withProjectScope(ctx, name, args)
+	if err := mcpProjectAllowsCall(ctx, name, args); err != nil {
+		inv.err = err
+		return inv
+	}
 	traced := context.WithValue(ctx, mcpUsageTraceKey{}, trace)
 	// Agent profiles (#539): the transport bound this call to a profile, so the
 	// profile, not the caller, decides the tool, the scope, raw-source
@@ -76,6 +85,10 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 			return inv
 		}
 		args = shaped
+		if err := mcpProjectAllowsCall(ctx, name, args); err != nil {
+			inv.err = err
+			return inv
+		}
 		policy = agentWritePolicy(policy, profile.Write)
 	}
 	policyHandled := false
@@ -98,13 +111,20 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 		if profiled {
 			proposedBy = profile.Name
 		}
-		inv.value, inv.err = stageMCPWriteProposalHeld(cfg, args, proposedBy, nil)
+		if name == "submit_resource" {
+			inv.value, inv.err = stageMCPResourceProposalWith(traced, cfg, args, proposedBy)
+		} else {
+			inv.value, inv.err = stageMCPWriteProposalHeld(cfg, args, proposedBy, nil)
+		}
 		policyHandled = true
 		proposed = true
 	case mcppkg.ActionTentative:
-		// Reached by unprofiled clients and by profiles whose open write is
-		// narrowed to the vault's tentative policy.
-		inv.value, inv.err = mcpWriteTentative(traced, cfg, args)
+		// An open profile may also be narrowed to the vault's tentative mode.
+		if name == "submit_resource" {
+			inv.value, inv.err = mcpSubmitResourceTentative(traced, cfg, args)
+		} else {
+			inv.value, inv.err = mcpWriteTentative(traced, cfg, args)
+		}
 		policyHandled = true
 	}
 	if !policyHandled {
@@ -118,7 +138,7 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 			receipt.ProposalID = proposalIDOf(inv.value)
 		case action == mcppkg.ActionRefuse:
 			receipt.Action = "refused"
-		case name == "write_memory" || name == "delete_memory":
+		case name == "write_memory" || name == "delete_memory" || name == "submit_resource":
 			receipt.Action = "wrote"
 		}
 		if inv.err == nil && !proposed {
@@ -166,6 +186,9 @@ func invokeMCPTool(ctx context.Context, name string, args map[string]any) mcpToo
 		}
 		trace.event = usageEvent{Tool: name, Results: results}
 	}
+	if inv.err == nil {
+		inv.value = mcpProjectResult(ctx, inv.value)
+	}
 	logGivenMCP(ctx, name, args, inv)
 	return inv
 }
@@ -181,7 +204,7 @@ func unknownMCPToolError(name string) error {
 // handleMCP places in jsonRPCResponse.Result; measurement never reshapes it.
 func (inv mcpToolInvocation) result() map[string]any {
 	envelopeStarted := time.Now()
-	result := toCallToolResult(inv.value, inv.err)
+	result := toCallToolResult(mcpWireValue(inv.cfg, inv.name, inv.value), inv.err)
 	b, _ := json.Marshal(result)
 	envelopeMillis := time.Since(envelopeStarted).Milliseconds()
 	if !inv.loggable {
@@ -198,6 +221,30 @@ func (inv mcpToolInvocation) result() map[string]any {
 	}
 	logUsage(inv.cfg, event)
 	return result
+}
+
+// mcpWireValue keeps the native result usable by internal callers (notably
+// CompanionCapture's fsync) while making only the serialized MCP receipt
+// vault-relative. The copy prevents response shaping from mutating a caller's
+// canonical Memory value or map.
+func mcpWireValue(cfg Config, name string, value any) any {
+	if name != "write_memory" {
+		return value
+	}
+	result, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	memory, ok := result["memory"].(Memory)
+	if !ok {
+		return value
+	}
+	out := make(map[string]any, len(result))
+	for key, item := range result {
+		out[key] = item
+	}
+	out["memory"] = mcpWriteDisplayMemory(cfg, memory)
+	return out
 }
 
 // recordMCPUsage defers a handler's structural metadata to the final envelope

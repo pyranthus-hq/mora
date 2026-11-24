@@ -67,6 +67,10 @@ func writeMemory(cfg Config, m Memory) error {
 	return atomicio.Write(path, body, 0o644)
 }
 func findMemoryRaw(cfg Config, id string) (Memory, error) {
+	return findMemoryRawWithReader(cfg, id, parseMemory)
+}
+
+func findMemoryRawWithReader(cfg Config, id string, read func(string) (Memory, error)) (Memory, error) {
 	files, err := allMemoryFiles(cfg)
 	if err != nil {
 		return Memory{}, err
@@ -91,13 +95,13 @@ func findMemoryRaw(cfg Config, id string) (Memory, error) {
 			fallback = append(fallback, path)
 			continue
 		}
-		m, err := parseMemory(path)
+		m, err := read(path)
 		if err == nil && m.ID == id {
 			return m, nil
 		}
 	}
 	for _, path := range fallback {
-		m, err := parseMemory(path)
+		m, err := read(path)
 		if err == nil && m.ID == id {
 			return m, nil
 		}
@@ -110,14 +114,21 @@ func findMemory(cfg Config, id string) (Memory, error) {
 	if err != nil {
 		return Memory{}, err
 	}
-	g, err := loadGovernance(cfg)
-	if err != nil {
+	if err := requireCurrentMemory(cfg, m.ID); err != nil {
 		return Memory{}, err
 	}
-	if !g.memoryVisible(m.ID) {
-		return Memory{}, fmt.Errorf("memory is not current: %s (use `mora teach history --memory-id %s` to audit revisions)", id, id)
-	}
 	return decorateDecision(m, time.Now()), nil
+}
+
+func requireCurrentMemory(cfg Config, id string) error {
+	g, err := loadGovernance(cfg)
+	if err != nil {
+		return err
+	}
+	if !g.memoryVisible(id) {
+		return fmt.Errorf("memory is not current: %s (use `mora teach history --memory-id %s` to audit revisions)", id, id)
+	}
+	return nil
 }
 
 // listMemories backs `mora list`, list_memory, and context_memory's no-query
@@ -161,6 +172,9 @@ func listMemories(cfg Config, scope string, limit int, filters ...searchFilters)
 		if scope != "" && m.Scope != scope {
 			continue
 		}
+		if len(f.Scopes) > 0 && !scopeInFilter(f.Scopes, m.Scope) {
+			continue
+		}
 		if f.Active() && !searchFilterPasses(f, m) {
 			continue
 		}
@@ -176,6 +190,15 @@ func listMemories(cfg Config, scope string, limit int, filters ...searchFilters)
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+func scopeInFilter(scopes []string, scope string) bool {
+	for _, allowed := range scopes {
+		if allowed == scope {
+			return true
+		}
+	}
+	return false
 }
 
 // writeWikiIndex refreshes a derived state-cache page. It intentionally never

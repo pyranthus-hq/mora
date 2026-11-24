@@ -63,7 +63,7 @@ func TestCoreB_McpCmdMCPBadSubcommand(t *testing.T) {
 		if err == nil {
 			t.Fatalf("cmdMCP(%v) = nil, want usage error", args)
 		}
-		const usage = "usage: mora mcp serve [--profile NAME] [--project-dir DIR] | mora mcp serve-http [--port N] [--allow-host HOST] | mora mcp proposals <list|show ID|approve ID|reject ID>"
+		const usage = "usage: mora mcp serve [--profile NAME] [--project-dir DIR] [--workspace] | mora mcp serve-http [--port N] [--allow-host HOST] | mora mcp proposals <list|show ID|approve ID|reject ID>"
 		if err.Error() != usage {
 			t.Fatalf("cmdMCP(%v) error = %q, want %q", args, err.Error(), usage)
 		}
@@ -207,7 +207,7 @@ func TestCoreB_McpHandleInitialize(t *testing.T) {
 	}
 }
 
-// TestCoreB_McpHandleToolsList covers the tools/list arm: exactly the 13 tools we
+// TestCoreB_McpHandleToolsList covers the tools/list arm: exactly the 15 tools we
 // publish, each a JSON-Schema object with the required properties.
 func TestCoreB_McpHandleToolsList(t *testing.T) {
 	resp := handleMCP(testCtx(t), jsonRPCRequest{JSONRPC: "2.0", ID: float64(2), Method: "tools/list"})
@@ -219,15 +219,16 @@ func TestCoreB_McpHandleToolsList(t *testing.T) {
 	if !ok {
 		t.Fatalf("tools must be a slice of maps, got %T", res["tools"])
 	}
-	if len(tools) != 13 {
-		t.Fatalf("expected 13 published tools, got %d", len(tools))
+	if len(tools) != 15 {
+		t.Fatalf("expected 15 published tools, got %d", len(tools))
 	}
 	names := map[string]bool{}
 	for _, tl := range tools {
 		names[tl["name"].(string)] = true
 	}
 	for _, want := range []string{"write_memory", "read_memory", "search_memory", "calendar_events", "list_memory",
-		"delete_memory", "context_memory", "think", "list_entities", "get_entity", "digest", "brief", "meeting_prep"} {
+		"delete_memory", "context_memory", "think", "list_entities", "get_entity", "digest", "brief", "meeting_prep",
+		"discover_resources", "submit_resource"} {
 		if !names[want] {
 			t.Fatalf("tools/list is missing %q; got %v", want, names)
 		}

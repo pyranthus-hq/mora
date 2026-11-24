@@ -105,6 +105,7 @@ func TestContractLeafCommandsRejectUnknownFlags(t *testing.T) {
 func TestContractMutationJSONReceipts(t *testing.T) {
 	withTempHome(t)
 	run(t, "init")
+	legacyOpenPolicy(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "note.md"), []byte("# note\n\nfilesystem receipt seed\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -152,6 +153,7 @@ func TestContractMutationJSONReceipts(t *testing.T) {
 // `merge confirm` and its `teach identity confirm` alias are one code path with
 // two contracts.
 func TestMergeDecisionJSONReceipts(t *testing.T) {
+	withTestVerifiedOwnerAction(t)
 	withTempHome(t)
 	run(t, "init")
 	for _, tc := range []struct {

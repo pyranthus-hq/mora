@@ -79,7 +79,7 @@ func DeriveProvenance(m Memory) string {
 	if isAgentMemory(m) {
 		return ProvenanceAuthored
 	}
-	if isAgentNoteMirror(m) {
+	if IsAgentNoteMirror(m) {
 		return ProvenanceAuthored
 	}
 	if isFilesystemDocument(m) {
@@ -310,7 +310,11 @@ func underVaultSources(path string) bool {
 	return strings.Contains(slashed, "/sources/") || strings.HasPrefix(slashed, "sources/")
 }
 
-func isAgentNoteMirror(m Memory) bool {
+// IsAgentNoteMirror reports whether a filesystem record mirrors an agent's
+// own durable notes. It is exported for read-boundary policies that must keep
+// this existing authored compatibility while rejecting provider-stamped raw
+// connector rows.
+func IsAgentNoteMirror(m Memory) bool {
 	for _, tag := range m.Tags {
 		for _, name := range agentNoteSources {
 			if strings.EqualFold(tag, name) {
